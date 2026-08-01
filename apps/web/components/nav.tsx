@@ -60,10 +60,16 @@ export function Nav() {
             <Link href="/search" className="btn btn-ghost btn-small" aria-label="Search the platform">
               Search
             </Link>
-            <span className="role-pill" title="Preview the platform as a role">
+            <span
+              className="role-pill"
+              title="Development preview: switch between seeded dev users (x-user-id header). Not available in production."
+            >
               <span aria-hidden="true">●</span>
+              <span className="small muted" aria-hidden="true">
+                dev
+              </span>
               <label className="small" style={{ position: 'absolute', left: '-9999px' }} htmlFor="role-select">
-                View as role
+                View as role (development preview)
               </label>
               <select
                 id="role-select"

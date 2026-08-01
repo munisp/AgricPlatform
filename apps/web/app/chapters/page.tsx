@@ -1,8 +1,7 @@
 import type { Metadata } from 'next';
-import { seedChapters } from '@agric-platform/shared';
 import { AttendanceRecorder } from '@/components/attendance-recorder';
-import { Card, PageHeader, Section, StatusBadge } from '@/components/ui';
-import { demoEvents } from '@/lib/content';
+import { ChapterEvents, ChapterNetwork } from '@/components/chapters-live';
+import { Card, PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Chapters',
@@ -34,41 +33,11 @@ export default function ChaptersPage() {
       />
 
       <Section kicker="Hierarchy" title="Chapter network">
-        <ul className="row-list">
-          {seedChapters.map((chapter) => (
-            <li className="row-item" key={chapter.id}>
-              <div className="row-main">
-                <div className="row-title">{chapter.name}</div>
-                <div className="small muted">
-                  {chapter.level} · {chapter.state}
-                  {chapter.parentId ? ' · reports to national' : ''}
-                </div>
-              </div>
-              <span className="small" style={{ fontWeight: 700 }}>
-                {chapter.memberCount.toLocaleString('en-NG')} members
-              </span>
-              <StatusBadge tone={chapter.active ? 'success' : 'neutral'}>
-                {chapter.active ? 'active' : 'inactive'}
-              </StatusBadge>
-            </li>
-          ))}
-        </ul>
+        <ChapterNetwork />
       </Section>
 
       <Section kicker="Events" title="Upcoming events and RSVP">
-        <div className="grid grid-3">
-          {demoEvents.map((event) => (
-            <Card key={event.id} title={event.title}>
-              <p className="small muted">
-                {event.type.replace(/_/g, ' ')} · {event.location}
-              </p>
-              <p className="small">
-                {new Date(event.startsAt).toLocaleString('en-NG', { dateStyle: 'full', timeStyle: 'short' })}
-              </p>
-              <StatusBadge tone="info">{event.rsvpCount} RSVPs</StatusBadge>
-            </Card>
-          ))}
-        </div>
+        <ChapterEvents />
       </Section>
 
       <Section

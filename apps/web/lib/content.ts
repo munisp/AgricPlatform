@@ -1,3 +1,13 @@
+/**
+ * Content for the web app, in two groups:
+ *
+ * 1. STATIC METADATA (top) — module catalogue, role copy, integration
+ *    catalogue copy, partner programme blurbs and consent-purpose text.
+ *    This is product copy, not API data, and stays local by design.
+ * 2. OFFLINE FALLBACK FIXTURES (marked section below) — demo arrays that
+ *    used to drive the UI and are now only rendered when the API is
+ *    unreachable, always behind an offline notice.
+ */
 import type {
   AuditEvent,
   Certificate,
@@ -7,7 +17,6 @@ import type {
   IntegrationStatus,
   MentorRequest,
   NotificationMessage,
-  Opportunity,
   Order,
   UserRole,
   VaultDocument
@@ -114,44 +123,15 @@ export const MODULES: ModuleDef[] = [
   }
 ];
 
-export const extraOpportunities: Opportunity[] = [
-  {
-    id: 'opp-cassava-equipment',
-    title: 'Cassava Processing Equipment Scheme',
-    type: 'equipment',
-    description:
-      'Subsidised graters, pressers and dryers for registered cassava cooperatives with chapter endorsement.',
-    states: ['Kogi', 'Ogun', 'Oyo', 'Benue', 'Delta'],
-    valueChains: ['Cassava', 'Agro-processing'],
-    eligibility: ['Registered cooperative', 'Chapter lead endorsement', 'Tier 1 KYC'],
-    deadline: '2026-12-15T23:59:59.000Z',
-    isActive: true
-  },
-  {
-    id: 'opp-agritech-internship',
-    title: 'AgriTech Data Internship — Cohort 4',
-    type: 'internship',
-    description:
-      'Six-month paid internship placing students with agri-data teams building farm record tools.',
-    states: ['Lagos', 'FCT', 'Kaduna'],
-    valueChains: ['Agro-processing', 'Logistics'],
-    eligibility: ['Student pathway enrolled', 'Basic digital literacy'],
-    deadline: '2026-09-30T23:59:59.000Z',
-    isActive: true
-  },
-  {
-    id: 'opp-irrigation-grant',
-    title: 'Dry-Season Irrigation Micro-Grant',
-    type: 'grant',
-    description:
-      'Small grants for solar pumps and drip kits to keep vegetable clusters producing through the dry season.',
-    states: ['Sokoto', 'Kano', 'Jigawa', 'Borno', 'Yobe'],
-    valueChains: ['Vegetables', 'Tomato'],
-    eligibility: ['Verified profile', 'Farm photo in document vault', 'Profile score 60%+'],
-    deadline: '2026-10-05T23:59:59.000Z',
-    isActive: true
-  }
-];
+/* --------------------------------------------------------------------------
+ * OFFLINE FALLBACK FIXTURES (quarantined)
+ *
+ * The demo arrays below were the app's data source before the API-wiring
+ * wave. They are now used ONLY as clearly-labelled offline fallbacks when
+ * the API is unreachable and nothing is cached (see `fallbackData` in
+ * lib/api/hooks.ts and the OfflineDataNotice banners). Do not render them
+ * as if they were live data.
+ * ------------------------------------------------------------------------ */
 
 export const demoTopics: ForumTopic[] = [
   {

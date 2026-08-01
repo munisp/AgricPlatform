@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
-import { platformMetrics } from '@agric-platform/shared';
-import { AutoBadge, Card, MetricsGrid, PageHeader, Section, StatusBadge } from '@/components/ui';
-import { demoAuditEvents, reviewQueue } from '@/lib/content';
+import { AdminAuditList, AdminKpis, AdminReviewQueueTable, AdminUserList } from '@/components/admin-live';
+import { Card, PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Admin Console',
@@ -18,61 +17,19 @@ export default function AdminPage() {
       />
 
       <Section kicker="KPIs" title="Platform health">
-        <MetricsGrid metrics={platformMetrics} />
+        <AdminKpis />
+      </Section>
+
+      <Section kicker="People" title="Users">
+        <AdminUserList />
       </Section>
 
       <Section kicker="Operations" title="Review queue">
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Item</th>
-                <th>Type</th>
-                <th>Submitted</th>
-                <th>Priority</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {reviewQueue.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.subject}</td>
-                  <td>{item.kind}</td>
-                  <td>{new Date(item.submitted).toLocaleDateString('en-NG', { dateStyle: 'medium' })}</td>
-                  <td>
-                    <StatusBadge
-                      tone={item.priority === 'high' ? 'critical' : item.priority === 'medium' ? 'warning' : 'neutral'}
-                    >
-                      {item.priority}
-                    </StatusBadge>
-                  </td>
-                  <td>
-                    <button type="button" className="btn btn-ghost btn-small" disabled title="Enabled when the API is connected">
-                      Open
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <AdminReviewQueueTable />
       </Section>
 
       <Section kicker="Audit" title="Recent audit events" description="Immutable audit log for admin and sensitive operations.">
-        <ul className="row-list">
-          {demoAuditEvents.map((event) => (
-            <li className="row-item" key={event.id}>
-              <div className="row-main">
-                <div className="row-title">{event.action}</div>
-                <div className="small muted">
-                  {event.entityType} #{event.entityId} · actor {event.actorId} ·{' '}
-                  {new Date(event.createdAt).toLocaleString('en-NG')}
-                </div>
-              </div>
-              <AutoBadge value="recorded" />
-            </li>
-          ))}
-        </ul>
+        <AdminAuditList />
       </Section>
 
       <Section kicker="Domains" title="Module operations">

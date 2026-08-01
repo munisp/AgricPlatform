@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatNaira, seedAdvisory, seedChapters, seedCourses, seedListings, seedOpportunities } from '@agric-platform/shared';
-import { extraOpportunities } from '@/lib/content';
+import { useApiQuery } from '@/lib/api/hooks';
+import { searchPlatform } from '@/lib/api/endpoints';
+import type { SearchResult } from '@/lib/api/endpoints';
 import { TextInput } from '@/components/forms';
 import { EmptyState, StatusBadge } from '@/components/ui';
 
@@ -25,7 +27,7 @@ const INDEX: SearchEntry[] = [
     href: '/learning',
     badge: course.offlineAvailable ? 'offline-ready' : 'online only'
   })),
-  ...[...seedOpportunities, ...extraOpportunities].map((opp) => ({
+  ...seedOpportunities.map((opp) => ({
     id: opp.id,
     group: 'Opportunities',
     title: opp.title,
@@ -59,16 +61,55 @@ const INDEX: SearchEntry[] = [
   }))
 ];
 
+const TYPE_META: Record<SearchResult['type'], { group: string; href: string }> = {
+  course: { group: 'Learning', href: '/learning' },
+  opportunity: { group: 'Opportunities', href: '/opportunities' },
+  listing: { group: 'Marketplace', href: '/marketplace' },
+  advisory: { group: 'Advisory', href: '/advisory' },
+  chapter: { group: 'Chapters', href: '/chapters' },
+  topic: { group: 'Community', href: '/community' }
+};
+
 export function SearchClient() {
   const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const needle = debounced.trim();
+
+  // Live cross-domain search (GET /api/v1/search?q=…). On failure the local
+  // fixture index below keeps search working offline.
+  const apiQuery = useApiQuery(
+    needle.length >= 2 ? `search:${needle.toLowerCase()}` : null,
+    () => searchPlatform({ q: needle, limit: 30 }).then((res) => res.data),
+    { staleTimeMs: 60_000 }
+  );
 
   const groups = useMemo(() => {
-    const needle = query.trim().toLowerCase();
     if (needle.length < 2) return [];
-    const hits = INDEX.filter(
-      (entry) =>
-        entry.title.toLowerCase().includes(needle) || entry.detail.toLowerCase().includes(needle)
-    );
+
+    let hits: SearchEntry[];
+    if (apiQuery.data && !apiQuery.error) {
+      hits = apiQuery.data.map((result) => ({
+        id: `${result.type}-${result.id}`,
+        group: TYPE_META[result.type].group,
+        title: result.title,
+        detail: result.summary,
+        href: TYPE_META[result.type].href,
+        badge: result.type
+      }));
+    } else {
+      const lower = needle.toLowerCase();
+      hits = INDEX.filter(
+        (entry) =>
+          entry.title.toLowerCase().includes(lower) || entry.detail.toLowerCase().includes(lower)
+      );
+    }
+
     const byGroup = new Map<string, SearchEntry[]>();
     for (const hit of hits) {
       const list = byGroup.get(hit.group) ?? [];
@@ -76,7 +117,7 @@ export function SearchClient() {
       byGroup.set(hit.group, list);
     }
     return [...byGroup.entries()];
-  }, [query]);
+  }, [needle, apiQuery.data, apiQuery.error]);
 
   return (
     <div className="stack-lg">
@@ -98,8 +139,14 @@ export function SearchClient() {
         </span>
       </div>
 
-      {query.trim().length >= 2 && groups.length === 0 ? (
-        <EmptyState title={`No results for “${query.trim()}”`} hint="Check spelling or try a broader term." />
+      {needle.length >= 2 && apiQuery.error ? (
+        <p className="notice notice-info" role="status">
+          Search service unreachable — searching cached offline data instead.
+        </p>
+      ) : null}
+
+      {needle.length >= 2 && groups.length === 0 ? (
+        <EmptyState title={`No results for “${needle}”`} hint="Check spelling or try a broader term." />
       ) : null}
 
       {groups.map(([group, entries]) => (

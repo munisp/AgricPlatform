@@ -1,18 +1,12 @@
 import type { Metadata } from 'next';
 import { KYC_TIERS } from '@agric-platform/shared';
-import { AutoBadge, Card, PageHeader, ProgressBar, Section, StatusBadge } from '@/components/ui';
-import { demoCreditProfile, demoDocuments } from '@/lib/content';
+import { CreditProfileSection, DocumentVault } from '@/components/finance-live';
+import { Card, PageHeader, Section, StatusBadge } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Finance & Credit',
   description: 'Credit readiness scoring, KYC tiers, document vault and lender matching foundations.'
 };
-
-const SIGNALS = [
-  { label: 'Training signals', value: demoCreditProfile.trainingSignals, max: 30 },
-  { label: 'Transaction signals', value: demoCreditProfile.transactionSignals, max: 30 },
-  { label: 'Production signals', value: demoCreditProfile.productionSignals, max: 40 }
-];
 
 const KYC_LABELS: Record<(typeof KYC_TIERS)[number], string> = {
   tier_0: 'Tier 0 — phone verified',
@@ -22,8 +16,6 @@ const KYC_LABELS: Record<(typeof KYC_TIERS)[number], string> = {
 };
 
 export default function FinancePage() {
-  const verifiedDocs = demoDocuments.filter((doc) => doc.status === 'verified').length;
-
   return (
     <div className="container">
       <PageHeader
@@ -33,29 +25,7 @@ export default function FinancePage() {
       />
 
       <Section kicker="Credit profile" title="Your readiness score">
-        <div className="grid grid-2">
-          <Card title={`Score: ${demoCreditProfile.score} / 100`}>
-            <ProgressBar value={demoCreditProfile.score} label="Credit readiness" />
-            <div className="stack" style={{ marginTop: '1rem' }}>
-              {SIGNALS.map((signal) => (
-                <ProgressBar
-                  key={signal.label}
-                  value={(signal.value / signal.max) * 100}
-                  label={`${signal.label} (${signal.value}/${signal.max})`}
-                />
-              ))}
-            </div>
-          </Card>
-          <Card title="Next best actions">
-            <ul className="row-list">
-              {demoCreditProfile.improvementActions.map((action) => (
-                <li className="row-item" key={action}>
-                  <div className="row-main small">{action}</div>
-                </li>
-              ))}
-            </ul>
-          </Card>
-        </div>
+        <CreditProfileSection />
       </Section>
 
       <Section kicker="KYC" title="Verification tiers" description="Higher tiers unlock larger lender matches and escrow limits.">
@@ -70,35 +40,8 @@ export default function FinancePage() {
         </div>
       </Section>
 
-      <Section
-        kicker="Document vault"
-        title={`Vault documents (${demoDocuments.length})`}
-        description={`${verifiedDocs} verified · stored encrypted; filenames only in this reference build.`}
-      >
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Document</th>
-                <th>Kind</th>
-                <th>Uploaded</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {demoDocuments.map((doc) => (
-                <tr key={doc.id}>
-                  <td>{doc.fileName}</td>
-                  <td>{doc.kind.replace(/_/g, ' ')}</td>
-                  <td>{new Date(doc.uploadedAt).toLocaleDateString('en-NG', { dateStyle: 'medium' })}</td>
-                  <td>
-                    <AutoBadge value={doc.status} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <Section kicker="Document vault" title="Vault documents">
+        <DocumentVault />
       </Section>
 
       <Section kicker="Ledger" title="Phase 1 financial design">

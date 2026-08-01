@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
-import { platformMetrics } from '@agric-platform/shared';
 import { RoleDashboard } from '@/components/dashboard-client';
+import { LiveMetrics, LiveNotifications } from '@/components/dashboard-live';
 import { QueueList } from '@/components/queue-list';
 import { NotificationPreferences } from '@/components/notification-preferences';
-import { AutoBadge, MetricsGrid, PageHeader, Section, Timeline } from '@/components/ui';
-import { demoNotifications } from '@/lib/content';
+import { PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Dashboard',
@@ -24,7 +23,7 @@ export default function DashboardPage() {
       </section>
 
       <Section kicker="Indicators" title="Platform metrics">
-        <MetricsGrid metrics={platformMetrics.slice(0, 3)} />
+        <LiveMetrics />
       </Section>
 
       <Section kicker="Offline first" title="Sync queue">
@@ -32,31 +31,7 @@ export default function DashboardPage() {
       </Section>
 
       <Section kicker="Activity" title="Recent notifications">
-        <div className="grid grid-2">
-          <Timeline
-            items={demoNotifications.map((notif) => ({
-              id: notif.id,
-              title: notif.title,
-              date: `${notif.channel.replace('_', ' ')} · ${new Date(notif.createdAt).toLocaleString('en-NG')}`,
-              description: notif.body,
-              tone: notif.status === 'queued' ? 'warning' : 'default'
-            }))}
-          />
-          <div className="card">
-            <h3>Delivery status</h3>
-            <ul className="row-list">
-              {demoNotifications.map((notif) => (
-                <li className="row-item" key={notif.id}>
-                  <div className="row-main">
-                    <div className="row-title">{notif.title}</div>
-                    <div className="small muted">{notif.channel.replace('_', ' ')}</div>
-                  </div>
-                  <AutoBadge value={notif.status} />
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
+        <LiveNotifications />
       </Section>
 
       <Section kicker="Communication" title="Notification preferences" id="notifications">
