@@ -68,7 +68,7 @@ export function Nav() {
               <span className="small muted" aria-hidden="true">
                 dev
               </span>
-              <label className="small" style={{ position: 'absolute', left: '-9999px' }} htmlFor="role-select">
+              <label className="small sr-only" htmlFor="role-select">
                 View as role (development preview)
               </label>
               <select

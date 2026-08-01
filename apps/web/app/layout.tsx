@@ -40,7 +40,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             Skip to content
           </a>
           <Nav />
-          <main className="main" id="main-content">
+          <main className="main" id="main-content" tabIndex={-1}>
             {children}
           </main>
           <Footer />

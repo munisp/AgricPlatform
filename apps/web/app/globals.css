@@ -424,6 +424,19 @@ a[aria-current='page'] .tab-icon::after {
   font-size: 0.85rem;
 }
 
+/* Filter groups rendered as fieldset+legend (a11y wave). */
+fieldset.card {
+  min-width: 0;
+  margin: 0;
+}
+
+fieldset.card legend {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--green-950);
+  padding: 0 0.3rem;
+}
+
 /* ---------- Layout primitives ---------- */
 
 .section {

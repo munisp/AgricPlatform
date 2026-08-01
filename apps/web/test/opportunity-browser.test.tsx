@@ -61,7 +61,10 @@ describe('OpportunityBrowser (wired smoke test)', () => {
     });
 
     expect(screen.getByRole('status').textContent).toContain('1 opportunity found');
-    expect(screen.getByRole('button', { name: 'Apply' })).toBeTruthy();
+    // Per-card accessible name disambiguates the identical Apply buttons.
+    expect(
+      screen.getByRole('button', { name: 'Apply for Test Irrigation Grant' })
+    ).toBeTruthy();
 
     // The list endpoint was called through the typed client (GET, no key).
     const listCall = fetchMock.mock.calls.find((call) =>

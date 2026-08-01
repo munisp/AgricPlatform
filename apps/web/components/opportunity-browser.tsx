@@ -101,7 +101,8 @@ export function OpportunityBrowser() {
   return (
     <div className="stack-lg">
       {opportunitiesQuery.source === 'fallback' ? <OfflineDataNotice /> : null}
-      <div className="card">
+      <fieldset className="card filter-card">
+        <legend>Filter opportunities</legend>
         <div className="form-grid cols-2">
           <Field id="opp-q" label="Search">
             <TextInput
@@ -144,14 +145,14 @@ export function OpportunityBrowser() {
           </Field>
         </div>
         <div className="cluster" style={{ marginTop: '0.9rem', justifyContent: 'space-between' }}>
-          <span className="small muted" role="status">
+          <span className="small muted" role="status" aria-live="polite">
             {results.length} opportunit{results.length === 1 ? 'y' : 'ies'} found
           </span>
           <button type="button" className="btn btn-ghost btn-small" onClick={clearFilters}>
             Clear filters
           </button>
         </div>
-      </div>
+      </fieldset>
 
       <QueryState
         isLoading={opportunitiesQuery.isLoading}
@@ -197,6 +198,11 @@ export function OpportunityBrowser() {
                     type="button"
                     className={`btn btn-small ${hasApplied ? 'btn-secondary' : 'btn-primary'}`}
                     disabled={hasApplied || applyMutation.status === 'pending'}
+                    aria-label={
+                      hasApplied
+                        ? `Applied to ${opp.title}`
+                        : `Apply for ${opp.title}`
+                    }
                     onClick={() => void applyMutation.mutate({ opportunity: opp })}
                   >
                     {hasApplied ? 'Applied' : applyMutation.status === 'pending' ? 'Applying…' : 'Apply'}
