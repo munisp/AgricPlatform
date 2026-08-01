@@ -2,9 +2,9 @@ import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 
 /**
- * Reads the authenticated user attached by RolesGuard, or null when the
- * route is unauthenticated. Phase 1 identity is header-based (`x-user-id`);
- * Phase 2 replaces this with Keycloak OIDC JWT verification.
+ * Reads the authenticated user attached by RolesGuard (verified OIDC bearer
+ * token, or the development `x-user-id` header where allowed), or null when
+ * the route is unauthenticated.
  */
 export const CurrentUser = createParamDecorator((_: unknown, ctx: ExecutionContext): User | null => {
   const request = ctx.switchToHttp().getRequest<{ user?: User }>();
