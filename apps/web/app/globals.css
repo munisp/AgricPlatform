@@ -16,7 +16,10 @@
   --sand-100: #f6f3ec;
   --sand-200: #ece5d2;
   --sand-300: #ddd2b8;
-  --earth-600: #8a6d4b;
+  /* Darkened for WCAG AA (a11y wave): earth-600 3.82:1→5.54:1 on sand-200,
+     ink-mute 4.53:1→5.08:1 on sand-100. Palette stays warm/low-saturation —
+     contrast is gained by darkening text, never by saturating backgrounds. */
+  --earth-600: #6e5535;
   --earth-500: #9c7f5b;
   --clay-600: #a35f3c;
   --clay-500: #b0724a;
@@ -24,7 +27,7 @@
   --red-600: #a34a3c;
   --ink: #22301f;
   --ink-soft: #43503f;
-  --ink-mute: #66735f;
+  --ink-mute: #5f6b58;
   --line: #d9d2bf;
   --card: #fffef9;
   --focus: #3c6f4d;
@@ -121,6 +124,20 @@ textarea {
 
 .skip-link:focus {
   left: 0;
+}
+
+/* Visually hidden but available to assistive technology (replaces inline
+   position:absolute; left:-9999px patterns). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .container {
@@ -225,7 +242,7 @@ textarea {
   border-radius: var(--radius-s);
   font-size: 0.92rem;
   white-space: nowrap;
-  min-height: 40px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
 }
@@ -402,7 +419,7 @@ a[aria-current='page'] .tab-icon::after {
 }
 
 .btn-small {
-  min-height: 36px;
+  min-height: 44px;
   padding: 0.35rem 0.8rem;
   font-size: 0.85rem;
 }
@@ -597,7 +614,8 @@ a[aria-current='page'] .tab-icon::after {
 
 .badge-critical {
   background: #f3ded8;
-  color: var(--red-600);
+  /* 4.51:1 → 5.63:1 on #f3ded8 (safety margin above AA). */
+  color: #8d3f30;
   border-color: #e0bfb4;
 }
 
@@ -616,7 +634,7 @@ a[aria-current='page'] .tab-icon::after {
 .chip {
   display: inline-flex;
   align-items: center;
-  min-height: 38px;
+  min-height: 44px;
   padding: 0.35rem 0.85rem;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -1139,14 +1157,20 @@ a[aria-current='page'] .tab-icon::after {
   background: var(--red-600);
 }
 
+/* Blanket reduced-motion: every transition/animation is effectively
+   disabled (0.01ms) when the user prefers reduced motion — covers .btn,
+   .chip, card hovers, skeleton shimmer and anything added later. */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
 
-  .module-card,
-  .progress-fill {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
@@ -1163,8 +1187,4 @@ a[aria-current='page'] .tab-icon::after {
 @keyframes skeleton-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .skeleton-line { animation: none; }
 }
