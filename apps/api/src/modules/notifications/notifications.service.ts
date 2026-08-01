@@ -76,6 +76,11 @@ export class NotificationsService {
     return this.messages.update(message.id, { status: result.delivered ? 'sent' : 'failed' });
   }
 
+  /** Single message (used for ownership checks before state changes). */
+  getMessage(id: string): NotificationMessage {
+    return this.messages.getById(id);
+  }
+
   markRead(id: string): NotificationMessage {
     return this.messages.update(id, { status: 'read' });
   }

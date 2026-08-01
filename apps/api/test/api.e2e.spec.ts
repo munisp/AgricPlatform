@@ -105,7 +105,7 @@ describe('AgricPlatform API (e2e)', () => {
 
   it('replays mutations with the same idempotency key', async () => {
     const payload = { buyerId: 'user-buyer', quantity: 1 };
-    const headers = { 'idempotency-key': 'e2e-order-1' };
+    const headers = { 'idempotency-key': 'e2e-order-1', 'x-user-id': 'user-buyer' };
     const first = await post('/listings/listing-maize-kano/orders', payload, headers);
     expect(first.status).toBe(201);
     const firstBody = await first.json();
@@ -120,9 +120,26 @@ describe('AgricPlatform API (e2e)', () => {
   });
 
   it('records chapter event RSVP and attendance', async () => {
-    const rsvp = await post('/events/event-kano-meeting/rsvp', { userId: 'user-farmer-2' });
+    const anonymous = await post('/events/event-kano-meeting/rsvp', { userId: 'user-farmer-2' });
+    expect(anonymous.status).toBe(401);
+    const rsvp = await post(
+      '/events/event-kano-meeting/rsvp',
+      { userId: 'user-farmer-2' },
+      { 'x-user-id': 'user-farmer-2' }
+    );
     expect(rsvp.status).toBe(201);
-    const attendance = await post('/events/event-kano-meeting/attendance', { userId: 'user-farmer-2' });
+    // Attendance is checked in by a chapter lead/admin, not the attendee.
+    const selfCheckIn = await post(
+      '/events/event-kano-meeting/attendance',
+      { userId: 'user-farmer-2' },
+      { 'x-user-id': 'user-farmer-2' }
+    );
+    expect(selfCheckIn.status).toBe(403);
+    const attendance = await post(
+      '/events/event-kano-meeting/attendance',
+      { userId: 'user-farmer-2' },
+      { 'x-user-id': 'user-lead-kaduna' }
+    );
     expect(attendance.status).toBe(201);
     const event = await (await fetch(`${base}/events/event-kano-meeting`)).json();
     expect(event.data.rsvpCount).toBe(1);
@@ -130,23 +147,51 @@ describe('AgricPlatform API (e2e)', () => {
   });
 
   it('enforces notification channel preferences', async () => {
-    const res = await post('/notifications/send', {
-      userId: 'user-adamu',
-      channel: 'whatsapp',
-      title: 'Test',
-      body: 'Disabled channel'
-    });
+    const auth = { 'x-user-id': 'user-adamu' };
+    const res = await post(
+      '/notifications/send',
+      { userId: 'user-adamu', channel: 'whatsapp', title: 'Test', body: 'Disabled channel' },
+      auth
+    );
     expect(res.status).toBe(400);
 
-    const ok = await post('/notifications/send', {
-      userId: 'user-adamu',
-      channel: 'sms',
-      title: 'Test',
-      body: 'Enabled channel'
-    });
+    const ok = await post(
+      '/notifications/send',
+      { userId: 'user-adamu', channel: 'sms', title: 'Test', body: 'Enabled channel' },
+      auth
+    );
     expect(ok.status).toBe(201);
     const body = await ok.json();
     expect(body.data.status).toBe('sent');
+  });
+
+  it('restricts notifications to the owning user or admin', async () => {
+    // Anonymous callers are rejected.
+    expect(
+      (await post('/notifications/send', { userId: 'user-adamu', channel: 'sms', title: 'T', body: 'B' }))
+        .status
+    ).toBe(401);
+    // A different authenticated user cannot send as or read someone else.
+    expect(
+      (
+        await post(
+          '/notifications/send',
+          { userId: 'user-adamu', channel: 'sms', title: 'T', body: 'B' },
+          { 'x-user-id': 'user-aisha' }
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (await fetch(`${base}/notifications/preferences/user-adamu`, { headers: { 'x-user-id': 'user-aisha' } }))
+        .status
+    ).toBe(403);
+    // The delivery log is admin-only.
+    expect(
+      (await fetch(`${base}/notifications/deliveries`, { headers: { 'x-user-id': 'user-adamu' } })).status
+    ).toBe(403);
+    expect(
+      (await fetch(`${base}/notifications/deliveries`, { headers: { 'x-user-id': 'user-admin' } })).status
+    ).toBe(200);
   });
 
   it('protects admin routes with RBAC', async () => {
@@ -182,15 +227,22 @@ describe('AgricPlatform API (e2e)', () => {
   });
 
   it('exports and deletes personal data (NDPR)', async () => {
-    const exportRes = await fetch(`${base}/privacy/export/user-hassan`);
+    const owner = { 'x-user-id': 'user-hassan' };
+    // Privacy records require the data subject or an admin.
+    expect((await fetch(`${base}/privacy/export/user-hassan`)).status).toBe(401);
+    expect(
+      (await fetch(`${base}/privacy/export/user-hassan`, { headers: { 'x-user-id': 'user-aisha' } })).status
+    ).toBe(403);
+
+    const exportRes = await fetch(`${base}/privacy/export/user-hassan`, { headers: owner });
     const bundle = await exportRes.json();
     expect(bundle.data.user.id).toBe('user-hassan');
     expect(bundle.data.profile.userId).toBe('user-hassan');
 
-    const request = await (await post('/privacy/delete/user-hassan', {})).json();
+    const request = await (await post('/privacy/delete/user-hassan', {}, owner)).json();
     expect(request.data.status).toBe('pending');
     const confirmed = await (
-      await post(`/privacy/delete/requests/${request.data.id}/confirm`, {})
+      await post(`/privacy/delete/requests/${request.data.id}/confirm`, {}, owner)
     ).json();
     expect(confirmed.data.status).toBe('completed');
 

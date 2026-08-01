@@ -9,7 +9,7 @@ This document defines the security and compliance control set for AgricPlatform,
 - Roles (canonical, in `packages/shared/src/domain.ts`): `farmer`, `student`, `buyer`, `supplier`, `chapter_lead`, `partner`, `admin`. PRD Appendix A also names platform-internal role mappings (e.g., CHAPTER_ADMIN, PROGRAMME_ADMIN, PLATFORM_ADMIN, PARTNER_API) which resolve to these canonical roles at the API boundary.
 - Enforcement model [code]: Keycloak issues OIDC tokens carrying realm roles; NestJS guards enforce RBAC from the JWT on every route without round-tripping to the auth server (PRD 12.2); the web app mirrors role visibility in UI but never relies on UI hiding as a control.
 - Acceptance evidence: guard unit tests per role per sensitive route; negative tests (farmer token against admin/partner routes returns 403); partner workspace tokens are permission-scoped (M17/E10); two-approval CODEOWNERS rule on `auth` and shared contracts per `docs/github-strategy.md`.
-- Status: role contract [code] implemented; Keycloak realm + guard layer [infra/code] planned; SSO to Moodle/Discourse [external: hosting].
+- Status: role contract [code] implemented; API guard layer verifies Keycloak OIDC JWTs via JWKS with bearer-first, header-fallback-outside-production semantics [code]; Keycloak realm hosting [infra]; SSO to Moodle/Discourse [external: hosting].
 
 ## 2. Idempotency
 
@@ -45,8 +45,8 @@ This document defines the security and compliance control set for AgricPlatform,
 
 - No secrets in Git (github-strategy). `.env.example` documents variable names only; all provider keys ship empty. `JWT_SECRET` and `WEBHOOK_SIGNING_SECRET` carry explicit `local-development-only` values.
 - Runtime secrets: GitHub Environments for CI; AWS Secrets Manager or equivalent for deployed environments (PRD 12.6). Local development defaults to stub drivers (`*_DRIVER=stub`).
-- Acceptance evidence: secret scanning in CI (gitleaks or equivalent) is a required check; dependency audit (Dependabot + npm audit) enabled; rotated-webhook-secret test for Paystack/Termii webhook signature verification.
-- Status: [code] gitleaks + blocking `npm audit` implemented in `.github/workflows/ci.yml` (first run evidence pending repository push); cloud secret store [infra] — Kubernetes secrets provisioning documented in `infra/k8s/secrets-provisioning.md`.
+- Acceptance evidence: secret scanning in CI (gitleaks or equivalent) is a required check; dependency audit (Dependabot + npm audit) enabled; rotated-webhook-secret test for Paystack/Termii webhook signature verification. Webhook HMAC-SHA256 verification over the raw body is implemented with idempotent replay handling and a stub-driver development bypass only outside production [code].
+- Status: [code] gitleaks + blocking `npm audit` implemented in `.github/workflows/ci.yml` (first run evidence pending repository push); webhook HMAC verification + e2e replay tests implemented; cloud secret store [infra] — Kubernetes secrets provisioning documented in `infra/k8s/secrets-provisioning.md`.
 
 ## 7. OWASP Top 10 mapping (PRD 12.6 control table)
 
@@ -58,10 +58,10 @@ This document defines the security and compliance control set for AgricPlatform,
 | Insecure design | Ports/adapters, ACL boundaries, idempotency, double-entry ledger | ADR/architecture review | [docs] done at baseline |
 | Security misconfiguration | Cloudflare WAF (OWASP Core Rule Set); hardened headers; environment parity | Config review; header tests | [infra] |
 | Vulnerable components | Dependabot + npm audit in CI | CI gate output | [code] planned |
-| Auth failures | Keycloak phone-OTP SPI (Termii), MFA option, stricter rate limits on auth endpoints | OTP flow test (stub/sandbox); throttler test | [code]/[external: Termii] |
+| Auth failures | Keycloak phone-OTP SPI (Termii), MFA option, stricter rate limits on auth endpoints; OTP attempt lockout + no dev code in production | OTP lockout/expiry tests; throttler test | [code] implemented /[external: Termii SPI] |
 | Software/data integrity | Branch protection, required CI, signed releases, linear history | GitHub settings evidence | [code] planned |
 | Logging/monitoring failures | Audit log + delivery logs; Wazuh/OpenSearch SOC (Phase 2) | Audit tests; SOC runbook | [code] Phase 1 / [external] Phase 2 |
-| SSRF / rate abuse | NestJS Throttler (Redis-backed), stricter on auth; APISIX rate limiting at edge (target) | Throttler tests | [code] planned |
+| SSRF / rate abuse | NestJS Throttler (in-memory now, Redis-backed follow-up), stricter on auth; APISIX rate limiting at edge (target) | Throttler tests | [code] implemented (Redis follow-up) |
 | **Penetration test** | Third-party test before public launch and annually thereafter | Pen test report; critical findings resolved | **[external] — launch blocker** |
 
 ## 8. Backups and disaster recovery

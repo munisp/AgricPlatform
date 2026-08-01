@@ -22,6 +22,7 @@
 # Paths match the NestJS module layout under apps/api/src/modules/.
 /apps/api/src/modules/finance/      @ORG/agricplatform-maintainers @ORG/agricplatform-api
 /apps/api/src/modules/auth/         @ORG/agricplatform-maintainers @ORG/agricplatform-api
+/apps/api/src/common/auth/          @ORG/agricplatform-maintainers @ORG/agricplatform-api
 /apps/api/src/modules/privacy/      @ORG/agricplatform-maintainers @ORG/agricplatform-api
 
 # Shared domain contracts consumed by every module and the web app.

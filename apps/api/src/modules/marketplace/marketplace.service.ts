@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import type {
   ApiListResponse,
   LocationRef,
   MarketplaceListing,
   Order,
-  OrderStatus
+  OrderStatus,
+  User
 } from '@agric-platform/shared';
 import { seedListings } from '@agric-platform/shared';
 import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
@@ -14,6 +15,50 @@ import { seedOrders, type OrderReview } from '../../database/seed-data.js';
 
 /** Orders at or above this value stay escrow-ready for settlement. */
 const ESCROW_THRESHOLD_NAIRA = 100_000;
+
+/** Which order party may drive each transition (admins may drive any of them). */
+type OrderActor = 'buyer' | 'seller';
+
+/**
+ * Marketplace order state machine over ORDER_STATUSES
+ * (docs/security-compliance.md §2: invalid transitions must be rejected
+ * under retry). Terminal states (completed, cancelled) accept no outbound
+ * transitions; re-sending the current status is an idempotent no-op.
+ */
+export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, Readonly<Partial<Record<OrderStatus, readonly OrderActor[]>>>>> = {
+  requested: {
+    negotiating: ['seller'],
+    confirmed: ['seller'],
+    cancelled: ['buyer', 'seller']
+  },
+  negotiating: {
+    confirmed: ['buyer', 'seller'],
+    cancelled: ['buyer', 'seller']
+  },
+  confirmed: {
+    deposit_paid: ['buyer'],
+    cancelled: ['buyer', 'seller']
+  },
+  deposit_paid: {
+    in_fulfilment: ['seller'],
+    disputed: ['buyer', 'seller']
+  },
+  in_fulfilment: {
+    delivered: ['seller'],
+    disputed: ['buyer', 'seller']
+  },
+  delivered: {
+    completed: ['buyer'],
+    disputed: ['buyer', 'seller']
+  },
+  disputed: {
+    // Disputes resolve through admin mediation only (empty actor list).
+    completed: [],
+    cancelled: []
+  },
+  completed: {},
+  cancelled: {}
+};
 
 export interface CreateListingInput {
   sellerId: string;
@@ -141,13 +186,39 @@ export class MarketplaceService {
     return this.orders.getById(id);
   }
 
-  setOrderStatus(id: string, status: OrderStatus, actorId: string): Order {
+  /**
+   * Drives the order state machine. Re-sending the current status is an
+   * idempotent replay (returns the order unchanged, no duplicate event);
+   * anything else must be a valid transition from ORDER_TRANSITIONS and the
+   * actor must be an entitled party (buyer/seller per the transition, or an
+   * administrator).
+   */
+  setOrderStatus(id: string, status: OrderStatus, actor: Pick<User, 'id' | 'roles'>): Order {
     const order = this.orders.getById(id);
+    if (order.status === status) {
+      return order; // idempotent replay of a retry
+    }
+    const allowed = ORDER_TRANSITIONS[order.status]?.[status];
+    if (!allowed) {
+      throw new BadRequestException(
+        `Invalid order transition '${order.status}' -> '${status}' for order ${id}`
+      );
+    }
+    const isAdmin = actor.roles.includes('admin');
+    if (!isAdmin) {
+      const party: OrderActor | null =
+        actor.id === order.buyerId ? 'buyer' : actor.id === order.sellerId ? 'seller' : null;
+      if (!party || !allowed.includes(party)) {
+        throw new ForbiddenException(
+          `Only the order ${allowed.length > 0 ? allowed.join(' or ') : 'administrator'} may move an order from '${order.status}' to '${status}'`
+        );
+      }
+    }
     const updated = this.orders.update(id, { status });
     this.events.publish(
       'marketplace.order.status_changed',
       { orderId: id, from: order.status, to: status },
-      actorId
+      actor.id
     );
     return updated;
   }
