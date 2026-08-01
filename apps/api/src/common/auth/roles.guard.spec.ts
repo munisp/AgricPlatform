@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import type { ExecutionContext } from '@nestjs/common';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type KeyLike } from 'jose';
+import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet } from 'jose';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { UserRole } from '@agric-platform/shared';
 import { UsersService } from '../../modules/users/users.service.js';
@@ -12,7 +12,7 @@ import { RolesGuard } from './roles.guard.js';
 const ISSUER = 'https://keycloak.test/realms/agric-platform';
 const AUDIENCE = 'agric-web';
 
-let privateKey: KeyLike;
+let privateKey: CryptoKey;
 let jwks: JSONWebKeySet;
 
 function makeGuard(required: UserRole[] | undefined): {
