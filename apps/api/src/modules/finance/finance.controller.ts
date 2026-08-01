@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsString } from 'class-validator';
-import type { VaultDocument } from '@agric-platform/shared';
-import { ActorId } from '../../common/auth/current-user.decorator.js';
+import type { User, VaultDocument } from '@agric-platform/shared';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { AuditService } from '../../core/audit.service.js';
 import { FinanceService, type UploadDocumentInput } from './finance.service.js';
 
@@ -58,24 +61,41 @@ export class FinanceController {
   }
 
   @Get('documents')
-  @ApiOperation({ summary: 'List document vault entries' })
-  documents(@Query('userId') userId?: string, @Query('status') status?: VaultDocument['status']) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List document vault entries (own records or admin)' })
+  documents(
+    @CurrentUser() actor: User | null,
+    @Query('userId') userId?: string,
+    @Query('status') status?: VaultDocument['status']
+  ) {
+    if (userId) {
+      assertSelfOrAdmin(actor, userId);
+    } else if (!actor?.roles.includes('admin')) {
+      throw new ForbiddenException('Listing the document vault across users requires the admin role');
+    }
     return { data: this.finance.listDocuments(userId, status) };
   }
 
   @Post('documents')
-  @ApiOperation({ summary: 'Register an uploaded vault document' })
-  upload(@Body() dto: UploadDocumentDto) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Register an uploaded vault document (own vault or admin)' })
+  upload(@Body() dto: UploadDocumentDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
     return { data: this.finance.uploadDocument(dto) };
   }
 
   @Patch('documents/:id/status')
-  @ApiOperation({ summary: 'Verify or reject a vault document (review workflow)' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Verify or reject a vault document (admin review workflow)' })
   setDocumentStatus(
     @Param('id') id: string,
     @Body() dto: DocumentStatusDto,
-    @ActorId() actorId: string
+    @CurrentUser() actor: User | null
   ) {
+    const actorId = actor?.id ?? 'anonymous';
     const document = this.finance.setDocumentStatus(id, dto.status, actorId);
     this.audit.record({
       actorId,

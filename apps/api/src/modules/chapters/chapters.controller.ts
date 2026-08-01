@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
-import type { Chapter, ChapterEvent } from '@agric-platform/shared';
-import { ActorId } from '../../common/auth/current-user.decorator.js';
+import type { Chapter, ChapterEvent, User } from '@agric-platform/shared';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import {
   ChaptersService,
@@ -90,7 +93,9 @@ export class ChaptersController {
   }
 
   @Post('chapters')
-  @ApiOperation({ summary: 'Create a chapter' })
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({ summary: 'Create a chapter (chapter leads and admins)' })
   create(@Body() dto: CreateChapterDto) {
     return { data: this.chapters.create(dto) };
   }
@@ -108,9 +113,11 @@ export class ChaptersController {
   }
 
   @Post('chapters/:id/events')
-  @ApiOperation({ summary: 'Create a chapter event' })
-  createEvent(@Param('id') id: string, @Body() dto: CreateEventDto, @ActorId() actorId: string) {
-    return { data: this.chapters.createEvent(id, dto, actorId) };
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({ summary: 'Create a chapter event (chapter leads and admins)' })
+  createEvent(@Param('id') id: string, @Body() dto: CreateEventDto, @CurrentUser() actor: User | null) {
+    return { data: this.chapters.createEvent(id, dto, actor?.id ?? 'anonymous') };
   }
 
   @Get('chapters/:id/announcements')
@@ -120,8 +127,15 @@ export class ChaptersController {
   }
 
   @Post('chapters/:id/announcements')
-  @ApiOperation({ summary: 'Publish a chapter announcement' })
-  createAnnouncement(@Param('id') id: string, @Body() dto: CreateAnnouncementDto) {
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({ summary: 'Publish a chapter announcement (chapter leads and admins)' })
+  createAnnouncement(
+    @Param('id') id: string,
+    @Body() dto: CreateAnnouncementDto,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, dto.authorId);
     return { data: this.chapters.createAnnouncement(id, dto) };
   }
 
@@ -132,13 +146,18 @@ export class ChaptersController {
   }
 
   @Post('events/:id/rsvp')
-  @ApiOperation({ summary: 'RSVP to a chapter event' })
-  rsvp(@Param('id') id: string, @Body() dto: EventUserDto) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'RSVP to a chapter event (own RSVP)' })
+  rsvp(@Param('id') id: string, @Body() dto: EventUserDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
     return { data: this.chapters.rsvp(id, dto.userId) };
   }
 
   @Post('events/:id/attendance')
-  @ApiOperation({ summary: 'Record event attendance (QR scan equivalent)' })
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({ summary: 'Record event attendance (checked in by a chapter lead or admin)' })
   attendance(@Param('id') id: string, @Body() dto: EventUserDto) {
     return { data: this.chapters.recordAttendance(id, dto.userId) };
   }

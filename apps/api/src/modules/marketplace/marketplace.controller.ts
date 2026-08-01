@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UnauthorizedException,
+  UseGuards
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -16,9 +26,13 @@ import {
   ORDER_STATUSES,
   type LocationRef,
   type MarketplaceListing,
-  type OrderStatus
+  type OrderStatus,
+  type User
 } from '@agric-platform/shared';
-import { ActorId } from '../../common/auth/current-user.decorator.js';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { AuditService } from '../../core/audit.service.js';
 import {
@@ -161,8 +175,11 @@ export class MarketplaceController {
   }
 
   @Post('listings')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Create a produce/input/service listing' })
-  createListing(@Body() dto: CreateListingDto) {
+  createListing(@Body() dto: CreateListingDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.sellerId);
     return { data: this.marketplace.createListing(dto) };
   }
 
@@ -173,14 +190,25 @@ export class MarketplaceController {
   }
 
   @Patch('listings/:id')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Update a listing (price, quantity, active state)' })
-  updateListing(@Param('id') id: string, @Body() dto: UpdateListingDto, @ActorId() actorId: string) {
-    return { data: this.marketplace.updateListing(id, dto, actorId) };
+  updateListing(
+    @Param('id') id: string,
+    @Body() dto: UpdateListingDto,
+    @CurrentUser() actor: User | null
+  ) {
+    const listing = this.marketplace.getListing(id);
+    const owner = assertSelfOrAdmin(actor, listing.sellerId);
+    return { data: this.marketplace.updateListing(id, dto, owner.id) };
   }
 
   @Post('listings/:id/orders')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Place an order against a listing (escrow-ready above threshold)' })
-  placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto) {
+  placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.buyerId);
     return { data: this.marketplace.placeOrder(id, dto.buyerId, dto.quantity) };
   }
 
@@ -201,11 +229,20 @@ export class MarketplaceController {
   }
 
   @Patch('orders/:id/status')
-  @ApiOperation({ summary: 'Transition an order status (fulfilment workflow)' })
-  setOrderStatus(@Param('id') id: string, @Body() dto: OrderStatusDto, @ActorId() actorId: string) {
-    const order = this.marketplace.setOrderStatus(id, dto.status, actorId);
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Transition an order status (state machine enforced, actor-scoped)' })
+  setOrderStatus(
+    @Param('id') id: string,
+    @Body() dto: OrderStatusDto,
+    @CurrentUser() actor: User | null
+  ) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required for order transitions');
+    }
+    const order = this.marketplace.setOrderStatus(id, dto.status, actor);
     this.audit.record({
-      actorId,
+      actorId: actor.id,
       action: 'order.status_changed',
       entityType: 'order',
       entityId: id,
@@ -215,8 +252,11 @@ export class MarketplaceController {
   }
 
   @Post('orders/:id/reviews')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Review a delivered/completed order' })
-  reviewOrder(@Param('id') id: string, @Body() dto: ReviewDto) {
+  reviewOrder(@Param('id') id: string, @Body() dto: ReviewDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.authorId);
     return { data: this.marketplace.reviewOrder(id, dto.authorId, dto.rating, dto.comment) };
   }
 

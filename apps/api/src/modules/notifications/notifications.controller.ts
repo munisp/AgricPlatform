@@ -1,13 +1,19 @@
-import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
 import { ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsString, ValidateNested } from 'class-validator';
 import {
   NOTIFICATION_CHANNELS,
   type NotificationChannel,
   type NotificationMessage,
-  type NotificationPreference
+  type NotificationPreference,
+  type User
 } from '@agric-platform/shared';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { assertSelfOrAdmin, isSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { NotificationsService, type SendNotificationInput } from './notifications.service.js';
 
 class SendNotificationDto implements SendNotificationInput {
@@ -40,38 +46,68 @@ class SetPreferencesDto {
   preferences!: PreferenceItemDto[];
 }
 
+/**
+ * Notification endpoints are authenticated; per-user resources are limited
+ * to the owning user or an admin, and the cross-user delivery log is
+ * admin-only.
+ */
 @ApiTags('notifications')
 @Controller('notifications')
+@UseGuards(RolesGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List notifications by user/status' })
-  list(@Query('userId') userId?: string, @Query('status') status?: NotificationMessage['status']) {
+  @Authenticated()
+  @ApiOperation({ summary: 'List notifications by user/status (own records or admin)' })
+  list(
+    @CurrentUser() actor: User | null,
+    @Query('userId') userId?: string,
+    @Query('status') status?: NotificationMessage['status']
+  ) {
+    if (userId) {
+      assertSelfOrAdmin(actor, userId);
+    } else if (!actor?.roles.includes('admin')) {
+      throw new ForbiddenException('Listing notifications across users requires the admin role');
+    }
     return { data: this.notifications.list({ userId, status }) };
   }
 
   @Post('send')
+  @Authenticated()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Send a notification honouring user preferences and provider adapters' })
-  send(@Body() dto: SendNotificationDto) {
+  send(@Body() dto: SendNotificationDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
     return { data: this.notifications.send(dto) };
   }
 
   @Post(':id/read')
+  @Authenticated()
   @ApiOperation({ summary: 'Mark a notification as read' })
-  markRead(@Param('id') id: string) {
+  markRead(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const message = this.notifications.getMessage(id);
+    assertSelfOrAdmin(actor, message.userId);
     return { data: this.notifications.markRead(id) };
   }
 
   @Get('preferences/:userId')
-  @ApiOperation({ summary: 'Notification preferences for a user' })
-  preferences(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Notification preferences for a user (own or admin)' })
+  preferences(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: this.notifications.preferencesFor(userId) };
   }
 
   @Put('preferences/:userId')
-  @ApiOperation({ summary: 'Replace notification preferences for a user' })
-  setPreferences(@Param('userId') userId: string, @Body() dto: SetPreferencesDto) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Replace notification preferences for a user (own or admin)' })
+  setPreferences(
+    @Param('userId') userId: string,
+    @Body() dto: SetPreferencesDto,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, userId);
     const prefs: NotificationPreference[] = dto.preferences.map((p) => ({
       userId,
       channel: p.channel,
@@ -81,7 +117,8 @@ export class NotificationsController {
   }
 
   @Get('deliveries')
-  @ApiOperation({ summary: 'Delivery log across provider adapters' })
+  @Roles('admin')
+  @ApiOperation({ summary: 'Delivery log across provider adapters (admin only)' })
   deliveries() {
     return { data: this.notifications.deliveries() };
   }

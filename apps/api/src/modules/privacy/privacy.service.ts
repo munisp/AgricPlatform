@@ -110,6 +110,11 @@ export class PrivacyService {
     return this.consents.find((c) => c.userId === userId);
   }
 
+  /** Single consent record (used for ownership checks before revocation). */
+  getConsent(id: string): ConsentRecord {
+    return this.consents.getById(id);
+  }
+
   /** Full NDPR data export for a data subject. */
   exportUser(userId: string, actorId: string) {
     const user = this.users.getById(userId);
