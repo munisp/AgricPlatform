@@ -34,5 +34,5 @@ COPY --from=build --chown=agric:agric /app/apps/api/dist ./apps/api/dist
 USER agric
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD wget -qO- http://127.0.0.1:3001/health >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1 || exit 1
 CMD ["node", "apps/api/dist/main.js"]

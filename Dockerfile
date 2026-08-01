@@ -28,5 +28,5 @@ USER agric
 EXPOSE 3000 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 \
-    && wget -qO- http://127.0.0.1:3001/health >/dev/null 2>&1
+    && wget -qO- http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1
 CMD ["npm", "run", "start"]

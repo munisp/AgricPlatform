@@ -46,7 +46,7 @@ http://localhost:8080 (admin/admin, local only). All drivers default to
 - Deployed automatically from CI for pull requests and merges to `main`.
 - May be torn down and recreated at any time; never store anything durable.
 - Uses sandbox provider keys held in the GitHub `dev` Environment.
-- Health: API `/health` endpoint monitored by CI smoke checks.
+- Health: API `/api/v1/health` endpoint monitored by CI smoke checks.
 
 ## staging
 
