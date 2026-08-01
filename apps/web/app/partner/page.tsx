@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import { AutoBadge, Card, PageHeader, ProgressBar, Section } from '@/components/ui';
-import { partnerProgrammes } from '@/lib/content';
+import { PartnerImpactCard, PartnerProgrammes } from '@/components/partner-live';
+import { Card, PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Partner Hub',
@@ -17,20 +17,11 @@ export default function PartnerPage() {
       />
 
       <Section kicker="Programmes" title="Your programmes">
-        <div className="grid grid-3">
-          {partnerProgrammes.map((programme) => (
-            <Card key={programme.id} title={programme.name}>
-              <p className="small muted">{programme.scope}</p>
-              <p className="small">
-                <strong>{programme.participants}</strong> participants
-              </p>
-              <ProgressBar value={programme.completionRate} label="Completion rate" />
-              <div style={{ marginTop: '0.75rem' }}>
-                <AutoBadge value={programme.status} />
-              </div>
-            </Card>
-          ))}
-        </div>
+        <PartnerProgrammes />
+      </Section>
+
+      <Section kicker="Impact" title="Impact metrics">
+        <PartnerImpactCard />
       </Section>
 
       <Section kicker="Impact" title="Impact reporting">

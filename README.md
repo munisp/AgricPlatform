@@ -27,6 +27,22 @@ Default URLs:
 - API: http://localhost:3001
 - API OpenAPI UI: http://localhost:3001/api/v1/docs
 
+## Running the web app against the API
+The Next.js PWA talks to the NestJS API directly from the browser — **no dev
+proxy is needed** because CORS is configured API-side (`CORS_ORIGIN`, default
+`http://localhost:3000`).
+
+- Point the web client at an API with `NEXT_PUBLIC_API_BASE_URL` (default
+  `http://localhost:3001/api/v1`, see `.env.example`).
+- Authentication: production clients send `Authorization: Bearer <OIDC JWT>`.
+  In development (`NODE_ENV !== 'production'` on the API) the app sends the
+  `x-user-id` header of the seeded user selected in the header's dev role
+  preview (e.g. `user-adamu`, `user-admin`).
+- Offline-first: when the API is unreachable, screens render cached data or
+  clearly-marked fixture fallbacks, and mutations are stored in the on-device
+  sync queue (dashboard → "Sync queue") and replayed with idempotency keys on
+  reconnect.
+
 ## Documentation
 - `SPEC.md` — implementation contract
 - `docs/prd-analysis.md` — PRD interpretation

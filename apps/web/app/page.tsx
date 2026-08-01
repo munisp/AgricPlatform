@@ -1,7 +1,7 @@
 import Link from 'next/link';
-import { platformMetrics, seedAdvisory } from '@agric-platform/shared';
 import { Hero } from '@/components/hero';
-import { MetricsGrid, ModuleCard, Section, StatusBadge, Timeline, Card } from '@/components/ui';
+import { HomeAdvisory, HomeMetrics } from '@/components/home-live';
+import { ModuleCard, Section, Timeline, Card } from '@/components/ui';
 import { MODULES, ROLE_SUMMARIES, ROLE_LABELS } from '@/lib/content';
 import { USER_ROLES } from '@agric-platform/shared';
 
@@ -41,9 +41,9 @@ export default function HomePage() {
       <Section
         kicker="Platform at a glance"
         title="Growing with Nigeria's young farmers"
-        description="Live platform indicators from the reference dataset."
+        description="Live platform indicators from the API, with cached data offline."
       >
-        <MetricsGrid metrics={platformMetrics} />
+        <HomeMetrics />
       </Section>
 
       <Section
@@ -76,24 +76,7 @@ export default function HomePage() {
             </Link>
           </Card>
           <Card title="Today's advisory">
-            <ul className="row-list">
-              {seedAdvisory.map((item) => (
-                <li className="row-item" key={item.id}>
-                  <div className="row-main">
-                    <div className="row-title">{item.title}</div>
-                    <div className="small muted">
-                      {[item.state, item.crop].filter(Boolean).join(' · ')}
-                    </div>
-                  </div>
-                  <StatusBadge tone={item.severity === 'warning' ? 'warning' : 'info'}>
-                    {item.kind.replace(/_/g, ' ')}
-                  </StatusBadge>
-                </li>
-              ))}
-            </ul>
-            <p style={{ marginTop: '1rem' }}>
-              <Link href="/advisory">See all advisory →</Link>
-            </p>
+            <HomeAdvisory />
           </Card>
         </div>
       </Section>

@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { seedAdvisory } from '@agric-platform/shared';
+import { AdvisoryFeed } from '@/components/advisory-live';
 import { Card, PageHeader, Section, StatusBadge, Timeline } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -14,12 +14,6 @@ const CROP_CALENDAR = [
   { id: 'cc4', title: 'Harvest and storage', date: 'September – November', description: 'Dry to safe moisture before bagging; use hermetic storage.' }
 ];
 
-function severityTone(severity?: string) {
-  if (severity === 'critical') return 'critical' as const;
-  if (severity === 'warning') return 'warning' as const;
-  return 'info' as const;
-}
-
 export default function AdvisoryPage() {
   return (
     <div className="container">
@@ -30,21 +24,7 @@ export default function AdvisoryPage() {
       />
 
       <Section kicker="Alerts" title="Latest advisories">
-        <div className="grid grid-3">
-          {seedAdvisory.map((item) => (
-            <Card key={item.id} title={item.title}>
-              <p className="small muted">{item.summary}</p>
-              <div className="cluster">
-                <StatusBadge tone={severityTone(item.severity)}>{item.severity ?? 'info'}</StatusBadge>
-                <StatusBadge tone="neutral">{item.kind.replace(/_/g, ' ')}</StatusBadge>
-              </div>
-              <p className="small muted" style={{ marginTop: '0.5rem' }}>
-                {[item.state, item.crop].filter(Boolean).join(' · ')} ·{' '}
-                {new Date(item.publishedAt).toLocaleDateString('en-NG', { dateStyle: 'medium' })}
-              </p>
-            </Card>
-          ))}
-        </div>
+        <AdvisoryFeed />
       </Section>
 
       <Section kicker="Crop calendar" title="Rainfed maize — Northern Guinea Savanna">
