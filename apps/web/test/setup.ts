@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 
 /**
  * Global test setup: mock next/navigation (App Router hooks are not
