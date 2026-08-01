@@ -78,6 +78,8 @@ Implemented frontend behaviours include role-aware dashboard state, onboarding, 
 
 Cross-cutting implementation includes validation, security headers, CORS, request logging, API exception mapping, idempotency interception, role guards, audit events, domain events, seed data, health/live/ready endpoints, and OpenAPI documentation at `/api/v1/docs`.
 
+**Security hardening (backend wave):** the API verifies Keycloak OIDC bearer tokens against the realm JWKS (`jose`), keeping the `x-user-id` header only outside production or with `ALLOW_DEV_HEADER_AUTH=true`, and refuses to boot in production without OIDC configuration. OTP challenges expire, track attempts, and lock out after five failures; the dev code is never returned in production. Rate limiting (`@nestjs/throttler`, in-memory) guards all routes with stricter limits on auth/OTP/notification/webhook endpoints — **Redis-backed storage is the follow-up so limits hold across replicas**. Sensitive per-user routes (privacy export/delete/consents, notification send/preferences/deliveries, finance document vault, marketplace mutations, chapter management/attendance, integration status) enforce authentication with ownership-or-admin checks. Provider webhooks verify an HMAC-SHA256 signature over the preserved raw body (bypass only for stub drivers outside production) and replayed signed payloads are idempotent. Marketplace order transitions follow an actor-scoped state machine over `ORDER_STATUSES`. Swagger is disabled in production unless `ENABLE_API_DOCS=true`, and non-stub integration drivers without credentials fail the production boot.
+
 ### Automated behaviour evidence
 
 Current automated tests verify these representative flows:
@@ -136,7 +138,8 @@ These map to blockers L1–L10 in `docs/security-compliance.md`.
 | --- | --- | --- | --- |
 | P0 | Frontend uses shared/local fixtures rather than live API data for most journeys | A browser demo can diverge from API behaviour | Frontend + API lead |
 | P0 | API repositories are in-memory | Restart loses state and does not prove PostgreSQL behaviour | API lead |
-| P0 | Local auth uses `x-user-id` header stub | Not safe outside development | Identity lead |
+| P0 | ~~Local auth uses `x-user-id` header stub~~ OIDC bearer verification implemented; Keycloak realm hosting and OTP SPI remain external | API verifies JWTs; the IdP itself is not yet provisioned | Identity lead |
+| P1 | Rate limiting and idempotency stores are in-memory | Limits and replay protection do not hold across replicas; move to Redis | API lead + DevOps |
 | P0 | Docker and Kubernetes assets have not been executed in this environment | Deployment bugs may remain | DevOps lead |
 | P1 | External providers are stubs only | OTP, payments, notifications, LMS, and community cannot be live-proven | Integrations lead |
 | P1 | Financial ledger is schema/spec ready but not the active runtime store | Marketplace and credit flows need durable balanced records | Finance engineering + counsel |
