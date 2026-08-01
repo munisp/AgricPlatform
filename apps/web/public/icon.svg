@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="AgricPlatform leaf mark">
+  <rect width="512" height="512" rx="104" fill="#2f5d3f"/>
+  <path d="M262 396c6-128 52-208 158-238-2 136-48 214-158 238z" fill="#ece5d2"/>
+  <path d="M250 396c-4-96-38-162-128-192 12 110 48 170 128 192z" fill="#b9c8a4"/>
+  <rect x="248" y="384" width="16" height="56" rx="8" fill="#ece5d2"/>
+</svg>

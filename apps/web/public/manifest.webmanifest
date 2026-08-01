@@ -1,0 +1,45 @@
+{
+  "name": "AgricPlatform — Nigeria Farmer Platform",
+  "short_name": "AgricPlatform",
+  "description": "Unified digital operating system for NYFN farmers, students, buyers, suppliers, chapters, partners and admins.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f6f3ec",
+  "theme_color": "#2f5d3f",
+  "lang": "en-NG",
+  "categories": ["agriculture", "education", "business"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "url": "/dashboard",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Opportunities",
+      "url": "/opportunities",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Marketplace",
+      "url": "/marketplace",
+      "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}
