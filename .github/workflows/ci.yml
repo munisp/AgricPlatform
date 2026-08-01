@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: no job in this workflow needs more than read access to the
+# repository contents. Jobs that need extra scopes declare them explicitly.
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: "20"
 
@@ -17,13 +22,14 @@ jobs:
   install:
     name: Install and cache dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - name: Install dependencies
+      - name: Install dependencies (reproducible, from lockfile)
         run: npm ci
       - name: Verify clean install from lockfile
         run: npm ls --workspaces --include-workspace-root --depth=0
@@ -31,6 +37,7 @@ jobs:
   build:
     name: Build shared, API and web
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: install
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +66,7 @@ jobs:
   test:
     name: Unit tests and coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: install
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +89,7 @@ jobs:
   lint:
     name: Lint and typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: install
     steps:
       - uses: actions/checkout@v4
@@ -97,28 +106,38 @@ jobs:
   security:
     name: Secret scan and dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      # Placeholder: enable GitHub secret scanning + push protection on the
-      # repository, and/or swap in gitleaks/trufflehog here when approved.
-      - name: Secret scan (placeholder)
-        run: |
-          echo "Repository-level secret scanning and push protection must be enabled."
-          echo "See scripts/github-bootstrap.md for the enabling commands."
+          fetch-depth: 0 # full history so gitleaks can diff the PR range
+      # Real gitleaks scan. For organisation-owned private repos,
+      # gitleaks-action requires a GITLEAKS_LICENSE secret (free for personal
+      # accounts); add it in repo settings when the org is provisioned.
+      # Also enable GitHub secret scanning + push protection per
+      # scripts/github-bootstrap.md.
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: Dependency audit (production deps)
+      # Blocking gate: high/critical findings in production dependencies fail
+      # CI. Moderate/low findings are reported without blocking so advisories
+      # stay visible while the Phase 1 dependency set stabilises.
+      - name: Dependency audit (blocking, production deps)
         run: npm audit --omit=dev --audit-level=high
-        continue-on-error: true # advisory until Phase 1 dependency set stabilises
+      - name: Dependency audit (advisory, all deps)
+        run: npm audit --audit-level=moderate || true
 
   bundle-audit:
     name: Bundle and artifact audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -140,22 +159,99 @@ jobs:
           fi
 
   container-build:
-    name: Container image build (optional)
+    name: Container image build and scan
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: build
-    # Requires Docker availability in the runner and existing app workspaces.
-    if: ${{ false }} # flip to true (or remove) once apps/api and apps/web exist
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # Images are built but not pushed here; deploy.yml pushes on main.
       - name: Build API image
-        run: docker build -f infra/docker/api.Dockerfile -t agric-api:${{ github.sha }} .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          load: true
+          tags: agric-api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
       - name: Build web image
-        run: docker build -f infra/docker/web.Dockerfile -t agric-web:${{ github.sha }} .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          load: true
+          tags: agric-web:${{ github.sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      # Blocking vulnerability gate on the built images. Unfixed findings are
+      # ignored (no patch available); fixed HIGH/CRITICAL findings fail CI.
+      - name: Trivy scan — API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: agric-api:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Trivy scan — web image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: agric-web:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  smoke-test:
+    name: Web/API smoke test (built processes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build all workspaces
+        run: npm run build --workspaces --if-present
+      # Starts the exact production processes (npm run start -> API on 3001,
+      # web standalone server on 3000) and curls both health surfaces.
+      - name: Start production processes and smoke test
+        run: |
+          set -e
+          NODE_ENV=production PORT=3001 npm run start --workspace=apps/api &
+          API_PID=$!
+          NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
+          WEB_PID=$!
+          cleanup() { kill "$API_PID" "$WEB_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/ >/dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "== API /api/v1/health =="
+          curl -fsS http://127.0.0.1:3001/api/v1/health
+          echo
+          echo "== API /api/v1/health/ready =="
+          curl -fsS http://127.0.0.1:3001/api/v1/health/ready
+          echo
+          echo "== Web / =="
+          curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/
 
   ci-gate:
     name: CI gate
     runs-on: ubuntu-latest
-    needs: [install, build, test, lint, security, bundle-audit]
+    timeout-minutes: 5
+    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test]
     steps:
       - name: All required checks passed
         run: echo "CI gate satisfied for ${{ github.sha }}"

@@ -38,18 +38,21 @@ On `main`:
 - Add CODEOWNERS for web, API, shared contracts, infra, and docs.
 
 ## CI/CD
-1. Install and cache dependencies.
+1. Install with `npm ci` and cache dependencies.
 2. Lint and typecheck.
 3. Unit tests and coverage.
 4. Build API and web.
-5. Secret scan and dependency audit.
-6. Container/image build when Docker is available.
-7. Deploy to staging on merge to `main`.
-8. Deploy to production only through manual GitHub Environment approval.
-9. Tag releases with semantic versions and attach readiness checklists.
+5. Gitleaks secret scan (blocking) plus blocking `npm audit --omit=dev --audit-level=high`; full-tree audit stays advisory while Phase 1 dependencies stabilise.
+6. Container image builds for `infra/docker/api.Dockerfile` and `infra/docker/web.Dockerfile`, gated by Trivy scans (HIGH/CRITICAL, unfixed findings ignored).
+7. Smoke test of the built production processes (API `/api/v1/health` + web `/`).
+8. Deploy to staging on merge to `main` via `infra/k8s/overlays/staging` (skipped with a notice until cluster credentials exist on the GitHub Environment).
+9. Deploy to production only through manual GitHub Environment approval, promoting the same image tag via `infra/k8s/overlays/production`.
+10. Tag releases with semantic versions and attach readiness checklists.
+
+All workflows run with least-privilege `permissions` (default `contents: read`; only the image push job gets `packages: write`).
 
 ## Secrets
-No secrets in Git. Use `.env.example` for documentation only. Real credentials belong in GitHub Environments for CI and AWS Secrets Manager or equivalent for runtime. Local development defaults to stub providers.
+No secrets in Git. Use `.env.example` for documentation only. Real credentials belong in GitHub Environments for CI and AWS Secrets Manager or equivalent for runtime. Local development defaults to stub providers. Kubernetes secret material is never committed — see `infra/k8s/secrets-provisioning.md` (External Secrets Operator, sealed-secrets, or manual bootstrap).
 
 ## Labels and planning
 - `type: feature|bug|chore|docs|security|debt|spike`

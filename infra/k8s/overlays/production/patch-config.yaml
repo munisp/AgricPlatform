@@ -1,0 +1,24 @@
+# Production runtime configuration.
+# IMPORTANT: provider drivers stay on `stub` until the matching live
+# credentials exist in the production secret store (blocker L4 in
+# docs/security-compliance.md). Flip each driver to `production` only as part
+# of a verified go-live step — see docs/integration-matrix.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agric-config
+data:
+  WEB_URL: "https://app.example.invalid"
+  API_URL: "https://api.example.invalid"
+  NEXT_PUBLIC_API_URL: "https://api.example.invalid"
+  KEYCLOAK_URL: "https://id.example.invalid"
+  NEXT_PUBLIC_KEYCLOAK_URL: "https://id.example.invalid"
+  SMS_DRIVER: "stub" # -> "production" with Termii/Twilio live keys
+  WHATSAPP_DRIVER: "stub" # -> "production" with 360dialog approval
+  EMAIL_DRIVER: "stub" # -> "production" with verified sending domain
+  PUSH_DRIVER: "stub" # -> "production" with OneSignal app credentials
+  PAYMENT_DRIVER: "stub" # -> "production" only after legal/escrow approval
+  SEARCH_DRIVER: "stub"
+  WEATHER_DRIVER: "stub"
+  LMS_DRIVER: "stub"
+  COMMUNITY_DRIVER: "stub"

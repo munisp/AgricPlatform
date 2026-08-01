@@ -13,7 +13,7 @@
 | Persistence readiness | 35% | PostgreSQL schema and repository boundaries exist | Replace in-memory repositories with PostgreSQL implementations and migrations |
 | Identity and access readiness | 45% | Canonical roles, API guards, RBAC tests, Keycloak realm assets | Replace header-based local auth stub with Keycloak OIDC and OTP flow |
 | Integration readiness | 55% | Provider registry, local stubs, adapter matrix, environment flags | Sandbox/live credentials and provider-specific drivers |
-| Infrastructure readiness | 60% | Dockerfiles, Compose, Kubernetes manifests, CI/CD workflows, environment model | Execute and harden in target cloud; run backup/restore and DR drills |
+| Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
 | Security and compliance readiness | 50% | RBAC, idempotency, audit, privacy export/delete, secret hygiene, compliance documentation | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
 | **Overall Phase 1 engineering readiness** | **60%** | Strong reference implementation with deterministic local gates | Complete persistence, OIDC, provider sandbox, and staging hardening |
 | **Public production readiness** | **35%** | Launch blockers remain external and operational | Close L1–L10 in `docs/security-compliance.md` |
@@ -28,7 +28,9 @@ The implementation should be treated as a **production-oriented reference platfo
 - Reproducible dependency lockfile (`package-lock.json`).
 - Shared TypeScript domain contracts, Nigerian state and value-chain fixtures, profile scoring, status enums, role enums, and utility tests.
 - Root validation commands for typecheck, lint, tests, and production builds.
-- GitHub Actions CI/deploy workflows, Dependabot configuration, CODEOWNERS, pull-request template, and issue templates.
+- GitHub Actions CI/deploy workflows with least-privilege permissions, gitleaks secret scanning, blocking dependency audit, container builds with Trivy image scans, and a built-process smoke test; Dependabot configuration, CODEOWNERS, pull-request template, and issue templates.
+- Kustomize overlays for staging and production (`infra/k8s/overlays/`) with replica counts, HPAs, PDBs, NetworkPolicies, per-environment config/driver overrides, and production container security contexts; committed secret manifests removed in favour of `infra/k8s/secrets-provisioning.md`.
+- Backup/restore assets: `scripts/backup-postgres.sh`, `scripts/restore-postgres.sh`, `infra/k8s/backup-cronjob.yaml`, and runbooks under `docs/runbooks/`.
 - GitHub operating model in `docs/github-strategy.md` and command handoff in `scripts/github-bootstrap.md`.
 
 ### Frontend reference PWA
@@ -221,6 +223,8 @@ Results:
 - Tracked `.env` file check: passed
 
 Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment because the container runtime is unavailable. Dockerfiles, Compose, and Kubernetes probes were statically aligned with the verified production start command and `/api/v1/health` endpoints. Those items remain staging-verification tasks rather than locally proven evidence.
+
+The operations-hardening wave (hardened workflows, kustomize overlays, backup/restore scripts and CronJob, runbooks, digest-pinning policy) was validated statically in the same environment: `bash -n` syntax checks on all scripts and YAML parse checks on every workflow and manifest. Container builds, Trivy scans, gitleaks, and cluster applies execute on GitHub-hosted runners once the repository is pushed; cluster-dependent deploy steps skip with an explicit notice until environment credentials are provisioned.
 
 ## 9. Final handoff statement
 

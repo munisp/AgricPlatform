@@ -1,7 +1,13 @@
 name: Deploy
 
-# Promotion model: merge to main -> staging automatically; production only via
-# manual approval on the `production` GitHub Environment (same image tag).
+# Promotion model: merge to main -> build/push images -> staging automatically;
+# production only via manual approval on the `production` GitHub Environment
+# (same immutable image tag).
+#
+# Prerequisites per environment (configured on the GitHub Environment):
+#   secret KUBECONFIG_B64   — base64-encoded kubeconfig for the target cluster
+#   var    API_HEALTH_URL   — e.g. https://api.staging.example/api/v1/health
+# Cluster deploy steps are skipped with a notice until these are provisioned.
 
 on:
   push:
@@ -13,34 +19,113 @@ on:
         required: false
         type: string
 
+# Least privilege: only the image push job needs packages:write; it declares
+# that scope at job level. Everything else stays read-only.
+permissions:
+  contents: read
+
 env:
   IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
   REGISTRY: ghcr.io
 
 jobs:
+  build-and-push-images:
+    name: Build and push container images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only pushes when triggered from this repository's main branch.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      web-image: ${{ steps.meta.outputs.web-image }}
+      api-image: ${{ steps.meta.outputs.api-image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/agric-api:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/agric-web:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      - name: Record image coordinates
+        id: meta
+        run: |
+          echo "api-image=${REGISTRY}/${{ github.repository_owner }}/agric-api:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "web-image=${REGISTRY}/${{ github.repository_owner }}/agric-web:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build-and-push-images
+    # workflow_dispatch skips the push job; always() lets a manual run deploy
+    # an existing tag, while push runs still require the image job to succeed.
+    if: ${{ (always() && github.event_name == 'workflow_dispatch') || needs.build-and-push-images.result == 'success' }}
     environment: staging
+    env:
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+      API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: Resolve image tags
         run: |
           echo "Deploying tag ${IMAGE_TAG}"
-          echo "web=${REGISTRY}/<org>/agric-web:${IMAGE_TAG}"
-          echo "api=${REGISTRY}/<org>/agric-api:${IMAGE_TAG}"
-      # Placeholder: configure registry login + cluster credentials via the
-      # `staging` GitHub Environment secrets, then apply kustomize overlay.
-      - name: Apply kustomize overlay (placeholder)
+          echo "web=${REGISTRY}/${{ github.repository_owner }}/agric-web:${IMAGE_TAG}"
+          echo "api=${REGISTRY}/${{ github.repository_owner }}/agric-api:${IMAGE_TAG}"
+      - name: Cluster credentials not configured — skipping apply
+        if: ${{ env.KUBECONFIG_B64 == '' }}
         run: |
-          echo "kubectl apply -k infra/k8s/overlays/staging  # create overlay per infra/environments.md"
-          echo "kubectl -n agric-platform rollout status deploy/web deploy/api"
-      - name: Smoke check (placeholder)
-        run: echo "curl -fsS https://api.staging.example.invalid/health"
+          echo "::notice::No KUBECONFIG_B64 secret on the 'staging' environment."
+          echo "Provision the cluster and add the secret, then re-run this workflow."
+          echo "Manifests that would be applied: infra/k8s/overlays/staging"
+      - name: Set up kubectl
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        uses: azure/setup-kubectl@v4
+      - name: Configure cluster credentials
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Pin image tag and apply staging overlay
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        run: |
+          cd infra/k8s/overlays/staging
+          kustomize edit set image \
+            "ghcr.io/PLACEHOLDER_ORG/agric-api=${REGISTRY}/${{ github.repository_owner }}/agric-api:${IMAGE_TAG}" \
+            "ghcr.io/PLACEHOLDER_ORG/agric-web=${REGISTRY}/${{ github.repository_owner }}/agric-web:${IMAGE_TAG}"
+          kubectl apply -k .
+          kubectl -n agric-platform rollout status deploy/web deploy/api --timeout=300s
+      - name: Smoke check
+        if: ${{ env.KUBECONFIG_B64 != '' && env.API_HEALTH_URL != '' }}
+        run: curl -fsS --retry 5 --retry-delay 5 "${API_HEALTH_URL}"
 
   production-approval:
     name: Await production approval
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: deploy-staging
     environment:
       name: production
@@ -53,22 +138,46 @@ jobs:
   deploy-production:
     name: Deploy to production
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: production-approval
     environment: production
+    env:
+      KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+      API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify promoted tag matches staging
         run: echo "Promoting ${IMAGE_TAG} from staging to production (same immutable artifact)"
-      # Placeholder: same apply path as staging against the production
-      # overlay, using secrets from the `production` GitHub Environment.
-      - name: Apply kustomize overlay (placeholder)
+      - name: Cluster credentials not configured — skipping apply
+        if: ${{ env.KUBECONFIG_B64 == '' }}
         run: |
-          echo "kubectl apply -k infra/k8s/overlays/production"
-          echo "kubectl -n agric-platform rollout status deploy/web deploy/api"
-      - name: Post-deploy verification (placeholder)
+          echo "::notice::No KUBECONFIG_B64 secret on the 'production' environment."
+          echo "Provision the cluster and add the secret, then re-run this workflow."
+          echo "Manifests that would be applied: infra/k8s/overlays/production"
+      - name: Set up kubectl
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        uses: azure/setup-kubectl@v4
+      - name: Configure cluster credentials
+        if: ${{ env.KUBECONFIG_B64 != '' }}
         run: |
-          echo "curl -fsS https://api.example.invalid/health"
-          echo "Verify admin.audit_events and events.outbox consumers are healthy."
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: Pin image tag and apply production overlay
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        run: |
+          cd infra/k8s/overlays/production
+          kustomize edit set image \
+            "ghcr.io/PLACEHOLDER_ORG/agric-api=${REGISTRY}/${{ github.repository_owner }}/agric-api:${IMAGE_TAG}" \
+            "ghcr.io/PLACEHOLDER_ORG/agric-web=${REGISTRY}/${{ github.repository_owner }}/agric-web:${IMAGE_TAG}"
+          kubectl apply -k .
+          kubectl -n agric-platform rollout status deploy/web deploy/api --timeout=600s
+      - name: Post-deploy verification
+        if: ${{ env.KUBECONFIG_B64 != '' && env.API_HEALTH_URL != '' }}
+        run: |
+          curl -fsS --retry 5 --retry-delay 5 "${API_HEALTH_URL}"
+          curl -fsS --retry 3 --retry-delay 5 "${API_HEALTH_URL}/ready"
+          echo "Verify admin.audit_events and events.outbox consumers are healthy (see docs/runbooks/deployment.md)."
       - name: Tag release
         if: github.event_name == 'push'
         run: echo "Create semantic version tag and attach readiness checklist per docs/github-strategy.md"

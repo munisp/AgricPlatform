@@ -46,7 +46,7 @@ This document defines the security and compliance control set for AgricPlatform,
 - No secrets in Git (github-strategy). `.env.example` documents variable names only; all provider keys ship empty. `JWT_SECRET` and `WEBHOOK_SIGNING_SECRET` carry explicit `local-development-only` values.
 - Runtime secrets: GitHub Environments for CI; AWS Secrets Manager or equivalent for deployed environments (PRD 12.6). Local development defaults to stub drivers (`*_DRIVER=stub`).
 - Acceptance evidence: secret scanning in CI (gitleaks or equivalent) is a required check; dependency audit (Dependabot + npm audit) enabled; rotated-webhook-secret test for Paystack/Termii webhook signature verification.
-- Status: [code] enforced by repo hygiene and CI gate (planned); cloud secret store [infra].
+- Status: [code] gitleaks + blocking `npm audit` implemented in `.github/workflows/ci.yml` (first run evidence pending repository push); cloud secret store [infra] — Kubernetes secrets provisioning documented in `infra/k8s/secrets-provisioning.md`.
 
 ## 7. OWASP Top 10 mapping (PRD 12.6 control table)
 
@@ -68,9 +68,10 @@ This document defines the security and compliance control set for AgricPlatform,
 
 - Requirements (PRD Ch. 8): automated daily backups of all databases and file stores from day one; RTO < 4 hours; RPO < 1 hour; backup integrity tested monthly.
 - Scope: PostgreSQL (point-in-time recovery to satisfy RPO < 1 h), Redis (no durable user data — idempotency keys are reconstructible), document vault object storage (versioned bucket + cross-region copy), Keycloak realm export.
-- DR: `dr` standby environment per github-strategy once cloud infrastructure is provisioned; restore runbook and quarterly restore drill.
+- DR: `dr` standby environment per github-strategy once cloud infrastructure is provisioned; restore runbook (`docs/runbooks/backup-restore.md`) and quarterly restore drill.
+- Assets in repo: `scripts/backup-postgres.sh`, `scripts/restore-postgres.sh`, example CronJob `infra/k8s/backup-cronjob.yaml`; off-site upload activates when a bucket is provisioned.
 - Acceptance evidence: backup schedule configuration; timed restore drill records (RTO proof); monthly integrity check log.
-- Status: [infra]/[external: cloud provisioning] — Phase 1 gate dependency (uptime > 99% for 60 days also requires provisioned monitoring).
+- Status: scripts/runbooks ready; schedule activation and drills [infra]/[external: cloud provisioning] — Phase 1 gate dependency (uptime > 99% for 60 days also requires provisioned monitoring).
 
 ## 9. Data residency
 

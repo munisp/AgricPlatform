@@ -1,0 +1,22 @@
+# Staging runtime configuration: sandbox provider drivers and staging hosts.
+# Real provider credentials come from the `staging` secret store, never Git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agric-config
+data:
+  WEB_URL: "https://app.staging.example.invalid"
+  API_URL: "https://api.staging.example.invalid"
+  NEXT_PUBLIC_API_URL: "https://api.staging.example.invalid"
+  KEYCLOAK_URL: "https://id.staging.example.invalid"
+  NEXT_PUBLIC_KEYCLOAK_URL: "https://id.staging.example.invalid"
+  # Sandbox drivers prove the adapter code paths without live delivery.
+  SMS_DRIVER: "sandbox"
+  WHATSAPP_DRIVER: "sandbox"
+  EMAIL_DRIVER: "sandbox"
+  PUSH_DRIVER: "sandbox"
+  PAYMENT_DRIVER: "sandbox"
+  SEARCH_DRIVER: "stub"
+  WEATHER_DRIVER: "stub"
+  LMS_DRIVER: "stub"
+  COMMUNITY_DRIVER: "stub"

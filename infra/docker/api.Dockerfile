@@ -1,6 +1,17 @@
 # AgricPlatform API (NestJS) image — npm workspaces aware.
 # Build from the REPOSITORY ROOT:
 #   docker build -f infra/docker/api.Dockerfile .
+#
+# BASE-IMAGE DIGEST POLICY: before the first cloud deployment, pin every
+# `FROM node:20-alpine` below to an immutable digest, e.g.
+#   FROM node:20-alpine@sha256:<digest>
+# Obtain the current digest with a verified pull, e.g.
+#   docker buildx imagetools inspect node:20-alpine
+# Do NOT invent a digest — only pin one observed from the registry. Once
+# pinned, Dependabot (docker ecosystem in .github/dependabot.yml) opens PRs
+# to advance the digest; CI's container build + Trivy scan gates each bump.
+# The tag is intentionally unpinned for now because Docker is unavailable in
+# the authoring environment and no digest has been verified yet.
 
 # ---- deps: install workspace dependencies with a reproducible lockfile ----
 FROM node:20-alpine AS deps

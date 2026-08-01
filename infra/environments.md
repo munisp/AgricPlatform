@@ -51,7 +51,10 @@ http://localhost:8080 (admin/admin, local only). All drivers default to
 ## staging
 
 - Mirrors production topology (same container images, same manifests via
-  kustomize overlays) with reduced scale.
+  kustomize overlays) with reduced scale. Overlay:
+  `infra/k8s/overlays/staging` (1 replica per tier, sandbox provider drivers,
+  small HPAs, PDBs, NetworkPolicies). The deploy workflow pins the image tag
+  with `kustomize edit set image` before `kubectl apply -k`.
 - Receives the exact artifact that will be promoted to production.
 - Release gates run here: R1/R2/R3 readiness checklists, NDPR workflow
   verification (consent, export, deletion), notification sandbox delivery
@@ -60,13 +63,23 @@ http://localhost:8080 (admin/admin, local only). All drivers default to
 ## production
 
 - Deploys only through a manual GitHub Environment approval (`deploy.yml`).
+  Overlay: `infra/k8s/overlays/production` (3 API / 2 web replicas with HPAs,
+  PDBs, NetworkPolicies, hardened container security contexts). Provider
+  drivers remain `stub` in the overlay until live credentials exist in the
+  secret store.
 - Database: managed PostgreSQL with PITR backups; Redis-compatible managed
   cache. The k8s manifests in `infra/k8s/` cover stateless web/api tiers;
-  stateful services are managed services, not in-cluster pods.
+  stateful services are managed services, not in-cluster pods. Logical
+  backups: `scripts/backup-postgres.sh` and the example CronJob
+  `infra/k8s/backup-cronjob.yaml`; procedures in
+  `docs/runbooks/backup-restore.md`.
 - Secrets live in AWS Secrets Manager (or equivalent) and are injected by the
-  platform — never committed, never printed in CI logs.
+  platform — never committed, never printed in CI logs. Provisioning options
+  (External Secrets Operator, sealed-secrets, manual bootstrap):
+  `infra/k8s/secrets-provisioning.md`.
 - Audit logging (`admin.audit_events`) and the domain event outbox
-  (`events.outbox`) must be verified healthy after every deploy.
+  (`events.outbox`) must be verified healthy after every deploy
+  (`docs/runbooks/deployment.md`).
 
 ## dr (disaster recovery)
 

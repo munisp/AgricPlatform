@@ -4,6 +4,12 @@
 #
 # Expects the Next.js app at apps/web with `output: "standalone"` in
 # next.config so the runtime stage can run the self-contained server.
+#
+# BASE-IMAGE DIGEST POLICY: identical to infra/docker/api.Dockerfile — pin
+# every `FROM node:20-alpine` to a registry-verified digest
+# (node:20-alpine@sha256:<digest>) before the first cloud deployment; never
+# invent a digest. Dependabot (docker ecosystem) then advances the pin via
+# PR, gated by the CI container build + Trivy scan.
 
 # ---- deps: install workspace dependencies with a reproducible lockfile ----
 FROM node:20-alpine AS deps

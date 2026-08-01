@@ -19,9 +19,13 @@
 
 # Finance, payments, auth and privacy surfaces need two approvals per
 # docs/github-strategy.md; enforce via branch protection + these owners.
-/apps/api/src/finance/              @ORG/agricplatform-maintainers @ORG/agricplatform-api
-/apps/api/src/auth/                 @ORG/agricplatform-maintainers @ORG/agricplatform-api
-/apps/api/src/privacy/              @ORG/agricplatform-maintainers @ORG/agricplatform-api
+# Paths match the NestJS module layout under apps/api/src/modules/.
+/apps/api/src/modules/finance/      @ORG/agricplatform-maintainers @ORG/agricplatform-api
+/apps/api/src/modules/auth/         @ORG/agricplatform-maintainers @ORG/agricplatform-api
+/apps/api/src/modules/privacy/      @ORG/agricplatform-maintainers @ORG/agricplatform-api
+
+# Shared domain contracts consumed by every module and the web app.
+/packages/shared/src/               @ORG/agricplatform-maintainers @ORG/agricplatform-api
 
 # Documentation and specification
 /docs/                              @ORG/agricplatform-maintainers

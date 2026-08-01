@@ -1,0 +1,102 @@
+# EXAMPLE — PostgreSQL backup CronJob. NOT part of any kustomization: review
+# and apply deliberately once a cluster and a storage decision exist.
+#
+#   kubectl apply -f infra/k8s/backup-cronjob.yaml
+#
+# Design notes:
+# - Dumps to a PersistentVolumeClaim (pgbackups) every night at 02:00 UTC.
+# - If S3_BUCKET/S3 credentials are added to the `agric-backup-storage` secret,
+#   the job also uploads off-site (EXTERNAL: requires a provisioned bucket).
+# - Uses the same `agric-secrets` Secret as the API for DATABASE_URL.
+# - Keep the postgres client image major version aligned with the server.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgbackups
+  namespace: agric-platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: agric-platform
+spec:
+  schedule: "0 2 * * *" # daily 02:00 UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: postgres-backup
+            app.kubernetes.io/part-of: agric-platform
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            # postgres:*-alpine images ship a `postgres` user with uid/gid 70.
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              envFrom:
+                - secretRef:
+                    name: agric-secrets # provides DATABASE_URL
+                - secretRef:
+                    name: agric-backup-storage # optional: S3_BUCKET, AWS_* keys
+                    optional: true
+              env:
+                - name: BACKUP_DIR
+                  value: /backups
+                - name: RETENTION_DAYS
+                  value: "14"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+                  FILE="${BACKUP_DIR}/agric_platform_${TS}.dump"
+                  pg_dump --dbname="$DATABASE_URL" --format=custom --compress=6 \
+                    --no-owner --no-privileges --file="$FILE"
+                  ( cd "$BACKUP_DIR" && sha256sum "$(basename "$FILE")" > "$(basename "$FILE").sha256" )
+                  if [ -n "${S3_BUCKET:-}" ]; then
+                    echo "S3_BUCKET set but aws CLI is not in postgres:16-alpine;"
+                    echo "add an upload sidecar or switch the image before enabling off-site copies."
+                  fi
+                  find "$BACKUP_DIR" -name 'agric_platform_*.dump*' -mtime "+${RETENTION_DAYS}" -delete
+                  echo "Backup written: $FILE"
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: pgbackups
+            - name: tmp
+              emptyDir: {}
