@@ -1,10 +1,16 @@
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { Request } from 'express';
 import helmet from 'helmet';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter.js';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor.js';
+
+/** Request augmented with the raw JSON body (needed for webhook HMAC verification). */
+export interface RawBodyRequest extends Request {
+  rawBody?: Buffer;
+}
 
 /** Shared HTTP configuration used by main.ts and e2e tests. */
 export function configureApp(app: NestExpressApplication): void {
@@ -19,8 +25,14 @@ export function configureApp(app: NestExpressApplication): void {
     credentials: true
   });
 
-  // JSON body limit for low-bandwidth PWA payloads.
-  app.useBodyParser('json', { limit: process.env.JSON_BODY_LIMIT ?? '1mb' });
+  // JSON body limit for low-bandwidth PWA payloads. The raw body is preserved
+  // so provider webhooks can verify HMAC signatures over the exact payload.
+  app.useBodyParser('json', {
+    limit: process.env.JSON_BODY_LIMIT ?? '1mb',
+    verify: (req: RawBodyRequest, _res: unknown, buf: Buffer) => {
+      req.rawBody = buf;
+    }
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -33,14 +45,18 @@ export function configureApp(app: NestExpressApplication): void {
   app.useGlobalFilters(new ApiExceptionFilter());
   app.useGlobalInterceptors(new RequestLoggingInterceptor(), new IdempotencyInterceptor());
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('AgricPlatform API')
-    .setDescription('Modular NestJS API for the NYFN farmer platform (PRD v3.3 Phase 1).')
-    .setVersion('0.1.0')
-    .addApiKey({ type: 'apiKey', name: 'x-user-id', in: 'header' }, 'x-user-id')
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/v1/docs', app, document);
+  // API documentation is disabled in production unless explicitly enabled.
+  if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('AgricPlatform API')
+      .setDescription('Modular NestJS API for the NYFN farmer platform (PRD v3.3 Phase 1).')
+      .setVersion('0.1.0')
+      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'oidc')
+      .addApiKey({ type: 'apiKey', name: 'x-user-id', in: 'header' }, 'x-user-id')
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api/v1/docs', app, document);
+  }
 
   app.enableShutdownHooks();
 }
