@@ -1,0 +1,35 @@
+{
+  "name": "agric-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified Nigeria Farmer Platform implementation based on NYFN PRD v3.3.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "validate": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "agriculture",
+    "nigeria",
+    "farmers",
+    "nyfn",
+    "platform"
+  ],
+  "license": "UNLICENSED"
+}
