@@ -1,0 +1,101 @@
+# Requirements Traceability — AgricPlatform
+
+This matrix traces PRD v3.3 requirements (18 modules, epics E1–E10, four canonical journeys, NFR categories) to the AgricPlatform implementation plan and records the acceptance evidence required before each item can be called done. It is the acceptance backbone for release gates R1, R2 and R3.
+
+## Baseline and status taxonomy
+
+**Repository baseline:** this matrix is written against the specification baseline (SPEC.md, `packages/shared` domain contracts, `.env.example` driver flags). At this baseline the implemented code is limited to shared domain contracts: `USER_ROLES`, `LANGUAGE_CODES`, `KYC_TIERS`, `APPLICATION_STATUSES`, `ORDER_STATUSES`, `NOTIFICATION_CHANNELS`, location/entity types (`packages/shared/src/domain.ts`), seed fixtures (`packages/shared/src/data.ts`), and the profile-completion scoring utility with unit tests (`packages/shared/src/profile.ts`, `packages/shared/test/profile.test.ts`). No `apps/web`, `apps/api` or `infra` runtime code exists at this baseline; surfaces below describe the committed plan in SPEC.md and `docs/architecture.md`.
+
+**Status classifications used throughout:**
+
+| Status | Meaning |
+| --- | --- |
+| Implemented reference slice | Behaviour exists as runnable code in the repository today (shared contracts, scoring logic, tests) and is verifiable without credentials. |
+| Adapter-ready | The integration point is specified as a provider adapter with a local stub (SPEC contract 4, `.env.example` `*_DRIVER` flags); stub behaviour is code-verifiable, but the live provider path cannot be exercised without credentials. |
+| External dependency | Delivery is gated on a third party: signed agreement, issued credentials, regulatory review, or partner system access. Code alone cannot close it. |
+| Phase 2 | Committed to Phase 2 per PRD Ch. 7.1 priority table and the GitHub milestone plan; out of Phase 1 acceptance scope. |
+| Phase 3 | Committed to Phase 3 (Appendix A target architecture scope); out of Phase 1/2 acceptance scope. |
+
+**Implementation surface key:** `web` = `apps/web` (Next.js PWA), `api` = `apps/api` (NestJS modular API), `infra` = local stack, deployment and CI assets, `docs` = repository documentation.
+
+---
+
+## 1. Module traceability (M1–M18)
+
+| # | Module (PRD Ch. 7) | MVP scope per PRD | Phase / release | Implementation surface | Acceptance evidence expected | Status at baseline |
+| --- | --- | --- | --- | --- | --- | --- |
+| M1 | Identity & Onboarding | Role signup, phone OTP, location capture, progressive profile, completion score | Phase 1 / R1 (Epic E1) | web: signup/onboarding flows; api: auth, users, profiles modules; infra: Keycloak realm config; docs: this matrix | Role/OTP auth E2E against Keycloak; state/LGA seed data; profile completion score unit + API tests; consent capture record on registration | Implemented reference slice (roles, KYC tiers, location types, completion scoring in `packages/shared`); OTP/Keycloak path is Adapter-ready |
+| M2 | Personalized Dashboards | Role dashboards with key widgets (farmer, chapter lead, buyer, partner, admin) | Phase 1 / R1–R2 (Epic E2) | web: role-aware dashboard pages; api: dashboard aggregation module | Widget render tests per role; RBAC-filtered dashboard API tests; p95 < 500 ms on dashboard endpoints in staging | Phase 1 planned; contracts only at baseline (roles in `packages/shared`) |
+| M3 | Community & Engagement | Forums, groups, messaging, events calendar, moderation | Phase 1 / R1 (Epic E4) | web: forum/group UI; api: community module + Discourse bridge adapter; infra: Discourse deployment | Discourse SSO login E2E (sandbox); group/category sync test; moderation queue workflow test | Adapter-ready (`COMMUNITY_DRIVER=stub` default); live Discourse is External dependency (hosting + SSO keys) |
+| M4 | Learning Academy (NYFN University) | 5–10 seed courses, basic LMS, enrolment, progress, certificates | Phase 1 / R1 (Epic E3) | web: catalogue/course UI; api: learning module + Moodle bridge; infra: Moodle deployment | Enrolment → completion → certificate flow test; certificate verification code check; Moodle completion webhook test (sandbox) | Adapter-ready (`LMS_DRIVER=stub`); live Moodle is External dependency |
+| M5 | Advisory & Decision Support | Crop calendar, pest advisory, weather alerts | Phase 1 / R2 (Epic E7) | web: advisory pages; api: advisory module + weather/price feed adapters; docs: content sourcing notes | Crop calendar renders by zone/crop; weather alert adapter test against recorded NiMet/OpenMeteo payload; FEWS NET snapshot ingestion test | Adapter-ready (`WEATHER_DRIVER=stub`); NiMet feed is External dependency; OpenMeteo is verifiable without credentials |
+| M6 | Opportunity Marketplace | Directory, applications, status notifications | Phase 1 / R2 (Epic E5) | web: directory + application UI; api: opportunities module | Application lifecycle test across `APPLICATION_STATUSES` (shared contract); eligibility pre-screen test; matching-alert trigger test | Implemented reference slice (application status contract); full slice Phase 1 planned |
+| M7 | Produce Marketplace & Route-to-Market | Listings, buyer-seller matching, order tracking, escrow-ready payments | Phase 2 per PRD 7.1 (Journey 2 reference slice planned earlier) | web: listing/order UI; api: marketplace module; api: payments adapter | Order state machine test across `ORDER_STATUSES`; escrow-state transition test with payment stub; dispute path test | Implemented reference slice (order status contract); payments Adapter-ready; escrow via Paystack is External dependency; full module Phase 2 |
+| M8 | Input & Service Marketplace | Supplier directory, service bookings, reviews | Phase 2 | web: directory/booking UI; api: marketplace module extension | Supplier directory CRUD + search test; booking workflow test; verified-buyer review test | Phase 2 |
+| M9 | Finance & Credit Readiness | Credit profile, document vault, opportunity matching, KYC tiers | Phase 2 per PRD 7.1 (foundations in Phase 1 journeys J1/J4) | web: credit profile/vault UI; api: finance module; infra: object storage for documents | Credit-readiness score test; document vault upload/access-control test; KYC tier gating test (`KYC_TIERS` contract); double-entry ledger posting test | Implemented reference slice (KYC tier contract); BVN/NIN verification is External dependency (NIBSS/NIMC agreements); full module Phase 2 |
+| M10 | Chapter & Field Operations | Four-level hierarchy, rosters, events, QR attendance, announcements | Phase 1 / R2 (Epic E6) | web: chapter management + QR check-in UI; api: chapters module | Hierarchy (National→State→LGA→Ward) integrity test; QR attendance recording test incl. duplicate-scan rejection; chapter KPI aggregation test | Phase 1 planned; contracts only at baseline |
+| M11 | Women & Youth Programmes | Programme pages, cohorts, enrolment, impact tracking | Phase 2 (Journey 4 exercises admin/programme slice in Phase 1) | web: programme portal; api: opportunities/programmes + partner modules | Cohort enrolment test; per-programme impact metric test; protected-space access test | Phase 2 |
+| M12 | Student & NYSC | NYSC enrolment, campus club registration | Phase 2 | web: student pathways UI; api: programmes/chapters extension | NYSC pathway enrolment test; campus club registration and approval test | Phase 2 |
+| M13 | Data, Analytics & Reporting | Admin analytics, key platform KPIs, exports | Phase 1 basic / R3 (Epic E9); full Phase 2–3 | web: analytics dashboards; api: analytics module; infra: BI tool (Superset/Metabase) optional | KPI query tests against seeded fixtures; CSV/PDF export test; segmentation query test | Phase 1 planned (basic); lakehouse/advanced analytics Phase 3 |
+| M14 | Knowledge Base, Media & Events | Resource library, podcast integration | Phase 2 per PRD 7.1 | web: library UI; api: content module + Directus adapter | Directus content sync test (sandbox); tagged search test; media embed render test | Adapter-ready via CMS adapter (no dedicated driver flag yet); live Directus is External dependency; full module Phase 2 |
+| M15 | Notifications & Communication | SMS, push, in-app; WhatsApp and email adapters; preferences | Phase 1 / R2 (Epic E8) | web: notification centre + preferences UI; api: notifications module; adapters for Termii/Twilio, 360dialog, Mailgun/SendGrid, OneSignal | Preference matrix test across `NOTIFICATION_CHANNELS` contract; delivery-log write test per channel; stub driver send tests | Implemented reference slice (channel contract); all four drivers Adapter-ready (`SMS/WHATSAPP/EMAIL/PUSH_DRIVER=stub`); live sends are External dependency |
+| M16 | Search, Discovery & Recommendations | Basic search and filters; AI recs later | Phase 1 basic; recommendations Phase 3 | web: search UI; api: search module + Meilisearch adapter | Full-text search test across content/users/opportunities/listings/courses with stub/local engine; faceted filter test | Adapter-ready (`SEARCH_DRIVER=stub`); Meilisearch self-host verifiable in local stack; recommendation engine Phase 3 |
+| M17 | Admin, CRM & Partner Workflows | User management, review queues, audit logs; partner workspace | Phase 1 / R3 (Epics E9, E10) | web: admin console + partner workspace; api: admin, partner modules | User approve/suspend/verify flow test; review queue approve/reject test with notes; audit entry emitted per admin action; partner scoped-access test | Phase 1 planned; audit/contract scaffolding only at baseline |
+| M18 | Security, Compliance & Integrations | RBAC, encryption, NDPR consent, Paystack integration, provider adapters | Phase 1 / R1–R3 (cross-cutting) | api: guards, interceptors, privacy module; infra: TLS, secrets, WAF, backups; docs: `docs/security-compliance.md`, `docs/integration-matrix.md` | See `docs/security-compliance.md` §verification matrix: RBAC guard tests, idempotency replay test, consent log test, export/delete E2E, secret scan clean, backup restore drill | Implemented reference slice (RBAC role contract, driver flags, docs); encryption-at-rest/WAF/backups are infra-provisioning dependent; pen test and DPO are External dependency |
+
+## 2. Epic traceability (E1–E10, PRD Ch. 13)
+
+| Epic | Name | Release | Modules | User stories (PRD) | Journeys exercised | Acceptance evidence | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| E1 | Member Identity & Onboarding | R1 (3 sprints) | M1, M2, M18 | US-E1-01 … US-E1-05 | J1 (steps 1–3) | Keycloak-backed signup/login E2E; role assignment test; profile completion scoring test (exists: `packages/shared/test/profile.test.ts`); session/logout test | Implemented reference slice (scoring + role contract); OTP path Adapter-ready |
+| E2 | Role-Based Dashboards | R1 & R2 (2 sprints) | M2, M13 | US-E2-01 … US-E2-03 | J1, J3, J4 | Per-role widget tests; RBAC filtering test; dashboard performance check | Phase 1 planned |
+| E3 | Learning Academy | R1 (3 sprints) | M4, M15 | US-E3-01 … US-E3-04 | J1 (steps 5–6), J4 | Enrol/complete/certificate E2E; Moodle bridge webhook test (sandbox); certificate-to-credit-profile event test (`learning.certificate.issued`) | Adapter-ready (Moodle stub) |
+| E4 | Community Forum | R1 (2 sprints) | M3, M18 | US-E4-01 … US-E4-03 | J3 (recruitment comms) | Discourse SSO E2E (sandbox); post/moderate flow test; report/flag queue test | Adapter-ready (Discourse stub) |
+| E5 | Opportunity Directory | R2 (2 sprints) | M6, M15 | US-E5-01 … US-E5-03 | J1 (steps 7–10) | Directory search/filter test; application submission test with idempotency key; status notification test | Phase 1 planned; status contract implemented |
+| E6 | Chapter Operations | R2 (3 sprints) | M10, M15 | US-E6-01 … US-E6-03 | J3 (all steps) | Chapter CRUD + roster test; event + RSVP test; QR attendance test; chapter report submission test | Phase 1 planned |
+| E7 | Advisory & Knowledge Base | R2 (2 sprints) | M5, M14 | Not enumerated in PRD 13.2 | J1 (advisory touchpoints) | Crop calendar by zone test; weather alert adapter test; content library render test | Adapter-ready (weather stub) |
+| E8 | Notifications & Engagement | R2 (1 sprint) | M15 | Not enumerated in PRD 13.2 | J1–J4 (all notification steps) | Channel preference test; delivery log test; SMS/push/in-app stub send tests; template rendering test | Adapter-ready (all four drivers stubbed) |
+| E9 | Admin Panel & Analytics | R3 (2 sprints) | M17, M13 | US-E9-01, US-E9-02 | J4 (steps 2, 4, 8) | Admin user-management flow test; KPI dashboard test against seeded metrics; audit trail test | Phase 1 planned |
+| E10 | Partner Workspace (Basic) | R3 (2 sprints) | M17, M11 | Not enumerated in PRD 13.2 | J4 (steps 3, 9) | Partner-scoped token/role test; post-opportunity flow test; read-only impact dashboard test | Phase 1 planned |
+
+## 3. Canonical journey traceability (PRD Ch. 9)
+
+| Journey | Modules spanned | Key external systems | Acceptance evidence (QA scenario) | Status |
+| --- | --- | --- | --- | --- |
+| J1 — Registration to opportunity application | M1, M2, M4, M6, M9, M15, M17 | Keycloak, Termii (OTP), Moodle, Paystack n/a, WhatsApp (alert) | Scripted E2E: signup → OTP (stub/sandbox) → profile → course enrol → certificate → matching alert → vault upload → application in admin review queue | Reference-sliceable end-to-end with stub drivers; OTP/WhatsApp live steps are External dependency |
+| J2 — Produce listing to buyer order and escrow-ready settlement | M7, M2, M15, M16, M10, M18 | Paystack (escrow), WhatsApp, search engine | E2E: listing → search indexing → buyer request → negotiation → deposit (payment stub/sandbox) → delivery confirmation → balance release state → reviews | Order status contract implemented; escrow settlement cannot be live-verified without Paystack live keys — External dependency; full marketplace Phase 2 |
+| J3 — Chapter setup, recruitment, event, attendance, reporting | M10, M2, M15, M13 | Termii, WhatsApp (invites), push | E2E: chapter wizard → 50 invites (stub) → roster updates → event create → RSVP → QR check-in ×19 → activity report → national analytics row | Phase 1 planned; invite delivery live-verification is External dependency |
+| J4 — Admin programme creation, enrolment, impact reporting, partner visibility | M17, M11, M4, M10, M13, M15 | WhatsApp (targeted alerts), email, BI export | E2E: programme create → targeted notify (stub) → 450 applications → approval queue → enrol 200 → completion aggregation → CSV/PDF export → partner read-only dashboard | Phase 1 planned (R3); partner workspace is Epic E10 |
+
+## 4. NFR category traceability (PRD Ch. 8)
+
+| NFR category | Requirement (PRD) | Implementation surface | Verification method | Status |
+| --- | --- | --- | --- | --- |
+| Performance | Page < 3 s on 3G (~1 Mbps); API p95 < 500 ms; SSR first paint | web (SSR, bundle budget), api (query tuning) | Lighthouse CI on 3G throttle; k6 p95 gate in CI/staging | Phase 1 planned |
+| Availability | 99.5% rolling 30-day; maintenance 01:00–04:00 WAT with 48 h notice; 2 h incident response | infra | Uptime monitor (Grafana/Betteruptime) 60-day evidence for Phase 1 gate | External dependency (hosting provisioned) |
+| Scalability | Horizontal scaling to 1M+ members; connection pooling; Redis cache; stateless containers | api, infra | Stateless API container test; load test at target concurrency | Phase 1 design; Phase 2/3 proof |
+| Mobile-first & offline | Installable PWA; offline registration, course access, opportunity browsing, produce listing via service workers + IndexedDB | web | PWA install audit; offline E2E for the four critical journeys with sync-on-reconnect | Phase 1 planned |
+| Accessibility | WCAG 2.1 AA: 4.5:1 contrast, keyboard nav, ARIA, alt text, transcripts | web | axe-core CI gate; manual keyboard/screen-reader pass per release | Phase 1 planned |
+| Localisation | English, Hausa, Yoruba, Igbo; externalised strings; professional translation of agronomy content | web, docs | i18n coverage report (no hard-coded strings); language switch test | Implemented reference slice (`LANGUAGE_CODES` contract en/ha/yo/ig); translations External dependency (professional translators) |
+| Data residency | PII in Nigeria/West Africa region (AWS af-south-1 or equivalent); no PII stored exclusively outside Africa without consent | infra, docs | Region evidence from cloud account; residency statement in privacy policy | External dependency (cloud provisioning + legal) |
+| Security | OWASP Top 10 mitigations; third-party pen test pre-launch and annually | api, web, infra, docs | See `docs/security-compliance.md` §OWASP mapping; pen test report | Controls Phase 1 planned; pen test External dependency |
+| Backup & recovery | Daily automated backups day one; RTO < 4 h; RPO < 1 h; monthly integrity test | infra | Backup schedule config; quarterly restore drill record | External dependency (environment provisioning) |
+| Low-bandwidth optimisation | WebP responsive images, lazy loading, gzip/brotli, inlined critical CSS, ≤ 300 KB first load | web, infra (CDN) | Bundle/page-weight budget check in CI | Phase 1 planned |
+| Privacy & NDPR | Consent at registration; privacy dashboard (view/edit/export/delete); processing register; appointed DPO | web, api (privacy module), docs | Consent log test; export/delete E2E; register document; DPO appointment letter | Consent/export/delete design Phase 1; DPO appointment External dependency (legal) |
+
+## 5. Phase mapping summary
+
+| Phase / release | Timeframe (PRD) | Modules / epics in scope | Gate evidence |
+| --- | --- | --- | --- |
+| R1 Alpha (Phase 1, months 1–4) | Gate 1: internal alpha, month 5, 50 NYFN staff/chapter leads | M1, M2, M3, M4 (E1–E4); M18 cross-cutting | CI green; Keycloak login E2E; learning + community slices demo |
+| R2 Beta (Phase 1, months 5–7) | Gate 2: closed beta, 500 invited users, 5 pilot states | M5, M6, M10, M15 (E5–E8); E2 completion | Journey J1, J3 QA scripts pass on staging with stub/sandbox drivers |
+| R3 Public Launch (Phase 1, months 7–8) | Gate 3: open registration | M13 basic, M17 (E9, E10); security hardening | Phase 1 gate checklist (Appendix D.5): pen test resolved, DPO appointed, privacy policy + ToS published, uptime > 99% for 60 days |
+| Phase 2 | Post-launch | M7, M8, M9, M11, M12, M14, M16 (full), M17 (full); WhatsApp structured replies; mobile app; TigerBeetle/Mojaloop/Temporal adapters | Phase 2 gate checklist: 100+ marketplace transactions/30 days, escrow QA-approved, ⚖ legal items cleared (see security-compliance doc) |
+| Phase 3 | Later | Recommendations, lakehouse analytics, USSD/IVR, commodity exchange (NCX/AFEX) ACL, farmOS sync, public SDK | Phase 3 gate checklist incl. ⚖ exchange/WRS/data-licensing legal reviews |
+
+## 6. Verification rules
+
+1. **Code-complete evidence** (unit/integration/E2E tests, CI checks, Lighthouse, axe, k6) must pass in CI or staging without third-party credentials, using stub drivers. This is the only evidence class available at the current baseline.
+2. **Sandbox evidence** requires test credentials (e.g., Paystack test keys, Moodle sandbox, Discourse staging). It verifies the adapter contract, not production behaviour, and must be labelled `sandbox` in test reports.
+3. **Live evidence** requires production credentials and/or signed agreements (Termii, 360dialog, Paystack live, NIBSS BVN, FMARD/AFEX/NCX). Items requiring live evidence are classified **External dependency** and cannot be closed by engineering alone.
+4. No module may be reported as "done" for a release gate while any in-scope row above is External dependency and unevidenced; such items must appear on the launch-blocker list in `docs/security-compliance.md`.
