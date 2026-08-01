@@ -1,0 +1,28 @@
+# CODEOWNERS for AgricPlatform.
+# Order matters: later rules take precedence. Replace placeholder team handles
+# with real GitHub teams/users after the organisation is provisioned.
+
+# Default owner for everything
+*                                   @ORG/agricplatform-maintainers
+
+# Applications
+/apps/web/                          @ORG/agricplatform-web
+/apps/api/                          @ORG/agricplatform-api
+
+# Shared contracts: changes affect all domains — require maintainer review
+/packages/shared/                   @ORG/agricplatform-maintainers @ORG/agricplatform-api
+
+# Infrastructure, CI/CD and deployment
+/infra/                             @ORG/agricplatform-infra
+/scripts/                           @ORG/agricplatform-infra
+/.github/                           @ORG/agricplatform-infra
+
+# Finance, payments, auth and privacy surfaces need two approvals per
+# docs/github-strategy.md; enforce via branch protection + these owners.
+/apps/api/src/finance/              @ORG/agricplatform-maintainers @ORG/agricplatform-api
+/apps/api/src/auth/                 @ORG/agricplatform-maintainers @ORG/agricplatform-api
+/apps/api/src/privacy/              @ORG/agricplatform-maintainers @ORG/agricplatform-api
+
+# Documentation and specification
+/docs/                              @ORG/agricplatform-maintainers
+/SPEC.md                            @ORG/agricplatform-maintainers

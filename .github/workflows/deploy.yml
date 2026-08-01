@@ -1,0 +1,74 @@
+name: Deploy
+
+# Promotion model: merge to main -> staging automatically; production only via
+# manual approval on the `production` GitHub Environment (same image tag).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to workflow SHA)"
+        required: false
+        type: string
+
+env:
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy-staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve image tags
+        run: |
+          echo "Deploying tag ${IMAGE_TAG}"
+          echo "web=${REGISTRY}/<org>/agric-web:${IMAGE_TAG}"
+          echo "api=${REGISTRY}/<org>/agric-api:${IMAGE_TAG}"
+      # Placeholder: configure registry login + cluster credentials via the
+      # `staging` GitHub Environment secrets, then apply kustomize overlay.
+      - name: Apply kustomize overlay (placeholder)
+        run: |
+          echo "kubectl apply -k infra/k8s/overlays/staging  # create overlay per infra/environments.md"
+          echo "kubectl -n agric-platform rollout status deploy/web deploy/api"
+      - name: Smoke check (placeholder)
+        run: echo "curl -fsS https://api.staging.example.invalid/health"
+
+  production-approval:
+    name: Await production approval
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment:
+      name: production
+      # Required reviewers are configured on the `production` GitHub
+      # Environment; this job pauses here until a reviewer approves.
+    steps:
+      - name: Approval granted
+        run: echo "Production deployment approved by ${{ github.actor }}"
+
+  deploy-production:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: production-approval
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify promoted tag matches staging
+        run: echo "Promoting ${IMAGE_TAG} from staging to production (same immutable artifact)"
+      # Placeholder: same apply path as staging against the production
+      # overlay, using secrets from the `production` GitHub Environment.
+      - name: Apply kustomize overlay (placeholder)
+        run: |
+          echo "kubectl apply -k infra/k8s/overlays/production"
+          echo "kubectl -n agric-platform rollout status deploy/web deploy/api"
+      - name: Post-deploy verification (placeholder)
+        run: |
+          echo "curl -fsS https://api.example.invalid/health"
+          echo "Verify admin.audit_events and events.outbox consumers are healthy."
+      - name: Tag release
+        if: github.event_name == 'push'
+        run: echo "Create semantic version tag and attach readiness checklist per docs/github-strategy.md"

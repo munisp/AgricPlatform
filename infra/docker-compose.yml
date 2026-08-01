@@ -1,0 +1,236 @@
+# AgricPlatform local stack.
+# Usage:
+#   docker compose -f infra/docker-compose.yml up -d postgres redis keycloak meilisearch
+#   docker compose -f infra/docker-compose.yml --profile integrations up -d   # adds Moodle, Discourse, Directus
+#   docker compose -f infra/docker-compose.yml --profile apps up -d           # builds and runs web + api
+# All credentials below are LOCAL-ONLY development defaults. Never reuse them outside local dev.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agric-postgres
+    environment:
+      POSTGRES_USER: agric
+      POSTGRES_PASSWORD: agric
+      POSTGRES_DB: agric_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Bootstrap schemas/tables on first container init only.
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agric -d agric_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [agric]
+
+  redis:
+    image: redis:7-alpine
+    container_name: agric-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [agric]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: agric-keycloak
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname-strict=false
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [agric]
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.8
+    container_name: agric-meilisearch
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: local-master-key
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili-data:/meili_data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7700/health | grep -q available"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [agric]
+
+  api:
+    profiles: ["apps"]
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: agric-api
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      WEB_URL: http://localhost:3000
+      DATABASE_URL: postgresql://agric:agric@postgres:5432/agric_platform
+      REDIS_URL: redis://redis:6379
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: agric-platform
+      KEYCLOAK_CLIENT_ID: agric-api
+      MEILISEARCH_HOST: http://meilisearch:7700
+      MEILISEARCH_API_KEY: local-master-key
+      JWT_SECRET: local-development-only
+      WEBHOOK_SIGNING_SECRET: local-development-only
+      SMS_DRIVER: stub
+      WHATSAPP_DRIVER: stub
+      EMAIL_DRIVER: stub
+      PUSH_DRIVER: stub
+      PAYMENT_DRIVER: stub
+      SEARCH_DRIVER: stub
+      WEATHER_DRIVER: stub
+      LMS_DRIVER: stub
+      COMMUNITY_DRIVER: stub
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+    networks: [agric]
+
+  web:
+    profiles: ["apps"]
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+        NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
+        NEXT_PUBLIC_KEYCLOAK_REALM: agric-platform
+        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: agric-web
+    container_name: agric-web
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks: [agric]
+
+  # ---- Optional integration references (profile: integrations) ----
+  # These run the real open-source systems so adapters can be tested against
+  # live APIs. They are NOT required for the core platform to boot.
+
+  moodle:
+    profiles: ["integrations"]
+    image: moodlehq/moodle-php-apache:8.3
+    container_name: agric-moodle
+    environment:
+      MOODLE_DB_TYPE: pgsql
+      MOODLE_DB_HOST: moodle-db
+      MOODLE_DB_NAME: moodle
+      MOODLE_DB_USER: moodle
+      MOODLE_DB_PASSWORD: moodle
+    ports:
+      - "8081:80"
+    depends_on:
+      - moodle-db
+    networks: [agric]
+
+  moodle-db:
+    profiles: ["integrations"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: moodle
+      POSTGRES_PASSWORD: moodle
+      POSTGRES_DB: moodle
+    volumes:
+      - moodle-db-data:/var/lib/postgresql/data
+    networks: [agric]
+
+  discourse:
+    profiles: ["integrations"]
+    image: bitnami/discourse:3
+    container_name: agric-discourse
+    environment:
+      DISCOURSE_HOST: localhost
+      DISCOURSE_PORT_NUMBER: "8082"
+      DISCOURSE_DATABASE_HOST: discourse-db
+      DISCOURSE_DATABASE_NAME: discourse
+      DISCOURSE_DATABASE_USER: discourse
+      DISCOURSE_DATABASE_PASSWORD: discourse
+      DISCOURSE_REDIS_HOST: redis
+    ports:
+      - "8082:3000"
+    depends_on:
+      - discourse-db
+      - redis
+    networks: [agric]
+
+  discourse-db:
+    profiles: ["integrations"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: discourse
+      POSTGRES_PASSWORD: discourse
+      POSTGRES_DB: discourse
+    volumes:
+      - discourse-db-data:/var/lib/postgresql/data
+    networks: [agric]
+
+  directus:
+    profiles: ["integrations"]
+    image: directus/directus:10
+    container_name: agric-directus
+    environment:
+      KEY: local-directus-key
+      SECRET: local-directus-secret
+      DB_CLIENT: pg
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: agric_platform
+      DB_USER: agric
+      DB_PASSWORD: agric
+      ADMIN_EMAIL: admin@example.local
+      ADMIN_PASSWORD: local-admin-password
+    ports:
+      - "8055:8055"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [agric]
+
+volumes:
+  postgres-data:
+  redis-data:
+  meili-data:
+  moodle-db-data:
+  discourse-db-data:
+
+networks:
+  agric:
+    driver: bridge

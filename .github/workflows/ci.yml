@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  install:
+    name: Install and cache dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify clean install from lockfile
+        run: npm ls --workspaces --include-workspace-root --depth=0
+
+  build:
+    name: Build shared, API and web
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build packages/shared
+        run: npm run build --workspace=packages/shared --if-present
+      - name: Build API
+        run: npm run build --workspace=apps/api --if-present
+      - name: Build web
+        run: npm run build --workspace=apps/web --if-present
+      - name: Upload build artifacts
+        if: hashFiles('apps/api/dist') != '' || hashFiles('apps/web/.next') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            apps/api/dist
+            apps/web/.next
+          retention-days: 7
+          if-no-files-found: ignore
+
+  test:
+    name: Unit tests and coverage
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Run workspace tests
+        run: npm run test --workspaces --if-present
+      - name: Upload coverage
+        if: hashFiles('coverage') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage
+          if-no-files-found: ignore
+          retention-days: 7
+
+  lint:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+      - name: Lint
+        run: npm run lint --workspaces --if-present
+
+  security:
+    name: Secret scan and dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Placeholder: enable GitHub secret scanning + push protection on the
+      # repository, and/or swap in gitleaks/trufflehog here when approved.
+      - name: Secret scan (placeholder)
+        run: |
+          echo "Repository-level secret scanning and push protection must be enabled."
+          echo "See scripts/github-bootstrap.md for the enabling commands."
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Dependency audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true # advisory until Phase 1 dependency set stabilises
+
+  bundle-audit:
+    name: Bundle and artifact audit
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: dist-check
+      - name: Check for secrets and sourcemaps leaked into build output
+        run: |
+          set -e
+          if [ -d dist-check ]; then
+            if grep -rIlE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|paystack_sk_live|AKIA[0-9A-Z]{16})' dist-check; then
+              echo "::error::Potential secret material found in build output"
+              exit 1
+            fi
+            du -sh dist-check || true
+          else
+            echo "No build output yet (apps not scaffolded); skipping."
+          fi
+
+  container-build:
+    name: Container image build (optional)
+    runs-on: ubuntu-latest
+    needs: build
+    # Requires Docker availability in the runner and existing app workspaces.
+    if: ${{ false }} # flip to true (or remove) once apps/api and apps/web exist
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f infra/docker/api.Dockerfile -t agric-api:${{ github.sha }} .
+      - name: Build web image
+        run: docker build -f infra/docker/web.Dockerfile -t agric-web:${{ github.sha }} .
+
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    needs: [install, build, test, lint, security, bundle-audit]
+    steps:
+      - name: All required checks passed
+        run: echo "CI gate satisfied for ${{ github.sha }}"

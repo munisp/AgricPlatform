@@ -1,0 +1,28 @@
+# Non-secret runtime configuration shared by web and api.
+# Environment overlays patch these values per environment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agric-config
+data:
+  NODE_ENV: "production"
+  APP_NAME: "AgricPlatform"
+  WEB_URL: "https://app.example.invalid"
+  API_URL: "https://api.example.invalid"
+  NEXT_PUBLIC_API_URL: "https://api.example.invalid"
+  KEYCLOAK_URL: "https://id.example.invalid"
+  KEYCLOAK_REALM: "agric-platform"
+  NEXT_PUBLIC_KEYCLOAK_URL: "https://id.example.invalid"
+  NEXT_PUBLIC_KEYCLOAK_REALM: "agric-platform"
+  NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: "agric-web"
+  MEILISEARCH_HOST: "http://meilisearch:7700"
+  # Integration drivers: stub | sandbox | production
+  SMS_DRIVER: "stub"
+  WHATSAPP_DRIVER: "stub"
+  EMAIL_DRIVER: "stub"
+  PUSH_DRIVER: "stub"
+  PAYMENT_DRIVER: "stub"
+  SEARCH_DRIVER: "stub"
+  WEATHER_DRIVER: "stub"
+  LMS_DRIVER: "stub"
+  COMMUNITY_DRIVER: "stub"

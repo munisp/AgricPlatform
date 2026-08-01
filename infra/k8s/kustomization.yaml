@@ -1,0 +1,24 @@
+# Kustomize base for AgricPlatform.
+# Overlay usage (per environment):
+#   kubectl apply -k infra/k8s/                     # base only (namespace + placeholders)
+#   kustomize build infra/k8s/overlays/staging      # when overlays are added
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agric-platform
+
+resources:
+  - namespace.yaml
+  - web.yaml
+  - api.yaml
+  - config.yaml
+  - secrets.yaml
+
+images:
+  - name: ghcr.io/PLACEHOLDER_ORG/agric-web
+    newTag: "0.1.0"
+  - name: ghcr.io/PLACEHOLDER_ORG/agric-api
+    newTag: "0.1.0"
+
+commonLabels:
+  app.kubernetes.io/part-of: agric-platform

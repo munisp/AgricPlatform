@@ -1,0 +1,66 @@
+name: Feature request
+description: Propose new functionality for AgricPlatform
+title: "feat(<scope>): "
+labels: ["type: feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user outcome first; implementation details second.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / user need
+      description: Which NYFN stakeholder benefits (farmer, student, buyer, chapter lead, partner, admin)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: domain
+    attributes:
+      label: Domain
+      options:
+        - identity
+        - profiles
+        - learning
+        - community
+        - opportunities
+        - chapters
+        - advisory
+        - marketplace
+        - finance
+        - notifications
+        - admin
+        - analytics
+        - privacy
+        - search
+        - integrations
+        - infra
+    validations:
+      required: true
+  - type: dropdown
+    id: release
+    attributes:
+      label: Target release / phase
+      options:
+        - R1 Alpha
+        - R2 Beta
+        - R3 Launch
+        - Phase 2
+        - Phase 3
+  - type: checkboxes
+    id: considerations
+    attributes:
+      label: Cross-cutting considerations
+      options:
+        - label: Requires NDPR consent or data-processing changes
+        - label: Touches payments or the double-entry ledger
+        - label: Needs an external provider adapter
+        - label: Emits or consumes domain events
+        - label: Needs offline/low-connectivity support
+        - label: "Needs an ADR before implementation (add label `status: needs-adr`)"
