@@ -10,12 +10,12 @@
 | --- | ---: | --- | --- |
 | Phase 1 product-surface coverage | 78% | All major PRD domains have frontend routes and NestJS modules | Wire frontend journeys to live API contracts; deepen Phase 2 modules |
 | Build and test health | 100% | Typecheck, lint, 20 automated tests, API build, and 18-route Next.js production build pass | Keep these checks required on `main` |
-| Persistence readiness | 35% | PostgreSQL schema and repository boundaries exist | Replace in-memory repositories with PostgreSQL implementations and migrations |
+| Persistence readiness | 85% (code-complete) | Async repository ports with 27 PostgreSQL repositories selected by `DATABASE_URL`, drift-aligned `infra/postgres/001_init.sql`, `migrate`/`seed` CLIs, Redis idempotency/OTP stores behind `REDIS_URL`, fail-closed production config, and in-memory/pg contract suites | Run the DATABASE_URL/REDIS_URL-gated suites against real containers (docker unavailable in the build environment) and soak in staging |
 | Identity and access readiness | 45% | Canonical roles, API guards, RBAC tests, Keycloak realm assets | Replace header-based local auth stub with Keycloak OIDC and OTP flow |
 | Integration readiness | 55% | Provider registry, local stubs, adapter matrix, environment flags | Sandbox/live credentials and provider-specific drivers |
 | Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
 | Security and compliance readiness | 50% | RBAC, idempotency, audit, privacy export/delete, secret hygiene, compliance documentation | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
-| **Overall Phase 1 engineering readiness** | **60%** | Strong reference implementation with deterministic local gates | Complete persistence, OIDC, provider sandbox, and staging hardening |
+| **Overall Phase 1 engineering readiness** | **70%** | Strong reference implementation with deterministic local gates; persistence wave code-complete | Container verification of the pg/Redis suites, OIDC, provider sandbox, and staging hardening |
 | **Public production readiness** | **35%** | Launch blockers remain external and operational | Close L1–L10 in `docs/security-compliance.md` |
 
 The implementation should be treated as a **production-oriented reference platform**, not as a live production system. The most important next engineering milestone is a staging build that uses PostgreSQL, Redis, and Keycloak end to end.
@@ -139,9 +139,9 @@ These map to blockers L1–L10 in `docs/security-compliance.md`.
 | Priority | Gap | Why it matters | Recommended owner |
 | --- | --- | --- | --- |
 | P0 | Frontend uses shared/local fixtures rather than live API data for most journeys | A browser demo can diverge from API behaviour | Frontend + API lead |
-| P0 | API repositories are in-memory | Restart loses state and does not prove PostgreSQL behaviour | API lead |
+| P0 | ~~API repositories are in-memory~~ PostgreSQL persistence implemented behind `DATABASE_URL` (fail-closed in production) | pg repositories, migrations, and seeds are code-complete but not yet executed against a live database (no docker in the build environment) | API lead |
 | P0 | ~~Local auth uses `x-user-id` header stub~~ OIDC bearer verification implemented; Keycloak realm hosting and OTP SPI remain external | API verifies JWTs; the IdP itself is not yet provisioned | Identity lead |
-| P1 | Rate limiting and idempotency stores are in-memory | Limits and replay protection do not hold across replicas; move to Redis | API lead + DevOps |
+| P1 | Rate limiting store is in-memory | Throttler limits do not hold across replicas; idempotency and OTP stores moved behind `REDIS_URL` with Redis/in-memory drivers | API lead + DevOps |
 | P0 | Docker and Kubernetes assets have not been executed in this environment | Deployment bugs may remain | DevOps lead |
 | P1 | External providers are stubs only | OTP, payments, notifications, LMS, and community cannot be live-proven | Integrations lead |
 | P1 | Financial ledger is schema/spec ready but not the active runtime store | Marketplace and credit flows need durable balanced records | Finance engineering + counsel |
@@ -173,9 +173,9 @@ These map to blockers L1–L10 in `docs/security-compliance.md`.
 
 1. Create GitHub repository and apply `scripts/github-bootstrap.md` settings.
 2. Deploy the existing Compose stack in a disposable staging environment.
-3. Replace API in-memory repositories with PostgreSQL repositories using the schema in `infra/postgres/001_init.sql`.
-4. Add migration execution to deployment and CI.
-5. Run the API e2e suite against PostgreSQL and Redis containers.
+3. ~~Replace API in-memory repositories with PostgreSQL repositories~~ Done in the persistence wave (`production-persistence` branch): pg implementations behind `DATABASE_URL`, aligned `001_init.sql`, `npm run migrate`/`npm run seed` CLIs.
+4. Add migration execution (`npm run migrate -w @agric-platform/api`) to deployment and CI.
+5. Run the API e2e and repository contract suites against PostgreSQL and Redis containers (external blocker: docker is unavailable in the build environment; suites are in place behind `DATABASE_URL`/`REDIS_URL`).
 
 ### Sprint 2 — identity and journey wiring
 
