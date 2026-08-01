@@ -9,44 +9,87 @@ import {
 } from '@agric-platform/shared';
 import type { Opportunity } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
+import { useSession } from '@/lib/session';
+import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
+import {
+  applyToOpportunity,
+  listApplications,
+  listOpportunities
+} from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
-import { extraOpportunities } from '@/lib/content';
 import { Field, Select, TextInput } from '@/components/forms';
 import { EmptyState, StatusBadge } from '@/components/ui';
+import { OfflineDataNotice, QueryState } from '@/components/api-state';
 
-const ALL_OPPORTUNITIES: Opportunity[] = [...seedOpportunities, ...extraOpportunities];
+// Offline fallback only: shown when the API is unreachable and nothing is
+// cached. Live data always comes from GET /api/v1/opportunities.
+const FALLBACK_OPPORTUNITIES: Opportunity[] = seedOpportunities;
 
 const TYPES = ['grant', 'loan', 'programme', 'job', 'internship', 'competition', 'equipment', 'land'] as const;
 
 export function OpportunityBrowser() {
-  const { enqueue } = useAppState();
+  const { userId } = useAppState();
+  const { hydrated } = useSession();
   const [query, setQuery] = useState('');
   const [type, setType] = useState('');
   const [state, setState] = useState('');
   const [chain, setChain] = useState('');
-  const [applied, setApplied] = usePersistentState<string[]>('agric.opportunity-applications', []);
   const [profile] = usePersistentState<{ state?: string; valueChains?: string[] }>(
     'agric.onboarding-draft',
     {}
   );
 
+  const opportunitiesQuery = useApiQuery(
+    hydrated ? `opportunities:${type}:${state}:${chain}` : null,
+    () =>
+      listOpportunities({
+        type: (type || undefined) as Opportunity['type'] | undefined,
+        state: state || undefined,
+        valueChain: chain || undefined,
+        active: true,
+        pageSize: 100
+      }).then((res) => res.data),
+    { fallbackData: FALLBACK_OPPORTUNITIES, enabled: hydrated }
+  );
+
+  const applicationsQuery = useApiQuery(
+    hydrated ? `applications:${userId}` : null,
+    () => listApplications({ userId }).then((res) => res.data),
+    { fallbackData: [], enabled: hydrated }
+  );
+
+  const applyMutation = useApiMutation<{ opportunity: Opportunity }, unknown>({
+    mutationFn: ({ opportunity }) =>
+      applyToOpportunity(opportunity.id, { userId }).then((res) => res.data),
+    queue: {
+      kind: 'opportunity.application.submitted',
+      label: ({ opportunity }) => `Application: ${opportunity.title}`,
+      method: 'POST',
+      path: ({ opportunity }) => `/opportunities/${opportunity.id}/apply`,
+      payload: () => ({ userId })
+    },
+    onSuccess: () => applicationsQuery.refresh(),
+    onQueued: () => applicationsQuery.refresh()
+  });
+
+  const appliedIds = useMemo(() => {
+    const ids = new Set((applicationsQuery.data ?? []).map((app) => app.opportunityId));
+    return ids;
+  }, [applicationsQuery.data]);
+
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return ALL_OPPORTUNITIES.filter((opp) => {
-      if (!opp.isActive) return false;
-      if (type && opp.type !== type) return false;
-      if (state && !opp.states.includes(state)) return false;
-      if (chain && !opp.valueChains.includes(chain)) return false;
-      if (needle && !`${opp.title} ${opp.description}`.toLowerCase().includes(needle)) return false;
-      return true;
-    }).sort((a, b) => a.deadline.localeCompare(b.deadline));
-  }, [query, type, state, chain]);
-
-  const apply = (opp: Opportunity) => {
-    if (applied.includes(opp.id)) return;
-    setApplied((current) => [...current, opp.id]);
-    enqueue('opportunity.application.submitted', `Application: ${opp.title}`);
-  };
+    return (opportunitiesQuery.data ?? [])
+      .filter((opp) => {
+        if (!opp.isActive) return false;
+        if (type && opp.type !== type) return false;
+        if (state && !opp.states.includes(state)) return false;
+        if (chain && !opp.valueChains.includes(chain)) return false;
+        if (needle && !`${opp.title} ${opp.description}`.toLowerCase().includes(needle)) return false;
+        return true;
+      })
+      .sort((a, b) => a.deadline.localeCompare(b.deadline));
+  }, [opportunitiesQuery.data, query, type, state, chain]);
 
   const clearFilters = () => {
     setQuery('');
@@ -57,6 +100,7 @@ export function OpportunityBrowser() {
 
   return (
     <div className="stack-lg">
+      {opportunitiesQuery.source === 'fallback' ? <OfflineDataNotice /> : null}
       <div className="card">
         <div className="form-grid cols-2">
           <Field id="opp-q" label="Search">
@@ -109,9 +153,18 @@ export function OpportunityBrowser() {
         </div>
       </div>
 
-      {results.length === 0 ? (
-        <EmptyState title="No opportunities match these filters" hint="Try widening the state or value chain filters." />
-      ) : (
+      <QueryState
+        isLoading={opportunitiesQuery.isLoading}
+        error={opportunitiesQuery.source === 'fallback' ? undefined : opportunitiesQuery.error}
+        data={results}
+        onRetry={opportunitiesQuery.refresh}
+        empty={
+          <EmptyState
+            title="No opportunities match these filters"
+            hint="Try widening the state or value chain filters."
+          />
+        }
+      >
         <div className="grid grid-2">
           {results.map((opp) => {
             const matches = opportunityMatchesProfile({
@@ -120,7 +173,7 @@ export function OpportunityBrowser() {
               profileState: profile.state,
               profileValueChains: profile.valueChains
             });
-            const hasApplied = applied.includes(opp.id);
+            const hasApplied = appliedIds.has(opp.id);
             return (
               <article className="card" key={opp.id}>
                 <div className="cluster" style={{ justifyContent: 'space-between' }}>
@@ -143,17 +196,17 @@ export function OpportunityBrowser() {
                   <button
                     type="button"
                     className={`btn btn-small ${hasApplied ? 'btn-secondary' : 'btn-primary'}`}
-                    disabled={hasApplied}
-                    onClick={() => apply(opp)}
+                    disabled={hasApplied || applyMutation.status === 'pending'}
+                    onClick={() => void applyMutation.mutate({ opportunity: opp })}
                   >
-                    {hasApplied ? 'Application queued' : 'Apply'}
+                    {hasApplied ? 'Applied' : applyMutation.status === 'pending' ? 'Applying…' : 'Apply'}
                   </button>
                 </div>
               </article>
             );
           })}
         </div>
-      )}
+      </QueryState>
     </div>
   );
 }
