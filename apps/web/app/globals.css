@@ -1149,3 +1149,22 @@ a[aria-current='page'] .tab-icon::after {
     transition: none;
   }
 }
+
+/* ---------- Loading skeletons ---------- */
+.skeleton-line {
+  height: 0.85rem;
+  border-radius: var(--radius-s, 6px);
+  background: linear-gradient(90deg, var(--sand-200) 25%, var(--sand-100, #f4f0e6) 50%, var(--sand-200) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  margin: 0.55rem 0;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line { animation: none; }
+}
