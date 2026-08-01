@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { CoreModule } from './core/core.module.js';
 import { HealthController } from './health/health.controller.js';
 import { AdminModule } from './modules/admin/admin.module.js';
@@ -22,6 +24,10 @@ import { UsersModule } from './modules/users/users.module.js';
 
 @Module({
   imports: [
+    // In-memory rate limiting (docs/security-compliance.md §7 "SSRF / rate
+    // abuse"). TODO(prod): back the store with Redis so limits hold across
+    // replicas — tracked in docs/production-readiness.md.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
     CoreModule,
     UsersModule,
     AuthModule,
@@ -42,6 +48,7 @@ import { UsersModule } from './modules/users/users.module.js';
     SearchModule,
     IntegrationsModule
   ],
-  controllers: [HealthController]
+  controllers: [HealthController],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }]
 })
 export class AppModule {}
