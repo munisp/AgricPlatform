@@ -14,7 +14,10 @@ Unified implementation of the Nigeria Farmer Platform PRD v3.3 for NYFN.
 npm ci
 npm run validate
 
-# Run the API and web app in separate terminals:
+# Run API and web together:
+npm run dev
+
+# Or run them separately:
 npm run dev -w @agric-platform/api
 npm run dev -w @agric-platform/web
 ```

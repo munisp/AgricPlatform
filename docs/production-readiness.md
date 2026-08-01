@@ -197,13 +197,11 @@ These map to blockers L1–L10 in `docs/security-compliance.md`.
 
 ## 8. Validation evidence from the current source tree
 
-The final local validation completed successfully with:
+The final merged-main validation completed successfully from a clean detached worktree after `npm ci`, using both:
 
 ```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
+npm run validate
+SKIP_INSTALL=1 bash scripts/validate-repo.sh
 ```
 
 Results:
@@ -218,6 +216,8 @@ Results:
 - NestJS production build: passed
 - Next.js production build: passed
 - Static routes generated: 18
+- Heuristic tracked-file secret scan: passed
+- Tracked `.env` file check: passed
 
 Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment. Those items remain staging-verification tasks rather than locally proven evidence.
 
