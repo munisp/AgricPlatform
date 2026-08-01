@@ -96,69 +96,69 @@ export class ChaptersController {
   @UseGuards(RolesGuard)
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Create a chapter (chapter leads and admins)' })
-  create(@Body() dto: CreateChapterDto) {
-    return { data: this.chapters.create(dto) };
+  async create(@Body() dto: CreateChapterDto) {
+    return { data: await this.chapters.create(dto) };
   }
 
   @Get('chapters/:id')
   @ApiOperation({ summary: 'Chapter detail with child chapters' })
-  get(@Param('id') id: string) {
-    return { data: this.chapters.getWithChildren(id) };
+  async get(@Param('id') id: string) {
+    return { data: await this.chapters.getWithChildren(id) };
   }
 
   @Get('chapters/:id/events')
   @ApiOperation({ summary: 'List chapter events' })
-  listEvents(@Param('id') id: string) {
-    return { data: this.chapters.listEvents(id) };
+  async listEvents(@Param('id') id: string) {
+    return { data: await this.chapters.listEvents(id) };
   }
 
   @Post('chapters/:id/events')
   @UseGuards(RolesGuard)
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Create a chapter event (chapter leads and admins)' })
-  createEvent(@Param('id') id: string, @Body() dto: CreateEventDto, @CurrentUser() actor: User | null) {
-    return { data: this.chapters.createEvent(id, dto, actor?.id ?? 'anonymous') };
+  async createEvent(@Param('id') id: string, @Body() dto: CreateEventDto, @CurrentUser() actor: User | null) {
+    return { data: await this.chapters.createEvent(id, dto, actor?.id ?? 'anonymous') };
   }
 
   @Get('chapters/:id/announcements')
   @ApiOperation({ summary: 'List chapter announcements' })
-  listAnnouncements(@Param('id') id: string) {
-    return { data: this.chapters.listAnnouncements(id) };
+  async listAnnouncements(@Param('id') id: string) {
+    return { data: await this.chapters.listAnnouncements(id) };
   }
 
   @Post('chapters/:id/announcements')
   @UseGuards(RolesGuard)
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Publish a chapter announcement (chapter leads and admins)' })
-  createAnnouncement(
+  async createAnnouncement(
     @Param('id') id: string,
     @Body() dto: CreateAnnouncementDto,
     @CurrentUser() actor: User | null
   ) {
     assertSelfOrAdmin(actor, dto.authorId);
-    return { data: this.chapters.createAnnouncement(id, dto) };
+    return { data: await this.chapters.createAnnouncement(id, dto) };
   }
 
   @Get('events/:id')
   @ApiOperation({ summary: 'Event detail' })
-  getEvent(@Param('id') id: string) {
-    return { data: this.chapters.getEvent(id) };
+  async getEvent(@Param('id') id: string) {
+    return { data: await this.chapters.getEvent(id) };
   }
 
   @Post('events/:id/rsvp')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'RSVP to a chapter event (own RSVP)' })
-  rsvp(@Param('id') id: string, @Body() dto: EventUserDto, @CurrentUser() actor: User | null) {
+  async rsvp(@Param('id') id: string, @Body() dto: EventUserDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.userId);
-    return { data: this.chapters.rsvp(id, dto.userId) };
+    return { data: await this.chapters.rsvp(id, dto.userId) };
   }
 
   @Post('events/:id/attendance')
   @UseGuards(RolesGuard)
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Record event attendance (checked in by a chapter lead or admin)' })
-  attendance(@Param('id') id: string, @Body() dto: EventUserDto) {
-    return { data: this.chapters.recordAttendance(id, dto.userId) };
+  async attendance(@Param('id') id: string, @Body() dto: EventUserDto) {
+    return { data: await this.chapters.recordAttendance(id, dto.userId) };
   }
 }

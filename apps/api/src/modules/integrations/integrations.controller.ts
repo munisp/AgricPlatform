@@ -49,7 +49,7 @@ export class IntegrationsController {
       'Receive a provider webhook. HMAC-SHA256 signature over the raw body is required unless ' +
       'the provider runs the stub driver outside production.'
   })
-  webhook(
+  async webhook(
     @Param('provider') provider: string,
     @Body() payload: unknown,
     @Req() request: RawBodyRequest,
@@ -62,13 +62,13 @@ export class IntegrationsController {
     );
     const result = this.integrations.recordWebhook(provider, payload, digest);
     if (!result.duplicate) {
-      this.audit.record({
+      await this.audit.record({
         actorId,
         action: 'integration.webhook_received',
         entityType: 'integration',
         entityId: provider
       });
-      this.events.publish('integration.webhook.received', { provider }, actorId);
+      await this.events.publish('integration.webhook.received', { provider }, actorId);
     }
     return { data: result };
   }

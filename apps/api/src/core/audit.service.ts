@@ -1,6 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { AuditEvent } from '@agric-platform/shared';
-import { newId } from '../common/in-memory.repository.js';
+import { newId } from '../common/async-repository.js';
+import { AUDIT_REPOSITORY } from '../database/persistence.tokens.js';
+import type { AuditCriteria, AuditRepository } from '../database/repositories/audit.repository.js';
 
 export interface RecordAuditInput {
   actorId: string;
@@ -12,14 +14,16 @@ export interface RecordAuditInput {
 
 /**
  * Audit log for admin and sensitive operations (NDPR/NDPA requirement).
- * Phase 1 stores events in memory; production persists to the PostgreSQL
- * audit_events table behind the same interface.
+ * Persists through the injected AuditRepository (in-memory by default,
+ * admin.audit_events in PostgreSQL).
  */
 @Injectable()
 export class AuditService {
-  private readonly events: AuditEvent[] = [];
+  constructor(
+    @Inject(AUDIT_REPOSITORY) private readonly audits: AuditRepository
+  ) {}
 
-  record(input: RecordAuditInput): AuditEvent {
+  async record(input: RecordAuditInput): Promise<AuditEvent> {
     const event: AuditEvent = {
       id: newId('audit'),
       actorId: input.actorId,
@@ -29,15 +33,10 @@ export class AuditService {
       metadata: input.metadata ?? {},
       createdAt: new Date().toISOString()
     };
-    this.events.push(event);
-    return event;
+    return this.audits.record(event);
   }
 
-  list(filter?: { actorId?: string; entityType?: string }): AuditEvent[] {
-    return this.events.filter(
-      (event) =>
-        (!filter?.actorId || event.actorId === filter.actorId) &&
-        (!filter?.entityType || event.entityType === filter.entityType)
-    );
+  async list(filter?: AuditCriteria): Promise<AuditEvent[]> {
+    return this.audits.list(filter);
   }
 }

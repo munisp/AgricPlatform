@@ -4,7 +4,6 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
 import helmet from 'helmet';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter.js';
-import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor.js';
 
 /** Request augmented with the raw JSON body (needed for webhook HMAC verification). */
@@ -43,7 +42,8 @@ export function configureApp(app: NestExpressApplication): void {
     })
   );
   app.useGlobalFilters(new ApiExceptionFilter());
-  app.useGlobalInterceptors(new RequestLoggingInterceptor(), new IdempotencyInterceptor());
+  // IdempotencyInterceptor is registered via APP_INTERCEPTOR (DI-managed store).
+  app.useGlobalInterceptors(new RequestLoggingInterceptor());
 
   // API documentation is disabled in production unless explicitly enabled.
   if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {

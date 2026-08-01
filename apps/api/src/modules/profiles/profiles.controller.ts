@@ -67,19 +67,19 @@ export class ProfilesController {
 
   @Get(':userId')
   @ApiOperation({ summary: 'Get a member profile' })
-  get(@Param('userId') userId: string) {
-    return { data: this.profiles.get(userId) };
+  async get(@Param('userId') userId: string) {
+    return { data: await this.profiles.get(userId) };
   }
 
   @Put(':userId')
   @ApiOperation({ summary: 'Create or update a profile; recomputes the completion score' })
-  upsert(@Param('userId') userId: string, @Body() dto: UpsertProfileDto) {
-    return { data: this.profiles.upsert(userId, dto) };
+  async upsert(@Param('userId') userId: string, @Body() dto: UpsertProfileDto) {
+    return { data: await this.profiles.upsert(userId, dto) };
   }
 
   @Get(':userId/completion')
   @ApiOperation({ summary: 'Profile completion score, badge and missing fields' })
-  completion(@Param('userId') userId: string) {
-    return { data: this.profiles.completion(userId) };
+  async completion(@Param('userId') userId: string) {
+    return { data: await this.profiles.completion(userId) };
   }
 }

@@ -44,27 +44,27 @@ export class FinanceController {
 
   @Get('credit-profile/:userId')
   @ApiOperation({ summary: 'Credit readiness profile recomputed from live signals' })
-  creditProfile(@Param('userId') userId: string) {
-    return { data: this.finance.creditProfile(userId) };
+  async creditProfile(@Param('userId') userId: string) {
+    return { data: await this.finance.creditProfile(userId) };
   }
 
   @Get('kyc/:userId')
   @ApiOperation({ summary: 'KYC tier and requirements for the next tier' })
-  kyc(@Param('userId') userId: string) {
-    return { data: this.finance.kycStatus(userId) };
+  async kyc(@Param('userId') userId: string) {
+    return { data: await this.finance.kycStatus(userId) };
   }
 
   @Get('lender-matches/:userId')
   @ApiOperation({ summary: 'Lender matches for a credit profile (stub lenders)' })
-  lenderMatches(@Param('userId') userId: string) {
-    return { data: this.finance.lenderMatches(userId) };
+  async lenderMatches(@Param('userId') userId: string) {
+    return { data: await this.finance.lenderMatches(userId) };
   }
 
   @Get('documents')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'List document vault entries (own records or admin)' })
-  documents(
+  async documents(
     @CurrentUser() actor: User | null,
     @Query('userId') userId?: string,
     @Query('status') status?: VaultDocument['status']
@@ -74,30 +74,30 @@ export class FinanceController {
     } else if (!actor?.roles.includes('admin')) {
       throw new ForbiddenException('Listing the document vault across users requires the admin role');
     }
-    return { data: this.finance.listDocuments(userId, status) };
+    return { data: await this.finance.listDocuments(userId, status) };
   }
 
   @Post('documents')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Register an uploaded vault document (own vault or admin)' })
-  upload(@Body() dto: UploadDocumentDto, @CurrentUser() actor: User | null) {
+  async upload(@Body() dto: UploadDocumentDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.userId);
-    return { data: this.finance.uploadDocument(dto) };
+    return { data: await this.finance.uploadDocument(dto) };
   }
 
   @Patch('documents/:id/status')
   @UseGuards(RolesGuard)
   @Roles('admin')
   @ApiOperation({ summary: 'Verify or reject a vault document (admin review workflow)' })
-  setDocumentStatus(
+  async setDocumentStatus(
     @Param('id') id: string,
     @Body() dto: DocumentStatusDto,
     @CurrentUser() actor: User | null
   ) {
     const actorId = actor?.id ?? 'anonymous';
-    const document = this.finance.setDocumentStatus(id, dto.status, actorId);
-    this.audit.record({
+    const document = await this.finance.setDocumentStatus(id, dto.status, actorId);
+    await this.audit.record({
       actorId,
       action: 'document.reviewed',
       entityType: 'vault_document',

@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
-import { Injectable, Logger } from '@nestjs/common';
-import { newId } from '../common/in-memory.repository.js';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { newId } from '../common/async-repository.js';
+import { OUTBOX_REPOSITORY } from '../database/persistence.tokens.js';
+import type { OutboxRepository } from '../database/repositories/outbox.repository.js';
 
 export interface DomainEvent<T = unknown> {
   id: string;
@@ -14,7 +16,9 @@ export interface DomainEvent<T = unknown> {
 const EVENT_NAME_PATTERN = /^[a-z_]+\.[a-z_]+\.[a-z_]+$/;
 
 /**
- * Domain event outbox. Phase 1 keeps an in-process outbox and emitter;
+ * Domain event outbox. The outbox persists through the injected
+ * OutboxRepository (in-memory by default, events.outbox in PostgreSQL);
+ * the EventEmitter fan-out stays synchronous after the event is persisted.
  * Phase 2 replaces the transport with a Kafka-compatible bus while keeping
  * the `{domain}.{entity}.{verb}` taxonomy from docs/architecture.md.
  */
@@ -22,9 +26,12 @@ const EVENT_NAME_PATTERN = /^[a-z_]+\.[a-z_]+\.[a-z_]+$/;
 export class DomainEventsService {
   private readonly logger = new Logger(DomainEventsService.name);
   private readonly emitter = new EventEmitter();
-  private readonly outbox: DomainEvent[] = [];
 
-  publish<T>(name: string, payload: T, actorId?: string): DomainEvent<T> {
+  constructor(
+    @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository
+  ) {}
+
+  async publish<T>(name: string, payload: T, actorId?: string): Promise<DomainEvent<T>> {
     if (!EVENT_NAME_PATTERN.test(name)) {
       throw new Error(
         `Invalid domain event name '${name}'. Expected '{domain}.{entity}.{verb}' taxonomy.`
@@ -37,7 +44,7 @@ export class DomainEventsService {
       actorId,
       occurredAt: new Date().toISOString()
     };
-    this.outbox.push(event as DomainEvent);
+    await this.outbox.append(event as DomainEvent);
     this.logger.log(`event ${name} (${event.id})`);
     this.emitter.emit(name, event);
     this.emitter.emit('*', event);
@@ -49,7 +56,7 @@ export class DomainEventsService {
   }
 
   /** Outbox snapshot, exposed read-only for admin/diagnostics. */
-  listOutbox(): DomainEvent[] {
-    return [...this.outbox];
+  async listOutbox(): Promise<DomainEvent[]> {
+    return this.outbox.list();
   }
 }

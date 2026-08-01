@@ -91,43 +91,43 @@ export class CommunityController {
 
   @Post('topics')
   @ApiOperation({ summary: 'Create a forum topic' })
-  createTopic(@Body() dto: CreateTopicDto) {
-    return { data: this.community.createTopic(dto) };
+  async createTopic(@Body() dto: CreateTopicDto) {
+    return { data: await this.community.createTopic(dto) };
   }
 
   @Get('topics/:id')
   @ApiOperation({ summary: 'Topic detail' })
-  getTopic(@Param('id') id: string) {
-    return { data: this.community.getTopic(id) };
+  async getTopic(@Param('id') id: string) {
+    return { data: await this.community.getTopic(id) };
   }
 
   @Post('topics/:id/replies')
   @ApiOperation({ summary: 'Reply to a topic (increments reply count)' })
-  reply(@Param('id') id: string, @Body() dto: ReplyDto) {
-    return { data: this.community.reply(id, dto.authorId) };
+  async reply(@Param('id') id: string, @Body() dto: ReplyDto) {
+    return { data: await this.community.reply(id, dto.authorId) };
   }
 
   @Post('topics/:id/flag')
   @ApiOperation({ summary: 'Flag a topic for moderation' })
-  flag(@Param('id') id: string, @Body() dto: FlagDto) {
-    return { data: this.community.flag(id, dto.reporterId, dto.reason) };
+  async flag(@Param('id') id: string, @Body() dto: FlagDto) {
+    return { data: await this.community.flag(id, dto.reporterId, dto.reason) };
   }
 
   @Post('mentors/requests')
   @ApiOperation({ summary: 'Request a mentor' })
-  createMentorRequest(@Body() dto: CreateMentorRequestDto) {
-    return { data: this.community.createMentorRequest(dto) };
+  async createMentorRequest(@Body() dto: CreateMentorRequestDto) {
+    return { data: await this.community.createMentorRequest(dto) };
   }
 
   @Get('mentors/requests')
   @ApiOperation({ summary: 'List mentorship requests' })
-  listMentorRequests(@Query('userId') userId?: string, @Query('status') status?: MentorRequest['status']) {
-    return { data: this.community.listMentorRequests({ userId, status }) };
+  async listMentorRequests(@Query('userId') userId?: string, @Query('status') status?: MentorRequest['status']) {
+    return { data: await this.community.listMentorRequests({ userId, status }) };
   }
 
   @Patch('mentors/requests/:id')
   @ApiOperation({ summary: 'Update mentorship request status (match/close)' })
-  updateMentorRequest(@Param('id') id: string, @Body() dto: MentorStatusDto) {
-    return { data: this.community.updateMentorRequestStatus(id, dto.status) };
+  async updateMentorRequest(@Param('id') id: string, @Body() dto: MentorStatusDto) {
+    return { data: await this.community.updateMentorRequestStatus(id, dto.status) };
   }
 }

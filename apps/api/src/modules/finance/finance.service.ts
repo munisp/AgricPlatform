@@ -1,8 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { CreditProfile, KycTier, VaultDocument } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
+import { newId } from '../../common/async-repository.js';
+import {
+  CREDIT_PROFILE_REPOSITORY,
+  DOCUMENT_REPOSITORY
+} from '../../database/persistence.tokens.js';
+import type { CreditProfileRepository } from '../../database/repositories/credit-profile.repository.js';
+import type { DocumentRepository } from '../../database/repositories/document.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { seedCreditProfiles, seedVaultDocuments } from '../../database/seed-data.js';
 import { LearningService } from '../learning/learning.service.js';
 import { UsersService } from '../users/users.service.js';
 
@@ -36,29 +41,25 @@ const KYC_REQUIREMENTS: Record<KycTier, string[]> = {
 
 @Injectable()
 export class FinanceService {
-  private readonly creditProfiles: InMemoryRepository<CreditProfile & { id: string }>;
-  private readonly documents = new InMemoryRepository<VaultDocument>(seedVaultDocuments);
-
   constructor(
     private readonly events: DomainEventsService,
     private readonly users: UsersService,
-    private readonly learning: LearningService
-  ) {
-    this.creditProfiles = new InMemoryRepository(
-      seedCreditProfiles.map((profile) => ({ ...profile, id: profile.userId }))
-    );
-  }
+    private readonly learning: LearningService,
+    @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles: CreditProfileRepository,
+    @Inject(DOCUMENT_REPOSITORY) private readonly documents: DocumentRepository
+  ) {}
 
   /** Credit readiness profile, recomputed from live signals. */
-  creditProfile(userId: string): CreditProfile {
-    this.users.getById(userId);
-    const documents = this.documents.find((d) => d.userId === userId);
-    const completedCourses = this.learning
-      .enrolmentsForUser(userId)
-      .filter((e) => e.status === 'completed').length;
+  async creditProfile(userId: string): Promise<CreditProfile> {
+    await this.users.getById(userId);
+    const [documents, enrolments, existing] = await Promise.all([
+      this.documents.find({ userId }),
+      this.learning.enrolmentsForUser(userId),
+      this.creditProfiles.findByUserId(userId)
+    ]);
+    const completedCourses = enrolments.filter((e) => e.status === 'completed').length;
     const verifiedDocs = documents.filter((d) => d.status === 'verified').length;
 
-    const existing = this.creditProfiles.findById(userId);
     const trainingSignals = Math.min(30, completedCourses * 10);
     const transactionSignals = existing?.transactionSignals ?? 0;
     const productionSignals = Math.min(40, (existing?.productionSignals ?? 10) + verifiedDocs * 5);
@@ -82,19 +83,14 @@ export class FinanceService {
     };
 
     if (!existing || existing.score !== score || existing.documentCount !== documents.length) {
-      const stored = { ...profile, id: userId };
-      if (existing) {
-        this.creditProfiles.update(userId, stored);
-      } else {
-        this.creditProfiles.create(stored);
-      }
-      this.events.publish('finance.credit_profile.updated', { userId, score }, userId);
+      await this.creditProfiles.upsert(profile);
+      await this.events.publish('finance.credit_profile.updated', { userId, score }, userId);
     }
     return profile;
   }
 
-  uploadDocument(input: UploadDocumentInput): VaultDocument {
-    this.users.getById(input.userId);
+  async uploadDocument(input: UploadDocumentInput): Promise<VaultDocument> {
+    await this.users.getById(input.userId);
     const document: VaultDocument = {
       id: newId('doc'),
       userId: input.userId,
@@ -103,31 +99,33 @@ export class FinanceService {
       status: 'uploaded',
       uploadedAt: new Date().toISOString()
     };
-    const created = this.documents.create(document);
-    this.events.publish(
+    const created = await this.documents.create(document);
+    await this.events.publish(
       'finance.document.uploaded',
       { documentId: created.id, kind: created.kind },
       input.userId
     );
-    this.creditProfile(input.userId); // refresh document count
+    await this.creditProfile(input.userId); // refresh document count
     return created;
   }
 
-  listDocuments(userId?: string, status?: VaultDocument['status']): VaultDocument[] {
-    return this.documents.find(
-      (d) => (!userId || d.userId === userId) && (!status || d.status === status)
-    );
+  async listDocuments(userId?: string, status?: VaultDocument['status']): Promise<VaultDocument[]> {
+    return this.documents.find({ userId, status });
   }
 
-  setDocumentStatus(id: string, status: VaultDocument['status'], actorId: string): VaultDocument {
-    const updated = this.documents.update(id, { status });
-    this.events.publish('finance.document.reviewed', { documentId: id, status }, actorId);
-    this.creditProfile(updated.userId);
+  async setDocumentStatus(
+    id: string,
+    status: VaultDocument['status'],
+    actorId: string
+  ): Promise<VaultDocument> {
+    const updated = await this.documents.update(id, { status });
+    await this.events.publish('finance.document.reviewed', { documentId: id, status }, actorId);
+    await this.creditProfile(updated.userId);
     return updated;
   }
 
-  kycStatus(userId: string): KycStatus {
-    const user = this.users.getById(userId);
+  async kycStatus(userId: string): Promise<KycStatus> {
+    const user = await this.users.getById(userId);
     const tiers: KycTier[] = ['tier_0', 'tier_1', 'tier_2', 'tier_3'];
     const index = tiers.indexOf(user.kycTier);
     return {
@@ -139,8 +137,8 @@ export class FinanceService {
   }
 
   /** Lender matching against the credit profile (stub lenders, no network). */
-  lenderMatches(userId: string): LenderMatch[] {
-    const profile = this.creditProfile(userId);
+  async lenderMatches(userId: string): Promise<LenderMatch[]> {
+    const profile = await this.creditProfile(userId);
     return [
       {
         lender: 'NYFN Cooperative Credit Window',

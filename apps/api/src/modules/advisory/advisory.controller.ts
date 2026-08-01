@@ -58,25 +58,25 @@ export class AdvisoryController {
 
   @Post()
   @ApiOperation({ summary: 'Publish advisory content' })
-  create(@Body() dto: CreateAdvisoryDto, @ActorId() actorId: string) {
-    return { data: this.advisory.create(dto, actorId) };
+  async create(@Body() dto: CreateAdvisoryDto, @ActorId() actorId: string) {
+    return { data: await this.advisory.create(dto, actorId) };
   }
 
   @Get('weather/:state')
   @ApiOperation({ summary: 'Weather readiness snapshot for a state (provider adapter)' })
-  weather(@Param('state') state: string) {
-    return { data: this.advisory.weatherFor(state) };
+  async weather(@Param('state') state: string) {
+    return { data: await this.advisory.weatherFor(state) };
   }
 
   @Get('prices/:crop')
   @ApiOperation({ summary: 'Price signal for a crop (provider adapter)' })
-  price(@Param('crop') crop: string, @Query('state') state?: string) {
-    return { data: this.advisory.priceFor(crop, state) };
+  async price(@Param('crop') crop: string, @Query('state') state?: string) {
+    return { data: await this.advisory.priceFor(crop, state) };
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Advisory item detail' })
-  get(@Param('id') id: string) {
-    return { data: this.advisory.get(id) };
+  async get(@Param('id') id: string) {
+    return { data: await this.advisory.get(id) };
   }
 }

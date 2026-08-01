@@ -15,25 +15,25 @@ export class AnalyticsController {
 
   @Get('metrics')
   @ApiOperation({ summary: 'Platform metrics' })
-  metrics() {
-    return { data: this.analytics.metrics() };
+  async metrics() {
+    return { data: await this.analytics.metrics() };
   }
 
   @Get('overview')
   @ApiOperation({ summary: 'Live cross-domain counts' })
-  overview() {
-    return { data: this.analytics.overview() };
+  async overview() {
+    return { data: await this.analytics.overview() };
   }
 
   @Get('segments')
   @ApiOperation({ summary: 'Member segmentation by state or role' })
-  segments(@Query() query: SegmentQuery) {
-    return { data: this.analytics.segments(query.by) };
+  async segments(@Query() query: SegmentQuery) {
+    return { data: await this.analytics.segments(query.by) };
   }
 
   @Get('export')
   @ApiOperation({ summary: 'Analytics export bundle (JSON)' })
-  export() {
-    return { data: this.analytics.export() };
+  async export() {
+    return { data: await this.analytics.export() };
   }
 }

@@ -1,9 +1,13 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { KycTier, LanguageCode, User, UserRole } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
-import { paginate } from '../../common/pagination.js';
+import { newId } from '../../common/async-repository.js';
+import { USER_REPOSITORY } from '../../database/persistence.tokens.js';
+import type {
+  AccountStatus,
+  UserCriteria,
+  UserRepository
+} from '../../database/repositories/user.repository.js';
 import type { ApiListResponse } from '@agric-platform/shared';
-import { seedUsers } from '../../database/seed-data.js';
 
 export interface CreateUserInput {
   phone: string;
@@ -22,36 +26,30 @@ export interface UpdateUserInput {
 
 @Injectable()
 export class UsersService {
-  private readonly repo = new InMemoryRepository<User>(seedUsers);
+  constructor(
+    @Inject(USER_REPOSITORY) private readonly repo: UserRepository
+  ) {}
 
-  list(filter: { role?: UserRole; q?: string; page?: number; pageSize?: number }): ApiListResponse<User> {
-    let items = this.repo.all();
-    if (filter.role) {
-      items = items.filter((user) => user.roles.includes(filter.role as UserRole));
-    }
-    if (filter.q) {
-      const q = filter.q.toLowerCase();
-      items = items.filter(
-        (user) => user.fullName.toLowerCase().includes(q) || user.phone.includes(q)
-      );
-    }
-    return paginate(items, filter.page, filter.pageSize);
+  async list(
+    filter: UserCriteria & { page?: number; pageSize?: number }
+  ): Promise<ApiListResponse<User>> {
+    return this.repo.searchPage({ role: filter.role, q: filter.q }, filter.page, filter.pageSize);
   }
 
-  findById(id: string): User | undefined {
+  async findById(id: string): Promise<User | undefined> {
     return this.repo.findById(id);
   }
 
-  getById(id: string): User {
+  async getById(id: string): Promise<User> {
     return this.repo.getById(id);
   }
 
-  findByPhone(phone: string): User | undefined {
-    return this.repo.findOne((user) => user.phone === phone);
+  async findByPhone(phone: string): Promise<User | undefined> {
+    return this.repo.findByPhone(phone);
   }
 
-  create(input: CreateUserInput): User {
-    if (this.findByPhone(input.phone)) {
+  async create(input: CreateUserInput): Promise<User> {
+    if (await this.findByPhone(input.phone)) {
       throw new ConflictException(`Phone number ${input.phone} is already registered`);
     }
     const user: User = {
@@ -68,20 +66,20 @@ export class UsersService {
     return this.repo.create(user);
   }
 
-  update(id: string, patch: UpdateUserInput): User {
+  async update(id: string, patch: UpdateUserInput): Promise<User> {
     return this.repo.update(id, { ...patch, lastActiveAt: new Date().toISOString() });
   }
 
-  setRoles(id: string, roles: UserRole[]): User {
+  async setRoles(id: string, roles: UserRole[]): Promise<User> {
     return this.repo.update(id, { roles });
   }
 
-  setVerified(id: string, isVerified: boolean): User {
+  async setVerified(id: string, isVerified: boolean): Promise<User> {
     return this.repo.update(id, { isVerified });
   }
 
   /** NDPR deletion: irreversibly masks personally identifiable fields. */
-  anonymize(id: string): User {
+  async anonymize(id: string): Promise<User> {
     return this.repo.update(id, {
       phone: `deleted:${id}`,
       email: undefined,
@@ -90,11 +88,19 @@ export class UsersService {
     });
   }
 
-  countByRole(role: UserRole): number {
-    return this.repo.count((user) => user.roles.includes(role));
+  async setStatus(userId: string, status: AccountStatus): Promise<void> {
+    return this.repo.setStatus(userId, status);
   }
 
-  count(): number {
+  async statusFor(userId: string): Promise<AccountStatus> {
+    return this.repo.statusFor(userId);
+  }
+
+  async countByRole(role: UserRole): Promise<number> {
+    return this.repo.countByRole(role);
+  }
+
+  async count(): Promise<number> {
     return this.repo.count();
   }
 }

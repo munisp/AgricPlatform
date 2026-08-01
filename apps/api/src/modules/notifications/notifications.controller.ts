@@ -60,7 +60,7 @@ export class NotificationsController {
   @Get()
   @Authenticated()
   @ApiOperation({ summary: 'List notifications by user/status (own records or admin)' })
-  list(
+  async list(
     @CurrentUser() actor: User | null,
     @Query('userId') userId?: string,
     @Query('status') status?: NotificationMessage['status']
@@ -70,39 +70,39 @@ export class NotificationsController {
     } else if (!actor?.roles.includes('admin')) {
       throw new ForbiddenException('Listing notifications across users requires the admin role');
     }
-    return { data: this.notifications.list({ userId, status }) };
+    return { data: await this.notifications.list({ userId, status }) };
   }
 
   @Post('send')
   @Authenticated()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Send a notification honouring user preferences and provider adapters' })
-  send(@Body() dto: SendNotificationDto, @CurrentUser() actor: User | null) {
+  async send(@Body() dto: SendNotificationDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.userId);
-    return { data: this.notifications.send(dto) };
+    return { data: await this.notifications.send(dto) };
   }
 
   @Post(':id/read')
   @Authenticated()
   @ApiOperation({ summary: 'Mark a notification as read' })
-  markRead(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const message = this.notifications.getMessage(id);
+  async markRead(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const message = await this.notifications.getMessage(id);
     assertSelfOrAdmin(actor, message.userId);
-    return { data: this.notifications.markRead(id) };
+    return { data: await this.notifications.markRead(id) };
   }
 
   @Get('preferences/:userId')
   @Authenticated()
   @ApiOperation({ summary: 'Notification preferences for a user (own or admin)' })
-  preferences(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+  async preferences(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, userId);
-    return { data: this.notifications.preferencesFor(userId) };
+    return { data: await this.notifications.preferencesFor(userId) };
   }
 
   @Put('preferences/:userId')
   @Authenticated()
   @ApiOperation({ summary: 'Replace notification preferences for a user (own or admin)' })
-  setPreferences(
+  async setPreferences(
     @Param('userId') userId: string,
     @Body() dto: SetPreferencesDto,
     @CurrentUser() actor: User | null
@@ -113,13 +113,13 @@ export class NotificationsController {
       channel: p.channel,
       enabled: p.enabled
     }));
-    return { data: this.notifications.setPreferences(userId, prefs) };
+    return { data: await this.notifications.setPreferences(userId, prefs) };
   }
 
   @Get('deliveries')
   @Roles('admin')
   @ApiOperation({ summary: 'Delivery log across provider adapters (admin only)' })
-  deliveries() {
-    return { data: this.notifications.deliveries() };
+  async deliveries() {
+    return { data: await this.notifications.deliveries() };
   }
 }

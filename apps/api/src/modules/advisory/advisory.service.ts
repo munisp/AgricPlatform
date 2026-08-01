@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { AdvisoryItem, ApiListResponse } from '@agric-platform/shared';
-import { seedAdvisory } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
-import { paginate } from '../../common/pagination.js';
+import { newId } from '../../common/async-repository.js';
+import { ADVISORY_REPOSITORY } from '../../database/persistence.tokens.js';
+import type {
+  AdvisoryCriteria,
+  AdvisoryRepository
+} from '../../database/repositories/advisory.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { IntegrationsService } from '../integrations/integrations.service.js';
 import type { WeatherSnapshot } from '../integrations/adapters.js';
@@ -26,36 +29,31 @@ export interface PriceSnapshot {
 
 @Injectable()
 export class AdvisoryService {
-  private readonly items = new InMemoryRepository<AdvisoryItem>(seedAdvisory);
-
   constructor(
     private readonly events: DomainEventsService,
-    private readonly integrations: IntegrationsService
+    private readonly integrations: IntegrationsService,
+    @Inject(ADVISORY_REPOSITORY) private readonly items: AdvisoryRepository
   ) {}
 
-  list(filter: {
-    kind?: AdvisoryItem['kind'];
-    state?: string;
-    crop?: string;
-    page?: number;
-    pageSize?: number;
-  }): ApiListResponse<AdvisoryItem> {
-    let items = this.items.all();
-    if (filter.kind) items = items.filter((i) => i.kind === filter.kind);
-    if (filter.state) items = items.filter((i) => i.state === filter.state);
-    if (filter.crop) items = items.filter((i) => i.crop === filter.crop);
-    return paginate(items, filter.page, filter.pageSize);
+  async list(
+    filter: AdvisoryCriteria & { page?: number; pageSize?: number }
+  ): Promise<ApiListResponse<AdvisoryItem>> {
+    return this.items.searchPage(
+      { kind: filter.kind, state: filter.state, crop: filter.crop },
+      filter.page,
+      filter.pageSize
+    );
   }
 
-  all(): AdvisoryItem[] {
+  async all(): Promise<AdvisoryItem[]> {
     return this.items.all();
   }
 
-  get(id: string): AdvisoryItem {
+  async get(id: string): Promise<AdvisoryItem> {
     return this.items.getById(id);
   }
 
-  create(input: CreateAdvisoryInput, actorId: string): AdvisoryItem {
+  async create(input: CreateAdvisoryInput, actorId: string): Promise<AdvisoryItem> {
     const item: AdvisoryItem = {
       id: newId('adv'),
       kind: input.kind,
@@ -66,8 +64,8 @@ export class AdvisoryService {
       severity: input.severity ?? 'info',
       publishedAt: new Date().toISOString()
     };
-    const created = this.items.create(item);
-    this.events.publish('advisory.content.published', { advisoryId: created.id, kind: created.kind }, actorId);
+    const created = await this.items.create(item);
+    await this.events.publish('advisory.content.published', { advisoryId: created.id, kind: created.kind }, actorId);
     return created;
   }
 

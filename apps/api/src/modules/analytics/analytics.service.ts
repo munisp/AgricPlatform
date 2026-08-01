@@ -35,42 +35,54 @@ export class AnalyticsService {
     return platformMetrics;
   }
 
-  overview(): AnalyticsOverview {
+  async overview(): Promise<AnalyticsOverview> {
+    const [users, courses, courseCompletions, activeOpportunities, applications, activeListings] =
+      await Promise.all([
+        this.users.count(),
+        this.learning.allCourses(),
+        this.learning.completionCount(),
+        this.opportunities.list({ active: true, page: 1, pageSize: 1 }),
+        this.opportunities.listApplications({}),
+        this.marketplace.activeListingCount()
+      ]);
     return {
-      users: this.users.count(),
-      courses: this.learning.allCourses().length,
-      courseCompletions: this.learning.completionCount(),
-      activeOpportunities: this.opportunities.list({ active: true, page: 1, pageSize: 1 }).total,
-      applications: this.opportunities.listApplications({}).length,
-      activeListings: this.marketplace.activeListingCount()
+      users,
+      courses: courses.length,
+      courseCompletions,
+      activeOpportunities: activeOpportunities.total,
+      applications: applications.length,
+      activeListings
     };
   }
 
-  segments(by: 'state' | 'role'): Segment[] {
+  async segments(by: 'state' | 'role'): Promise<Segment[]> {
     if (by === 'role') {
-      return USER_ROLES.map((role: UserRole) => ({
-        key: role,
-        count: this.users.countByRole(role)
-      }));
+      return Promise.all(
+        USER_ROLES.map(async (role: UserRole) => ({
+          key: role,
+          count: await this.users.countByRole(role)
+        }))
+      );
     }
-    const counts = new Map<string, number>();
-    for (const profile of this.profiles.all()) {
-      const state = profile.location?.state || 'unknown';
-      counts.set(state, (counts.get(state) ?? 0) + 1);
-    }
+    const counts = await this.profiles.countByState();
     return [...counts.entries()]
       .map(([key, count]) => ({ key, count }))
       .sort((a, b) => b.count - a.count);
   }
 
   /** JSON export bundle for reporting pipelines (CSV driver in Phase 2). */
-  export() {
+  async export() {
+    const [overview, byRole, byState] = await Promise.all([
+      this.overview(),
+      this.segments('role'),
+      this.segments('state')
+    ]);
     return {
       generatedAt: new Date().toISOString(),
       metrics: this.metrics(),
-      overview: this.overview(),
-      byRole: this.segments('role'),
-      byState: this.segments('state')
+      overview,
+      byRole,
+      byState
     };
   }
 }

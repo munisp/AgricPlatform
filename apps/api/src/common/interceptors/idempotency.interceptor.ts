@@ -1,13 +1,15 @@
-import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import {
+  CallHandler,
+  ExecutionContext,
+  Inject,
+  Injectable,
+  NestInterceptor
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Observable, of, tap } from 'rxjs';
+import { IDEMPOTENCY_STORE } from '../../database/persistence.tokens.js';
+import type { IdempotencyStore } from '../../redis/idempotency.store.js';
 
-interface CachedResponse {
-  body: unknown;
-  expiresAt: number;
-}
-
-const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24h replay window
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
@@ -15,14 +17,16 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  * an `Idempotency-Key` header; the first successful response is cached and
  * replays return the cached body with an `Idempotent-Replay: true` header.
  *
- * Phase 1 uses an in-process Map; production swaps the store for Redis per
- * SPEC contract 5 (Redis is cache/idempotency).
+ * The store is injected (Redis in production, in-memory otherwise) so replay
+ * safety holds across replicas (persistence wave plan §7).
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
-  private readonly store = new Map<string, CachedResponse>();
+  constructor(
+    @Inject(IDEMPOTENCY_STORE) private readonly store: IdempotencyStore
+  ) {}
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+  async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
     const request = context.switchToHttp().getRequest<Request>();
     const response = context.switchToHttp().getResponse<Response>();
 
@@ -36,27 +40,17 @@ export class IdempotencyInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    this.sweepExpired();
     const scopedKey = `${request.method}:${request.originalUrl}:${key}`;
-    const cached = this.store.get(scopedKey);
-    if (cached) {
+    const cached = await this.store.get(scopedKey);
+    if (cached !== undefined) {
       response.setHeader('Idempotent-Replay', 'true');
-      return of(cached.body);
+      return of(cached);
     }
 
     return next.handle().pipe(
       tap((body) => {
-        this.store.set(scopedKey, { body, expiresAt: Date.now() + IDEMPOTENCY_TTL_MS });
+        void this.store.save(scopedKey, body);
       })
     );
-  }
-
-  private sweepExpired(): void {
-    const now = Date.now();
-    for (const [key, value] of this.store) {
-      if (value.expiresAt <= now) {
-        this.store.delete(key);
-      }
-    }
   }
 }
