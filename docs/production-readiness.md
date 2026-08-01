@@ -216,10 +216,11 @@ Results:
 - NestJS production build: passed
 - Next.js production build: passed
 - Static routes generated: 18
+- All-in-one production process smoke test: passed (`npm run start`, web page title, and `/api/v1/health`)
 - Heuristic tracked-file secret scan: passed
 - Tracked `.env` file check: passed
 
-Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment. Those items remain staging-verification tasks rather than locally proven evidence.
+Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment because the container runtime is unavailable. Dockerfiles, Compose, and Kubernetes probes were statically aligned with the verified production start command and `/api/v1/health` endpoints. Those items remain staging-verification tasks rather than locally proven evidence.
 
 ## 9. Final handoff statement
 
