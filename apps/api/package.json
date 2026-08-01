@@ -11,7 +11,9 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "typecheck": "npm run build -w @agric-platform/shared && tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate": "tsx src/database/migrate.ts",
+    "seed": "tsx src/database/seed.ts"
   },
   "dependencies": {
     "@agric-platform/shared": "0.1.0",
@@ -25,7 +27,9 @@
     "helmet": "^8.1.0",
     "jose": "^6.2.7",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "pg": "^8.13.1",
+    "ioredis": "^5.4.2"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
@@ -34,6 +38,9 @@
     "@types/node": "^20.19.0",
     "typescript": "^5.8.3",
     "unplugin-swc": "^1.5.1",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "pgsql-ast-parser": "^12.0.2"
   }
 }
