@@ -1,0 +1,248 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`criteria SQL builders > advisory + marketplace criteria 1`] = `
+{
+  "params": [
+    "price",
+    "Kano",
+    "maize",
+  ],
+  "where": " WHERE (kind = $1) AND (state = $2) AND (crop = $3)",
+}
+`;
+
+exports[`criteria SQL builders > advisory + marketplace criteria 2`] = `
+{
+  "params": [
+    "produce",
+    "Kano",
+    "maize",
+    true,
+    "%maize%",
+  ],
+  "where": " WHERE (kind = $1) AND (location_state = $2) AND (crop = $3) AND (is_active = $4) AND (title ILIKE $5)",
+}
+`;
+
+exports[`criteria SQL builders > advisory + marketplace criteria 3`] = `
+{
+  "params": [
+    "u1",
+    "confirmed",
+  ],
+  "where": " WHERE (buyer_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > advisory + marketplace criteria 4`] = `
+{
+  "params": [
+    "o1",
+  ],
+  "where": " WHERE (order_id = $1)",
+}
+`;
+
+exports[`criteria SQL builders > chapter criteria 1`] = `
+{
+  "params": [
+    "state",
+    "Kano",
+  ],
+  "where": " WHERE (level = $1) AND (state = $2)",
+}
+`;
+
+exports[`criteria SQL builders > chapter criteria 2`] = `
+{
+  "params": [
+    "chapter-kano",
+  ],
+  "where": " WHERE (chapter_id = $1)",
+}
+`;
+
+exports[`criteria SQL builders > chapter criteria 3`] = `
+{
+  "params": [
+    "e1",
+    "u1",
+  ],
+  "where": " WHERE (event_id = $1) AND (user_id = $2)",
+}
+`;
+
+exports[`criteria SQL builders > community criteria 1`] = `
+{
+  "params": [
+    "crops",
+    "Kano",
+    "%maize%",
+  ],
+  "where": " WHERE (category = $1) AND (state = $2) AND (title ILIKE $3)",
+}
+`;
+
+exports[`criteria SQL builders > community criteria 2`] = `
+{
+  "params": [
+    "u1",
+    "requested",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > community criteria 3`] = `
+{
+  "params": [
+    "open",
+  ],
+  "where": " WHERE (status = $1)",
+}
+`;
+
+exports[`criteria SQL builders > course criteria 1`] = `
+{
+  "params": [],
+  "where": "",
+}
+`;
+
+exports[`criteria SQL builders > course criteria 2`] = `
+{
+  "params": [
+    "agronomy",
+    "beginner",
+    "en",
+    "%maize%",
+  ],
+  "where": " WHERE (category = $1) AND (level = $2) AND (language = $3) AND (title ILIKE $4)",
+}
+`;
+
+exports[`criteria SQL builders > enrolment + certificate criteria 1`] = `
+{
+  "params": [
+    "u1",
+    "completed",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > enrolment + certificate criteria 2`] = `
+{
+  "params": [
+    "NYFN-CERT-2026-0001",
+  ],
+  "where": " WHERE (verification_code = $1)",
+}
+`;
+
+exports[`criteria SQL builders > opportunity criteria (array containment) 1`] = `
+{
+  "params": [],
+  "where": "",
+}
+`;
+
+exports[`criteria SQL builders > opportunity criteria (array containment) 2`] = `
+{
+  "params": [
+    "grant",
+    true,
+    "Kano",
+    "maize",
+  ],
+  "where": " WHERE (type = $1) AND (is_active = $2) AND (states @> ARRAY[$3]::text[]) AND (value_chains @> ARRAY[$4]::text[])",
+}
+`;
+
+exports[`criteria SQL builders > opportunity criteria (array containment) 3`] = `
+{
+  "params": [
+    "u1",
+    "submitted",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > privacy + finance + notification criteria 1`] = `
+{
+  "params": [
+    "u1",
+  ],
+  "where": " WHERE (user_id = $1)",
+}
+`;
+
+exports[`criteria SQL builders > privacy + finance + notification criteria 2`] = `
+{
+  "params": [
+    "u1",
+    "pending",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > privacy + finance + notification criteria 3`] = `
+{
+  "params": [
+    "u1",
+    "uploaded",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > privacy + finance + notification criteria 4`] = `
+{
+  "params": [
+    "u1",
+    "queued",
+  ],
+  "where": " WHERE (user_id = $1) AND (status = $2)",
+}
+`;
+
+exports[`criteria SQL builders > user criteria (roles EXISTS + ILIKE q) 1`] = `
+{
+  "params": [],
+  "where": "",
+}
+`;
+
+exports[`criteria SQL builders > user criteria (roles EXISTS + ILIKE q) 2`] = `
+{
+  "params": [
+    "farmer",
+  ],
+  "where": " WHERE (EXISTS (SELECT 1 FROM identity.user_roles ur2
+                      WHERE ur2.user_id = u.id AND ur2.role_code = $1))",
+}
+`;
+
+exports[`criteria SQL builders > user criteria (roles EXISTS + ILIKE q) 3`] = `
+{
+  "params": [
+    "%adamu%",
+    "%adamu%",
+  ],
+  "where": " WHERE ((u.full_name ILIKE $1 OR u.phone ILIKE $2))",
+}
+`;
+
+exports[`criteria SQL builders > user criteria (roles EXISTS + ILIKE q) 4`] = `
+{
+  "params": [
+    "buyer",
+    "%aisha%",
+    "%aisha%",
+  ],
+  "where": " WHERE (EXISTS (SELECT 1 FROM identity.user_roles ur2
+                      WHERE ur2.user_id = u.id AND ur2.role_code = $1)) AND ((u.full_name ILIKE $2 OR u.phone ILIKE $3))",
+}
+`;

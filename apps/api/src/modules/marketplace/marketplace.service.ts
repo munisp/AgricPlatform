@@ -173,7 +173,7 @@ export class MarketplaceService {
       escrowRequired: totalNaira >= ESCROW_THRESHOLD_NAIRA,
       createdAt: new Date().toISOString()
     };
-    const created = await this.orders.create(order);
+    const created = await this.orders.placeOrder(order);
     await this.events.publish(
       'marketplace.order.placed',
       { orderId: created.id, listingId, totalNaira, escrowRequired: created.escrowRequired },

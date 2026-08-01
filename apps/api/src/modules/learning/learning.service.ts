@@ -113,13 +113,28 @@ export class LearningService {
     const clamped = Math.min(100, progressPercent);
     const status: Enrolment['status'] =
       clamped >= 100 ? 'completed' : clamped > 0 ? 'in_progress' : enrolment.status;
-    const updated = await this.enrolments.update(id, {
-      progressPercent: clamped,
-      status,
-      completedAt: status === 'completed' ? new Date().toISOString() : enrolment.completedAt
-    });
-    if (status === 'completed' && enrolment.status !== 'completed') {
-      await this.issueCertificate(updated);
+    const completing = status === 'completed' && enrolment.status !== 'completed';
+    // Certificate insert and enrolment update commit as one unit.
+    const certificate = completing ? await this.buildCertificate(enrolment) : undefined;
+    const updated = await this.enrolments.updateWithCertificate(
+      id,
+      {
+        progressPercent: clamped,
+        status,
+        completedAt: status === 'completed' ? new Date().toISOString() : enrolment.completedAt
+      },
+      certificate
+    );
+    if (certificate) {
+      await this.events.publish(
+        'learning.certificate.issued',
+        {
+          certificateId: certificate.id,
+          courseId: enrolment.courseId,
+          verificationCode: certificate.verificationCode
+        },
+        enrolment.userId
+      );
     }
     return updated;
   }
@@ -149,9 +164,9 @@ export class LearningService {
     return this.enrolments.countCompleted();
   }
 
-  private async issueCertificate(enrolment: Enrolment): Promise<Certificate> {
+  private async buildCertificate(enrolment: Enrolment): Promise<Certificate> {
     const code = await this.certificates.allocateVerificationCode();
-    const certificate: Certificate = {
+    return {
       id: newId('cert'),
       userId: enrolment.userId,
       courseId: enrolment.courseId,
@@ -159,12 +174,5 @@ export class LearningService {
       issuedAt: new Date().toISOString(),
       verificationUrl: `/api/v1/certificates/verify/${code}`
     };
-    const created = await this.certificates.create(certificate);
-    await this.events.publish(
-      'learning.certificate.issued',
-      { certificateId: created.id, courseId: enrolment.courseId, verificationCode: code },
-      enrolment.userId
-    );
-    return created;
   }
 }

@@ -125,8 +125,7 @@ export class ChaptersService {
       status: 'rsvp',
       createdAt: new Date().toISOString()
     };
-    const created = await this.rsvps.create(rsvp);
-    await this.eventsRepo.incrementRsvp(eventId);
+    const created = await this.rsvps.recordRsvp(rsvp);
     await this.domainEvents.publish('chapter.event.rsvp_recorded', { eventId }, userId);
     return created;
   }
@@ -137,19 +136,14 @@ export class ChaptersService {
     if (existing?.status === 'attended') {
       throw new ConflictException('Attendance already recorded for this user');
     }
-    let record: EventRsvp;
-    if (existing) {
-      record = await this.rsvps.update(existing.id, { status: 'attended' });
-    } else {
-      record = await this.rsvps.create({
-        id: newId('rsvp'),
-        eventId,
-        userId,
-        status: 'attended',
-        createdAt: new Date().toISOString()
-      });
-    }
-    const event = await this.eventsRepo.incrementAttendance(eventId);
+    const record = await this.rsvps.recordAttendance({
+      id: existing?.id ?? newId('rsvp'),
+      eventId,
+      userId,
+      status: 'attended',
+      createdAt: existing?.createdAt ?? new Date().toISOString()
+    });
+    const event = await this.eventsRepo.getById(eventId);
     await this.domainEvents.publish(
       'chapter.event.attendance_recorded',
       { eventId, chapterId: event.chapterId },

@@ -9,8 +9,14 @@ export interface OrderCriteria {
   status?: OrderStatus;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface OrderRepository extends AsyncRepository<Order, OrderCriteria> {}
+export interface OrderRepository extends AsyncRepository<Order, OrderCriteria> {
+  /**
+   * Order placement as one atomic unit (plan §10 task 15): the pg
+   * implementation locks the listing row FOR UPDATE and re-validates
+   * availability before inserting.
+   */
+  placeOrder(order: Order): Promise<Order>;
+}
 
 export function orderMatcher(criteria: OrderCriteria): (order: Order) => boolean {
   return (order) =>
@@ -25,6 +31,10 @@ export class InMemoryOrderRepository
 {
   constructor(seed: readonly Order[] = []) {
     super(seed, orderMatcher);
+  }
+
+  async placeOrder(order: Order): Promise<Order> {
+    return this.create(order);
   }
 }
 

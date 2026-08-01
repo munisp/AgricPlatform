@@ -71,12 +71,16 @@ export class NotificationsService {
     );
 
     const result = this.integrations.deliver(input.channel);
-    await this.deliveryLog.append({
-      notificationId: message.id,
-      result,
-      at: new Date().toISOString()
-    });
-    return this.messages.update(message.id, { status: result.delivered ? 'sent' : 'failed' });
+    // Delivery log + status flip commit as one unit.
+    return this.messages.recordDelivery(
+      message.id,
+      result.delivered ? 'sent' : 'failed',
+      {
+        notificationId: message.id,
+        result,
+        at: new Date().toISOString()
+      }
+    );
   }
 
   /** Single message (used for ownership checks before state changes). */
