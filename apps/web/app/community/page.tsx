@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
-import { AutoBadge, Card, PageHeader, Section, StatusBadge } from '@/components/ui';
-import { demoMentorRequests, demoTopics } from '@/lib/content';
+import { MentorBoard, TopicsSection } from '@/components/community-live';
+import { Card, PageHeader, Section, StatusBadge } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Community',
@@ -17,22 +17,7 @@ export default function CommunityPage() {
       />
 
       <Section kicker="Forums" title="Trending topics">
-        <ul className="row-list">
-          {demoTopics.map((topic) => (
-            <li className="row-item" key={topic.id}>
-              <div className="row-main">
-                <div className="row-title">{topic.title}</div>
-                <div className="small muted">
-                  {topic.category}
-                  {topic.state ? ` · ${topic.state}` : ''}
-                  {topic.crop ? ` · ${topic.crop}` : ''} ·{' '}
-                  {new Date(topic.createdAt).toLocaleDateString('en-NG', { dateStyle: 'medium' })}
-                </div>
-              </div>
-              <StatusBadge tone="neutral">{topic.replyCount} replies</StatusBadge>
-            </li>
-          ))}
-        </ul>
+        <TopicsSection />
       </Section>
 
       <Section
@@ -40,14 +25,7 @@ export default function CommunityPage() {
         title="Mentor matching"
         description="Experienced farmers and agribusiness mentors are matched by crop, state and challenge."
       >
-        <div className="grid grid-2">
-          {demoMentorRequests.map((request) => (
-            <Card key={request.id} title={`${request.crop} — ${request.state}`}>
-              <p className="small muted">{request.challenge}</p>
-              <AutoBadge value={request.status} />
-            </Card>
-          ))}
-        </div>
+        <MentorBoard />
       </Section>
 
       <Section kicker="Groups" title="Find your people">
