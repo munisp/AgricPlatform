@@ -4,7 +4,7 @@ This matrix traces PRD v3.3 requirements (18 modules, epics E1–E10, four canon
 
 ## Baseline and status taxonomy
 
-**Repository baseline:** this matrix is written against the specification baseline (SPEC.md, `packages/shared` domain contracts, `.env.example` driver flags). At this baseline the implemented code is limited to shared domain contracts: `USER_ROLES`, `LANGUAGE_CODES`, `KYC_TIERS`, `APPLICATION_STATUSES`, `ORDER_STATUSES`, `NOTIFICATION_CHANNELS`, location/entity types (`packages/shared/src/domain.ts`), seed fixtures (`packages/shared/src/data.ts`), and the profile-completion scoring utility with unit tests (`packages/shared/src/profile.ts`, `packages/shared/test/profile.test.ts`). No `apps/web`, `apps/api` or `infra` runtime code exists at this baseline; surfaces below describe the committed plan in SPEC.md and `docs/architecture.md`.
+**Repository baseline:** this matrix was initially written against the specification baseline (SPEC.md, `packages/shared` domain contracts, `.env.example` driver flags) before the runtime implementation landed. **Updated on 2026-08-02:** `apps/web`, `apps/api`, and `infra` now exist and are validated; the current implementation state and launch score are maintained in `docs/production-readiness.md`. The status column below preserves the original planning classification so PRD scope and phase intent remain traceable; do not read historical labels such as "contracts only" as the current repository state.
 
 **Status classifications used throughout:**
 
@@ -22,7 +22,7 @@ This matrix traces PRD v3.3 requirements (18 modules, epics E1–E10, four canon
 
 ## 1. Module traceability (M1–M18)
 
-| # | Module (PRD Ch. 7) | MVP scope per PRD | Phase / release | Implementation surface | Acceptance evidence expected | Status at baseline |
+| # | Module (PRD Ch. 7) | MVP scope per PRD | Phase / release | Implementation surface | Acceptance evidence expected | Initial planning status |
 | --- | --- | --- | --- | --- | --- | --- |
 | M1 | Identity & Onboarding | Role signup, phone OTP, location capture, progressive profile, completion score | Phase 1 / R1 (Epic E1) | web: signup/onboarding flows; api: auth, users, profiles modules; infra: Keycloak realm config; docs: this matrix | Role/OTP auth E2E against Keycloak; state/LGA seed data; profile completion score unit + API tests; consent capture record on registration | Implemented reference slice (roles, KYC tiers, location types, completion scoring in `packages/shared`); OTP/Keycloak path is Adapter-ready |
 | M2 | Personalized Dashboards | Role dashboards with key widgets (farmer, chapter lead, buyer, partner, admin) | Phase 1 / R1–R2 (Epic E2) | web: role-aware dashboard pages; api: dashboard aggregation module | Widget render tests per role; RBAC-filtered dashboard API tests; p95 < 500 ms on dashboard endpoints in staging | Phase 1 planned; contracts only at baseline (roles in `packages/shared`) |

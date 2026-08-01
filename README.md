@@ -11,21 +11,27 @@ Unified implementation of the Nigeria Farmer Platform PRD v3.3 for NYFN.
 
 ## Quick start
 ```bash
-npm install
-npm run build
-npm run test
-npm run dev
+npm ci
+npm run validate
+
+# Run the API and web app in separate terminals:
+npm run dev -w @agric-platform/api
+npm run dev -w @agric-platform/web
 ```
 
 Default URLs:
 - Web: http://localhost:3000
 - API: http://localhost:3001
+- API OpenAPI UI: http://localhost:3001/api/v1/docs
 
 ## Documentation
 - `SPEC.md` — implementation contract
 - `docs/prd-analysis.md` — PRD interpretation
 - `docs/architecture.md` — architecture and data model
 - `docs/github-strategy.md` — repository and operating model
+- `docs/requirements-traceability.md` — PRD-to-implementation traceability
+- `docs/security-compliance.md` — security controls and launch blockers
+- `docs/integration-matrix.md` — provider adapter and credential matrix
 - `docs/production-readiness.md` — final readiness assessment
 
 ## External credentials

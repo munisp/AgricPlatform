@@ -2,7 +2,7 @@
 
 This document defines the security and compliance control set for AgricPlatform, its verification method, and its launch-blocking status. It implements PRD v3.3 Chapter 8 (NFRs), Chapter 12.6 (Security Controls & Rollout), Module 18, and the Appendix C/D financial and legal gates, against the Phase 1 stack committed in SPEC.md (Next.js, NestJS, PostgreSQL, Redis, Keycloak OIDC).
 
-**Baseline honesty note:** at the current repository baseline, the implemented code comprises shared domain contracts and profile-scoring logic (`packages/shared`) plus documentation. Controls below are marked **[code]** where behaviour is or will be verifiable in this repository without credentials, **[infra]** where they depend on environment provisioning, and **[external]** where they require a third party (auditor, regulator, counsel, provider). Nothing marked [external] can be closed by engineering alone.
+**Baseline honesty note:** this control matrix was first drafted at the specification baseline. **Updated on 2026-08-02:** the repository now includes the Next.js PWA, NestJS modular API, RBAC/idempotency/audit/privacy reference slices, tests, and deployment assets. Controls below are marked **[code]** where behaviour is or will be verifiable in this repository without credentials, **[infra]** where they depend on environment provisioning, and **[external]** where they require a third party (auditor, regulator, counsel, provider). Nothing marked [external] can be closed by engineering alone. See `docs/production-readiness.md` for the current go/no-go assessment.
 
 ## 1. RBAC
 
