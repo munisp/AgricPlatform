@@ -37,5 +37,10 @@ Default URLs:
 - `docs/integration-matrix.md` — provider adapter and credential matrix
 - `docs/production-readiness.md` — final readiness assessment
 
+## Container builds
+- Root `Dockerfile` — all-in-one preview/validation image for the API and web app.
+- `infra/docker/api.Dockerfile` and `infra/docker/web.Dockerfile` — separated production-oriented service images.
+- `infra/docker-compose.yml` — local dependency and service topology.
+
 ## External credentials
 The codebase boots with stub providers. Copy `.env.example` to `.env` and set production credentials only in your local or cloud secret store. Never commit real secrets.

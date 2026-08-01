@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w @agric-platform/api\" \"npm run dev -w @agric-platform/web\"",
+    "start": "concurrently -k \"PORT=3001 npm run start -w @agric-platform/api\" \"PORT=3000 npm run start -w @agric-platform/web\"",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
