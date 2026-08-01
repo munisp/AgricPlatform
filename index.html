@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgricPlatform — Repository Handoff</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f4ed;
+        --card: #fffdf8;
+        --ink: #243126;
+        --muted: #687266;
+        --line: #ddd6c8;
+        --accent: #426b4f;
+        --accent-soft: #e5eee6;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 40px 20px;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        width: min(920px, 100%);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        padding: clamp(32px, 6vw, 72px);
+        box-shadow: 0 24px 70px rgba(50, 58, 45, 0.08);
+      }
+      .eyebrow {
+        display: inline-flex;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 24px 0 16px;
+        max-width: 760px;
+        font-size: clamp(40px, 7vw, 76px);
+        line-height: 0.96;
+        letter-spacing: -0.055em;
+      }
+      p {
+        max-width: 700px;
+        margin: 0;
+        color: var(--muted);
+        font-size: clamp(17px, 2vw, 20px);
+        line-height: 1.65;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-top: 42px;
+      }
+      .item {
+        min-height: 132px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: #fbf9f3;
+      }
+      .item strong { display: block; margin-bottom: 8px; font-size: 17px; }
+      .item span { color: var(--muted); font-size: 14px; line-height: 1.5; }
+      code {
+        display: block;
+        margin-top: 36px;
+        padding: 18px 20px;
+        border-radius: 16px;
+        background: #263126;
+        color: #eff5ec;
+        font-size: 14px;
+        overflow-x: auto;
+      }
+      @media (max-width: 760px) {
+        .grid { grid-template-columns: 1fr; }
+        main { border-radius: 22px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">Validated handoff</div>
+      <h1>AgricPlatform full-stack reference implementation</h1>
+      <p>
+        Nigeria Farmer Platform PRD v3.3 implemented as a Next.js PWA, NestJS modular API,
+        shared domain contracts, integration adapters, deployment assets, security controls,
+        and GitHub operating documentation.
+      </p>
+      <section class="grid" aria-label="Repository highlights">
+        <div class="item"><strong>18 web routes</strong><span>Role-aware PWA surfaces for farmers, buyers, partners, chapter leads, and administrators.</span></div>
+        <div class="item"><strong>20 tests passing</strong><span>API e2e coverage, RBAC, idempotency, audit, privacy, certificates, search, and shared utilities.</span></div>
+        <div class="item"><strong>Production path</strong><span>Docker, Compose, Kubernetes, CI/CD, secret hygiene, adapter matrix, and readiness gates included.</span></div>
+      </section>
+      <code>npm ci && npm run validate && npm run dev</code>
+    </main>
+  </body>
+</html>
