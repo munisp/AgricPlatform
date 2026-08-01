@@ -27,7 +27,6 @@ export function usePersistentState<T>(
       // ignore corrupt payloads
     }
     setHydrated(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   useEffect(() => {

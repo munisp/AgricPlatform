@@ -3,9 +3,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./*"],
-      "@agric-platform/shared": ["../../packages/shared/src/index.ts"],
-      "@agric-platform/shared/*": ["../../packages/shared/src/*"]
+      "@/*": ["./*"]
     },
     "jsx": "preserve",
     "incremental": true,

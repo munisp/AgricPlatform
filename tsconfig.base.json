@@ -9,11 +9,6 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "baseUrl": ".",
-    "paths": {
-      "@agric-platform/shared": ["packages/shared/src/index.ts"],
-      "@agric-platform/shared/*": ["packages/shared/src/*"]
-    }
+    "isolatedModules": true
   }
 }

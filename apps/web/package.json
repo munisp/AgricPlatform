@@ -4,9 +4,11 @@
   "private": true,
   "description": "Next.js App Router PWA for the Nigeria Farmer Platform (NYFN).",
   "scripts": {
+    "prebuild": "npm run build -w @agric-platform/shared",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "pretypecheck": "npm run build -w @agric-platform/shared && next typegen",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

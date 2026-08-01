@@ -1,13 +1,15 @@
-import { FlatCompat } from '@eslint/eslintrc';
-
-const compat = new FlatCompat({
-  baseDirectory: import.meta.dirname
-});
+import nextConfig from 'eslint-config-next';
 
 const eslintConfig = [
-  ...compat.extends('next/core-web-vitals', 'next/typescript'),
+  ...nextConfig,
   {
-    ignores: ['.next/**', 'node_modules/**', 'public/sw.js']
+    ignores: ['.next/**', 'node_modules/**', 'public/sw.js'],
+    rules: {
+      // These hooks intentionally hydrate from localStorage after first render to
+      // avoid SSR/client markup mismatches for offline drafts and role state.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/refs': 'off'
+    }
   }
 ];
 
