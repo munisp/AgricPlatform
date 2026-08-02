@@ -57,7 +57,12 @@ export function createInMemoryExternalAccountLinkRepository(
 
 // ---------------------------------------------------------------------------
 
-export type FarmRecordType = 'crop_plan' | 'harvest' | 'field_map';
+/**
+ * crop_plan|harvest|field_map arrive via the farmOS/LiteFarm adapters;
+ * partner_push is a farm-data bundle pushed through the partner API
+ * (wave P6b) — the column carries no CHECK constraint, so no migration.
+ */
+export type FarmRecordType = 'crop_plan' | 'harvest' | 'field_map' | 'partner_push';
 
 export interface FarmRecord {
   id: string;

@@ -3,12 +3,24 @@ import type { Enrolment, Opportunity, Profile, User } from '@agric-platform/shar
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { CONSENT_REPOSITORY, WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
+import {
+  CONSENT_REPOSITORY,
+  EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+  FARM_RECORD_REPOSITORY,
+  INBOUND_EVENT_REPOSITORY,
+  WEBHOOK_SUBSCRIPTION_REPOSITORY
+} from '../../database/persistence.tokens.js';
 import type { ConsentRepository } from '../../database/repositories/consent.repository.js';
 import type {
   WebhookSubscription,
   WebhookSubscriptionRepository
 } from '../../database/repositories/partner-api.repository.js';
+import type {
+  ExternalAccountLinkRepository,
+  FarmRecord,
+  FarmRecordRepository,
+  InboundEventRepository
+} from '../../database/repositories/phase3.repository.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { ProfilesService } from '../profiles/profiles.service.js';
@@ -60,6 +72,12 @@ export interface FarmDataPushResult {
   userId: string;
   accepted: boolean;
   receivedAt: string;
+  /** True when the payload was persisted against an external account link. */
+  linked: boolean;
+  /** integrations.farm_records id when linked. */
+  farmRecordId?: string;
+  /** True when no linkage exists; the payload is ledgered pending a link. */
+  pendingLink?: boolean;
 }
 
 /**
@@ -79,7 +97,11 @@ export class PartnerApiService {
     private readonly events: DomainEventsService,
     @Inject(CONSENT_REPOSITORY) private readonly consents: ConsentRepository,
     @Inject(WEBHOOK_SUBSCRIPTION_REPOSITORY)
-    private readonly subscriptions: WebhookSubscriptionRepository
+    private readonly subscriptions: WebhookSubscriptionRepository,
+    @Inject(EXTERNAL_ACCOUNT_LINK_REPOSITORY)
+    private readonly accountLinks: ExternalAccountLinkRepository,
+    @Inject(FARM_RECORD_REPOSITORY) private readonly farmRecords: FarmRecordRepository,
+    @Inject(INBOUND_EVENT_REPOSITORY) private readonly inboundEvents: InboundEventRepository
   ) {}
 
   /** True when the user holds an active partner-sharing consent. */
@@ -220,9 +242,18 @@ export class PartnerApiService {
   }
 
   /**
-   * Accepts a farmOS-compatible farm data push. The payload is validated
-   * for shape only and forwarded as a domain event (analytics/integrations
-   * consumers subscribe downstream); no PII beyond the owning user id.
+   * Accepts a farmOS-compatible farm data push (wave P6b: now persisted).
+   * The payload is validated for shape only, stored in
+   * integrations.farm_records (record_type partner_push) against the
+   * member's active external account link when one exists, and forwarded as
+   * a domain event; no PII beyond the owning user id.
+   *
+   * Pending-link path: farm_records.link_id is FK-constrained to
+   * external_account_links, so when the member has no active link the push
+   * cannot ride farm_records without a schema change. It is ledgered instead
+   * as a replay-safe inbound event (event_type farm_data.pending_link) whose
+   * payload carries the `pending-link:{userId}` marker; a later account
+   * linkage can replay these into farm_records.
    */
   async recordFarmDataPush(
     userId: string,
@@ -234,11 +265,42 @@ export class PartnerApiService {
       id: newId('farmdata'),
       userId,
       accepted: true,
-      receivedAt: new Date().toISOString()
+      receivedAt: new Date().toISOString(),
+      linked: false
     };
+    const link = (await this.accountLinks.find({ userId, activeOnly: true }))[0];
+    if (link) {
+      const record: FarmRecord = {
+        id: newId('frec'),
+        linkId: link.id,
+        recordType: 'partner_push',
+        // The push id is the replay dedupe key (UNIQUE(link_id, type, external_id)).
+        externalId: result.id,
+        payload,
+        source: 'partner_api',
+        observedAt: result.receivedAt,
+        syncedAt: result.receivedAt
+      };
+      await this.farmRecords.upsertMany([record]);
+      result.linked = true;
+      result.farmRecordId = record.id;
+    } else {
+      await this.inboundEvents.ingest({
+        id: newId('evt'),
+        system: 'partner_api',
+        eventType: 'farm_data.pending_link',
+        dedupeKey: result.id,
+        payload: { ...payload, userId, linkId: `pending-link:${userId}` },
+        receivedAt: result.receivedAt
+      });
+      result.pendingLink = true;
+    }
     await this.events.publish(
       'partner.farm_data.received',
-      { ...result, assetCount: Array.isArray(payload.assets) ? payload.assets.length : 0 },
+      {
+        ...result,
+        assetCount: Array.isArray(payload.assets) ? payload.assets.length : 0
+      },
       actorId
     );
     return result;
