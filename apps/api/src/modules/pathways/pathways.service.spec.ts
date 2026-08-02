@@ -49,6 +49,36 @@ async function makeTemplate(service: PathwaysService) {
   );
 }
 
+describe('PathwaysService own enrolments list', () => {
+  it('returns only the user\'s enrolments with template and stage progress summary', async () => {
+    const service = makeService();
+    const template = await makeTemplate(service);
+    const mine = await service.enrol(template.id, student.id);
+    await service.enrol(template.id, outsider.id);
+
+    const summaries = await service.listMyEnrolments(student.id);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].enrolment.id).toBe(mine.id);
+    expect(summaries[0].template.id).toBe(template.id);
+    expect(summaries[0].stagesTotal).toBe(3);
+    expect(summaries[0].stagesCompleted).toBe(0);
+    expect(summaries[0].currentStageTitle).toBe('Orientation');
+
+    await service.completeCurrentStage(mine.id, 'briefing attended', student);
+    const updated = await service.listMyEnrolments(student.id);
+    expect(updated[0].stagesCompleted).toBe(1);
+    expect(updated[0].currentStageTitle).toBe('Field placement');
+  });
+
+  it('never leaks another user\'s enrolments', async () => {
+    const service = makeService();
+    const template = await makeTemplate(service);
+    await service.enrol(template.id, student.id);
+    const summaries = await service.listMyEnrolments(outsider.id);
+    expect(summaries).toEqual([]);
+  });
+});
+
 describe('PathwaysService templates', () => {
   it('creates templates with ordered stages', async () => {
     const service = makeService();

@@ -66,6 +66,36 @@ async function openCohort(
   return service.setCohortStatus(cohort.id, 'open', admin.id);
 }
 
+describe('ProgrammesService own enrolments list', () => {
+  it('returns only the user\'s enrolments with cohort and milestone progress summary', async () => {
+    const service = makeService();
+    const cohort = await openCohort(service);
+    const first = await service.addMilestone(cohort.id, { title: 'Baseline survey', sequence: 1 }, admin.id);
+    await service.addMilestone(cohort.id, { title: 'Business plan', sequence: 2 }, admin.id);
+    const mine = await service.enrol(
+      cohort.id,
+      { userId: member.id, declaredGender: 'female' },
+      INSIDE_WINDOW
+    );
+    await service.enrol(cohort.id, { userId: other.id, declaredGender: 'female' }, INSIDE_WINDOW);
+    await service.setMilestoneProgress(first.id, member.id, 'completed', member);
+
+    const summaries = await service.listMyEnrolments(member.id);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].enrolment.id).toBe(mine.id);
+    expect(summaries[0].cohort.id).toBe(cohort.id);
+    expect(summaries[0].milestonesTotal).toBe(2);
+    expect(summaries[0].milestonesCompleted).toBe(1);
+
+    // Ownership scoping: the other member's enrolment never leaks.
+    const othersSummaries = await service.listMyEnrolments(other.id);
+    expect(othersSummaries).toHaveLength(1);
+    expect(othersSummaries[0].enrolment.userId).toBe(other.id);
+    expect(othersSummaries[0].milestonesCompleted).toBe(0);
+    expect(await service.listMyEnrolments('user-unknown')).toEqual([]);
+  });
+});
+
 describe('ProgrammesService cohort lifecycle', () => {
   it('walks draft → open → closed → active → completed and rejects skips', async () => {
     const service = makeService();

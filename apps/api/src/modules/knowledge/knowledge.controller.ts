@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsBoolean, IsIn, IsISO8601, IsInt, IsOptional, IsString, IsUrl, Min } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -184,6 +184,18 @@ export class KnowledgeController {
   @ApiOperation({ summary: 'Schedule a webinar (IANA timezone, default Africa/Lagos)' })
   async createWebinar(@Body() dto: CreateWebinarDto, @CurrentUser() actor: User | null) {
     return { data: await this.knowledge.createWebinar(dto, actor?.id ?? 'anonymous') };
+  }
+
+  // Declared before `webinars/:id` so 'mine' is not captured as an id.
+  @Get('webinars/mine/registrations')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List the current user\'s webinar registrations' })
+  async listMyRegistrations(@CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    return { data: await this.knowledge.listMyRegistrations(actor.id) };
   }
 
   @Get('webinars/:id')

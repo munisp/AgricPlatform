@@ -45,6 +45,15 @@ export interface CreateTemplateInput {
   stages: Array<{ title: string; requiredActions?: string[] }>;
 }
 
+/** Per-user enrolment with template + stage progress summary for `/pathway-enrolments/mine`. */
+export interface MyPathwayEnrolmentSummary {
+  enrolment: PathwayEnrolment;
+  template: PathwayTemplate;
+  stagesTotal: number;
+  stagesCompleted: number;
+  currentStageTitle?: string;
+}
+
 export interface CreateClubInput {
   name: string;
   institution: string;
@@ -141,6 +150,28 @@ export class PathwaysService {
   async getEnrolment(id: string): Promise<{ enrolment: PathwayEnrolment; progress: StageProgress[] }> {
     const enrolment = await this.enrolments.getById(id);
     return { enrolment, progress: await this.progress.find({ enrolmentId: id }) };
+  }
+
+  /** Own enrolments (ownership-scoped by user id) with template and stage progress summary. */
+  async listMyEnrolments(userId: string): Promise<MyPathwayEnrolmentSummary[]> {
+    const enrolments = await this.enrolments.find({ userId });
+    const summaries: MyPathwayEnrolmentSummary[] = [];
+    for (const enrolment of enrolments) {
+      const template = await this.templates.findById(enrolment.templateId);
+      if (!template) {
+        continue; // dangling enrolment (template removed) — never leak, just skip
+      }
+      const stages = await this.stagesForTemplate(enrolment.templateId);
+      const progress = await this.progress.find({ enrolmentId: enrolment.id });
+      summaries.push({
+        enrolment,
+        template,
+        stagesTotal: stages.length,
+        stagesCompleted: progress.filter((entry) => entry.status === 'completed').length,
+        currentStageTitle: stages.find((stage) => stage.id === enrolment.currentStageId)?.title
+      });
+    }
+    return summaries.sort((a, b) => b.enrolment.enrolledAt.localeCompare(a.enrolment.enrolledAt));
   }
 
   /** Completes the current stage (evidence required) and advances to the next. */

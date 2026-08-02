@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsIn, IsInt, IsISO8601, IsOptional, IsString, Min } from 'class-validator';
 import type { CohortStatus, MilestoneProgressStatus, ProgrammeType, User } from '@agric-platform/shared';
@@ -143,6 +143,18 @@ export class ProgrammesController {
   @ApiOperation({ summary: 'Create a cohort (partners and admins)' })
   async createCohort(@Body() dto: CreateCohortDto, @CurrentUser() actor: User | null) {
     return { data: await this.programmes.createCohort(dto, actor?.id ?? 'anonymous') };
+  }
+
+  // Declared before `programme-cohorts/:id` so 'mine' is not captured as an id.
+  @Get('programme-cohorts/mine')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List the current user\'s cohort enrolments with cohort and milestone progress summary' })
+  async listMyEnrolments(@CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    return { data: await this.programmes.listMyEnrolments(actor.id) };
   }
 
   @Get('programme-cohorts/:id')

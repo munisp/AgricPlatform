@@ -322,6 +322,34 @@ describe('AgricPlatform API (e2e)', () => {
     expect(body.data.valid).toBe(true);
   });
 
+  it('exposes per-user "mine" list endpoints scoped to the caller', async () => {
+    const auth = { 'x-user-id': 'user-aisha' };
+    // Anonymous callers are rejected on every /mine route.
+    expect((await fetch(`${base}/service-bookings/mine`)).status).toBe(401);
+    expect((await fetch(`${base}/pathway-enrolments/mine`)).status).toBe(401);
+    expect((await fetch(`${base}/programme-cohorts/mine`)).status).toBe(401);
+    expect((await fetch(`${base}/webinars/mine/registrations`)).status).toBe(401);
+
+    // Authenticated callers get their own (possibly empty) lists — the 'mine'
+    // routes must not be swallowed by the sibling `:id` routes.
+    for (const path of [
+      '/service-bookings/mine',
+      '/pathway-enrolments/mine',
+      '/programme-cohorts/mine',
+      '/webinars/mine/registrations'
+    ]) {
+      const res = await fetch(`${base}${path}`, { headers: auth });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Array.isArray(body.data)).toBe(true);
+    }
+
+    // The status filter is validated.
+    expect(
+      (await fetch(`${base}/service-bookings/mine?status=bogus`, { headers: auth })).status
+    ).toBe(400);
+  });
+
   it('counts domain events on the metrics endpoint', async () => {
     // OTP request + failed verification.
     const otp = await (

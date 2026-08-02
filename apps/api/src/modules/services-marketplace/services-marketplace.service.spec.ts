@@ -206,6 +206,32 @@ describe('ServicesMarketplaceService booking window conflicts', () => {
   });
 });
 
+describe('ServicesMarketplaceService own bookings list', () => {
+  it('lists only the requesting user\'s bookings with a status filter', async () => {
+    const { service } = makeService();
+    const { offering } = await makeSupplierWithOffering(service);
+    const mine = await service.createBooking({ offeringId: offering.id, customerId: customer.id, ...WINDOW_A });
+    const other = await service.createBooking({
+      offeringId: offering.id,
+      customerId: outsider.id,
+      scheduledStart: '2026-10-01T08:00:00.000Z',
+      scheduledEnd: '2026-10-02T08:00:00.000Z'
+    });
+
+    const all = await service.listBookingsForCustomer(customer.id);
+    expect(all.map((booking) => booking.id)).toEqual([mine.id]);
+
+    // Ownership scoping: another user's records never leak.
+    const outsiders = await service.listBookingsForCustomer(outsider.id);
+    expect(outsiders.map((booking) => booking.id)).toEqual([other.id]);
+    expect(await service.listBookingsForCustomer('user-unknown')).toEqual([]);
+
+    // Status filter applies on top of ownership scoping.
+    expect(await service.listBookingsForCustomer(customer.id, 'requested')).toHaveLength(1);
+    expect(await service.listBookingsForCustomer(customer.id, 'completed')).toHaveLength(0);
+  });
+});
+
 describe('ServicesMarketplaceService reviews', () => {
   it('allows one review per completed booking and maintains the supplier aggregate', async () => {
     const { service } = makeService();
