@@ -1,4 +1,8 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { NextConfig } from 'next';
+
+const configDir = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Origin of the NestJS API for CSP connect-src. Derived from the public env
@@ -52,6 +56,10 @@ const nextConfig: NextConfig = {
   output: 'standalone',
   reactStrictMode: true,
   poweredByHeader: false,
+  // Pin the Turbopack workspace root to the monorepo root. In the Docker
+  // partial-workspace install (and any non-standard node_modules layout)
+  // Next cannot infer the root and refuses to build.
+  turbopack: { root: resolve(configDir, '../..') },
   async headers() {
     return [
       {

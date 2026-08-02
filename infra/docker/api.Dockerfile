@@ -19,7 +19,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN npm ci --workspace=apps/api --include-workspace-root
+# Pin npm 11 (see web.Dockerfile — npm 10 can leave a partial node_modules).
+RUN npm install -g npm@11 && npm ci --workspace=apps/api --include-workspace-root
 
 # ---- build: compile shared contracts, then the NestJS production bundle ----
 FROM node:20-alpine AS build

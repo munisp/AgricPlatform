@@ -17,7 +17,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN npm ci --workspace=apps/web --include-workspace-root
+# Pin npm 11: node:20-alpine ships npm 10, whose "Exit handler never called"
+# crash can leave a partially installed node_modules (same failure class seen
+# on GitHub runners; a truncated install here surfaces as next/package.json
+# being unresolvable at build time).
+RUN npm install -g npm@11 && npm ci --workspace=apps/web --include-workspace-root
 
 # ---- build: compile shared contracts, then the Next.js production build ----
 FROM node:20-alpine AS build
