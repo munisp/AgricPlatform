@@ -241,10 +241,17 @@ jobs:
       - name: Start production processes and smoke test
         run: |
           set -e
-          # Production-mode boot is fail-closed without OIDC config (by design).
-          # A dummy issuer satisfies the boot check; health endpoints are
-          # unauthenticated so no JWKS fetch occurs during the smoke test.
-          NODE_ENV=production PORT=3001 OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform npm run start --workspace=apps/api &
+          # Production-mode boot is fail-closed by design (OIDC, DATABASE_URL,
+          # REDIS_URL, signing secrets). The smoke runner is a single ephemeral
+          # process, so it exercises the production boot path with the
+          # documented break-glass flags and throwaway CI-only values. Real
+          # deployments must provide real OIDC/Postgres/Redis/secrets.
+          NODE_ENV=production PORT=3001 \
+            OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform \
+            ALLOW_INMEMORY_PERSISTENCE=true ALLOW_INMEMORY_CACHE=true \
+            ATTENDANCE_SIGNING_SECRET=ci-smoke-attendance-signing-key \
+            VET_SIGNING_SECRET=ci-smoke-vet-signing-key \
+            npm run start --workspace=apps/api &
           API_PID=$!
           NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
           WEB_PID=$!

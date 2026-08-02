@@ -194,17 +194,15 @@ function router(url: string, init?: RequestInit) {
 const CROP_LISTING: MarketplaceListing = {
   id: 'listing-crop-1',
   sellerId: 'user-aisha',
-  sellerName: 'Aisha Bello',
-  sellerState: 'Kano',
   kind: 'produce',
   title: '50kg bags of maize',
   crop: 'Maize',
-  quantityKg: 500,
+  quantity: 500,
+  unit: 'kg',
   priceNaira: 210_000,
-  state: 'Kano',
-  freshness: 'new',
-  deliveryOption: 'pickup',
-  createdAt: '2026-07-01T09:00:00.000Z'
+  location: { state: 'Kano', lga: 'Kano Municipal' },
+  harvestDate: '2026-07-01',
+  isActive: true
 };
 
 const LIVESTOCK_LISTING: MarketplaceListing = {
