@@ -1,5 +1,10 @@
 import type { Metadata } from 'next';
-import { PodcastList, ResourceLibrary, WebinarList } from '@/components/knowledge-live';
+import {
+  MyWebinarRegistrations,
+  PodcastList,
+  ResourceLibrary,
+  WebinarList
+} from '@/components/knowledge-live';
 import { PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -31,6 +36,10 @@ export default function KnowledgePage() {
 
       <Section kicker="Live" title="Webinars">
         <WebinarList />
+      </Section>
+
+      <Section kicker="Yours" title="My registrations">
+        <MyWebinarRegistrations />
       </Section>
     </div>
   );

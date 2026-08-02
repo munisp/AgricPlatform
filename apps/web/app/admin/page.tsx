@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { AdminAuditList, AdminKpis, AdminReviewQueueTable, AdminUserList } from '@/components/admin-live';
 import { AnalyticsExportButtons } from '@/components/analytics-export';
-import { Card, PageHeader, Section } from '@/components/ui';
+import { Card, ModuleCard, PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
   title: 'Admin Console',
@@ -19,6 +19,23 @@ export default function AdminPage() {
 
       <Section kicker="KPIs" title="Platform health">
         <AdminKpis />
+      </Section>
+
+      <Section kicker="Depth" title="Admin surfaces">
+        <div className="grid grid-2">
+          <ModuleCard
+            href="/admin/insights"
+            title="Insights & data marts"
+            description="Segmentation, funnels, weekly retention and KPI mart snapshot/export controls."
+            tag="Analytics depth"
+          />
+          <ModuleCard
+            href="/admin/integrations"
+            title="Integrations & federation"
+            description="Channel drivers, external account links, farm-record sync and beneficiary imports."
+            tag="Federation"
+          />
+        </div>
       </Section>
 
       <Section kicker="People" title="Users">

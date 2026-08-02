@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { RoleDashboard } from '@/components/dashboard-client';
 import { LiveMetrics, LiveNotifications } from '@/components/dashboard-live';
+import { RecommendationsRail } from '@/components/recommendations-rail';
 import { QueueList } from '@/components/queue-list';
 import { NotificationPreferences } from '@/components/notification-preferences';
 import { T } from '@/lib/i18n';
@@ -22,6 +23,8 @@ export default function DashboardPage() {
       <section className="section-tight">
         <RoleDashboard />
       </section>
+
+      <RecommendationsRail />
 
       <Section kicker={<T k="dashboard.metricsKicker" />} title={<T k="dashboard.metricsTitle" />}>
         <LiveMetrics />

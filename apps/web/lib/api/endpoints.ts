@@ -992,3 +992,246 @@ export function fetchRelatedItems(params: {
 }): Promise<{ data: SearchResult[] }> {
   return apiFetch('/search/related', { query: { ...params } });
 }
+
+/* --------------------------- recommendations --------------------------- */
+
+export const RECOMMENDATION_TYPES = ['course', 'opportunity', 'listing', 'knowledge'] as const;
+export type RecommendationType = (typeof RECOMMENDATION_TYPES)[number];
+
+export const RECOMMENDATION_REASONS = [
+  'same_crop',
+  'state_match',
+  'lga_match',
+  'value_chain_match',
+  'category_affinity',
+  'purchased_category',
+  'completed_prerequisite',
+  'trending_fallback'
+] as const;
+export type RecommendationReason = (typeof RECOMMENDATION_REASONS)[number];
+
+/** Mirrors ScoredRecommendation in apps/api/src/modules/search/recommender.ts. */
+export interface RecommendedItem {
+  type: RecommendationType;
+  id: string;
+  title: string;
+  summary: string;
+  score: number;
+  reasons: RecommendationReason[];
+}
+
+export type RecommendationFeedbackAction = 'clicked' | 'dismissed';
+
+/** Authenticated. Plain `{ data: T[] }` envelope. */
+export function fetchRecommendations(params: {
+  limit?: number;
+} = {}): Promise<{ data: RecommendedItem[] }> {
+  return apiFetch('/recommendations', { query: { ...params } });
+}
+
+/** Authenticated. Feedback adjusts future ranking; response data is { recorded: true }. */
+export function sendRecommendationFeedback(
+  id: string,
+  input: { type: RecommendationType; action: RecommendationFeedbackAction }
+): Promise<{ data: unknown }> {
+  return apiFetch(`/recommendations/${encodeURIComponent(id)}/feedback`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/* ---------------------------- analytics depth -------------------------- */
+
+export const SEGMENT_DIMENSIONS = ['state', 'crop', 'role', 'kyc_tier', 'cohort'] as const;
+export type SegmentDimension = (typeof SEGMENT_DIMENSIONS)[number];
+
+export interface SegmentBreakdown {
+  key: string;
+  count: number;
+  percentage: number;
+}
+
+export interface SegmentationResult {
+  dimension: SegmentDimension;
+  total: number;
+  segments: SegmentBreakdown[];
+}
+
+export interface FunnelStep {
+  key: string;
+  count: number;
+  conversionFromPrevious: number | null;
+  conversionFromFirst: number;
+}
+
+export interface ChapterOpsFunnel {
+  events: number;
+  rsvps: number;
+  attendances: number;
+  rsvpPerEvent: number;
+  attendanceRate: number;
+}
+
+export interface CohortRetentionRow {
+  cohortWeek: string;
+  size: number;
+  retention: (number | null)[];
+  retained: (number | null)[];
+}
+
+export interface RetentionMatrix {
+  timezone: 'Africa/Lagos';
+  currentWeek: string;
+  maxWeeks: number;
+  rows: CohortRetentionRow[];
+}
+
+export const MART_NAMES = ['member_kpis', 'marketplace', 'learning'] as const;
+export type MartName = (typeof MART_NAMES)[number];
+
+/** Row counts persisted by the snapshot job, keyed by mart. */
+export interface MartSnapshot {
+  memberKpis: unknown;
+  marketplace: unknown;
+  learning: unknown;
+}
+
+/** Admin only. */
+export function fetchSegmentation(by: SegmentDimension): Promise<{ data: SegmentationResult }> {
+  return apiFetch('/analytics/segmentation', { query: { by } });
+}
+
+/** Admin only. */
+export function fetchMemberFunnel(params: {
+  windowDays?: number;
+} = {}): Promise<{ data: FunnelStep[] }> {
+  return apiFetch('/analytics/funnel', { query: { ...params } });
+}
+
+/** Admin only. */
+export function fetchChapterFunnel(): Promise<{ data: ChapterOpsFunnel }> {
+  return apiFetch('/analytics/funnel/chapters');
+}
+
+/** Admin only. */
+export function fetchRetention(params: { weeks?: number } = {}): Promise<{ data: RetentionMatrix }> {
+  return apiFetch('/analytics/retention', { query: { ...params } });
+}
+
+/** Admin only. Recomputes and upserts all KPI marts for one Lagos calendar day. */
+export function snapshotMarts(params: { date?: string } = {}): Promise<{ data: MartSnapshot }> {
+  return apiFetch('/analytics/marts/snapshot', { method: 'POST', query: { ...params } });
+}
+
+/* ------------------------- federation (phase 3) ------------------------ */
+
+export type ExternalSystem = 'farmos' | 'litefarm';
+
+export interface ExternalAccountLink {
+  id: string;
+  userId: string;
+  system: ExternalSystem;
+  externalId: string;
+  consentAt: string;
+  revokedAt?: string;
+  createdAt: string;
+}
+
+export type FarmRecordType = 'crop_plan' | 'harvest' | 'field_map';
+
+export interface FarmRecord {
+  id: string;
+  linkId: string;
+  recordType: FarmRecordType;
+  externalId: string;
+  payload: Record<string, unknown>;
+  source: string;
+  observedAt: string;
+  syncedAt: string;
+}
+
+export type ImportBatchStatus = 'STAGED' | 'CONFIRMED';
+
+export interface ImportBatch {
+  id: string;
+  sourceSystem: string;
+  donorSource: string;
+  status: ImportBatchStatus;
+  recordCount: number;
+  createdBy: string;
+  createdAt: string;
+  confirmedAt?: string;
+  confirmedBy?: string;
+}
+
+export type ImportRecordStatus = 'STAGED' | 'MERGED' | 'REJECTED';
+
+export interface ImportRecord {
+  id: string;
+  batchId: string;
+  ninHash?: string;
+  phoneHash?: string;
+  payload: Record<string, unknown>;
+  status: ImportRecordStatus;
+  donorSource: string;
+  consentDate: string;
+  matchedUserId?: string;
+  createdAt: string;
+}
+
+export interface ImportBatchDetail {
+  batch: ImportBatch;
+  records: ImportRecord[];
+}
+
+export interface ImportConfirmResult {
+  batch: ImportBatch;
+  merged: number;
+  rejected: number;
+}
+
+/** Authenticated; caller's own links. Plain `{ data: T[] }` envelope. */
+export function listExternalAccountLinks(): Promise<{ data: ExternalAccountLink[] }> {
+  return apiFetch('/integrations/federation/links');
+}
+
+/** Authenticated; soft-revokes (unlinks) one of the caller's external accounts. */
+export function revokeExternalAccountLink(id: string): Promise<{ data: ExternalAccountLink }> {
+  return apiFetch(`/integrations/federation/links/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+}
+
+/** Authenticated; normalised farm records across the caller's links. Plain `{ data: T[] }`. */
+export function listMyFarmRecords(): Promise<{ data: FarmRecord[] }> {
+  return apiFetch('/integrations/federation/farm-records');
+}
+
+/** Authenticated; admins may pass userId to sync a member's links. */
+export function syncFarmRecords(params: {
+  userId?: string;
+} = {}): Promise<{ data: { syncedLinks: number; inserted: number } }> {
+  return apiFetch('/integrations/federation/farm-records/sync', {
+    method: 'POST',
+    body: params.userId ? { userId: params.userId } : {}
+  });
+}
+
+/** Admin only. */
+export function fetchImportBatch(id: string): Promise<{ data: ImportBatchDetail }> {
+  return apiFetch(`/integrations/federation/import/batches/${encodeURIComponent(id)}`);
+}
+
+/** Admin only. Confirm-and-merge a staged batch; returns a summary. */
+export function confirmImportBatch(id: string): Promise<{ data: ImportConfirmResult }> {
+  return apiFetch(`/integrations/federation/import/batches/${encodeURIComponent(id)}/confirm`, {
+    method: 'POST'
+  });
+}
+
+/** Admin only. Pull submissions from configured field-data sources into new batches. */
+export function pullBeneficiaryImport(input: {
+  donorSource: string;
+}): Promise<{ data: { batchIds: string[] } }> {
+  return apiFetch('/integrations/federation/import/pull', { method: 'POST', body: input });
+}
