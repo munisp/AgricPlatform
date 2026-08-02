@@ -1,6 +1,18 @@
-import { ConflictException, Inject, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException
+} from '@nestjs/common';
 import type { ApiListResponse, Chapter, ChapterEvent } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { resolveAttendanceSecret } from '../../config/attendance.config.js';
+import {
+  generateAttendanceCode,
+  verifyAttendanceCode,
+  type AttendanceCode
+} from './attendance-codes.js';
 import {
   ANNOUNCEMENT_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
@@ -41,13 +53,22 @@ export interface CreateAnnouncementInput {
 
 @Injectable()
 export class ChaptersService {
+  /**
+   * HMAC key for QR attendance codes. Resolved at construction so a missing
+   * ATTENDANCE_SIGNING_SECRET fails closed at bootstrap in production
+   * (config/attendance.config.ts).
+   */
+  private readonly attendanceSecret: string;
+
   constructor(
     private readonly domainEvents: DomainEventsService,
     @Inject(CHAPTER_REPOSITORY) private readonly chapters: ChapterRepository,
     @Inject(CHAPTER_EVENT_REPOSITORY) private readonly eventsRepo: ChapterEventRepository,
     @Inject(EVENT_RSVP_REPOSITORY) private readonly rsvps: EventRsvpRepository,
     @Inject(ANNOUNCEMENT_REPOSITORY) private readonly announcements: AnnouncementRepository
-  ) {}
+  ) {
+    this.attendanceSecret = resolveAttendanceSecret();
+  }
 
   async list(
     filter: ChapterCriteria & { page?: number; pageSize?: number }
@@ -131,17 +152,61 @@ export class ChaptersService {
   }
 
   async recordAttendance(eventId: string, userId: string): Promise<EventRsvp> {
+    return this.checkIn(eventId, userId, {});
+  }
+
+  /**
+   * Issue the signed QR attendance code for an event (Wave P3). The code is
+   * bound to the event id and rotates on a 15-minute nonce window; chapter
+   * leads render it as a QR at the venue and members scan it to check in.
+   */
+  async issueAttendanceCode(eventId: string): Promise<AttendanceCode> {
+    const event = await this.eventsRepo.getById(eventId);
+    return generateAttendanceCode(event.id, this.attendanceSecret);
+  }
+
+  /**
+   * QR scan check-in (Wave P3): verifies the signed code (event binding,
+   * HMAC signature, rotating-window expiry) and records attendance for the
+   * member. Duplicate scans for the same member+event are rejected with a
+   * distinct 409; the unique(event_id, user_id) constraint plus the upsert
+   * repository keep retries idempotent.
+   */
+  async scanAttendance(eventId: string, code: string, memberId: string, scannerId: string): Promise<EventRsvp> {
+    const event = await this.eventsRepo.getById(eventId);
+    const verdict = verifyAttendanceCode(code, event.id, this.attendanceSecret);
+    if (!verdict.ok) {
+      if (verdict.reason === 'signature' || verdict.reason === 'wrong_event') {
+        throw new UnauthorizedException('Invalid attendance code signature');
+      }
+      throw new BadRequestException(
+        verdict.reason === 'expired'
+          ? 'Attendance code has expired; ask the event lead for the current code'
+          : 'Malformed attendance code'
+      );
+    }
+    return this.checkIn(eventId, memberId, { scannerId });
+  }
+
+  private async checkIn(
+    eventId: string,
+    userId: string,
+    scan: { scannerId?: string }
+  ): Promise<EventRsvp> {
     await this.eventsRepo.getById(eventId);
     const existing = await this.rsvps.findByEventAndUser(eventId, userId);
     if (existing?.status === 'attended') {
-      throw new ConflictException('Attendance already recorded for this user');
+      throw new ConflictException('Attendance already recorded for this member (duplicate scan)');
     }
     const record = await this.rsvps.recordAttendance({
       id: existing?.id ?? newId('rsvp'),
       eventId,
       userId,
       status: 'attended',
-      createdAt: existing?.createdAt ?? new Date().toISOString()
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      ...(scan.scannerId
+        ? { scannedAt: new Date().toISOString(), scannerId: scan.scannerId }
+        : {})
     });
     const event = await this.eventsRepo.getById(eventId);
     await this.domainEvents.publish(

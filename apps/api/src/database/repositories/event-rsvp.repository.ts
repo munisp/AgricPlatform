@@ -54,7 +54,11 @@ export class InMemoryEventRsvpRepository
   async recordAttendance(rsvp: EventRsvp): Promise<EventRsvp> {
     const existing = await this.findByEventAndUser(rsvp.eventId, rsvp.userId);
     const record = existing
-      ? await this.update(existing.id, { status: 'attended' })
+      ? await this.update(existing.id, {
+          status: 'attended',
+          ...(rsvp.scannedAt ? { scannedAt: rsvp.scannedAt } : {}),
+          ...(rsvp.scannerId ? { scannerId: rsvp.scannerId } : {})
+        })
       : await this.create(rsvp);
     await this.events?.incrementAttendance(rsvp.eventId);
     return record;

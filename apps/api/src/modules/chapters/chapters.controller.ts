@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+  Query,
+  UnauthorizedException,
+  UseGuards
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
 import type { Chapter, ChapterEvent, User } from '@agric-platform/shared';
@@ -68,6 +78,20 @@ class CreateEventDto implements CreateEventInput {
 class EventUserDto {
   @IsString()
   userId!: string;
+}
+
+class ScanAttendanceDto {
+  /** Signed QR code payload (v1.<eventId>.<window>.<hmac>). */
+  @IsString()
+  code!: string;
+
+  /**
+   * Member being checked in. Defaults to the authenticated caller (self
+   * scan); checking in someone else requires an admin or chapter lead.
+   */
+  @IsOptional()
+  @IsString()
+  memberId?: string;
 }
 
 class CreateAnnouncementDto implements CreateAnnouncementInput {
@@ -160,5 +184,42 @@ export class ChaptersController {
   @ApiOperation({ summary: 'Record event attendance (checked in by a chapter lead or admin)' })
   async attendance(@Param('id') id: string, @Body() dto: EventUserDto) {
     return { data: await this.chapters.recordAttendance(id, dto.userId) };
+  }
+
+  @Get('events/:id/attendance-code')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({
+    summary:
+      'Signed QR attendance code for an event (rotating 15-minute window; chapter leads and admins)'
+  })
+  async attendanceCode(@Param('id') id: string) {
+    return { data: await this.chapters.issueAttendanceCode(id) };
+  }
+
+  @Post('events/:id/attendance/scan')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'Check in to an event by scanning its signed QR code. Duplicate scans for the same member return 409; retries with the same Idempotency-Key replay the first response.'
+  })
+  async scanAttendance(
+    @Param('id') id: string,
+    @Body() dto: ScanAttendanceDto,
+    @CurrentUser() actor: User | null
+  ) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required to scan attendance');
+    }
+    const memberId = dto.memberId ?? actor.id;
+    if (
+      memberId !== actor.id &&
+      !actor.roles.includes('admin') &&
+      !actor.roles.includes('chapter_lead')
+    ) {
+      throw new ForbiddenException('Only chapter leads and admins can check in another member');
+    }
+    return { data: await this.chapters.scanAttendance(id, dto.code, memberId, actor.id) };
   }
 }

@@ -34,6 +34,9 @@ export interface EventRsvp {
   userId: string;
   status: 'rsvp' | 'attended';
   createdAt: string;
+  /** QR scan check-in metadata (Wave P3); absent for manual RSVP rows. */
+  scannedAt?: string;
+  scannerId?: string;
 }
 
 export interface OrderReview {
