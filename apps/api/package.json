@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "migrate": "tsx src/database/migrate.ts",
-    "seed": "tsx src/database/seed.ts"
+    "seed": "tsx src/database/seed.ts",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@agric-platform/shared": "0.1.0",

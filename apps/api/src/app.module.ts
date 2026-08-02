@@ -25,6 +25,10 @@ import { PrivacyModule } from './modules/privacy/privacy.module.js';
 import { ProfilesModule } from './modules/profiles/profiles.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { KnowledgeModule } from './modules/knowledge/knowledge.module.js';
+import { PathwaysModule } from './modules/pathways/pathways.module.js';
+import { ProgrammesModule } from './modules/programmes/programmes.module.js';
+import { ServicesMarketplaceModule } from './modules/services-marketplace/services-marketplace.module.js';
 import { RedisModule } from './redis/redis.module.js';
 
 @Module({
@@ -57,7 +61,12 @@ import { RedisModule } from './redis/redis.module.js';
     PrivacyModule,
     SearchModule,
     IntegrationsModule,
-    HealthModule
+    HealthModule,
+    // Engagement wave (P2b) modules — appended to minimise merge conflicts.
+    ServicesMarketplaceModule,
+    ProgrammesModule,
+    PathwaysModule,
+    KnowledgeModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
