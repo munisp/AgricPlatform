@@ -17,12 +17,17 @@ const apiOrigin = (() => {
 /**
  * Baseline Content Security Policy.
  * - 'self' everywhere by default; the API origin is the only extra connect-src.
+ * - script-src allows 'unsafe-inline' because the App Router embeds its
+ *   hydration/flight payload in inline scripts (`self.__next_f.push(...)`);
+ *   a static 'self'-only policy silently blocks hydration of any route with
+ *   a suspense boundary (the page never leaves its loading.tsx fallback).
+ *   Upgrade path: per-request nonce CSP via middleware + 'strict-dynamic'.
  * - style-src allows 'unsafe-inline' because the app uses style attributes.
  * - NO 'unsafe-eval' anywhere.
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -38,7 +43,9 @@ const securityHeaders = [
   { key: 'Content-Security-Policy', value: contentSecurityPolicy },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(self)' }
+  // camera=(self) is required by the chapter QR attendance scanner
+  // (getUserMedia); it degrades to the paste-in flow when denied.
+  { key: 'Permissions-Policy', value: 'camera=(self), microphone=(), geolocation=(self)' }
 ];
 
 const nextConfig: NextConfig = {
