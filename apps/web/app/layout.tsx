@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import './globals.css';
 import { AppProvider } from '@/lib/app-state';
+import { I18nProvider, T } from '@/lib/i18n';
 import { Nav } from '@/components/nav';
 import { Footer } from '@/components/footer';
 import { ServiceWorkerRegister } from '@/components/sw-register';
@@ -36,15 +37,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en-NG">
       <body>
         <AppProvider>
-          <a className="skip-link" href="#main-content">
-            Skip to content
-          </a>
-          <Nav />
-          <main className="main" id="main-content" tabIndex={-1}>
-            {children}
-          </main>
-          <Footer />
-          <ServiceWorkerRegister />
+          <I18nProvider>
+            <a className="skip-link" href="#main-content">
+              <T k="nav.skipToContent" />
+            </a>
+            <Nav />
+            <main className="main" id="main-content" tabIndex={-1}>
+              {children}
+            </main>
+            <Footer />
+            <ServiceWorkerRegister />
+          </I18nProvider>
         </AppProvider>
       </body>
     </html>

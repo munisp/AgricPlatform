@@ -7,6 +7,7 @@ import { useAppState } from '@/lib/app-state';
 import { useApiMutation } from '@/lib/api/hooks';
 import { createListing } from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
+import { useT } from '@/lib/i18n';
 import { Field, QueuedNotice, Select, TextInput } from '@/components/forms';
 import { ApiErrorNotice } from '@/components/api-state';
 import { AutoBadge } from '@/components/ui';
@@ -36,6 +37,7 @@ const EMPTY: ListingDraft = {
 };
 
 export function ListingForm() {
+  const { t } = useT();
   const { userId } = useAppState();
   const [draft, setDraft] = useState<ListingDraft>(EMPTY);
   const [myListings, setMyListings] = usePersistentState<MarketplaceListing[]>('agric.my-listings', []);
@@ -93,12 +95,12 @@ export function ListingForm() {
   return (
     <div className="stack-lg">
       <div className="card">
-        <h3>Create a listing</h3>
+        <h3>{t('marketplace.formTitle')}</h3>
         <p className="small muted">
-          Listings are saved offline first and published when the marketplace service is reachable.
+          {t('marketplace.formIntro')}
         </p>
         <div className="form-grid cols-2">
-          <Field id="lf-kind" label="Listing kind">
+          <Field id="lf-kind" label={t('marketplace.kindLabel')}>
             <Select id="lf-kind" value={draft.kind} onChange={(e) => patch({ kind: e.target.value })}>
               {KINDS.map((kind) => (
                 <option key={kind} value={kind}>
@@ -107,9 +109,9 @@ export function ListingForm() {
               ))}
             </Select>
           </Field>
-          <Field id="lf-crop" label="Crop (optional)">
+          <Field id="lf-crop" label={t('marketplace.cropLabel')}>
             <Select id="lf-crop" value={draft.crop} onChange={(e) => patch({ crop: e.target.value })}>
-              <option value="">Not crop-specific</option>
+              <option value="">{t('marketplace.notCropSpecific')}</option>
               {VALUE_CHAINS.map((chain) => (
                 <option key={chain} value={chain}>
                   {chain}
@@ -117,7 +119,7 @@ export function ListingForm() {
               ))}
             </Select>
           </Field>
-          <Field id="lf-title" label="Title" hint="At least 6 characters.">
+          <Field id="lf-title" label={t('marketplace.titleLabel')} hint={t('marketplace.titleHint')}>
             <TextInput
               id="lf-title"
               value={draft.title}
@@ -125,7 +127,7 @@ export function ListingForm() {
               placeholder="e.g. Fresh cassava tubers — 5 tonnes"
             />
           </Field>
-          <Field id="lf-price" label="Total price (₦)">
+          <Field id="lf-price" label={t('marketplace.priceLabel')}>
             <TextInput
               id="lf-price"
               value={draft.priceNaira}
@@ -134,7 +136,7 @@ export function ListingForm() {
               placeholder="185000"
             />
           </Field>
-          <Field id="lf-qty" label="Quantity">
+          <Field id="lf-qty" label={t('marketplace.quantityLabel')}>
             <TextInput
               id="lf-qty"
               value={draft.quantity}
@@ -143,7 +145,7 @@ export function ListingForm() {
               placeholder="5"
             />
           </Field>
-          <Field id="lf-unit" label="Unit">
+          <Field id="lf-unit" label={t('marketplace.unitLabel')}>
             <TextInput
               id="lf-unit"
               value={draft.unit}
@@ -151,9 +153,9 @@ export function ListingForm() {
               placeholder="tonne / bag / hectare slot"
             />
           </Field>
-          <Field id="lf-state" label="State">
+          <Field id="lf-state" label={t('marketplace.stateLabel')}>
             <Select id="lf-state" value={draft.state} onChange={(e) => patch({ state: e.target.value })}>
-              <option value="">Select state…</option>
+              <option value="">{t('marketplace.selectState')}</option>
               {NIGERIAN_STATES.map((state) => (
                 <option key={state} value={state}>
                   {state}
@@ -161,7 +163,7 @@ export function ListingForm() {
               ))}
             </Select>
           </Field>
-          <Field id="lf-lga" label="LGA">
+          <Field id="lf-lga" label={t('marketplace.lgaLabel')}>
             <TextInput
               id="lf-lga"
               value={draft.lga}
@@ -177,7 +179,7 @@ export function ListingForm() {
             disabled={!valid || mutation.status === 'pending'}
             onClick={submit}
           >
-            {mutation.status === 'pending' ? 'Saving…' : 'Save listing'}
+            {mutation.status === 'pending' ? t('marketplace.saving') : t('marketplace.saveListing')}
           </button>
         </div>
       </div>
@@ -191,8 +193,8 @@ export function ListingForm() {
       {mutation.status === 'error' ? <ApiErrorNotice error={mutation.error} /> : null}
 
       {myListings.length > 0 ? (
-        <section aria-label="My offline listings">
-          <h3>My listings on this device</h3>
+        <section aria-label={t('marketplace.myListingsAria')}>
+          <h3>{t('marketplace.myListings')}</h3>
           <ul className="row-list">
             {myListings.map((listing) => (
               <li className="row-item" key={listing.id}>

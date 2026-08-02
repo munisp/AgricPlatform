@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { OnboardingWizard } from '@/components/onboarding-wizard';
+import { T } from '@/lib/i18n';
 import { PageHeader } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -11,9 +12,9 @@ export default function OnboardingPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Onboarding"
-        title="Create your NYFN account"
-        description="Five short steps. Your progress is saved on this device as you go — nothing is lost if your connection drops."
+        kicker={<T k="onboarding.kicker" />}
+        title={<T k="onboarding.title" />}
+        description={<T k="onboarding.description" />}
       />
       <section className="section-tight" style={{ maxWidth: 760 }}>
         <OnboardingWizard />

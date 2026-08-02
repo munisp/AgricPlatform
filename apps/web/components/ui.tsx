@@ -10,9 +10,9 @@ export function PageHeader({
   description,
   children
 }: {
-  kicker: string;
-  title: string;
-  description?: string;
+  kicker: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
   children?: ReactNode;
 }) {
   return (
@@ -33,13 +33,19 @@ export function Section({
   children
 }: {
   id?: string;
-  kicker?: string;
-  title: string;
-  description?: string;
+  kicker?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="section" id={id} aria-label={title}>
+    // aria-label only when the title is a plain string; translated titles
+    // (<T> nodes) rely on the h2 for heading navigation.
+    <section
+      className="section"
+      id={id}
+      aria-label={typeof title === 'string' ? title : undefined}
+    >
       <div className="section-head">
         {kicker ? <span className="kicker">{kicker}</span> : null}
         <h2>{title}</h2>
@@ -55,7 +61,7 @@ export function Card({
   children,
   className
 }: {
-  title?: string;
+  title?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { AppProvider } from '@/lib/app-state';
+import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
 import { CheckRow, Field, TextInput } from '@/components/forms';
 import { EmptyState, ProgressBar, StatusBadge } from '@/components/ui';
@@ -85,7 +86,9 @@ describe('axe smoke tests (headless, jsdom)', () => {
   it('OpportunityBrowser composite has no violations', async () => {
     const { container } = render(
       <AppProvider>
-        <OpportunityBrowser />
+        <I18nProvider>
+          <OpportunityBrowser />
+        </I18nProvider>
       </AppProvider>
     );
     await waitFor(() => {
@@ -97,7 +100,9 @@ describe('axe smoke tests (headless, jsdom)', () => {
   it('OpportunityBrowser exposes a labelled filter group and live result count', async () => {
     const { container } = render(
       <AppProvider>
-        <OpportunityBrowser />
+        <I18nProvider>
+          <OpportunityBrowser />
+        </I18nProvider>
       </AppProvider>
     );
     await waitFor(() => {
@@ -115,7 +120,9 @@ describe('axe smoke tests (headless, jsdom)', () => {
   it('OnboardingWizard composite has no violations', async () => {
     const { container } = render(
       <AppProvider>
-        <OnboardingWizard />
+        <I18nProvider>
+          <OnboardingWizard />
+        </I18nProvider>
       </AppProvider>
     );
     await waitFor(() => {

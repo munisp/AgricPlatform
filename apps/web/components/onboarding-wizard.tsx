@@ -12,6 +12,8 @@ import type { LanguageCode, UserRole } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
 import { useSession } from '@/lib/session';
 import { usePersistentState } from '@/lib/use-persistent-state';
+import { useT } from '@/lib/i18n';
+import type { TranslationKey } from '@/lib/i18n';
 import { NetworkError, TimeoutError } from '@/lib/api/errors';
 import { register, upsertProfile } from '@/lib/api/endpoints';
 import { ROLE_LABELS } from '@/lib/content';
@@ -47,7 +49,13 @@ const EMPTY_DRAFT: OnboardingDraft = {
   yearsExperience: ''
 };
 
-const STEPS = ['Account', 'Location', 'Interests', 'Farm details', 'Review'] as const;
+const STEPS: TranslationKey[] = [
+  'onboarding.stepAccount',
+  'onboarding.stepLocation',
+  'onboarding.stepInterests',
+  'onboarding.stepFarm',
+  'onboarding.stepReview'
+];
 
 const LANGUAGES: { code: LanguageCode; label: string }[] = [
   { code: 'en', label: 'English' },
@@ -61,6 +69,7 @@ function toggle(list: string[], item: string): string[] {
 }
 
 export function OnboardingWizard() {
+  const { t } = useT();
   const { enqueue, setRole } = useAppState();
   const { signIn } = useSession();
   const [step, setStep] = useState(0);
@@ -193,26 +202,26 @@ export function OnboardingWizard() {
 
   return (
     <div className="stack">
-      <ol className="steps" aria-label="Onboarding progress">
-        {STEPS.map((label, index) => (
+      <ol className="steps" aria-label={t('onboarding.stepsAria')}>
+        {STEPS.map((labelKey, index) => (
           <li
-            key={label}
+            key={labelKey}
             aria-current={index === step ? 'step' : undefined}
             className={index < step ? 'done' : undefined}
           >
             <span className="step-dot" aria-hidden="true">
               {index + 1}
             </span>
-            {label}
+            {t(labelKey)}
           </li>
         ))}
       </ol>
 
-      <ProgressBar value={((step + 1) / STEPS.length) * 100} label={`Step ${step + 1} of ${STEPS.length}`} />
+      <ProgressBar value={((step + 1) / STEPS.length) * 100} label={t('onboarding.stepProgress', { step: step + 1, total: STEPS.length })} />
 
       {step === 0 ? (
         <div className="form-grid cols-2">
-          <Field id="ob-name" label="Full name">
+          <Field id="ob-name" label={t('onboarding.fullName')}>
             <TextInput
               id="ob-name"
               value={draft.fullName}
@@ -221,7 +230,7 @@ export function OnboardingWizard() {
               autoComplete="name"
             />
           </Field>
-          <Field id="ob-phone" label="Phone number" hint="Used for OTP sign-in and SMS alerts.">
+          <Field id="ob-phone" label={t('onboarding.phone')} hint={t('onboarding.phoneHint')}>
             <TextInput
               id="ob-phone"
               value={draft.phone}
@@ -231,7 +240,7 @@ export function OnboardingWizard() {
               autoComplete="tel"
             />
           </Field>
-          <Field id="ob-role" label="I am joining as">
+          <Field id="ob-role" label={t('onboarding.role')}>
             <Select
               id="ob-role"
               value={draft.role}
@@ -244,7 +253,7 @@ export function OnboardingWizard() {
               ))}
             </Select>
           </Field>
-          <Field id="ob-lang" label="Preferred language">
+          <Field id="ob-lang" label={t('onboarding.language')}>
             <Select
               id="ob-lang"
               value={draft.language}
@@ -262,9 +271,9 @@ export function OnboardingWizard() {
 
       {step === 1 ? (
         <div className="form-grid cols-2">
-          <Field id="ob-state" label="State">
+          <Field id="ob-state" label={t('onboarding.state')}>
             <Select id="ob-state" value={draft.state} onChange={(e) => patch({ state: e.target.value })}>
-              <option value="">Select state…</option>
+              <option value="">{t('onboarding.selectState')}</option>
               {NIGERIAN_STATES.map((state) => (
                 <option key={state} value={state}>
                   {state}
@@ -272,7 +281,7 @@ export function OnboardingWizard() {
               ))}
             </Select>
           </Field>
-          <Field id="ob-lga" label="Local government area (LGA)">
+          <Field id="ob-lga" label={t('onboarding.lga')}>
             <TextInput
               id="ob-lga"
               value={draft.lga}
@@ -285,7 +294,7 @@ export function OnboardingWizard() {
 
       {step === 2 ? (
         <div className="stack">
-          <Field id="ob-interests" label="Farming interests" hint="Choose all that apply.">
+          <Field id="ob-interests" label={t('onboarding.interests')} hint={t('onboarding.interestsHint')}>
             <div className="cluster" role="group" aria-labelledby="ob-interests">
               {VALUE_CHAINS.slice(0, 10).map((chain) => (
                 <button
@@ -300,8 +309,8 @@ export function OnboardingWizard() {
               ))}
             </div>
           </Field>
-          <Field id="ob-chains" label="Value chains you work in">
-            <div className="cluster" role="group" aria-label="Value chains">
+          <Field id="ob-chains" label={t('onboarding.chains')}>
+            <div className="cluster" role="group" aria-label={t('onboarding.chainsAria')}>
               {VALUE_CHAINS.map((chain) => (
                 <button
                   key={chain}
@@ -320,7 +329,7 @@ export function OnboardingWizard() {
 
       {step === 3 ? (
         <div className="form-grid cols-2">
-          <Field id="ob-size" label="Farm size (hectares)">
+          <Field id="ob-size" label={t('onboarding.farmSize')}>
             <TextInput
               id="ob-size"
               value={draft.farmSizeHectares}
@@ -329,7 +338,7 @@ export function OnboardingWizard() {
               placeholder="e.g. 2.5"
             />
           </Field>
-          <Field id="ob-exp" label="Years of experience">
+          <Field id="ob-exp" label={t('onboarding.experience')}>
             <TextInput
               id="ob-exp"
               value={draft.yearsExperience}
@@ -338,7 +347,7 @@ export function OnboardingWizard() {
               placeholder="e.g. 4"
             />
           </Field>
-          <Field id="ob-bio" label="Short bio" hint="At least 20 characters — it raises your profile score.">
+          <Field id="ob-bio" label={t('onboarding.bio')} hint={t('onboarding.bioHint')}>
             <TextArea
               id="ob-bio"
               value={draft.bio}
@@ -382,7 +391,7 @@ export function OnboardingWizard() {
           disabled={step === 0}
           onClick={() => setStep((s) => Math.max(0, s - 1))}
         >
-          Back
+          {t('onboarding.back')}
         </button>
         {step < STEPS.length - 1 ? (
           <button
@@ -391,7 +400,7 @@ export function OnboardingWizard() {
             disabled={!canContinue}
             onClick={() => setStep((s) => Math.min(STEPS.length - 1, s + 1))}
           >
-            Continue
+            {t('onboarding.continue')}
           </button>
         ) : (
           <button
@@ -400,7 +409,7 @@ export function OnboardingWizard() {
             disabled={submitting}
             onClick={() => void finish()}
           >
-            {submitting ? 'Joining…' : 'Finish and join'}
+            {submitting ? t('onboarding.joining') : t('onboarding.finish')}
           </button>
         )}
       </div>

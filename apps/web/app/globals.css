@@ -288,6 +288,32 @@ textarea {
   max-width: 130px;
 }
 
+.locale-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.locale-switcher label {
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.locale-switcher select {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--card);
+  color: var(--green-900);
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-height: 44px;
+  padding: 0.3rem 0.5rem;
+}
+
+.site-footer .locale-switcher label {
+  color: var(--green-100);
+}
+
 /* Mobile bottom tab bar */
 .bottom-nav {
   position: fixed;
