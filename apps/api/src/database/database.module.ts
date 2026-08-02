@@ -63,7 +63,12 @@ import {
   REPAYMENT_SCHEDULE_REPOSITORY,
   SHIPMENT_REPOSITORY,
   WEBINAR_REGISTRATION_REPOSITORY,
-  WEBINAR_REPOSITORY
+  WEBINAR_REPOSITORY,
+  EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+  FARM_RECORD_REPOSITORY,
+  IMPORT_BATCH_REPOSITORY,
+  IMPORT_RECORD_REPOSITORY,
+  INBOUND_EVENT_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -241,6 +246,21 @@ import {
   createPgLoanApplicationRepository,
   createPgRepaymentScheduleRepository
 } from './repositories/credit.pg-repository.js';
+// Phase-3 federated integration wave (P5a) repositories.
+import {
+  createInMemoryExternalAccountLinkRepository,
+  createInMemoryFarmRecordRepository,
+  createInMemoryImportBatchRepository,
+  createInMemoryImportRecordRepository,
+  createInMemoryInboundEventRepository
+} from './repositories/phase3.repository.js';
+import {
+  createPgExternalAccountLinkRepository,
+  createPgFarmRecordRepository,
+  createPgImportBatchRepository,
+  createPgImportRecordRepository,
+  createPgInboundEventRepository
+} from './repositories/phase3.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -620,6 +640,37 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
       inject: [PG_POOL]
+    },
+    // Phase-3 federated integration wave (P5a) providers.
+    {
+      provide: EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgExternalAccountLinkRepository(pool) : createInMemoryExternalAccountLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FARM_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmRecordRepository(pool) : createInMemoryFarmRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: IMPORT_BATCH_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgImportBatchRepository(pool) : createInMemoryImportBatchRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: IMPORT_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgImportRecordRepository(pool) : createInMemoryImportRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INBOUND_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -684,7 +735,12 @@ import {
     LENDER_REPOSITORY,
     LOAN_APPLICATION_REPOSITORY,
     REPAYMENT_SCHEDULE_REPOSITORY,
-    SHIPMENT_REPOSITORY
+    SHIPMENT_REPOSITORY,
+    EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+    FARM_RECORD_REPOSITORY,
+    IMPORT_BATCH_REPOSITORY,
+    IMPORT_RECORD_REPOSITORY,
+    INBOUND_EVENT_REPOSITORY
   ]
 })
 export class DatabaseModule {}

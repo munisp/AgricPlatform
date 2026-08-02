@@ -72,6 +72,14 @@ export const LENDER_REPOSITORY = Symbol('LENDER_REPOSITORY');
 export const LOAN_APPLICATION_REPOSITORY = Symbol('LOAN_APPLICATION_REPOSITORY');
 export const REPAYMENT_SCHEDULE_REPOSITORY = Symbol('REPAYMENT_SCHEDULE_REPOSITORY');
 
+// Wave P5a: Phase-3 federated integrations (external links, farm records,
+// beneficiary imports, inbound event ledger).
+export const EXTERNAL_ACCOUNT_LINK_REPOSITORY = Symbol('EXTERNAL_ACCOUNT_LINK_REPOSITORY');
+export const FARM_RECORD_REPOSITORY = Symbol('FARM_RECORD_REPOSITORY');
+export const IMPORT_BATCH_REPOSITORY = Symbol('IMPORT_BATCH_REPOSITORY');
+export const IMPORT_RECORD_REPOSITORY = Symbol('IMPORT_RECORD_REPOSITORY');
+export const INBOUND_EVENT_REPOSITORY = Symbol('INBOUND_EVENT_REPOSITORY');
+
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
 export const IDEMPOTENCY_STORE = Symbol('IDEMPOTENCY_STORE');
