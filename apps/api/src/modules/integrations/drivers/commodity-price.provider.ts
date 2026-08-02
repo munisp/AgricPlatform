@@ -29,7 +29,7 @@ export class UnconfiguredCommodityPriceProvider implements CommodityPriceProvide
   readonly name = 'unconfigured';
   readonly configured = false;
 
-  fetchQuote(): Promise<CommodityPriceQuote> {
+  fetchQuote(_crop?: string, _state?: string): Promise<CommodityPriceQuote> {
     return Promise.reject(
       new ServiceUnavailableException(
         'No commodity price provider is configured. Set COMMODITY_PRICE_DRIVER and provider ' +

@@ -2,6 +2,7 @@ import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
+import type express from 'express';
 import helmet from 'helmet';
 import { ErrorTrackingService } from './common/error-tracking/error-tracking.service.js';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter.js';
@@ -71,11 +72,10 @@ export function configureApp(app: NestExpressApplication): void {
 
   // Wave P: the generated OpenAPI spec is always served as JSON (the web
   // developer portal regenerates its catalogue from this document).
-  app
-    .getHttpAdapter()
-    .get('/api/v1/openapi.json', (_req: unknown, res: { json: (body: unknown) => void }) => {
-      res.json(buildOpenApiDocument(app));
-    });
+  const openApiHandler: express.RequestHandler = (_req, res) => {
+    res.json(buildOpenApiDocument(app));
+  };
+  app.getHttpAdapter().getInstance().get('/api/v1/openapi.json', openApiHandler);
 
   app.enableShutdownHooks();
 }

@@ -56,7 +56,7 @@ describe('AuditService.verify range walks (Wave P)', () => {
     const forged = {
       ...unsigned,
       metadata: { tampered: true },
-      hash: hashAuditEvent({ ...unsigned, metadata: { tampered: true } }, unsigned.prevHash)
+      hash: hashAuditEvent({ ...unsigned, metadata: { tampered: true } }, unsigned.prevHash!)
     } as AuditEvent;
     // The forged copy appends where history diverges; its prevHash points at
     // event 0 while the running tail is event 2's hash.

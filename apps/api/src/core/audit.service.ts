@@ -100,11 +100,11 @@ export class AuditService {
    */
   async verify(range?: { fromId?: string; toId?: string }): Promise<AuditVerification> {
     const all = await this.audits.list();
-    let start = range?.fromId ? all.findIndex((event) => event.id === range.fromId) : 0;
+    const start = range?.fromId ? all.findIndex((event) => event.id === range.fromId) : 0;
     if (start < 0) {
       return { valid: false, brokenAt: range?.fromId, checked: 0 };
     }
-    let end = range?.toId ? all.findIndex((event) => event.id === range.toId) : all.length - 1;
+    const end = range?.toId ? all.findIndex((event) => event.id === range.toId) : all.length - 1;
     if (end < 0) {
       return { valid: false, brokenAt: range?.toId, checked: 0 };
     }
