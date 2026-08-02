@@ -3,9 +3,17 @@
  * queue (apps/web/lib/offline-queue.ts).
  *
  * Mutations made while offline are appended to persistent storage with a
- * stable idempotency key; on reconnect `flush` replays them in order through
- * the API client. Successful entries are dropped, failed entries stay queued
- * for the next flush, so replays are safe (the API dedupes on the key).
+ * stable idempotency key; on reconnect `flush` replays them in FIFO order
+ * through the API client. Successful entries are dropped, failed entries
+ * stay queued for the next flush, so replays are safe (the API dedupes on
+ * the key). Enqueueing the same idempotency key twice is a no-op — the
+ * existing entry is returned, so a double-tap cannot queue two copies of
+ * one logical mutation.
+ *
+ * Auth-failure park: when a replay rejects with a 401 the session is dead
+ * and every remaining replay would fail too (and could trip server-side
+ * idempotency/rate limits). The flush stops immediately and parks the
+ * current and all later entries for the next flush after re-login.
  *
  * Storage backend: any AsyncStorage-compatible key/value store. Production
  * builds pass `@react-native-async-storage/async-storage` directly (its
@@ -50,6 +58,8 @@ export interface QueuedRequest {
 export interface FlushResult {
   sent: number;
   failed: number;
+  /** Entries not attempted because a replay failed with 401 (auth park). */
+  parked: number;
 }
 
 export type QueueSender = (request: QueuedRequest) => Promise<unknown>;
@@ -70,6 +80,15 @@ function randomId(): string {
   return `req-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/** Duck-typed 401 check — the queue must not depend on the API client. */
+export function isAuthFailure(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { status?: unknown }).status === 401
+  );
+}
+
 export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
   async function read(): Promise<QueuedRequest[]> {
     const raw = await storage.getItem(STORAGE_KEY);
@@ -88,12 +107,16 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
 
   return {
     async enqueue(request) {
+      const current = await read();
+      // Dedup by idempotency key: one logical mutation, one queue entry.
+      const existing = current.find((entry) => entry.idempotencyKey === request.idempotencyKey);
+      if (existing) return existing;
+
       const queued: QueuedRequest = {
         ...request,
         id: randomId(),
         enqueuedAt: new Date().toISOString()
       };
-      const current = await read();
       await write([...current, queued]);
       return queued;
     },
@@ -107,16 +130,29 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
     async flush(sender) {
       const remaining: QueuedRequest[] = [];
       let sent = 0;
+      let parked = 0;
+      let authParked = false;
       for (const request of await read()) {
+        if (authParked) {
+          // Behind a 401: leave everything queued in original order.
+          remaining.push(request);
+          parked += 1;
+          continue;
+        }
         try {
           await sender(request);
           sent += 1;
-        } catch {
+        } catch (error) {
           remaining.push(request);
+          if (isAuthFailure(error)) {
+            // Session is dead — park this and every later entry unattempted.
+            authParked = true;
+            parked += 1;
+          }
         }
       }
       await write(remaining);
-      return { sent, failed: remaining.length };
+      return { sent, failed: remaining.length - parked, parked };
     }
   };
 }

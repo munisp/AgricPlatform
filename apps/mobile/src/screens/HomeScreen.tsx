@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text } from 'react-native';
 import { useApiClient } from '../api/context';
-import { fetchWeather, listMyPathwayEnrolments, listOpportunities } from '../api/endpoints';
+import {
+  fetchSession,
+  fetchWeather,
+  listActiveRecalls,
+  listMyAnimals,
+  listMyOrders,
+  listMyPathwayEnrolments,
+  listOpportunities
+} from '../api/endpoints';
 import type { MyPathwayEnrolmentSummary, WeatherSnapshot } from '../api/types';
 import { Card, CardTitle, Loading, Muted, PrimaryButton } from './ui';
 
@@ -9,7 +17,14 @@ interface DashboardData {
   pathways: MyPathwayEnrolmentSummary[];
   opportunitiesTotal: number;
   weather: WeatherSnapshot | null;
+  /** Farmer summary cards (best-effort, mirror the web dashboard sources). */
+  animalsTotal: number | null;
+  pendingHealthTasks: number | null;
+  activeOrders: number | null;
 }
+
+/** Orders that still need the farmer's attention. */
+const ACTIVE_ORDER_STATUSES = new Set(['placed', 'deposit_paid', 'in_fulfilment', 'delivered']);
 
 /**
  * Home dashboard: training progress (from /pathway-enrolments/mine),
@@ -19,12 +34,18 @@ export function HomeScreen({
   state = 'Kano',
   onOpenCourses,
   onOpenMarketplace,
-  onOpenProfile
+  onOpenProfile,
+  onOpenOrders,
+  onOpenNotifications,
+  onOpenLivestock
 }: {
   state?: string;
   onOpenCourses: () => void;
   onOpenMarketplace: () => void;
   onOpenProfile: () => void;
+  onOpenOrders: () => void;
+  onOpenNotifications: () => void;
+  onOpenLivestock: () => void;
 }) {
   const client = useApiClient();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -33,14 +54,38 @@ export function HomeScreen({
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [pathways, opportunities, weather] = await Promise.all([
+      const [pathways, opportunities, weather, farm] = await Promise.all([
         listMyPathwayEnrolments(client).then((res) => res.data),
         listOpportunities(client, { pageSize: 1 }).then((res) => res.total),
         fetchWeather(client, state)
           .then((res) => res.data)
-          .catch(() => null) // weather is best-effort on the dashboard
+          .catch(() => null), // weather is best-effort on the dashboard
+        // Farmer summary (animals, pending health tasks, active orders) is
+        // best-effort: each source falls back to null independently.
+        (async () => {
+          const [animals, recalls, orders] = await Promise.all([
+            listMyAnimals(client)
+              .then((res) => res.data.length)
+              .catch(() => null),
+            listActiveRecalls(client)
+              .then((res) => res.data.length)
+              .catch(() => null),
+            fetchSession(client)
+              .then((session) => listMyOrders(client, session.data.user.id))
+              .then((res) => res.data.filter((order) => ACTIVE_ORDER_STATUSES.has(order.status)).length)
+              .catch(() => null)
+          ]);
+          return { animals, recalls, orders };
+        })()
       ]);
-      setData({ pathways, opportunitiesTotal: opportunities, weather });
+      setData({
+        pathways,
+        opportunitiesTotal: opportunities,
+        weather,
+        animalsTotal: farm.animals,
+        pendingHealthTasks: farm.recalls,
+        activeOrders: farm.orders
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load your dashboard');
     }
@@ -106,9 +151,22 @@ export function HomeScreen({
       </Card>
 
       <Card>
+        <CardTitle>Farm summary</CardTitle>
+        <Text style={styles.bigNumber}>{data.animalsTotal ?? '—'}</Text>
+        <Muted>registered animals</Muted>
+        <Text style={styles.bigNumber}>{data.pendingHealthTasks ?? '—'}</Text>
+        <Muted>pending health tasks (active recalls)</Muted>
+        <Text style={styles.bigNumber}>{data.activeOrders ?? '—'}</Text>
+        <Muted>active orders</Muted>
+      </Card>
+
+      <Card>
         <CardTitle>Explore</CardTitle>
         <PrimaryButton label="Browse courses" onPress={onOpenCourses} />
         <PrimaryButton label="Browse marketplace" onPress={onOpenMarketplace} />
+        <PrimaryButton label="My orders" onPress={onOpenOrders} />
+        <PrimaryButton label="Notifications" onPress={onOpenNotifications} />
+        <PrimaryButton label="My livestock" onPress={onOpenLivestock} />
         <PrimaryButton label="View profile" onPress={onOpenProfile} />
       </Card>
     </ScrollView>
