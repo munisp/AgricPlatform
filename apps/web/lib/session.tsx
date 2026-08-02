@@ -49,7 +49,10 @@ export const DEV_PREVIEW_USERS: Record<UserRole, { userId: string; displayName: 
   partner: { userId: 'user-partner', displayName: 'Agri Partner Foundation' },
   admin: { userId: 'user-admin', displayName: 'NYFN Platform Admin' },
   vet: { userId: 'user-vet', displayName: 'Field Veterinarian' },
-  regulator: { userId: 'user-regulator', displayName: 'State Vet Regulator' }
+  lender: { userId: 'user-lender', displayName: 'Livestock Credit Cooperative' },
+  insurer: { userId: 'user-insurer', displayName: 'Sahel Livestock Insurance' },
+  regulator: { userId: 'user-regulator', displayName: 'State Vet Regulator' },
+  donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' }
 };
 
 const SESSION_KEY = 'agric.session';

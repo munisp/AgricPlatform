@@ -12,7 +12,6 @@ import {
 import { LivestockService } from './livestock.service.js';
 
 type UserRef = Pick<User, 'id' | 'roles'>;
-
 const asUser = (ref: UserRef): User => ({
   phone: '+2348000000000',
   fullName: 'Spec User',

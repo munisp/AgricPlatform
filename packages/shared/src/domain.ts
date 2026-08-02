@@ -9,7 +9,11 @@ export const USER_ROLES = [
   // Wave L1b (ALTP): field veterinarian (Dr. Chidinma persona) and
   // regulator/state-vet auditor (Mrs. Comfort persona).
   'vet',
-  'regulator'
+  // Wave L1c ALTP personas (finance + compliance).
+  'lender',
+  'insurer',
+  'regulator',
+  'donor'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];

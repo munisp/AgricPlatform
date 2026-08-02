@@ -40,6 +40,8 @@ import { IvrModule } from './modules/ivr/ivr.module.js';
 import { LivestockModule } from './modules/livestock/livestock.module.js';
 // Wave L1b (additive): ALTP livestock health/traceability.
 import { LivestockHealthModule } from './modules/livestock-health/livestock-health.module.js';
+// Wave L1c (additive): ALTP trade/finance/compliance.
+import { LivestockTradeModule } from './modules/livestock-trade/livestock-trade.module.js';
 
 @Module({
   imports: [
@@ -87,7 +89,9 @@ import { LivestockHealthModule } from './modules/livestock-health/livestock-heal
     // Wave L1a ALTP livestock core — appended to minimise merge conflicts.
     LivestockModule,
     // Wave L1b ALTP livestock health/traceability — appended to minimise merge conflicts.
-    LivestockHealthModule
+    LivestockHealthModule,
+    // Wave L1c ALTP trade/finance/compliance — appended to minimise merge conflicts.
+    LivestockTradeModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

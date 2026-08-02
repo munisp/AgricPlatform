@@ -31,7 +31,10 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   partner: 'Partner',
   admin: 'Admin',
   vet: 'Veterinarian',
-  regulator: 'Regulator'
+  lender: 'Lender',
+  insurer: 'Insurer',
+  regulator: 'Regulator',
+  donor: 'Donor'
 };
 
 export const ROLE_SUMMARIES: Record<UserRole, string> = {
@@ -43,7 +46,10 @@ export const ROLE_SUMMARIES: Record<UserRole, string> = {
   partner: 'Publish programmes and track participant impact in your scope.',
   admin: 'Operate the platform: users, reviews, audit and integrations.',
   vet: 'Sign vaccination and treatment records and issue movement permits.',
-  regulator: 'Oversee disease surveillance, recalls and movement control.'
+  lender: 'Register and manage liens over livestock collateral.',
+  insurer: 'Bind livestock insurance policies and settle claims.',
+  regulator: 'Export compliance reports and oversee disease surveillance, recalls and movement control.',
+  donor: 'Schedule and track milestone-based programme disbursements.'
 };
 
 export interface ModuleDef {

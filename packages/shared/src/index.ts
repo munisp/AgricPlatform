@@ -5,3 +5,4 @@ export * from './engagement.js';
 export * from './finance.js';
 export * from './livestock.js';
 export * from './livestock-health.js';
+export * from './livestock-trade.js';
