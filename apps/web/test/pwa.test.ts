@@ -40,8 +40,10 @@ describe('service worker (static guards)', () => {
     expect(calls).toHaveLength(1);
     expect(sw).toContain("event.data && event.data.type === 'SKIP_WAITING'");
     // And the install listener body must not contain it (no unconditional activation).
-    const installBody = sw.match(/addEventListener\('install'[\s\S]*?\n\}\);/);
-    expect(installBody?.[0]).not.toContain('skipWaiting()');
+    const installBody = sw
+      .match(/addEventListener\('install'[\s\S]*?\n\}\);/)?.[0]
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(installBody).not.toContain('skipWaiting()');
   });
 
   it('returns a real Response for failed non-navigation fetches', () => {
