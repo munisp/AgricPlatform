@@ -298,6 +298,25 @@ import {
 import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
 import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
+// Wave L1a: ALTP livestock core persistence (additive).
+import {
+  ANIMAL_REPOSITORY,
+  LOT_REPOSITORY,
+  OWNERSHIP_TRANSFER_REPOSITORY,
+  PASTORALIST_PROFILE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAnimalRepository,
+  createInMemoryLotRepository,
+  createInMemoryOwnershipTransferRepository,
+  createInMemoryPastoralistProfileRepository
+} from './repositories/livestock.repository.js';
+import {
+  createPgAnimalRepository,
+  createPgLotRepository,
+  createPgOwnershipTransferRepository,
+  createPgPastoralistProfileRepository
+} from './repositories/livestock.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -765,6 +784,34 @@ import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgIvrCallRepository(pool) : createInMemoryIvrCallRepository(),
       inject: [PG_POOL]
+    },
+    // Wave L1a: ALTP livestock core (appended).
+    {
+      provide: OWNERSHIP_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOwnershipTransferRepository(pool) : createInMemoryOwnershipTransferRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ANIMAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transfers: unknown) =>
+        pool
+          ? createPgAnimalRepository(pool)
+          : createInMemoryAnimalRepository(
+              transfers as Parameters<typeof createInMemoryAnimalRepository>[0]
+            ),
+      inject: [PG_POOL, OWNERSHIP_TRANSFER_REPOSITORY]
+    },
+    {
+      provide: LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLotRepository(pool) : createInMemoryLotRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PASTORALIST_PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPastoralistProfileRepository(pool) : createInMemoryPastoralistProfileRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -842,7 +889,11 @@ import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository
     PARTNER_CLIENT_REPOSITORY,
     API_KEY_REPOSITORY,
     WEBHOOK_SUBSCRIPTION_REPOSITORY,
-    IVR_CALL_REPOSITORY
+    IVR_CALL_REPOSITORY,
+    ANIMAL_REPOSITORY,
+    LOT_REPOSITORY,
+    OWNERSHIP_TRANSFER_REPOSITORY,
+    PASTORALIST_PROFILE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

@@ -91,6 +91,11 @@ export const API_KEY_REPOSITORY = Symbol('API_KEY_REPOSITORY');
 export const WEBHOOK_SUBSCRIPTION_REPOSITORY = Symbol('WEBHOOK_SUBSCRIPTION_REPOSITORY');
 // Wave P6a: IVR voice channel.
 export const IVR_CALL_REPOSITORY = Symbol('IVR_CALL_REPOSITORY');
+// Wave L1a: ALTP livestock core (animals, lots, transfers, pastoralists).
+export const ANIMAL_REPOSITORY = Symbol('ANIMAL_REPOSITORY');
+export const LOT_REPOSITORY = Symbol('LOT_REPOSITORY');
+export const OWNERSHIP_TRANSFER_REPOSITORY = Symbol('OWNERSHIP_TRANSFER_REPOSITORY');
+export const PASTORALIST_PROFILE_REPOSITORY = Symbol('PASTORALIST_PROFILE_REPOSITORY');
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');

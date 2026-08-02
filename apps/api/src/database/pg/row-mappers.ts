@@ -1,5 +1,6 @@
 import type {
   AdvisoryItem,
+  Animal,
   CampusClub,
   CampusClubMembership,
   Certificate,
@@ -19,6 +20,7 @@ import type {
   JudgeScore,
   KnowledgeResource,
   Lender,
+  LivestockLot,
   LoanApplication,
   LocationRef,
   MarketplaceListing,
@@ -29,6 +31,8 @@ import type {
   Opportunity,
   OpportunityApplication,
   Order,
+  OwnershipTransfer,
+  PastoralistProfile,
   PathwayEnrolment,
   PathwayStage,
   PathwayTemplate,
@@ -1727,5 +1731,161 @@ export const recommendationFeedbackMapper: RowMapper<RecommendationFeedbackEvent
       item_id: 'itemId',
       action: 'action',
       created_at: 'createdAt'
+    })
+};
+
+// ---------------------------------------------------------------------------
+// Wave L1a: ALTP livestock core (livestock schema, infra/postgres/012).
+// PK columns are domain-named (animal_id/lot_id), so the pg repositories
+// override the id-keyed base methods.
+
+export const animalMapper: RowMapper<Animal> = {
+  columns: [
+    'animal_id',
+    'species',
+    'breed',
+    'sex',
+    'birth_date',
+    'tag_id',
+    'eid',
+    'owner_user_id',
+    'state',
+    'lga',
+    'status',
+    'sire_id',
+    'dam_id',
+    'notes',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.animal_id as string,
+    species: row.species as Animal['species'],
+    breed: row.breed as string,
+    sex: row.sex as Animal['sex'],
+    birthDate: row.birth_date ? ts(row.birth_date) : undefined,
+    tagId: (row.tag_id as string) ?? undefined,
+    eid: (row.eid as string) ?? undefined,
+    ownerUserId: row.owner_user_id as string,
+    state: row.state as string,
+    lga: (row.lga as string) ?? undefined,
+    status: row.status as Animal['status'],
+    sireId: (row.sire_id as string) ?? undefined,
+    damId: (row.dam_id as string) ?? undefined,
+    notes: (row.notes as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      animal_id: 'id',
+      species: 'species',
+      breed: 'breed',
+      sex: 'sex',
+      birth_date: 'birthDate',
+      tag_id: 'tagId',
+      eid: 'eid',
+      owner_user_id: 'ownerUserId',
+      state: 'state',
+      lga: 'lga',
+      status: 'status',
+      sire_id: 'sireId',
+      dam_id: 'damId',
+      notes: 'notes',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const lotMapper: RowMapper<LivestockLot> = {
+  columns: [
+    'lot_id',
+    'species',
+    'quantity',
+    'owner_user_id',
+    'state',
+    'lga',
+    'formation_rule',
+    'status',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.lot_id as string,
+    species: row.species as LivestockLot['species'],
+    quantity: num(row.quantity),
+    ownerUserId: row.owner_user_id as string,
+    state: row.state as string,
+    lga: (row.lga as string) ?? undefined,
+    formationRule: (row.formation_rule as string) ?? undefined,
+    status: row.status as LivestockLot['status'],
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      lot_id: 'id',
+      species: 'species',
+      quantity: 'quantity',
+      owner_user_id: 'ownerUserId',
+      state: 'state',
+      lga: 'lga',
+      formation_rule: 'formationRule',
+      status: 'status',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const ownershipTransferMapper: RowMapper<OwnershipTransfer> = {
+  columns: [
+    'id',
+    'animal_id',
+    'from_user_id',
+    'to_user_id',
+    'transfer_type',
+    'effective_at',
+    'recorded_by',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    animalId: row.animal_id as string,
+    fromUserId: row.from_user_id as string,
+    toUserId: row.to_user_id as string,
+    transferType: row.transfer_type as OwnershipTransfer['transferType'],
+    effectiveAt: ts(row.effective_at),
+    recordedBy: row.recorded_by as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      animal_id: 'animalId',
+      from_user_id: 'fromUserId',
+      to_user_id: 'toUserId',
+      transfer_type: 'transferType',
+      effective_at: 'effectiveAt',
+      recorded_by: 'recordedBy',
+      created_at: 'createdAt'
+    })
+};
+
+export const pastoralistProfileMapper: RowMapper<PastoralistProfile> = {
+  columns: ['user_id', 'grazing_zone_id', 'migration_pattern', 'primary_species', 'updated_at'],
+  fromRow: (row) => ({
+    userId: row.user_id as string,
+    grazingZoneId: (row.grazing_zone_id as string) ?? undefined,
+    migrationPattern: (row.migration_pattern as string) ?? undefined,
+    primarySpecies: (row.primary_species as PastoralistProfile['primarySpecies']) ?? [],
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      user_id: 'userId',
+      grazing_zone_id: 'grazingZoneId',
+      migration_pattern: 'migrationPattern',
+      primary_species: 'primarySpecies',
+      updated_at: 'updatedAt'
     })
 };

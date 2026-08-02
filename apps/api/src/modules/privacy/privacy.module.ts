@@ -18,6 +18,8 @@ import { PrivacyService } from './privacy.service.js';
     NotificationsModule
   ],
   controllers: [PrivacyController],
-  providers: [PrivacyService]
+  providers: [PrivacyService],
+  // Exported for per-domain consent capture (e.g. livestock enrolment, L1a).
+  exports: [PrivacyService]
 })
 export class PrivacyModule {}
