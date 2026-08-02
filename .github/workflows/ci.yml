@@ -293,11 +293,58 @@ jobs:
       - name: Test mobile
         run: npm run test -w apps/mobile
 
+  db-contract:
+    name: Database migrations and pg contract suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agricplatform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agricplatform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agricplatform
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Lint SQL migrations
+        run: npm run lint:sql
+      - name: Apply migrations
+        run: npm run migrate -w @agric-platform/api
+      - name: Run pg repository contract suite
+        run: npm run test -w @agric-platform/api -- test/pg
+
   ci-gate:
     name: CI gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test, mobile]
+    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test, mobile, db-contract]
     steps:
       - name: All required checks passed
         run: echo "CI gate satisfied for ${{ github.sha }}"
