@@ -38,7 +38,7 @@
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "fake-indexeddb": "^6.2.5",
     "jest-axe": "^11.0.0",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "typescript": "^5.8.3",
     "vitest": "^3.2.7"
   }
