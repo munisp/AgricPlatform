@@ -25,6 +25,10 @@ export function Footer() {
             <li><Link href="/learning">Learning Academy</Link></li>
             <li><Link href="/opportunities">Opportunities</Link></li>
             <li><Link href="/marketplace">Marketplace</Link></li>
+            <li><Link href="/services">Services</Link></li>
+            <li><Link href="/programmes">Programmes</Link></li>
+            <li><Link href="/pathways">Pathways</Link></li>
+            <li><Link href="/knowledge">Knowledge</Link></li>
             <li><Link href="/advisory">Advisory</Link></li>
           </ul>
         </div>
@@ -44,6 +48,7 @@ export function Footer() {
             <li><Link href="/privacy">Privacy &amp; NDPR</Link></li>
             <li><Link href="/search">Search</Link></li>
             <li><Link href="/offline">Offline mode</Link></li>
+            <li><Link href="/settings">Settings</Link></li>
             <li><Link href="/onboarding">Join NYFN</Link></li>
           </ul>
         </div>

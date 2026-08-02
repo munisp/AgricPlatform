@@ -108,6 +108,34 @@ export const MODULES: ModuleDef[] = [
     roles: ['farmer', 'student', 'chapter_lead']
   },
   {
+    href: '/services',
+    title: 'Services',
+    description: 'Input and service suppliers with booking, quotes and reviews.',
+    tag: 'Services',
+    roles: ['farmer', 'supplier', 'buyer']
+  },
+  {
+    href: '/programmes',
+    title: 'Programmes',
+    description: 'Women and youth cohorts with milestones and protected spaces.',
+    tag: 'Cohorts',
+    roles: ['farmer', 'student', 'partner']
+  },
+  {
+    href: '/pathways',
+    title: 'Pathways',
+    description: 'Student and NYSC stage-by-stage pathways and campus clubs.',
+    tag: 'Students',
+    roles: ['student']
+  },
+  {
+    href: '/knowledge',
+    title: 'Knowledge',
+    description: 'Offline-ready resources, podcasts with transcripts and webinars.',
+    tag: 'Library',
+    roles: ['farmer', 'student', 'chapter_lead']
+  },
+  {
     href: '/partner',
     title: 'Partner Hub',
     description: 'Scoped programmes, participants and impact reporting.',

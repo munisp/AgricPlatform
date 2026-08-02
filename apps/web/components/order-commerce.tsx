@@ -77,13 +77,14 @@ function ShipmentPanel({ shipment }: { shipment: Shipment | null }) {
   }
   const failed = shipment.status === 'failed';
   const currentIndex = SHIPMENT_FLOW.indexOf(shipment.status as (typeof SHIPMENT_FLOW)[number]);
-  const items = SHIPMENT_FLOW.slice(0, failed ? SHIPMENT_FLOW.length : Math.max(currentIndex + 1, 1)).map(
-    (status, index) => ({
-      id: status,
-      title: status.replace(/_/g, ' '),
-      tone: (index === currentIndex && !failed ? 'warning' : 'default') as 'warning' | 'default'
-    })
-  );
+  const items: { id: string; title: string; tone: 'warning' | 'default' }[] = SHIPMENT_FLOW.slice(
+    0,
+    failed ? SHIPMENT_FLOW.length : Math.max(currentIndex + 1, 1)
+  ).map((status, index) => ({
+    id: status,
+    title: status.replace(/_/g, ' '),
+    tone: index === currentIndex && !failed ? 'warning' : 'default'
+  }));
   if (failed) {
     items.push({ id: 'failed', title: 'failed', tone: 'default' });
   }

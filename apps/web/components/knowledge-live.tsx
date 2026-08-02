@@ -161,8 +161,8 @@ function EpisodeDetail({ episode }: { episode: PodcastEpisode }) {
   return (
     <article className="stack" style={{ marginTop: '0.5rem' }} aria-label={`Episode: ${episode.title}`}>
       <p className="small muted">{episode.showNotes}</p>
-      {/* preload="none" keeps low-data connections from fetching audio early. */}
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption -- transcript provided below as semantic text */}
+      {/* preload="none" keeps low-data connections from fetching audio early;
+          the full transcript below is the accessibility equivalent. */}
       <audio controls preload="none" src={episode.audioUrl} style={{ width: '100%' }}>
         Your browser does not support audio playback — read the transcript below.
       </audio>
@@ -231,6 +231,9 @@ export function PodcastList() {
 function WebinarCard({ webinar }: { webinar: Webinar }) {
   const { userId } = useAppState();
   const [registered, setRegistered] = useState(false);
+  // Fixed at mount — a webinar crossing its start time mid-session only
+  // flips to "past" on the next render pass, which is acceptable.
+  const [now] = useState(() => Date.now());
 
   const mutation = useApiMutation<void, unknown>({
     mutationFn: () => registerForWebinar(webinar.id, userId).then((res) => res.data),
@@ -246,7 +249,7 @@ function WebinarCard({ webinar }: { webinar: Webinar }) {
   });
 
   const startsAt = new Date(webinar.startsAt);
-  const past = webinar.status === 'completed' || startsAt.getTime() < Date.now();
+  const past = webinar.status === 'completed' || startsAt.getTime() < now;
 
   return (
     <Card title={webinar.title}>
