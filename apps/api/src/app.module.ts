@@ -47,6 +47,7 @@ import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module.
 // Wave P (additive): Redis-backed rate-limit store.
 import { RedisThrottlerStorage } from './common/rate-limit/redis-throttler.storage.js';
 import { REDIS_CLIENT } from './database/persistence.tokens.js';
+import { CommerceModule } from './modules/commerce/commerce.module.js';
 
 @Module({
   imports: [
@@ -104,6 +105,8 @@ import { REDIS_CLIENT } from './database/persistence.tokens.js';
     LivestockHealthModule,
     // Wave L1c ALTP trade/finance/compliance — appended to minimise merge conflicts.
     LivestockTradeModule,
+    // Wave M marketplace commerce depth — appended to minimise merge conflicts.
+    CommerceModule,
     // Wave P platform foundation — appended to minimise merge conflicts.
     FeatureFlagsModule
   ],
