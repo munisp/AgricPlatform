@@ -28,7 +28,7 @@ import {
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { LedgerService, type PostEntryInput } from './ledger.service.js';
 

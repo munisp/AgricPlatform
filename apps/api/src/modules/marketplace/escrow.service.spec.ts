@@ -26,7 +26,7 @@ function makeService(provider?: PaymentProviderPort) {
 
 describe('EscrowService', () => {
   it('holds the order total in integer kobo without a provider', async () => {
-    const { service } = makeService();
+    makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(record.status).toBe('held');
     expect(record.amountKobo).toBe(37_000_000);
@@ -35,7 +35,7 @@ describe('EscrowService', () => {
   });
 
   it('is idempotent per order (retries never double-hold)', async () => {
-    const { service } = makeService();
+    makeService();
     const first = await service.holdForOrder('order-buyer-cassava', buyer.id);
     const second = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(second.id).toBe(first.id);
@@ -66,14 +66,14 @@ describe('EscrowService', () => {
   });
 
   it('walks the buyer-release path with actor scoping', async () => {
-    const { service } = makeService();
+    makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect((await service.transition(record.id, 'released', buyer)).status).toBe('released');
     expect((await service.escrowForOrder('order-buyer-cassava'))?.resolvedAt).toBeDefined();
   });
 
   it('rejects illegal transitions and terminal-state moves', async () => {
-    const { service } = makeService();
+    makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     await expect(service.transition(record.id, 'held', admin)).resolves.toBeDefined(); // replay no-op
     await service.transition(record.id, 'refunded', seller);
@@ -86,7 +86,7 @@ describe('EscrowService', () => {
   });
 
   it('enforces the entitled party per transition', async () => {
-    const { service } = makeService();
+    makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     // Only the buyer releases; only the seller refunds.
     await expect(service.transition(record.id, 'released', seller)).rejects.toThrowError(
@@ -119,7 +119,7 @@ describe('EscrowService', () => {
   });
 
   it('system release/refund paths act only on held escrows', async () => {
-    const { service } = makeService();
+    makeService();
     expect(await service.releaseForOrder('order-buyer-cassava', admin.id)).toBeUndefined();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     await service.transition(record.id, 'disputed', buyer);
@@ -129,7 +129,7 @@ describe('EscrowService', () => {
   });
 
   it('refuses to hold escrow for cancelled orders', async () => {
-    const { service } = makeService();
+    makeService();
     const orders = createInMemoryOrderRepository();
     await orders.update('order-buyer-cassava', { status: 'cancelled' });
     const events = new DomainEventsService(createInMemoryOutboxRepository());
