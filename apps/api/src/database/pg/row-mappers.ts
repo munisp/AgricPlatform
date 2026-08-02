@@ -888,8 +888,8 @@ export const invoiceMapper: RowMapper<Invoice> = {
     paidAt: row.paid_at ? ts(row.paid_at) : undefined,
     createdAt: ts(row.created_at)
   }),
-  toRow: (item) =>
-    present(item, {
+  toRow: (item) => {
+    const row = present(item, {
       id: 'id',
       invoice_number: 'invoiceNumber',
       order_id: 'orderId',
@@ -904,7 +904,14 @@ export const invoiceMapper: RowMapper<Invoice> = {
       issued_at: 'issuedAt',
       paid_at: 'paidAt',
       created_at: 'createdAt'
-    })
+    });
+    // jsonb array-of-objects: node-pg would emit a Postgres array literal for
+    // JS arrays, so serialise explicitly.
+    if ('line_items' in row) {
+      row.line_items = row.line_items === null ? null : JSON.stringify(row.line_items);
+    }
+    return row;
+  }
 };
 
 export const shipmentMapper: RowMapper<Shipment> = {
