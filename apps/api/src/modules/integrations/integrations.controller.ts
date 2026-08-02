@@ -74,7 +74,10 @@ export class IntegrationsController {
         entityType: 'integration',
         entityId: provider
       });
-      await this.events.publish('integration.webhook.received', { provider }, actorId);
+      // The verified payload rides the event so inbound-conversation
+      // consumers (wave P5b WhatsApp workflows) can process it without the
+      // integrations module depending back on them.
+      await this.events.publish('integration.webhook.received', { provider, payload }, actorId);
     }
     return { data: result };
   }

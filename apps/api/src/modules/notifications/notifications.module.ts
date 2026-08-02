@@ -1,12 +1,16 @@
 import { Module } from '@nestjs/common';
+import { AdvisoryModule } from '../advisory/advisory.module.js';
 import { IntegrationsModule } from '../integrations/integrations.module.js';
+import { LearningModule } from '../learning/learning.module.js';
+import { MarketplaceModule } from '../marketplace/marketplace.module.js';
+import { InboundConversationsService } from './inbound-conversations.service.js';
 import { NotificationsController } from './notifications.controller.js';
 import { NotificationsService } from './notifications.service.js';
 
 @Module({
-  imports: [IntegrationsModule],
+  imports: [IntegrationsModule, AdvisoryModule, LearningModule, MarketplaceModule],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
-  exports: [NotificationsService]
+  providers: [NotificationsService, InboundConversationsService],
+  exports: [NotificationsService, InboundConversationsService]
 })
 export class NotificationsModule {}
