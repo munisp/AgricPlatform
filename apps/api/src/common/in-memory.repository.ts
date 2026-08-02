@@ -77,14 +77,19 @@ export class InMemoryRepository<T extends { id: string }, TCriteria = void>
   }
 
   /**
-   * Synchronous check-and-set mirroring the pg conditional UPDATE: the
-   * precondition is verified and the patch applied without an intervening
-   * await, so concurrent transitions serialise exactly like the guarded SQL.
+   * Synchronous check-and-set mirroring the pg conditional UPDATE. The body
+   * deliberately contains NO await: the read, precondition check and write
+   * execute in one synchronous tick, so concurrent transitions serialise
+   * exactly like the guarded SQL (an awaited read would capture a stale
+   * snapshot and defeat the guard — see the funds-integrity wave).
    * The optional outbox event is NOT persisted here (no transactionalOutbox
    * marker); callers fall back to DomainEventsService.persist.
    */
   async updateExpected(id: string, patch: Partial<T>, expected: Partial<T>): Promise<T> {
-    const current = await this.getById(id);
+    const current = this.items.get(id);
+    if (!current) {
+      throw new NotFoundException(`Resource with id '${id}' not found`);
+    }
     for (const [key, value] of Object.entries(expected)) {
       if ((current as Record<string, unknown>)[key] !== value) {
         throw new ConflictException(

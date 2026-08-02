@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createInMemoryWebhookDedupeStore } from '../../database/repositories/webhook-dedupe.repository.js';
 import { InMemoryKeyValueStore } from '../../redis/key-value-store.js';
 import { ProviderConfigError } from './drivers/http.js';
 import { IntegrationsService } from './integrations.service.js';
@@ -94,5 +95,32 @@ describe('IntegrationsService live driver wiring (wave P1)', () => {
     vi.stubEnv('WEATHER_DRIVER', 'production');
     const service = new IntegrationsService();
     expect(service.weatherProvider()).toBeDefined();
+  });
+});
+
+describe('IntegrationsService webhook dedupe (funds-integrity wave)', () => {
+  const payload = { event: 'charge.success', data: { reference: 'ref-1' } };
+
+  it('suppresses duplicate webhooks through the injected store', async () => {
+    const service = new IntegrationsService();
+    const first = await service.recordWebhook('paystack', payload);
+    expect(first.duplicate).toBeUndefined();
+    const replay = await service.recordWebhook('paystack', payload);
+    expect(replay.duplicate).toBe(true);
+  });
+
+  it('dedupe survives a service restart when the store is shared (durable port)', async () => {
+    // Simulates the pg-backed store: state lives outside the service, so a
+    // new instance (restart / second API pod) still sees the receipt.
+    const sharedStore = createInMemoryWebhookDedupeStore();
+    const before = new IntegrationsService(undefined, sharedStore);
+    expect((await before.recordWebhook('paystack', payload)).duplicate).toBeUndefined();
+    const after = new IntegrationsService(undefined, sharedStore);
+    expect((await after.recordWebhook('paystack', payload)).duplicate).toBe(true);
+    // A different payload (different digest) is not suppressed.
+    expect(
+      (await after.recordWebhook('paystack', { event: 'charge.success', data: { reference: 'ref-2' } }))
+        .duplicate
+    ).toBeUndefined();
   });
 });

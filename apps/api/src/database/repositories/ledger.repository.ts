@@ -4,7 +4,7 @@ import type {
   LedgerBalance,
   LedgerJournalEntry
 } from '@agric-platform/shared';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 
 /**
@@ -105,6 +105,13 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[]
   ): Promise<LedgerJournalEntry> {
+    // Mirror the pg UNIQUE constraint on idempotency_key (23505 → 409):
+    // concurrent posts with the same key cannot both persist.
+    for (const existing of this.items.values()) {
+      if (existing.idempotencyKey === entry.idempotencyKey) {
+        throw new ConflictException('A record with these unique values already exists');
+      }
+    }
     this.items.set(entry.id, structuredClone(entry));
     // Solvency guard with rollback semantics: compute the post-entry balance
     // synchronously and back the entry out when a protected account would

@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -57,6 +57,28 @@ function makeService() {
     schedules
   );
   return { service, ledger, events };
+}
+
+/**
+ * Funds the platform cash account (lender funding liability ↔ cash asset) so
+ * the disbursement solvency guard passes — platform cash may never go
+ * negative (funds-integrity wave).
+ */
+async function fundPlatformCash(ledger: LedgerService, amountKobo: number) {
+  await ledger.ensureAccount({ code: 'platform:funding', type: 'liability' });
+  await ledger.postEntry(
+    {
+      idempotencyKey: `platform-funding:${amountKobo}`,
+      referenceType: 'funding',
+      referenceId: 'lender-nyfn-coop',
+      description: 'Lender funding of platform cash',
+      postings: [
+        { accountCode: 'platform:cash', direction: 'debit', amountKobo },
+        { accountCode: 'platform:funding', direction: 'credit', amountKobo }
+      ]
+    },
+    admin.id
+  );
 }
 
 async function approvedLoan(service: LoanService) {
@@ -138,6 +160,7 @@ describe('LoanService', () => {
 
   it('disburses with a balanced ledger posting and a repayment calendar', async () => {
     const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
     const loan = await approvedLoan(service);
     const disbursed = await service.disburse(loan.id, admin.id, '2026-09-01');
     expect(disbursed.status).toBe('repaying');
@@ -179,6 +202,7 @@ describe('LoanService', () => {
 
   it('marks installments paid with balanced postings and closes the loan', async () => {
     const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
     const loan = await approvedLoan(service);
     await service.disburse(loan.id, admin.id, '2026-09-01');
     const schedule = await service.scheduleForLoan(loan.id);
@@ -211,6 +235,102 @@ describe('LoanService', () => {
     const loan = await approvedLoan(service);
     await expect(service.markInstallmentPaid(loan.id, 1, applicant.id)).rejects.toThrowError(
       /not repaying/
+    );
+  });
+
+  it('rejects disbursement when platform cash would go negative (solvency guard)', async () => {
+    const { service, ledger } = makeService();
+    const loan = await approvedLoan(service); // no platform:cash funding posted
+    await expect(service.disburse(loan.id, admin.id)).rejects.toThrowError(/Insufficient funds/);
+    // The rejection is atomic: no journal entry, loan still approved, and
+    // disbursement converges once the account is funded.
+    expect(await ledger.listEntries({ referenceType: 'loan_application', referenceId: loan.id })).toHaveLength(0);
+    expect((await service.getLoan(loan.id)).status).toBe('approved');
+    await fundPlatformCash(ledger, 12_000_000);
+    expect((await service.disburse(loan.id, admin.id)).status).toBe('repaying');
+  });
+
+  it('recovers a stuck close: re-entering after partial completion converges to closed', async () => {
+    const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
+    const loan = await approvedLoan(service);
+    await service.disburse(loan.id, admin.id, '2026-09-01');
+    const schedule = await service.scheduleForLoan(loan.id);
+    // Pay all installments except the last through the service.
+    for (const installment of schedule.slice(0, -1)) {
+      await service.markInstallmentPaid(loan.id, installment.sequence, admin.id);
+    }
+    // Simulate the CRIT-4 crash: the final installment is marked paid and
+    // the ledger entry posted, but the process died before the close write.
+    const last = schedule[schedule.length - 1];
+    await service.markInstallmentPaid(loan.id, last.sequence, admin.id);
+    // Artificially rewind the close (as if it never committed).
+    const loans = (service as unknown as { loans: InMemoryLoanApplicationRepository }).loans;
+    await loans.update(loan.id, { status: 'repaying', closedAt: undefined });
+    expect((await service.getLoan(loan.id)).status).toBe('repaying');
+    // Re-entering the repayment path must converge the close (the old code
+    // took the early return and left the loan stuck in 'repaying' forever).
+    const replay = await service.markInstallmentPaid(loan.id, last.sequence, admin.id);
+    expect(replay.status).toBe('paid');
+    expect((await service.getLoan(loan.id)).status).toBe('closed');
+    // Still exactly one repayment entry for the final installment.
+    const entries = await ledger.listEntries({ referenceType: 'loan_application', referenceId: loan.id });
+    expect(entries.filter((e) => e.idempotencyKey === `loan-repayment:${loan.id}:${last.sequence}`)).toHaveLength(1);
+  });
+
+  it('serialises concurrent confirmations of the same installment (one winner, one ledger entry)', async () => {
+    const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
+    const loan = await approvedLoan(service);
+    await service.disburse(loan.id, admin.id, '2026-09-01');
+    const [first, second] = await Promise.allSettled([
+      service.markInstallmentPaid(loan.id, 1, admin.id),
+      service.markInstallmentPaid(loan.id, 1, admin.id)
+    ]);
+    const outcomes = [first, second];
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(ConflictException);
+    const entries = await ledger.listEntries({ referenceType: 'loan_application', referenceId: loan.id });
+    expect(entries.filter((e) => e.idempotencyKey === `loan-repayment:${loan.id}:1`)).toHaveLength(1);
+    expect((await service.scheduleForLoan(loan.id))[0].status).toBe('paid');
+  });
+
+  it('records borrower-declared payments pending confirmation (no ledger write-off)', async () => {
+    const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
+    const loan = await approvedLoan(service);
+    await service.disburse(loan.id, admin.id, '2026-09-01');
+
+    // Borrower declares a payment with an external reference.
+    const declared = await service.declarePayment(loan.id, 1, applicant.id, 'paystack:ref-001');
+    expect(declared.status).toBe('declared');
+    expect(declared.paymentReference).toBe('paystack:ref-001');
+    expect(declared.declaredBy).toBe(applicant.id);
+    // No ledger posting happens at declaration time.
+    expect(
+      (await ledger.listEntries({ referenceType: 'loan_application', referenceId: loan.id })).filter(
+        (e) => e.idempotencyKey.startsWith('loan-repayment:')
+      )
+    ).toHaveLength(0);
+    // Same-reference replay is idempotent; a new reference supersedes.
+    expect((await service.declarePayment(loan.id, 1, applicant.id, 'paystack:ref-001')).declaredAt).toBe(
+      declared.declaredAt
+    );
+    expect((await service.declarePayment(loan.id, 1, applicant.id, 'paystack:ref-002')).paymentReference).toBe(
+      'paystack:ref-002'
+    );
+    // Empty references are rejected.
+    await expect(service.declarePayment(loan.id, 1, applicant.id, '  ')).rejects.toThrowError(
+      /paymentReference/
+    );
+    // Lender-side confirmation keeps the declared reference and posts once.
+    const paid = await service.markInstallmentPaid(loan.id, 1, admin.id);
+    expect(paid.status).toBe('paid');
+    expect(paid.paymentReference).toBe('paystack:ref-002');
+    // Declaring against a paid installment is a conflict.
+    await expect(service.declarePayment(loan.id, 1, applicant.id, 'paystack:ref-003')).rejects.toThrowError(
+      ConflictException
     );
   });
 

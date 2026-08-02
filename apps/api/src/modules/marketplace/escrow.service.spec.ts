@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -137,5 +137,120 @@ describe('EscrowService', () => {
     await expect(cancelled.holdForOrder('order-buyer-cassava', buyer.id)).rejects.toThrowError(
       BadRequestException
     );
+  });
+});
+
+/** Records provider calls; can be told to fail the next release/refund. */
+function fakeProvider(failures: { release?: number; refund?: number } = {}) {
+  const calls: string[] = [];
+  let releaseFailures = failures.release ?? 0;
+  let refundFailures = failures.refund ?? 0;
+  const provider: PaymentProviderPort = {
+    name: 'fake-pay',
+    hold: async () => ({ providerReference: 'fake_hold_1' }),
+    release: async (reference) => {
+      calls.push(`release:${reference}`);
+      if (releaseFailures-- > 0) throw new Error('provider unreachable');
+    },
+    refund: async (reference) => {
+      calls.push(`refund:${reference}`);
+      if (refundFailures-- > 0) throw new Error('provider unreachable');
+    }
+  };
+  return { provider, calls };
+}
+
+describe('EscrowService funds-integrity hardening', () => {
+  it('rejects client-driven pending states', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await expect(service.transition(record.id, 'releasing', buyer)).rejects.toThrowError(
+      /system-driven/
+    );
+    await expect(service.transition(record.id, 'refunding', admin)).rejects.toThrowError(
+      BadRequestException
+    );
+  });
+
+  it('persists the release intent BEFORE calling the provider and converges on retry', async () => {
+    const { provider, calls } = fakeProvider({ release: 1 }); // first release call crashes
+    const { service } = makeService(provider);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    // Provider crash: the record is left in the resumable 'releasing' state.
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      BadGatewayException
+    );
+    const stuck = await service.escrowForOrder('order-buyer-cassava');
+    expect(stuck?.status).toBe('releasing'); // intent survived the crash
+    expect(stuck?.resolvedAt).toBeUndefined();
+
+    // Retry converges: same provider reference, no double-hold/double-write.
+    const released = await service.transition(record.id, 'released', buyer);
+    expect(released.status).toBe('released');
+    expect(released.resolvedAt).toBeDefined();
+    expect(calls).toEqual(['release:fake_hold_1', 'release:fake_hold_1']); // idempotent reference
+
+    // A further retry is a pure replay: no additional provider call.
+    await service.transition(record.id, 'released', buyer);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('never double-releases: a concurrent release + refund race has exactly one winner', async () => {
+    const { provider, calls } = fakeProvider();
+    const { service } = makeService(provider);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const [release, refund] = await Promise.allSettled([
+      service.transition(record.id, 'released', buyer),
+      service.transition(record.id, 'refunded', seller)
+    ]);
+    const outcomes = [release, refund];
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    // The loser either never passed the guard (400) or lost the guarded
+    // write race (409) — it must never silently overwrite.
+    expect([BadRequestException, ConflictException]).toContainEqual(loser.reason.constructor);
+
+    const final = await service.escrowForOrder('order-buyer-cassava');
+    expect(['released', 'refunded']).toContain(final?.status); // exactly one terminal state
+    // Exactly one provider-side money movement happened — never both.
+    expect(calls).toHaveLength(1);
+    expect(['release:fake_hold_1', 'refund:fake_hold_1']).toContain(calls[0]);
+  });
+
+  it('system release path resumes a stuck releasing record', async () => {
+    const { provider } = fakeProvider({ release: 1 });
+    const { service } = makeService(provider);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      BadGatewayException
+    );
+    const resumed = await service.releaseForOrder('order-buyer-cassava', admin.id);
+    expect(resumed?.status).toBe('released');
+  });
+
+  it('expires held escrows deterministically through the guarded refund path', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    expect(record.heldUntil).toBeDefined();
+
+    // Not yet due: nothing expires.
+    expect(await service.expireHeldEscrows(record.heldAt)).toHaveLength(0);
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+
+    // At/past the deadline: exactly one auto-refund, then idempotent.
+    const afterDeadline = new Date(Date.parse(record.heldUntil!) + 1000).toISOString();
+    const expired = await service.expireHeldEscrows(afterDeadline);
+    expect(expired).toHaveLength(1);
+    expect(expired[0].status).toBe('refunded');
+    expect(expired[0].resolvedAt).toBeDefined();
+    expect(await service.expireHeldEscrows(afterDeadline)).toHaveLength(0);
+  });
+
+  it('sets a heldUntil deadline on every new hold', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    expect(Date.parse(record.heldUntil!)).toBeGreaterThan(Date.parse(record.heldAt));
   });
 });

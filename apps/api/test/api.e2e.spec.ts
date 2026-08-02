@@ -117,7 +117,9 @@ describe('AgricPlatform API (e2e)', () => {
     const replayBody = await replay.json();
     expect(replayBody.data.id).toBe(firstBody.data.id);
 
-    const orders = await (await fetch(`${base}/orders?buyerId=user-buyer`)).json();
+    const orders = await (
+      await fetch(`${base}/orders?buyerId=user-buyer`, { headers: { 'x-user-id': 'user-buyer' } })
+    ).json();
     expect(orders.data.filter((o: { listingId: string }) => o.listingId === 'listing-maize-kano')).toHaveLength(1);
   });
 
@@ -363,5 +365,106 @@ describe('AgricPlatform API (e2e)', () => {
     expect(text).toContain('agric_otp_verifications_total{result="invalid"');
     expect(text).toContain('agric_idempotent_replays_total');
     expect(text).toContain('agric_errors_5xx_total');
+  });
+
+  // Funds-integrity wave: the financial read endpoints used to be
+  // unauthenticated, and borrowers could mark their own installments paid.
+  describe('funds-integrity hardening', () => {
+    async function patch(path: string, body: unknown, headers: Record<string, string> = {}) {
+      return fetch(`${base}${path}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body)
+      });
+    }
+
+    it('rejects unauthenticated financial reads (401) and non-party reads (403)', async () => {
+      // Order reads require authentication now.
+      expect((await fetch(`${base}/orders`)).status).toBe(401);
+      expect((await fetch(`${base}/orders/order-buyer-cassava`)).status).toBe(401);
+      expect((await fetch(`${base}/orders/order-buyer-cassava/escrow`)).status).toBe(401);
+      expect((await fetch(`${base}/orders/order-buyer-cassava/shipment`)).status).toBe(401);
+      // A non-party authenticated user gets 403, the buyer gets 200.
+      expect(
+        (await fetch(`${base}/orders/order-buyer-cassava`, { headers: { 'x-user-id': 'user-aisha' } })).status
+      ).toBe(403);
+      expect(
+        (await fetch(`${base}/orders/order-buyer-cassava`, { headers: { 'x-user-id': 'user-buyer' } })).status
+      ).toBe(200);
+      // Listing reads stay public (catalogue browsing).
+      expect((await fetch(`${base}/listings/listing-maize-kano`)).status).toBe(200);
+    });
+
+    it('blocks borrower self-pay and honors the declare → confirm flow', async () => {
+      const borrower = { 'x-user-id': 'user-adamu' };
+      const admin = { 'x-user-id': 'user-admin' };
+      // Apply → submit → review → approve.
+      const applied = await (
+        await post(
+          '/finance/loans',
+          {
+            applicantId: 'user-adamu',
+            lenderId: 'lender-nyfn-coop',
+            amountKobo: 5_000_000,
+            termMonths: 2,
+            annualRateBps: 0
+          },
+          borrower
+        )
+      ).json();
+      const loanId = applied.data.id as string;
+      await patch(`/finance/loans/${loanId}/status`, { status: 'submitted' }, borrower);
+      await patch(`/finance/loans/${loanId}/status`, { status: 'under_review' }, admin);
+      await patch(`/finance/loans/${loanId}/status`, { status: 'approved' }, admin);
+
+      // Disbursement requires a funded platform cash account (solvency).
+      const underfunded = await post(`/finance/loans/${loanId}/disburse`, {}, admin);
+      expect(underfunded.status).toBe(400);
+      await post('/finance/ledger/accounts', { code: 'platform:cash', type: 'asset' }, admin);
+      await post('/finance/ledger/accounts', { code: 'platform:funding', type: 'liability' }, admin);
+      const funding = await post(
+        '/finance/ledger/entries',
+        {
+          idempotencyKey: 'e2e-platform-funding-1',
+          description: 'Lender funding',
+          postings: [
+            { accountCode: 'platform:cash', direction: 'debit', amountKobo: 5_000_000 },
+            { accountCode: 'platform:funding', direction: 'credit', amountKobo: 5_000_000 }
+          ]
+        },
+        admin
+      );
+      expect(funding.status).toBe(201);
+      const disbursed = await post(`/finance/loans/${loanId}/disburse`, {}, admin);
+      expect(disbursed.status).toBe(201);
+
+      // CRIT-1: the borrower can no longer mark their own installment paid.
+      const selfPay = await post(`/finance/loans/${loanId}/installments/1/pay`, {}, borrower);
+      expect(selfPay.status).toBe(403);
+      // The borrower declares the payment with a verifiable reference instead.
+      const declared = await post(
+        `/finance/loans/${loanId}/installments/1/declare-payment`,
+        { paymentReference: 'paystack:e2e-ref-1' },
+        borrower
+      );
+      expect(declared.status).toBe(201);
+      expect((await declared.json()).data.status).toBe('declared');
+      // A declaration without a reference is rejected.
+      expect(
+        (await post(`/finance/loans/${loanId}/installments/2/declare-payment`, {}, borrower)).status
+      ).toBe(400);
+      // Lender-side confirmation (admin) marks it paid with the reference.
+      const confirmed = await post(`/finance/loans/${loanId}/installments/1/pay`, {}, admin);
+      expect(confirmed.status).toBe(201);
+      const confirmedBody = await confirmed.json();
+      expect(confirmedBody.data.status).toBe('paid');
+      expect(confirmedBody.data.paymentReference).toBe('paystack:e2e-ref-1');
+      // Confirming the second installment closes the two-installment loan.
+      await post(`/finance/loans/${loanId}/installments/2/pay`, {}, admin);
+      const loan = await (
+        await fetch(`${base}/finance/loans/${loanId}`, { headers: borrower })
+      ).json();
+      expect(loan.data.status).toBe('closed');
+    });
   });
 });
