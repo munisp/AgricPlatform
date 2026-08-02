@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "NYFN",
+    "slug": "nyfn-platform",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#ffffff",
+    "primaryColor": "#1b5e20",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ng.nyfn.platform"
+    },
+    "android": {
+      "package": "ng.nyfn.platform"
+    },
+    "extra": {
+      "apiBaseUrl": "http://localhost:3001/api/v1"
+    }
+  }
+}
