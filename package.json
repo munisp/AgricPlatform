@@ -15,7 +15,9 @@
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "validate": "npm run typecheck && npm run lint && npm run lint:sql && npm run test && npm run build",
-    "lint:sql": "node scripts/lint-migrations.mjs"
+    "lint:sql": "node scripts/lint-migrations.mjs",
+    "check:bundle": "node scripts/check-bundle-budget.mjs",
+    "audit:media": "node scripts/audit-media.mjs"
   },
   "engines": {
     "node": ">=20.0.0",
