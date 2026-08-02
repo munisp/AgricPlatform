@@ -12,8 +12,11 @@ import { AnalyticsDepthService } from './analytics-depth.service.js';
 import { AnalyticsService } from './analytics.service.js';
 import { analyticsExportCsv, analyticsExportPdf } from './export-formats.js';
 import { MART_NAMES, type MartName } from './marts.js';
+import { AnalyticsProjectorService } from './projector.service.js';
 import { lagosDateKey } from './retention.js';
 import { SEGMENT_DIMENSIONS, type SegmentDimension } from './segmentation.js';
+import { AnalyticsStarService } from './star-marts.service.js';
+import { STAR_FACT_NAMES, type StarFactName } from './star-marts.js';
 
 class SegmentQuery {
   @IsIn(['state', 'role'])
@@ -81,7 +84,9 @@ export class AnalyticsController {
   constructor(
     private readonly analytics: AnalyticsService,
     private readonly depth: AnalyticsDepthService,
-    private readonly audit: AuditService
+    private readonly audit: AuditService,
+    private readonly projector: AnalyticsProjectorService,
+    private readonly star: AnalyticsStarService
   ) {}
 
   @Get('metrics')
@@ -231,6 +236,86 @@ export class AnalyticsController {
       'Content-Disposition',
       `attachment; filename="mart-${mart.replace(/_/g, '-')}.csv"`
     );
+    return csv;
+  }
+
+  // -- Wave B: star-schema marts (analytics schema, migration 019) -----------
+
+  @Post('project')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Runs one outbox→mart projection pass: applies unprocessed domain events to the analytics star marts (idempotent upserts; replay-safe) and recomputes the daily rollups for touched Lagos days. No in-process timer exists — an external scheduler (cron/CronJob) calls this endpoint. Admin only; audit-logged.'
+  })
+  async project(@CurrentUser() actor: User | null) {
+    const result = await this.projector.project();
+    await this.audit.record({
+      actorId: actor?.id ?? 'unknown',
+      action: 'analytics.project',
+      entityType: 'analytics_projection',
+      entityId: result.ranAt,
+      metadata: {
+        scanned: result.scanned,
+        applied: result.applied,
+        skipped: result.skipped,
+        recomputedDates: result.recomputedDates
+      }
+    });
+    return { data: result };
+  }
+
+  @Get('metrics/daily')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'regulator')
+  @ApiOperation({
+    summary:
+      'Daily rollup mart (mart_daily_metrics) over an inclusive YYYY-MM-DD range: GMV (kobo), orders, active farmers, escrow held, livestock registered — Africa/Lagos calendar days. Admin or regulator.'
+  })
+  async dailyMetrics(@Query() query: MartExportQuery) {
+    return { data: await this.star.dailyMetrics({ from: query.from, to: query.to }) };
+  }
+
+  @Get('metrics/summary')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'regulator')
+  @ApiOperation({
+    summary:
+      'Headline star-mart numbers: GMV (kobo, non-cancelled orders), orders, current escrow exposure (kobo), livestock registered, member/listing dimensions and the projector heartbeat. Admin or regulator.'
+  })
+  async metricsSummary() {
+    return { data: await this.star.summary() };
+  }
+
+  @Get('export/:fact.csv')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'regulator')
+  @ApiOperation({
+    summary:
+      'Lakehouse handoff: streaming CSV of a star fact table (fact_orders, fact_payments) over an optional date range, columns mirroring migration 019 1:1. When a real lakehouse exists (object storage + Iceberg + Trino), these exports are its ingestion contract. Admin or regulator; audit-logged.'
+  })
+  async exportFact(
+    @Param('fact') factParam: string,
+    @Query() query: MartExportQuery,
+    @CurrentUser() actor: User | null,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    if (!(STAR_FACT_NAMES as readonly string[]).includes(factParam)) {
+      throw new BadRequestException(
+        `Unknown fact '${factParam}'; expected one of ${STAR_FACT_NAMES.join(', ')}`
+      );
+    }
+    const fact = factParam as StarFactName;
+    const csv = await this.star.factCsv(fact, { from: query.from, to: query.to });
+    await this.audit.record({
+      actorId: actor?.id ?? 'unknown',
+      action: 'analytics.export.fact',
+      entityType: 'analytics_fact',
+      entityId: fact,
+      metadata: { fact, from: query.from, to: query.to }
+    });
+    response.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    response.setHeader('Content-Disposition', `attachment; filename="${fact}.csv"`);
     return csv;
   }
 }

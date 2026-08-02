@@ -2,13 +2,16 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import type pg from 'pg';
 import {
+  ANALYTICS_STAR_REPOSITORY,
   DELIVERY_LOG_REPOSITORY,
   NOTIFICATION_REPOSITORY,
   PG_POOL,
   REDIS_CLIENT
 } from '../database/persistence.tokens.js';
+import type { AnalyticsStarRepository } from '../database/repositories/analytics-star.repository.js';
 import type { DeliveryLogRepository } from '../database/repositories/delivery-log.repository.js';
 import type { NotificationRepository } from '../database/repositories/notification.repository.js';
+import { ANALYTICS_PROJECTOR_CONSUMER } from '../modules/analytics/projector.service.js';
 import { FeatureFlagsService } from '../common/feature-flags/feature-flags.service.js';
 import { OutboxSweeperService } from '../core/outbox-sweeper.service.js';
 import { IntegrationsService } from '../modules/integrations/integrations.service.js';
@@ -43,6 +46,7 @@ export class ModuleHealthService {
     private readonly flags: FeatureFlagsService,
     @Inject(NOTIFICATION_REPOSITORY) private readonly messages: NotificationRepository,
     @Inject(DELIVERY_LOG_REPOSITORY) private readonly deliveryLog: DeliveryLogRepository,
+    @Inject(ANALYTICS_STAR_REPOSITORY) private readonly analyticsStar: AnalyticsStarRepository,
     @Optional() @Inject(PG_POOL) private readonly pool: pg.Pool | null = null,
     @Optional() @Inject(REDIS_CLIENT) private readonly redis: Redis | null = null
   ) {}
@@ -54,7 +58,8 @@ export class ModuleHealthService {
       this.probe('outbox', () => this.probeOutbox()),
       this.probe('notifications', () => this.probeNotifications()),
       this.probe('integrations', () => this.probeIntegrations()),
-      this.probe('feature-flags', () => this.probeFlags())
+      this.probe('feature-flags', () => this.probeFlags()),
+      this.probe('analytics', () => this.probeAnalytics())
     ]);
     return {
       status: modules.some((module) => module.status === 'down') ? 'degraded' : 'ok',
@@ -122,6 +127,30 @@ export class ModuleHealthService {
       name: 'feature-flags',
       status: 'up',
       details: { flags: flags.length, enabled: flags.filter((flag) => flag.enabled).length }
+    };
+  }
+
+  /**
+   * Wave B analytics marts: row counts per star table + the projector
+   * heartbeat (last run / events processed). The marts are queryable as
+   * long as the database is up, so the probe is informational — a
+   * never-projected store reports lastProjectionAt=null, not 'down'.
+   */
+  private async probeAnalytics(): Promise<ModuleProbe> {
+    const stats = await this.analyticsStar.stats(ANALYTICS_PROJECTOR_CONSUMER);
+    return {
+      name: 'analytics',
+      status: 'up',
+      details: {
+        dimUsers: stats.dimUsers,
+        dimListings: stats.dimListings,
+        factOrders: stats.factOrders,
+        factPayments: stats.factPayments,
+        factLivestock: stats.factLivestock,
+        dailyMetrics: stats.dailyMetrics,
+        lastProjectionAt: stats.projection?.lastRunAt ?? null,
+        processedTotal: stats.projection?.processedTotal ?? 0
+      }
     };
   }
 }
