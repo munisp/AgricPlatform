@@ -29,6 +29,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module.js';
 import { PathwaysModule } from './modules/pathways/pathways.module.js';
 import { ProgrammesModule } from './modules/programmes/programmes.module.js';
 import { ServicesMarketplaceModule } from './modules/services-marketplace/services-marketplace.module.js';
+import { UssdModule } from './modules/ussd/ussd.module.js';
 import { RedisModule } from './redis/redis.module.js';
 
 @Module({
@@ -66,7 +67,9 @@ import { RedisModule } from './redis/redis.module.js';
     ServicesMarketplaceModule,
     ProgrammesModule,
     PathwaysModule,
-    KnowledgeModule
+    KnowledgeModule,
+    // USSD channel + lightweight-channel depth wave (P5b) — appended.
+    UssdModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

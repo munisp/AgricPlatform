@@ -261,6 +261,15 @@ import {
   createPgImportRecordRepository,
   createPgInboundEventRepository
 } from './repositories/phase3.pg-repository.js';
+// USSD channel + lightweight-channel depth wave (P5b) repositories.
+import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
+import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
+import { createInMemoryPinProfileRepository } from './repositories/pin-profile.repository.js';
+import { createPgPinProfileRepository } from './repositories/pin-profile.pg-repository.js';
+import {
+  PIN_PROFILE_REPOSITORY,
+  USSD_SESSION_REPOSITORY
+} from './persistence.tokens.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -671,6 +680,19 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
       inject: [PG_POOL]
+    },
+    // USSD channel + lightweight-channel depth wave (P5b) providers.
+    {
+      provide: USSD_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgUssdSessionRepository(pool) : createInMemoryUssdSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PIN_PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPinProfileRepository(pool) : createInMemoryPinProfileRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -740,7 +762,9 @@ import {
     FARM_RECORD_REPOSITORY,
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
-    INBOUND_EVENT_REPOSITORY
+    INBOUND_EVENT_REPOSITORY,
+    USSD_SESSION_REPOSITORY,
+    PIN_PROFILE_REPOSITORY
   ]
 })
 export class DatabaseModule {}
