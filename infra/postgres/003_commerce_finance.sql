@@ -149,6 +149,11 @@ CREATE TABLE IF NOT EXISTS finance.repayment_installments (
 CREATE INDEX IF NOT EXISTS repayment_installments_loan_idx
     ON finance.repayment_installments (loan_id, sequence);
 
+-- Reversal linkage for counter-entries (posting immutability: corrections
+-- append a reversal entry referencing the original, never UPDATE/DELETE).
+ALTER TABLE finance.ledger_transfers
+    ADD COLUMN IF NOT EXISTS reverses_transfer_id uuid REFERENCES finance.ledger_transfers(id);
+
 -- ---------------------------------------------------------------------------
 -- finance: double-entry ledger hardening (tables from 001_init.sql)
 --

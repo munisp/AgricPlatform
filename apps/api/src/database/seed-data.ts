@@ -5,6 +5,7 @@ import type {
   CreditProfile,
   Enrolment,
   ForumTopic,
+  Lender,
   MarketplaceListing,
   MentorRequest,
   NotificationMessage,
@@ -439,3 +440,39 @@ export const seedNotificationMessages: NotificationMessage[] = [
 
 export { seedListings };
 export type { MarketplaceListing };
+
+/* ---------------------------------------------------------------------------
+ * Wave P2a seeds: lender directory for credit matching (integer kobo tickets).
+ * ------------------------------------------------------------------------- */
+export const seedLenders: Lender[] = [
+  {
+    id: 'lender-nyfn-coop',
+    name: 'NYFN Cooperative Credit Window',
+    product: 'Input financing (per season)',
+    minTicketKobo: 5_000_000,
+    maxTicketKobo: 50_000_000,
+    minScore: 40,
+    criteria: ['Credit score 40+', 'Verified membership'],
+    isActive: true
+  },
+  {
+    id: 'lender-partner-mfi',
+    name: 'Partner MFI Network',
+    product: 'Asset financing (equipment)',
+    minTicketKobo: 25_000_000,
+    maxTicketKobo: 300_000_000,
+    minScore: 60,
+    criteria: ['Credit score 60+', 'Two verified vault documents'],
+    isActive: true
+  },
+  {
+    id: 'lender-commercial-agri',
+    name: 'Commercial Agri Desk',
+    product: 'Working capital line',
+    minTicketKobo: 100_000_000,
+    maxTicketKobo: 1_000_000_000,
+    minScore: 75,
+    criteria: ['Credit score 75+', 'Tier 2 KYC'],
+    isActive: true
+  }
+];

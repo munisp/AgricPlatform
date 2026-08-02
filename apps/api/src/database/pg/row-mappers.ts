@@ -6,8 +6,13 @@ import type {
   ConsentRecord,
   Course,
   CreditProfile,
+  CreditScoreResult,
   Enrolment,
+  EscrowRecord,
   ForumTopic,
+  Invoice,
+  Lender,
+  LoanApplication,
   LocationRef,
   MarketplaceListing,
   MentorRequest,
@@ -17,6 +22,8 @@ import type {
   OpportunityApplication,
   Order,
   Profile,
+  RepaymentInstallment,
+  Shipment,
   VaultDocument
 } from '@agric-platform/shared';
 import type { DomainEvent } from '../../core/domain-events.service.js';
@@ -810,4 +817,283 @@ export const outboxMapper: RowMapper<DomainEvent> = {
     actor_id: item.actorId ?? null,
     occurred_at: item.occurredAt
   })
+};
+
+/* ---------------------------------------------------------------------------
+ * Wave P2a mappers: escrow, invoices, shipments, credit scores, lenders,
+ * loan applications, repayment installments. Money columns are bigint kobo.
+ * ------------------------------------------------------------------------- */
+
+export const escrowMapper: RowMapper<EscrowRecord> = {
+  columns: [
+    'id',
+    'order_id',
+    'amount_kobo',
+    'status',
+    'provider_reference',
+    'held_at',
+    'resolved_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    orderId: row.order_id as string,
+    amountKobo: num(row.amount_kobo),
+    status: row.status as EscrowRecord['status'],
+    providerReference: (row.provider_reference as string) ?? undefined,
+    heldAt: ts(row.held_at),
+    resolvedAt: row.resolved_at ? ts(row.resolved_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      order_id: 'orderId',
+      amount_kobo: 'amountKobo',
+      status: 'status',
+      provider_reference: 'providerReference',
+      held_at: 'heldAt',
+      resolved_at: 'resolvedAt'
+    })
+};
+
+export const invoiceMapper: RowMapper<Invoice> = {
+  columns: [
+    'id',
+    'invoice_number',
+    'order_id',
+    'seller_id',
+    'buyer_id',
+    'status',
+    'currency',
+    'subtotal_kobo',
+    'vat_kobo',
+    'total_kobo',
+    'line_items',
+    'issued_at',
+    'paid_at',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    invoiceNumber: row.invoice_number as string,
+    orderId: row.order_id as string,
+    sellerId: row.seller_id as string,
+    buyerId: row.buyer_id as string,
+    status: row.status as Invoice['status'],
+    currency: row.currency as Invoice['currency'],
+    subtotalKobo: num(row.subtotal_kobo),
+    vatKobo: num(row.vat_kobo),
+    totalKobo: num(row.total_kobo),
+    lineItems: (row.line_items as Invoice['lineItems']) ?? [],
+    issuedAt: row.issued_at ? ts(row.issued_at) : undefined,
+    paidAt: row.paid_at ? ts(row.paid_at) : undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      invoice_number: 'invoiceNumber',
+      order_id: 'orderId',
+      seller_id: 'sellerId',
+      buyer_id: 'buyerId',
+      status: 'status',
+      currency: 'currency',
+      subtotal_kobo: 'subtotalKobo',
+      vat_kobo: 'vatKobo',
+      total_kobo: 'totalKobo',
+      line_items: 'lineItems',
+      issued_at: 'issuedAt',
+      paid_at: 'paidAt',
+      created_at: 'createdAt'
+    })
+};
+
+export const shipmentMapper: RowMapper<Shipment> = {
+  columns: [
+    'id',
+    'order_id',
+    'status',
+    'carrier',
+    'tracking_reference',
+    'scheduled_pickup_at',
+    'picked_up_at',
+    'delivered_at',
+    'confirmed_at',
+    'failure_reason',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    orderId: row.order_id as string,
+    status: row.status as Shipment['status'],
+    carrier: (row.carrier as string) ?? undefined,
+    trackingReference: (row.tracking_reference as string) ?? undefined,
+    scheduledPickupAt: row.scheduled_pickup_at ? ts(row.scheduled_pickup_at) : undefined,
+    pickedUpAt: row.picked_up_at ? ts(row.picked_up_at) : undefined,
+    deliveredAt: row.delivered_at ? ts(row.delivered_at) : undefined,
+    confirmedAt: row.confirmed_at ? ts(row.confirmed_at) : undefined,
+    failureReason: (row.failure_reason as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      order_id: 'orderId',
+      status: 'status',
+      carrier: 'carrier',
+      tracking_reference: 'trackingReference',
+      scheduled_pickup_at: 'scheduledPickupAt',
+      picked_up_at: 'pickedUpAt',
+      delivered_at: 'deliveredAt',
+      confirmed_at: 'confirmedAt',
+      failure_reason: 'failureReason',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const creditScoreMapper: RowMapper<CreditScoreResult> = {
+  columns: ['user_id', 'version', 'score', 'components', 'computed_at'],
+  fromRow: (row) => ({
+    userId: row.user_id as string,
+    version: row.version as string,
+    score: num(row.score),
+    components: (row.components as Record<string, number>) ?? {},
+    computedAt: ts(row.computed_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      user_id: 'userId',
+      version: 'version',
+      score: 'score',
+      components: 'components',
+      computed_at: 'computedAt'
+    })
+};
+
+export const lenderMapper: RowMapper<Lender> = {
+  columns: [
+    'id',
+    'name',
+    'product',
+    'min_ticket_kobo',
+    'max_ticket_kobo',
+    'min_score',
+    'criteria',
+    'is_active'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    product: row.product as string,
+    minTicketKobo: num(row.min_ticket_kobo),
+    maxTicketKobo: num(row.max_ticket_kobo),
+    minScore: num(row.min_score),
+    criteria: (row.criteria as string[]) ?? [],
+    isActive: row.is_active as boolean
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      product: 'product',
+      min_ticket_kobo: 'minTicketKobo',
+      max_ticket_kobo: 'maxTicketKobo',
+      min_score: 'minScore',
+      criteria: 'criteria',
+      is_active: 'isActive'
+    })
+};
+
+export const loanApplicationMapper: RowMapper<LoanApplication> = {
+  columns: [
+    'id',
+    'applicant_id',
+    'lender_id',
+    'product_name',
+    'amount_kobo',
+    'term_months',
+    'annual_rate_bps',
+    'purpose',
+    'status',
+    'submitted_at',
+    'decided_at',
+    'disbursed_at',
+    'closed_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    applicantId: row.applicant_id as string,
+    lenderId: row.lender_id as string,
+    productName: (row.product_name as string) ?? undefined,
+    amountKobo: num(row.amount_kobo),
+    termMonths: num(row.term_months),
+    annualRateBps: num(row.annual_rate_bps),
+    purpose: (row.purpose as string) ?? undefined,
+    status: row.status as LoanApplication['status'],
+    submittedAt: row.submitted_at ? ts(row.submitted_at) : undefined,
+    decidedAt: row.decided_at ? ts(row.decided_at) : undefined,
+    disbursedAt: row.disbursed_at ? ts(row.disbursed_at) : undefined,
+    closedAt: row.closed_at ? ts(row.closed_at) : undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      applicant_id: 'applicantId',
+      lender_id: 'lenderId',
+      product_name: 'productName',
+      amount_kobo: 'amountKobo',
+      term_months: 'termMonths',
+      annual_rate_bps: 'annualRateBps',
+      purpose: 'purpose',
+      status: 'status',
+      submitted_at: 'submittedAt',
+      decided_at: 'decidedAt',
+      disbursed_at: 'disbursedAt',
+      closed_at: 'closedAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const installmentMapper: RowMapper<RepaymentInstallment> = {
+  columns: [
+    'id',
+    'loan_id',
+    'sequence',
+    'due_date',
+    'principal_kobo',
+    'interest_kobo',
+    'total_kobo',
+    'status',
+    'paid_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    loanId: row.loan_id as string,
+    sequence: num(row.sequence),
+    dueDate: row.due_date instanceof Date ? row.due_date.toISOString().slice(0, 10) : (row.due_date as string),
+    principalKobo: num(row.principal_kobo),
+    interestKobo: num(row.interest_kobo),
+    totalKobo: num(row.total_kobo),
+    status: row.status as RepaymentInstallment['status'],
+    paidAt: row.paid_at ? ts(row.paid_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      loan_id: 'loanId',
+      sequence: 'sequence',
+      due_date: 'dueDate',
+      principal_kobo: 'principalKobo',
+      interest_kobo: 'interestKobo',
+      total_kobo: 'totalKobo',
+      status: 'status',
+      paid_at: 'paidAt'
+    })
 };

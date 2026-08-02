@@ -12,13 +12,20 @@ import {
   CONSENT_REPOSITORY,
   COURSE_REPOSITORY,
   CREDIT_PROFILE_REPOSITORY,
+  CREDIT_SCORE_REPOSITORY,
   DELETION_REQUEST_REPOSITORY,
   DELIVERY_LOG_REPOSITORY,
   DOCUMENT_REPOSITORY,
   ENROLMENT_REPOSITORY,
+  ESCROW_REPOSITORY,
   EVENT_RSVP_REPOSITORY,
   FORUM_TOPIC_REPOSITORY,
+  INVOICE_REPOSITORY,
+  LEDGER_ACCOUNT_REPOSITORY,
+  LEDGER_ENTRY_REPOSITORY,
+  LENDER_REPOSITORY,
   LISTING_REPOSITORY,
+  LOAN_APPLICATION_REPOSITORY,
   MENTOR_REQUEST_REPOSITORY,
   NOTIFICATION_PREFERENCE_REPOSITORY,
   NOTIFICATION_REPOSITORY,
@@ -27,7 +34,9 @@ import {
   OUTBOX_REPOSITORY,
   PG_POOL,
   PROFILE_REPOSITORY,
+  REPAYMENT_SCHEDULE_REPOSITORY,
   REVIEW_REPOSITORY,
+  SHIPMENT_REPOSITORY,
   TOPIC_FLAG_REPOSITORY,
   USER_REPOSITORY
 } from './persistence.tokens.js';
@@ -103,6 +112,34 @@ import {
 import { createInMemoryTopicFlagRepository } from './repositories/topic-flag.repository.js';
 import { createInMemoryUserRepository } from './repositories/user.repository.js';
 import { createPgUserRepository } from './repositories/user.pg-repository.js';
+import { createInMemoryEscrowRepository } from './repositories/escrow.repository.js';
+import { createInMemoryInvoiceRepository } from './repositories/invoice.repository.js';
+import { createInMemoryShipmentRepository } from './repositories/shipment.repository.js';
+import {
+  createPgEscrowRepository,
+  createPgInvoiceRepository,
+  createPgShipmentRepository
+} from './repositories/commerce.pg-repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from './repositories/ledger.repository.js';
+import {
+  createPgCreditScoreRepository,
+  createPgLedgerAccountRepository,
+  createPgLedgerEntryRepository
+} from './repositories/ledger.pg-repository.js';
+import { createInMemoryCreditScoreRepository } from './repositories/credit-score.repository.js';
+import { createInMemoryLenderRepository } from './repositories/lender.repository.js';
+import {
+  createInMemoryLoanApplicationRepository,
+  createInMemoryRepaymentScheduleRepository
+} from './repositories/loan.repository.js';
+import {
+  createPgLenderRepository,
+  createPgLoanApplicationRepository,
+  createPgRepaymentScheduleRepository
+} from './repositories/credit.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -282,6 +319,57 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
       provide: OUTBOX_REPOSITORY,
       useFactory: (pool: pg.Pool | null) => (pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository()),
       inject: [PG_POOL]
+    },
+    // Wave P2a: marketplace depth + finance/credit repositories.
+    {
+      provide: ESCROW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INVOICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgInvoiceRepository(pool) : createInMemoryInvoiceRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgShipmentRepository(pool) : createInMemoryShipmentRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerAccountRepository(pool) : createInMemoryLedgerAccountRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ENTRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerEntryRepository(pool) : createInMemoryLedgerEntryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditScoreRepository(pool) : createInMemoryCreditScoreRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LENDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLenderRepository(pool) : createInMemoryLenderRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOAN_APPLICATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLoanApplicationRepository(pool) : createInMemoryLoanApplicationRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REPAYMENT_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -312,7 +400,16 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
     NOTIFICATION_PREFERENCE_REPOSITORY,
     DELIVERY_LOG_REPOSITORY,
     AUDIT_REPOSITORY,
-    OUTBOX_REPOSITORY
+    OUTBOX_REPOSITORY,
+    ESCROW_REPOSITORY,
+    INVOICE_REPOSITORY,
+    SHIPMENT_REPOSITORY,
+    LEDGER_ACCOUNT_REPOSITORY,
+    LEDGER_ENTRY_REPOSITORY,
+    CREDIT_SCORE_REPOSITORY,
+    LENDER_REPOSITORY,
+    LOAN_APPLICATION_REPOSITORY,
+    REPAYMENT_SCHEDULE_REPOSITORY
   ]
 })
 export class DatabaseModule {}
