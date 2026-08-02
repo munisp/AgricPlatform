@@ -13,6 +13,18 @@ export interface RawBodyRequest extends Request {
   rawBody?: Buffer;
 }
 
+/** Builds the OpenAPI document (Wave P: single source for UI, JSON spec, generator). */
+export function buildOpenApiDocument(app: NestExpressApplication) {
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('AgricPlatform API')
+    .setDescription('Modular NestJS API for the NYFN farmer platform (PRD v3.3 Phase 1).')
+    .setVersion('0.1.0')
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'oidc')
+    .addApiKey({ type: 'apiKey', name: 'x-user-id', in: 'header' }, 'x-user-id')
+    .build();
+  return SwaggerModule.createDocument(app, swaggerConfig);
+}
+
 /** Shared HTTP configuration used by main.ts and e2e tests. */
 export function configureApp(app: NestExpressApplication): void {
   app.setGlobalPrefix('api/v1');
@@ -53,16 +65,17 @@ export function configureApp(app: NestExpressApplication): void {
 
   // API documentation is disabled in production unless explicitly enabled.
   if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {
-    const swaggerConfig = new DocumentBuilder()
-      .setTitle('AgricPlatform API')
-      .setDescription('Modular NestJS API for the NYFN farmer platform (PRD v3.3 Phase 1).')
-      .setVersion('0.1.0')
-      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'oidc')
-      .addApiKey({ type: 'apiKey', name: 'x-user-id', in: 'header' }, 'x-user-id')
-      .build();
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    const document = buildOpenApiDocument(app);
     SwaggerModule.setup('api/v1/docs', app, document);
   }
+
+  // Wave P: the generated OpenAPI spec is always served as JSON (the web
+  // developer portal regenerates its catalogue from this document).
+  app
+    .getHttpAdapter()
+    .get('/api/v1/openapi.json', (_req: unknown, res: { json: (body: unknown) => void }) => {
+      res.json(buildOpenApiDocument(app));
+    });
 
   app.enableShutdownHooks();
 }

@@ -79,10 +79,12 @@ export class AdminController {
 
   @Get('audit-log/verify')
   @ApiOperation({
-    summary: 'Verify the tamper-evident audit hash chain ({valid, brokenAt?})'
+    summary:
+      'Verify the tamper-evident audit hash chain ({valid, brokenAt?, checked}). ' +
+      'Optional fromId/toId bound the walk to a contiguous range (regulator spot-checks).'
   })
-  async verifyAuditLog() {
-    return { data: await this.admin.verifyAuditLog() };
+  async verifyAuditLog(@Query('fromId') fromId?: string, @Query('toId') toId?: string) {
+    return { data: await this.admin.verifyAuditLog({ fromId, toId }) };
   }
 
   @Get('events')

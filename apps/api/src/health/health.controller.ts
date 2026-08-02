@@ -7,6 +7,7 @@ import {
   type DependencyIndicator,
   type DependencyStatus
 } from './dependency-indicator.js';
+import { ModuleHealthService } from './module-health.service.js';
 
 /** Legacy persistence block status (kept for the existing readiness consumers). */
 type PersistenceStatus = 'up' | 'down' | 'disabled';
@@ -23,6 +24,7 @@ function toPersistenceStatus(status: DependencyStatus | undefined): PersistenceS
 export class HealthController {
   constructor(
     private readonly integrations: IntegrationsService,
+    private readonly moduleHealth: ModuleHealthService,
     @Optional()
     @Inject(DEPENDENCY_INDICATORS)
     private readonly dependencies: DependencyIndicator[] = []
@@ -43,6 +45,17 @@ export class HealthController {
   @ApiOperation({ summary: 'Liveness probe' })
   live() {
     return { status: 'ok' };
+  }
+
+  @Get('modules')
+  @ApiOperation({
+    summary:
+      'Per-module readiness matrix (Wave P): cheap probes only — connectivity pings ' +
+      'and backlog counters (outbox pending/dead-lettered, notification queue depth, ' +
+      'integration adapter health, feature-flag count).'
+  })
+  async modules() {
+    return this.moduleHealth.report();
   }
 
   @Get('ready')

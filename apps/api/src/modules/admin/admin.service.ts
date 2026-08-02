@@ -134,8 +134,8 @@ export class AdminService {
   }
 
   /** Tamper-evidence check over the audit hash chain (observability plan §A.6). */
-  async verifyAuditLog() {
-    return this.audit.verify();
+  async verifyAuditLog(range?: { fromId?: string; toId?: string }) {
+    return this.audit.verify(range);
   }
 
   /** Wave P: one outbox sweeper pass (retries + dead-lettering). */
