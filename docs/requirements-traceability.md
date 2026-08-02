@@ -115,7 +115,20 @@ The table below supersedes the "Initial planning status" column wherever they di
 | Appendix G | Integration ACL principle realised via the adapter/port layer (no raw external calls in business logic); OpenAPI-versioned `/api/v1` surface; price/weather feeds row (G.3 P1) implemented as above. Partner API onboarding, SDK publish, embedded widgets remain Phase 2/3 + External dependency. |
 | NFR tooling | k6 smoke/gate scripts (p95<500 threshold), Lighthouse CI config (mobile 3G, a11y≥0.95 error gate), bundle-budget CI gate, media audit — all in repo; execution against staging/live URLs is environment-dependent. |
 
-## 7. Verification rules
+## 7. Stage 9 closure addendum (2026-08-02, remaining-scope build-out)
+
+Waves P5a–P5e (merges through c4ebae2) closed every engineering-buildable PRD item that remained after Stage 8. Merged-main validation: 889 tests (711 API + 130 web + 18 SDK + 17 shared + 13 mobile), lint:sql 10 migrations, typecheck/lint/build/bundle green.
+
+| PRD item | Post-Stage-9 status |
+| --- | --- |
+| M13 full (analytics) | Segmentation, registration/chapter funnels, weekly cohort retention (Africa/Lagos), KPI data marts + idempotent ETL snapshots + columnar CSV export (lakehouse handoff layer). BI tool itself remains an external product choice. |
+| M16 full (recommendations) | Explainable content-based recommender with reason codes, cold-start trending fallback, Beta-smoothed feedback loop; `/recommendations` + `/similar` + `/feedback` endpoints. |
+| Appendix F channels | USSD fully implemented (Africa's Talking callback, menu state machine: registration, price check, opportunities, course confirmation; 182-char turns, session TTL, idempotent replay). WhatsApp structured multi-turn workflows implemented. Shared-device PIN session swap implemented. Live USSD/SMS carrier testing remains External dependency. |
+| Appendix G integrations | farmOS/LiteFarm, OFN, NCX/AFEX, ODK/KoboToolbox, input-finance, e-Extension adapters all implemented fail-closed with consent gating (migration 007). Partner API (client credentials, scoped reads/writes, HMAC webhooks, rate buckets) implemented (migration 010). Developer SDK (`@agric-platform/sdk`) + developer portal + 4 embedded widgets implemented. SDK npm/PyPI publish and partner adoption remain External dependency. |
+| Mobile app (Phase 2) | `apps/mobile` Expo/React Native shell with typed API client, offline queue, Login/Home/Courses/Marketplace/Profile screens, CI job. Store assets/submission remain External dependency. |
+| IVR (Phase 3) | NOT built — the only PRD feature area without code. Thin telephony-provider adapter candidate (Africa's Talking Voice); classified with USSD-live as provider-dependent. |
+
+## 8. Verification rules
 
 1. **Code-complete evidence** (unit/integration/E2E tests, CI checks, Lighthouse, axe, k6) must pass in CI or staging without third-party credentials, using stub drivers. This is the only evidence class available at the current baseline.
 2. **Sandbox evidence** requires test credentials (e.g., Paystack test keys, Moodle sandbox, Discourse staging). It verifies the adapter contract, not production behaviour, and must be labelled `sandbox` in test reports.
