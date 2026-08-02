@@ -4,6 +4,8 @@ import type {
   LedgerBalance,
   LedgerJournalEntry
 } from '@agric-platform/shared';
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import type { DomainEvent } from '../../core/domain-events.service.js';
 
 /**
  * Double-entry ledger ports (wave P2a). Journal entries are immutable: the
@@ -23,6 +25,11 @@ export interface LedgerEntryCriteria {
 }
 
 export interface LedgerEntryRepository {
+  /**
+   * True when postEntry persists a passed outbox event in the same database
+   * transaction as the journal entry (PostgreSQL implementation).
+   */
+  readonly transactionalOutbox?: boolean;
   findById(id: string): Promise<LedgerJournalEntry | undefined>;
   findByIdempotencyKey(key: string): Promise<LedgerJournalEntry | undefined>;
   /** The reversal entry pointing at `entryId`, if one was posted. */
@@ -31,8 +38,18 @@ export interface LedgerEntryRepository {
   /**
    * Persists a validated, balanced journal entry as one atomic unit: the
    * transfer row plus its ≥2 posting rows commit or roll back together.
+   *
+   * `requireSolventAccounts` (funds-integrity wave): account codes whose
+   * post-entry balance must stay non-negative; the check runs inside the
+   * same transaction, so an underfunded posting rolls back atomically.
+   * `outboxEvent` is appended to events.outbox in the same transaction when
+   * the implementation sets `transactionalOutbox` (ignored otherwise).
    */
-  postEntry(entry: LedgerJournalEntry): Promise<LedgerJournalEntry>;
+  postEntry(
+    entry: LedgerJournalEntry,
+    requireSolventAccounts?: readonly string[],
+    outboxEvent?: DomainEvent
+  ): Promise<LedgerJournalEntry>;
   entriesForAccount(accountCode: string): Promise<LedgerJournalEntry[]>;
   /** Aggregated debit/credit totals (integer kobo) for an account. */
   balance(accountCode: string): Promise<LedgerBalance>;
@@ -84,8 +101,30 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
     );
   }
 
-  async postEntry(entry: LedgerJournalEntry): Promise<LedgerJournalEntry> {
+  async postEntry(
+    entry: LedgerJournalEntry,
+    requireSolventAccounts?: readonly string[]
+  ): Promise<LedgerJournalEntry> {
+    // Mirror the pg UNIQUE constraint on idempotency_key (23505 → 409):
+    // concurrent posts with the same key cannot both persist.
+    for (const existing of this.items.values()) {
+      if (existing.idempotencyKey === entry.idempotencyKey) {
+        throw new ConflictException('A record with these unique values already exists');
+      }
+    }
     this.items.set(entry.id, structuredClone(entry));
+    // Solvency guard with rollback semantics: compute the post-entry balance
+    // synchronously and back the entry out when a protected account would
+    // go negative (mirrors the in-transaction check of the pg posting).
+    for (const accountCode of requireSolventAccounts ?? []) {
+      const { balanceKobo } = await this.balance(accountCode);
+      if (balanceKobo < 0) {
+        this.items.delete(entry.id);
+        throw new BadRequestException(
+          `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
+        );
+      }
+    }
     return entry;
   }
 

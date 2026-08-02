@@ -118,6 +118,8 @@ export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
 export const IDEMPOTENCY_STORE = Symbol('IDEMPOTENCY_STORE');
 export const OTP_STORE = Symbol('OTP_STORE');
+// Funds-integrity wave: durable provider-webhook dedupe (integrations.inbound_events).
+export const WEBHOOK_DEDUPE_STORE = Symbol('WEBHOOK_DEDUPE_STORE');
 // Wave L1b: ALTP animal health, movement traceability, recall, surveillance.
 export const HEALTH_RECORD_REPOSITORY = Symbol('HEALTH_RECORD_REPOSITORY');
 export const MOVEMENT_REPOSITORY = Symbol('MOVEMENT_REPOSITORY');

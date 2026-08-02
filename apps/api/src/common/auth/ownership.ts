@@ -20,3 +20,19 @@ export function assertSelfOrAdmin(actor: User | null, userId: string): User {
 export function isSelfOrAdmin(actor: User | null, userId: string): boolean {
   return Boolean(actor && (actor.id === userId || actor.roles.includes('admin')));
 }
+
+/**
+ * Multi-party authorisation (funds-integrity wave): financial records with
+ * more than one entitled party (order buyer/seller, invoice seller/buyer)
+ * may be read by any of those parties or an administrator; everyone else
+ * gets a 403 (and anonymous callers a 401).
+ */
+export function assertPartyOrAdmin(actor: User | null, partyIds: readonly string[]): User {
+  if (!actor) {
+    throw new UnauthorizedException('Authentication required for this resource');
+  }
+  if (partyIds.includes(actor.id) || actor.roles.includes('admin')) {
+    return actor;
+  }
+  throw new ForbiddenException('You may only access records you are a party to');
+}

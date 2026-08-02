@@ -21,8 +21,8 @@ import {
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { EscrowService } from './escrow.service.js';
 import { InvoiceService } from './invoice.service.js';
@@ -92,9 +92,27 @@ export class CommerceController {
   }
 
   @Get('orders/:id/escrow')
-  @ApiOperation({ summary: 'Escrow record for an order' })
-  async escrowForOrder(@Param('id') orderId: string) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Escrow record for an order (order parties or admin)' })
+  async escrowForOrder(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
+    const order = await this.marketplace.getOrder(orderId);
+    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
     return { data: (await this.escrow.escrowForOrder(orderId)) ?? null };
+  }
+
+  /**
+   * Deterministic escrow expiry sweep (funds-integrity wave): every held
+   * escrow past its heldUntil deadline is auto-refunded through the guarded
+   * transition machinery. Admin-triggered; safe to run repeatedly.
+   */
+  @Post('escrow/expire')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Auto-refund all expired escrow holds (admin; idempotent)' })
+  async expireEscrows(@CurrentUser() actor: User | null) {
+    requireActor(actor);
+    return { data: await this.escrow.expireHeldEscrows() };
   }
 
   @Patch('escrow/:id/status')
@@ -138,14 +156,22 @@ export class CommerceController {
   }
 
   @Get('invoices/:id')
-  @ApiOperation({ summary: 'Invoice detail' })
-  async getInvoice(@Param('id') id: string) {
-    return { data: await this.invoices.getById(id) };
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Invoice detail (invoice parties or admin)' })
+  async getInvoice(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const invoice = await this.invoices.getById(id);
+    assertPartyOrAdmin(actor, [invoice.buyerId, invoice.sellerId]);
+    return { data: invoice };
   }
 
   @Get('invoices/:id/serialised')
-  @ApiOperation({ summary: 'PDF-ready invoice serialisation (structured JSON)' })
-  async serialiseInvoice(@Param('id') id: string) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'PDF-ready invoice serialisation (invoice parties or admin)' })
+  async serialiseInvoice(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const invoice = await this.invoices.getById(id);
+    assertPartyOrAdmin(actor, [invoice.buyerId, invoice.sellerId]);
     return { data: await this.invoices.serialise(id) };
   }
 
@@ -174,8 +200,12 @@ export class CommerceController {
   }
 
   @Get('orders/:id/shipment')
-  @ApiOperation({ summary: 'Shipment for an order' })
-  async shipmentForOrder(@Param('id') orderId: string) {
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Shipment for an order (order parties or admin)' })
+  async shipmentForOrder(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
+    const order = await this.marketplace.getOrder(orderId);
+    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
     return { data: (await this.logistics.shipmentForOrder(orderId)) ?? null };
   }
 

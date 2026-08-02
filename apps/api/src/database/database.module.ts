@@ -70,7 +70,8 @@ import {
   IMPORT_RECORD_REPOSITORY,
   INBOUND_EVENT_REPOSITORY,
   RECOMMENDATION_FEEDBACK_REPOSITORY,
-  ANALYTICS_MART_REPOSITORY
+  ANALYTICS_MART_REPOSITORY,
+  WEBHOOK_DEDUPE_STORE
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -267,8 +268,10 @@ import {
   createPgFarmRecordRepository,
   createPgImportBatchRepository,
   createPgImportRecordRepository,
-  createPgInboundEventRepository
+  createPgInboundEventRepository,
+  createPgWebhookDedupeStore
 } from './repositories/phase3.pg-repository.js';
+import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
 // USSD channel + lightweight-channel depth wave (P5b) repositories.
 import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
 import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
@@ -506,8 +509,13 @@ import {
     },
     {
       provide: ORDER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) => (pool ? createPgOrderRepository(pool) : createInMemoryOrderRepository()),
-      inject: [PG_POOL]
+      // In-memory mode attaches the listing repository so placeOrder can
+      // decrement stock with the same compare-and-set guard as the pg path.
+      useFactory: (pool: pg.Pool | null, listings: unknown) =>
+        pool
+          ? createPgOrderRepository(pool)
+          : createInMemoryOrderRepository(listings as Parameters<typeof createInMemoryOrderRepository>[0]),
+      inject: [PG_POOL, LISTING_REPOSITORY]
     },
     {
       provide: REVIEW_REPOSITORY,
@@ -789,6 +797,15 @@ import {
         pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
       inject: [PG_POOL]
     },
+    {
+      // Durable provider-webhook dedupe (funds-integrity wave): pg mode
+      // persists receipts in integrations.inbound_events; in-memory mode
+      // keeps the bounded replay cache for development.
+      provide: WEBHOOK_DEDUPE_STORE,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWebhookDedupeStore(pool) : createInMemoryWebhookDedupeStore(),
+      inject: [PG_POOL]
+    },
     // USSD channel + lightweight-channel depth wave (P5b) providers.
     {
       provide: USSD_SESSION_REPOSITORY,
@@ -1043,6 +1060,7 @@ import {
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
+    WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
     PIN_PROFILE_REPOSITORY,
     RECOMMENDATION_FEEDBACK_REPOSITORY,

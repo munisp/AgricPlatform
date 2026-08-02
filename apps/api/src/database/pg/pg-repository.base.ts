@@ -6,6 +6,7 @@ import {
 import type pg from 'pg';
 import type { ApiListResponse } from '@agric-platform/shared';
 import { pageSlice } from '../../common/pagination.js';
+import type { DomainEvent } from '../../core/domain-events.service.js';
 
 /** snake_case row ↔ camelCase entity mapping, explicit per entity. */
 export interface RowMapper<T> {
@@ -81,6 +82,9 @@ export interface PgRepositoryOptions<T, TCriteria> {
  * hand-rolled SQL; criteria compile through whitelisted builders.
  */
 export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
+  /** updateExpected persists a passed outbox event in the same transaction. */
+  readonly transactionalOutbox = true;
+
   constructor(
     protected readonly pool: pg.Pool,
     protected readonly options: PgRepositoryOptions<T, TCriteria>
@@ -178,6 +182,72 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
       throw new NotFoundException(`Resource with id '${id}' not found`);
     }
     return this.mapper.fromRow(result.rows[0]);
+  }
+
+  /**
+   * Optimistic state guarding (funds-integrity wave): the patch is applied
+   * only when every `expected` column still matches, compiled to
+   * `UPDATE … WHERE id = $1 AND col = $n … RETURNING …`. A concurrent
+   * transition that already moved the row yields 0 rows → ConflictException
+   * (the id itself is re-checked so a genuinely missing row still 404s).
+   *
+   * When `outboxEvent` is provided, the event row is appended to
+   * events.outbox in the SAME transaction as the state change (the
+   * transactional-outbox guarantee for funds-affecting flows; see the
+   * `transactionalOutbox` marker consumed by services).
+   */
+  async updateExpected(
+    id: string,
+    patch: Partial<T>,
+    expected: Partial<T>,
+    outboxEvent?: DomainEvent
+  ): Promise<T> {
+    const row = this.mapper.toRow(patch as T);
+    const columns = Object.keys(row).filter((column) => column !== 'id');
+    if (columns.length === 0) {
+      return this.getById(id);
+    }
+    const expectedRow = this.mapper.toRow(expected as T);
+    const expectedColumns = Object.keys(expectedRow).filter((column) => column !== 'id');
+    const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+    const values = columns.map((column) => row[column]);
+    const offset = values.length + 1;
+    const preconditions = expectedColumns
+      .map((column, index) => `${column} = $${offset + index + 1}`)
+      .join(' AND ');
+    const sql =
+      `UPDATE ${this.table} SET ${assignments} WHERE id = $1` +
+      (preconditions ? ` AND ${preconditions}` : '') +
+      ` RETURNING ${this.selectList()}`;
+    const params = [id, ...values, ...expectedColumns.map((column) => expectedRow[column])];
+    const execute = async (queryable: Pick<pg.Pool, 'query'>): Promise<T | undefined> => {
+      const result = await queryable.query(sql, params);
+      if (!result.rows[0]) {
+        return undefined;
+      }
+      if (outboxEvent) {
+        await queryable.query(
+          `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            outboxEvent.id,
+            outboxEvent.name,
+            JSON.stringify(outboxEvent.payload ?? {}),
+            outboxEvent.actorId ?? null,
+            outboxEvent.occurredAt
+          ]
+        );
+      }
+      return this.mapper.fromRow(result.rows[0]);
+    };
+    const updated = outboxEvent ? await this.withTransaction(execute) : await execute(this.pool);
+    if (!updated) {
+      await this.getById(id); // preserves the 404 contract for missing rows
+      throw new ConflictException(
+        `Concurrent state change on ${this.table} row '${id}'; re-read and retry the operation`
+      );
+    }
+    return updated;
   }
 
   async remove(id: string): Promise<boolean> {

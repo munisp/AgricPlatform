@@ -20,13 +20,17 @@ const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['studen
 
 function makeService() {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  // Orders repo wired with the listings repo so placeOrder decrements stock
+  // with the same compare-and-set guard as the pg conditional UPDATE.
+  const listings = createInMemoryListingRepository();
   return {
     marketplace: new MarketplaceService(
       events,
-      createInMemoryListingRepository(),
-      createInMemoryOrderRepository(),
+      listings,
+      createInMemoryOrderRepository(listings),
       createInMemoryReviewRepository()
     ),
+    listings,
     events
   };
 }
@@ -94,6 +98,36 @@ describe('MarketplaceService order state machine', () => {
     await expect(marketplace.reviewOrder('order-buyer-cassava', 'user-buyer', 5)).rejects.toThrowError(
       BadRequestException
     );
+  });
+});
+
+describe('MarketplaceService oversell protection (funds-integrity wave)', () => {
+  // Seed listing 'listing-maize-kano': quantity 2, seller user-farmer-2.
+
+  it('decrements the listing quantity atomically with order placement', async () => {
+    const { marketplace, listings } = makeService();
+    await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    expect((await listings.getById('listing-maize-kano')).quantity).toBe(1);
+    await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    expect((await listings.getById('listing-maize-kano')).quantity).toBe(0);
+    // Stock exhausted: further orders are rejected.
+    await expect(marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1)).rejects.toThrowError(
+      /Quantity must be between 1 and 0/
+    );
+  });
+
+  it('rejects concurrent orders that would oversell (exactly one winner)', async () => {
+    const { marketplace, listings } = makeService();
+    const [first, second] = await Promise.allSettled([
+      marketplace.placeOrder('listing-maize-kano', 'user-buyer', 2),
+      marketplace.placeOrder('listing-maize-kano', 'user-hassan', 2)
+    ]);
+    const outcomes = [first, second];
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(BadRequestException);
+    // Stock left by the winner is consistent — never negative.
+    expect((await listings.getById('listing-maize-kano')).quantity).toBe(0);
   });
 });
 

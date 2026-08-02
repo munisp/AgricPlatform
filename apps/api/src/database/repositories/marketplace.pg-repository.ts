@@ -59,26 +59,36 @@ export class PgOrderRepository
   }
 
   /**
-   * Order placement in one transaction (plan §10.15): lock the listing row
-   * FOR UPDATE, re-validate availability, then insert.
+   * Order placement in one transaction (plan §10.15) with atomic stock
+   * decrement (funds-integrity wave): the listing quantity is decremented by
+   * a conditional UPDATE (`quantity >= $n`), so concurrent orders cannot
+   * oversell — the loser gets 0 rows and the order is rejected.
    */
   async placeOrder(order: Order): Promise<Order> {
     return this.withTransaction(async (client) => {
-      const listing = await client.query(
-        `SELECT seller_id, quantity, is_active FROM marketplace.listings WHERE id = $1 FOR UPDATE`,
-        [order.listingId]
+      const decremented = await client.query(
+        `UPDATE marketplace.listings
+            SET quantity = quantity - $2
+          WHERE id = $1 AND is_active AND seller_id <> $3 AND quantity >= $2 AND $2 > 0
+        RETURNING seller_id, quantity`,
+        [order.listingId, order.quantity, order.buyerId]
       );
-      const row = listing.rows[0] as
-        | { seller_id: string; quantity: string; is_active: boolean }
-        | undefined;
-      if (!row || !row.is_active) {
-        throw new BadRequestException('Listing is not active');
-      }
-      if (order.quantity <= 0 || order.quantity > Number(row.quantity)) {
+      if (!decremented.rows[0]) {
+        // Re-read to surface the precise rejection reason.
+        const listing = await client.query(
+          `SELECT seller_id, quantity, is_active FROM marketplace.listings WHERE id = $1`,
+          [order.listingId]
+        );
+        const row = listing.rows[0] as
+          | { seller_id: string; quantity: string; is_active: boolean }
+          | undefined;
+        if (!row || !row.is_active) {
+          throw new BadRequestException('Listing is not active');
+        }
+        if (row.seller_id === order.buyerId) {
+          throw new BadRequestException('Sellers cannot order their own listing');
+        }
         throw new BadRequestException(`Quantity must be between 1 and ${row.quantity}`);
-      }
-      if (row.seller_id === order.buyerId) {
-        throw new BadRequestException('Sellers cannot order their own listing');
       }
       const orderRow = orderMapper.toRow(order);
       const columns = Object.keys(orderRow);

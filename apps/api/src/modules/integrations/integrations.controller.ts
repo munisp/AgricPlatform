@@ -62,7 +62,7 @@ export class IntegrationsController {
       request.rawBody,
       request.headers
     );
-    const result = this.integrations.recordWebhook(provider, payload, digest);
+    const result = await this.integrations.recordWebhook(provider, payload, digest);
     // Payment webhooks drive the payments lifecycle metric (plan §A.3).
     if (this.integrations.status(provider).capability === 'payments') {
       this.metrics.paymentEvent(result.duplicate ? 'webhook_duplicate' : 'webhook_received');

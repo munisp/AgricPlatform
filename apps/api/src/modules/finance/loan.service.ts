@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -238,12 +239,18 @@ export class LoanService {
       }
     }
     const now = new Date().toISOString();
-    const updated = await this.loans.update(id, {
-      status,
-      submittedAt: status === 'submitted' ? now : loan.submittedAt,
-      decidedAt: status === 'approved' || status === 'declined' ? now : loan.decidedAt,
-      updatedAt: now
-    });
+    // Guarded write: a concurrent transition that already moved the loan
+    // surfaces as a 409 instead of silently overwriting the state machine.
+    const updated = await this.loans.updateExpected(
+      id,
+      {
+        status,
+        submittedAt: status === 'submitted' ? now : loan.submittedAt,
+        decidedAt: status === 'approved' || status === 'declined' ? now : loan.decidedAt,
+        updatedAt: now
+      },
+      { status: loan.status }
+    );
     if (status === 'approved' || status === 'declined') {
       await this.audit?.record({
         actorId: actor.id,
@@ -291,7 +298,11 @@ export class LoanService {
         postings: [
           { accountCode: receivable.code, direction: 'debit', amountKobo: loan.amountKobo },
           { accountCode: 'platform:cash', direction: 'credit', amountKobo: loan.amountKobo }
-        ]
+        ],
+        // Solvency guard: platform cash must stay non-negative — the check
+        // runs inside the ledger posting transaction, so an underfunded
+        // disbursement rolls back atomically instead of creating money.
+        requireSolventAccounts: ['platform:cash']
       },
       actorId
     );
@@ -313,11 +324,30 @@ export class LoanService {
       })
     );
     await this.schedules.replaceSchedule(loan.id, schedule);
-    const updated = await this.loans.update(id, {
-      status: 'repaying',
-      disbursedAt: loan.disbursedAt ?? now,
-      updatedAt: now
-    });
+    // Guarded status advance: concurrent disburse calls race here; the loser
+    // gets a 409 (its ledger posting replayed via the idempotency key and its
+    // schedule replace wrote identical rows) instead of double-disbursing.
+    // On PostgreSQL the outbox event commits with the state change.
+    const event = this.events.build(
+      'finance.loan.disbursed',
+      { loanId: id, applicantId: loan.applicantId, amountKobo: loan.amountKobo },
+      actorId
+    );
+    const updated = await this.loans.updateExpected(
+      id,
+      {
+        status: 'repaying',
+        disbursedAt: loan.disbursedAt ?? now,
+        updatedAt: now
+      },
+      { status: 'approved' },
+      event
+    );
+    if (this.loans.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
     await this.audit?.record({
       actorId,
       action: 'finance.loan.disbursed',
@@ -325,11 +355,6 @@ export class LoanService {
       entityId: id,
       metadata: { amountKobo: loan.amountKobo, termMonths: loan.termMonths, annualRateBps: loan.annualRateBps }
     });
-    await this.events.publish(
-      'finance.loan.disbursed',
-      { loanId: id, applicantId: loan.applicantId, amountKobo: loan.amountKobo },
-      actorId
-    );
     return updated;
   }
 
@@ -340,21 +365,80 @@ export class LoanService {
   }
 
   /**
-   * Marks a schedule installment paid and posts the balanced repayment to
-   * the ledger (platform cash debit; member receivable + interest income
-   * credits). When the final installment is paid the loan closes.
+   * Borrower-side payment declaration (CRIT-1 fix): the borrower records a
+   * payment reference (provider receipt / bank transfer id) which moves the
+   * installment to 'declared'. NO ledger posting happens here — the payment
+   * only becomes real when a lender-side actor confirms it via
+   * markInstallmentPaid. Re-declaring the same reference is an idempotent
+   * replay; a different reference supersedes the earlier declaration.
+   */
+  async declarePayment(
+    loanId: string,
+    sequence: number,
+    actorId: string,
+    paymentReference: string
+  ): Promise<RepaymentInstallment> {
+    if (!paymentReference || paymentReference.trim().length === 0) {
+      throw new BadRequestException('A paymentReference is required to declare a payment');
+    }
+    const loan = await this.loans.getById(loanId);
+    if (loan.status !== 'repaying') {
+      throw new BadRequestException(`Loan ${loanId} is not repaying (status '${loan.status}')`);
+    }
+    const installments = await this.scheduleForLoan(loanId);
+    const installment = installments.find((item) => item.sequence === sequence);
+    if (!installment) {
+      throw new NotFoundException(`Installment ${sequence} not found for loan ${loanId}`);
+    }
+    if (installment.status === 'paid') {
+      throw new ConflictException(`Installment ${sequence} of loan ${loanId} is already paid`);
+    }
+    if (installment.status === 'declared' && installment.paymentReference === paymentReference) {
+      return installment; // idempotent replay of the same declaration
+    }
+    const declared = await this.schedules.updateExpected(
+      installment.id,
+      {
+        status: 'declared',
+        paymentReference,
+        declaredBy: actorId,
+        declaredAt: new Date().toISOString()
+      },
+      { status: installment.status }
+    );
+    await this.events.publish(
+      'finance.loan.payment_declared',
+      { loanId, sequence, paymentReference },
+      actorId
+    );
+    return declared;
+  }
+
+  /**
+   * Lender-side confirmation of an installment payment: posts the balanced
+   * repayment to the ledger (platform cash debit; member receivable +
+   * interest income credits) and marks the installment paid. Accepts
+   * 'pending' installments (admin-recorded payment, reference optional) and
+   * borrower-'declared' ones (the declaration's paymentReference is kept
+   * unless explicitly overridden). When the final installment is paid the
+   * loan closes — and the close is retry-convergent: re-entering after a
+   * partial failure recomputes and completes the close instead of taking
+   * the early return and leaving the loan stuck in 'repaying'.
    */
   async markInstallmentPaid(
     loanId: string,
     sequence: number,
     actorId: string,
-    paidAt?: string
+    options: { paidAt?: string; paymentReference?: string } = {}
   ): Promise<RepaymentInstallment> {
     const loan = await this.loans.getById(loanId);
     const installments = await this.scheduleForLoan(loanId);
     const installment = installments.find((item) => item.sequence === sequence);
     if (installment?.status === 'paid') {
-      return installment; // idempotent replay (also after the loan has closed)
+      // Idempotent replay — but a previous attempt may have crashed between
+      // the installment write and the loan close: converge the close now.
+      await this.closeIfFullyRepaid(loanId, actorId);
+      return installment;
     }
     if (loan.status !== 'repaying') {
       throw new BadRequestException(`Loan ${loanId} is not repaying (status '${loan.status}')`);
@@ -362,7 +446,8 @@ export class LoanService {
     if (!installment) {
       throw new NotFoundException(`Installment ${sequence} not found for loan ${loanId}`);
     }
-    const now = paidAt ?? new Date().toISOString();
+    const now = options.paidAt ?? new Date().toISOString();
+    const paymentReference = options.paymentReference ?? installment.paymentReference;
     const postings = [
       { accountCode: 'platform:cash', direction: 'debit' as const, amountKobo: installment.totalKobo },
       {
@@ -388,29 +473,54 @@ export class LoanService {
       },
       actorId
     );
-    const updated = await this.schedules.update(installment.id, {
-      status: 'paid',
-      paidAt: now
-    });
+    // Guarded write: concurrent confirmations of the same installment race
+    // here; the loser's ledger call replayed via the idempotency key and the
+    // conditional update fails with a 409 instead of double-recording.
+    const updated = await this.schedules.updateExpected(
+      installment.id,
+      { status: 'paid', paidAt: now, paymentReference },
+      { status: installment.status }
+    );
     await this.audit?.record({
       actorId,
       action: 'finance.loan.repayment_received',
       entityType: 'repayment_installment',
       entityId: installment.id,
-      metadata: { loanId, sequence, totalKobo: installment.totalKobo }
+      metadata: { loanId, sequence, totalKobo: installment.totalKobo, paymentReference }
     });
     await this.events.publish(
       'finance.loan.repayment_received',
       { loanId, sequence, totalKobo: installment.totalKobo },
       actorId
     );
-    const remaining = installments.filter(
-      (item) => item.id !== installment.id && item.status !== 'paid'
-    );
-    if (remaining.length === 0) {
-      await this.loans.update(loanId, { status: 'closed', closedAt: now, updatedAt: now });
-      await this.events.publish('finance.loan.closed', { loanId }, actorId);
-    }
+    await this.closeIfFullyRepaid(loanId, actorId, now);
     return updated;
+  }
+
+  /**
+   * Closes the loan once every installment is paid. Computable at ANY time
+   * (CRIT-4 fix): the close write is a conditional update from 'repaying',
+   * so re-entering after a partial failure converges to 'closed' and
+   * concurrent closers cannot double-close or double-publish.
+   */
+  private async closeIfFullyRepaid(loanId: string, actorId: string, now?: string): Promise<void> {
+    const installments = await this.schedules.find({ loanId });
+    if (installments.length === 0 || installments.some((item) => item.status !== 'paid')) {
+      return;
+    }
+    const closedAt = now ?? new Date().toISOString();
+    try {
+      await this.loans.updateExpected(
+        loanId,
+        { status: 'closed', closedAt, updatedAt: closedAt },
+        { status: 'repaying' }
+      );
+    } catch (error) {
+      if (error instanceof ConflictException || error instanceof NotFoundException) {
+        return; // another closer won the race, or the loan already advanced
+      }
+      throw error;
+    }
+    await this.events.publish('finance.loan.closed', { loanId }, actorId);
   }
 }

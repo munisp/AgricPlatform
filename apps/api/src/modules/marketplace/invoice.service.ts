@@ -204,10 +204,28 @@ export class InvoiceService {
     status: InvoiceStatus,
     actorId: string
   ): Promise<Invoice> {
-    const updated = await this.invoices.update(invoice.id, {
-      status,
-      paidAt: status === 'paid' ? new Date().toISOString() : undefined
-    });
+    // Guarded write (funds-integrity wave): concurrent transitions race on
+    // the conditional UPDATE; the loser gets a 409 instead of overwriting.
+    // On PostgreSQL the outbox event commits with the state change.
+    const event = this.events.build(
+      'marketplace.invoice.status_changed',
+      { invoiceId: invoice.id, orderId: invoice.orderId, from: invoice.status, to: status },
+      actorId
+    );
+    const updated = await this.invoices.updateExpected(
+      invoice.id,
+      {
+        status,
+        paidAt: status === 'paid' ? new Date().toISOString() : undefined
+      },
+      { status: invoice.status },
+      event
+    );
+    if (this.invoices.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
     if (status === 'paid' || status === 'cancelled') {
       await this.audit?.record({
         actorId,
@@ -217,11 +235,6 @@ export class InvoiceService {
         metadata: { from: invoice.status, to: status, totalKobo: invoice.totalKobo }
       });
     }
-    await this.events.publish(
-      'marketplace.invoice.status_changed',
-      { invoiceId: invoice.id, orderId: invoice.orderId, from: invoice.status, to: status },
-      actorId
-    );
     return updated;
   }
 

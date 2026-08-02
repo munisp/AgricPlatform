@@ -23,6 +23,7 @@ import type {
   InboundEventCriteria,
   InboundEventRepository
 } from './phase3.repository.js';
+import { webhookDedupeRow, type WebhookDedupeStore } from './webhook-dedupe.repository.js';
 
 // The mappers live next to the repositories (instead of row-mappers.ts) to
 // keep the wave P5a diff additive and conflict-free with concurrent waves.
@@ -357,4 +358,29 @@ export class PgInboundEventRepository
 
 export function createPgInboundEventRepository(pool: pg.Pool): PgInboundEventRepository {
   return new PgInboundEventRepository(pool);
+}
+
+/**
+ * Durable provider-webhook dedupe (funds-integrity wave): reuses
+ * integrations.inbound_events with UNIQUE (system, dedupe_key) as the
+ * atomic check-and-insert, so a replayed webhook is suppressed across
+ * restarts and across multiple API instances.
+ */
+export class PgWebhookDedupeStore implements WebhookDedupeStore {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async recordIfNew(provider: string, digest: string, payload: unknown): Promise<boolean> {
+    const row = webhookDedupeRow(provider, digest, payload);
+    const result = await this.pool.query(
+      `INSERT INTO integrations.inbound_events (id, system, event_type, dedupe_key, payload)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (system, dedupe_key) DO NOTHING`,
+      [row.id, row.system, row.eventType, row.dedupeKey, JSON.stringify(row.payload)]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+}
+
+export function createPgWebhookDedupeStore(pool: pg.Pool): PgWebhookDedupeStore {
+  return new PgWebhookDedupeStore(pool);
 }

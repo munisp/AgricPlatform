@@ -34,6 +34,12 @@ export interface PostEntryInput {
   postings: LedgerPosting[];
   /** Set internally when this entry reverses an earlier one. */
   reversesEntryId?: string;
+  /**
+   * Solvency guard: these account codes must keep a non-negative balance
+   * after the entry posts; the check runs inside the posting transaction so
+   * an underfunded posting is rejected atomically (funds-integrity wave).
+   */
+  requireSolventAccounts?: readonly string[];
 }
 
 /**
@@ -115,7 +121,20 @@ export class LedgerService {
       postedAt: new Date().toISOString(),
       postings: input.postings
     };
-    const posted = await this.entries.postEntry(entry);
+    // On PostgreSQL the journal entry and the outbox event commit in one
+    // transaction (transactionalOutbox); in-memory repos persist the event
+    // right after the synchronous posting.
+    const event = this.events.build(
+      'finance.ledger.entry_posted',
+      { entryId: entry.id, idempotencyKey: entry.idempotencyKey, referenceId: entry.referenceId },
+      actorId
+    );
+    const posted = await this.entries.postEntry(entry, input.requireSolventAccounts, event);
+    if (this.entries.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
     await this.audit?.record({
       actorId,
       action: 'finance.ledger.entry_posted',
@@ -128,11 +147,6 @@ export class LedgerService {
         postings: posted.postings
       }
     });
-    await this.events.publish(
-      'finance.ledger.entry_posted',
-      { entryId: posted.id, idempotencyKey: posted.idempotencyKey, referenceId: posted.referenceId },
-      actorId
-    );
     return posted;
   }
 

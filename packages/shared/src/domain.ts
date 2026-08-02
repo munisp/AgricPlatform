@@ -322,7 +322,14 @@ export interface ApiItemResponse<T> {
  * Money is always integer kobo (1 NGN = 100 kobo); no float money arithmetic.
  * ------------------------------------------------------------------------- */
 
-export const ESCROW_STATUSES = ['held', 'released', 'refunded', 'disputed'] as const;
+export const ESCROW_STATUSES = [
+  'held',
+  'releasing',
+  'released',
+  'refunding',
+  'refunded',
+  'disputed'
+] as const;
 export type EscrowStatus = (typeof ESCROW_STATUSES)[number];
 
 /** Escrow record held against a marketplace order (provider-agnostic). */
@@ -330,10 +337,17 @@ export interface EscrowRecord {
   id: string;
   orderId: string;
   amountKobo: number;
+  /**
+   * 'releasing'/'refunding' are system-driven pending states: the intent is
+   * persisted BEFORE the payment provider is called, so a crash mid-call
+   * leaves a resumable record instead of a double-release risk.
+   */
   status: EscrowStatus;
   /** Opaque reference returned by the payment provider adapter, when attached. */
   providerReference?: string;
   heldAt: string;
+  /** Expiry deadline: a held escrow past this timestamp is auto-refunded. */
+  heldUntil?: string;
   resolvedAt?: string;
 }
 
@@ -493,7 +507,7 @@ export interface LoanApplication {
   updatedAt: string;
 }
 
-export const INSTALLMENT_STATUSES = ['pending', 'paid', 'late'] as const;
+export const INSTALLMENT_STATUSES = ['pending', 'declared', 'paid', 'late'] as const;
 export type InstallmentStatus = (typeof INSTALLMENT_STATUSES)[number];
 
 export interface RepaymentInstallment {
@@ -505,8 +519,17 @@ export interface RepaymentInstallment {
   principalKobo: number;
   interestKobo: number;
   totalKobo: number;
+  /**
+   * 'declared' = the borrower asserts they paid (with paymentReference) and
+   * the payment awaits lender/admin confirmation; only a confirmed payment
+   * ('paid') posts to the ledger.
+   */
   status: InstallmentStatus;
   paidAt?: string;
+  /** External payment evidence (provider receipt / transfer reference). */
+  paymentReference?: string;
+  declaredBy?: string;
+  declaredAt?: string;
 }
 
 export interface Lender {
