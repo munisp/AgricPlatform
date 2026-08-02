@@ -157,6 +157,33 @@ export class PgAnalyticsStarRepository implements AnalyticsStarRepository {
     return row;
   }
 
+  async dimUsers(): Promise<DimUserRow[]> {
+    const result = await this.pool.query(
+      `SELECT user_id, roles, state, chapter_id, registered_at FROM analytics.dim_users ORDER BY user_id`
+    );
+    return result.rows.map((row) => ({
+      userId: String(row.user_id),
+      roles: (row.roles as string[]) ?? [],
+      ...(row.state ? { state: String(row.state) } : {}),
+      ...(row.chapter_id ? { chapterId: String(row.chapter_id) } : {}),
+      registeredAt: ts(row.registered_at)
+    }));
+  }
+
+  async dimListings(): Promise<DimListingRow[]> {
+    const result = await this.pool.query(
+      `SELECT listing_id, seller_id, kind, crop, state, created_at FROM analytics.dim_listings ORDER BY listing_id`
+    );
+    return result.rows.map((row) => ({
+      listingId: String(row.listing_id),
+      sellerId: String(row.seller_id),
+      kind: String(row.kind),
+      ...(row.crop ? { crop: String(row.crop) } : {}),
+      ...(row.state ? { state: String(row.state) } : {}),
+      createdAt: ts(row.created_at)
+    }));
+  }
+
   async factOrder(orderId: string): Promise<FactOrderRow | undefined> {
     const result = await this.pool.query(
       `SELECT order_id, listing_id, buyer_id, seller_id, channel, variant_id, quantity,

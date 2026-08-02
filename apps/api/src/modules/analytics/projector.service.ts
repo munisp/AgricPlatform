@@ -347,7 +347,9 @@ export class AnalyticsProjectorService {
     const animal = await this.animals.findById(payload.animalId);
     await this.star.upsertFactLivestock({
       ...existing,
-      status: animal?.status ?? payload.to ?? existing.status
+      // The event payload is the status as of this transition; the registry
+      // record is the fallback (and the rebuild path when events are lost).
+      status: payload.to ?? animal?.status ?? existing.status
     });
   }
 

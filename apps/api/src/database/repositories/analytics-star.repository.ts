@@ -48,6 +48,8 @@ export interface AnalyticsStarRepository {
   upsertFactLivestock(row: FactLivestockRow): Promise<FactLivestockRow>;
   upsertDailyMetric(row: DailyMetricRow): Promise<DailyMetricRow>;
 
+  dimUsers(): Promise<DimUserRow[]>;
+  dimListings(): Promise<DimListingRow[]>;
   factOrder(orderId: string): Promise<FactOrderRow | undefined>;
   factOrders(range?: MartDateRange): Promise<FactOrderRow[]>;
   factPayments(range?: MartDateRange): Promise<FactPaymentRow[]>;
@@ -111,6 +113,14 @@ export class InMemoryAnalyticsStarRepository implements AnalyticsStarRepository 
   async upsertDailyMetric(row: DailyMetricRow): Promise<DailyMetricRow> {
     this.dailyMetricRows.set(row.metricDate, { ...row });
     return row;
+  }
+
+  async dimUsers(): Promise<DimUserRow[]> {
+    return [...this.dimUserRows.values()].map((row) => ({ ...row, roles: [...row.roles] }));
+  }
+
+  async dimListings(): Promise<DimListingRow[]> {
+    return [...this.dimListingRows.values()].map((row) => ({ ...row }));
   }
 
   async factOrder(orderId: string): Promise<FactOrderRow | undefined> {
