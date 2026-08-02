@@ -18,6 +18,12 @@ export interface ListingRepository extends AsyncRepository<MarketplaceListing, L
     pageSize?: number
   ): Promise<ApiListResponse<MarketplaceListing>>;
   activeListingCount(): Promise<number>;
+  /**
+   * Atomic stock increment (Wave M cancel-with-restock / RMA restock):
+   * compiled to `quantity = quantity + $n` on pg so concurrent restocks
+   * never lose increments.
+   */
+  restock(id: string, quantity: number): Promise<MarketplaceListing>;
 }
 
 export function listingMatcher(criteria: ListingCriteria): (listing: MarketplaceListing) => boolean {
@@ -39,6 +45,13 @@ export class InMemoryListingRepository
 
   async activeListingCount(): Promise<number> {
     return this.count({ active: true });
+  }
+
+  /** Synchronous check-and-set increment mirroring the pg atomic UPDATE. */
+  async restock(id: string, quantity: number): Promise<MarketplaceListing> {
+    const current = await this.getById(id);
+    const next = { ...current, quantity: current.quantity + quantity };
+    return this.update(id, { quantity: next.quantity });
   }
 }
 

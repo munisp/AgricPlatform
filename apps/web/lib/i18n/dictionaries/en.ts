@@ -206,6 +206,25 @@ export const en = {
     bio: 'Short bio',
     bioHint: 'At least 20 characters — it raises your profile score.'
   },
+  commerce: {
+    sellerKicker: 'Seller tools',
+    sellerTitle: 'Your seller dashboard',
+    sellerDescription: 'Revenue, orders, returns and ratings in one place.',
+    revenueLabel: 'Revenue',
+    ordersLabel: 'Orders',
+    fulfilmentLabel: 'Fulfilment rate',
+    disputeLabel: 'Dispute rate',
+    returnLabel: 'Return rate',
+    ratingLabel: 'Seller rating',
+    topVariantsTitle: 'Top variants',
+    promotionsTitle: 'Promotions',
+    returnsTitle: 'Return requests',
+    unitsSold: '{count} sold',
+    noVariants: 'No variant sales yet.',
+    noPromotions: 'No promotions yet.',
+    noReturns: 'No return requests.',
+    offlineNotice: 'Live commerce data unavailable — showing reference data.'
+  },
   common: {
     loading: 'Loading…',
     retry: 'Retry'

@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
 import type { MarketplaceListing, Order } from '@agric-platform/shared';
 import type { OrderReview } from '../seed-data.js';
@@ -39,6 +39,21 @@ export class PgListingRepository
 
   async activeListingCount(): Promise<number> {
     return this.count({ active: true });
+  }
+
+  /** Atomic stock increment (Wave M cancel-with-restock / RMA restock). */
+  async restock(id: string, quantity: number): Promise<MarketplaceListing> {
+    const result = await this.pool.query(
+      `UPDATE marketplace.listings
+          SET quantity = quantity + $2
+        WHERE id = $1
+        RETURNING ${listingMapper.columns.join(', ')}`,
+      [id, quantity]
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException(`Resource with id '${id}' not found`);
+    }
+    return listingMapper.fromRow(result.rows[0]);
   }
 }
 

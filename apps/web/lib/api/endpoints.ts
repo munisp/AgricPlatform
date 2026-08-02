@@ -51,6 +51,18 @@ import type {
   LivestockSubjectType,
   LoanApplication,
   MarketplaceListing,
+  BuyerGroup,
+  DraftOrder,
+  ListingVariant,
+  OrderExtension,
+  PriceList,
+  ProductReview,
+  Promotion,
+  ReturnRequest,
+  ReturnStatus,
+  SalesChannel,
+  SellerAnalytics,
+  SellerRating,
   MentorRequest,
   MilestoneProgress,
   MilestoneProgressStatus,
@@ -2044,4 +2056,147 @@ export function listColdChainReadings(pointId: string): Promise<{ data: ColdChai
   return apiFetch(
     `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/cold-chain`
   );
+}
+
+/* -------------------- Wave M: marketplace commerce ---------------------- */
+
+export function listVariants(listingId: string): Promise<{ data: ListingVariant[] }> {
+  return apiFetch(`/listings/${encodeURIComponent(listingId)}/variants`);
+}
+
+export function createVariant(
+  listingId: string,
+  input: { sku: string; name: string; attributes?: Record<string, string>; priceKobo: number; quantity: number },
+  idempotencyKey?: string
+): Promise<{ data: ListingVariant }> {
+  return apiFetch(`/listings/${encodeURIComponent(listingId)}/variants`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function checkoutOrder(
+  input: {
+    listingId: string;
+    variantId?: string;
+    buyerId: string;
+    quantity: number;
+    promotionCode?: string;
+    channel?: SalesChannel;
+  },
+  idempotencyKey?: string
+): Promise<{ data: { order: Order; extension: OrderExtension } }> {
+  return apiFetch('/checkout/orders', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listBuyerGroups(): Promise<{ data: BuyerGroup[] }> {
+  return apiFetch('/buyer-groups');
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listPriceLists(): Promise<{ data: PriceList[] }> {
+  return apiFetch('/price-lists');
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listPromotions(): Promise<{ data: Promotion[] }> {
+  return apiFetch('/promotions');
+}
+
+export function createPromotion(
+  input: {
+    code?: string;
+    name: string;
+    kind: Promotion['kind'];
+    value: number;
+    automatic?: boolean;
+    minOrderKobo?: number;
+    listingId?: string;
+    buyerGroupId?: string;
+    usageLimit?: number;
+    startsAt?: string;
+    endsAt?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: Promotion }> {
+  return apiFetch('/promotions', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function editOrderQuantity(orderId: string, quantity: number): Promise<{ data: Order }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/edit`, {
+    method: 'POST',
+    body: { quantity }
+  });
+}
+
+export function cancelOrderWithRestock(orderId: string): Promise<{ data: Order }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/cancel`, { method: 'POST' });
+}
+
+export function requestReturn(
+  orderId: string,
+  input: { buyerId: string; reason: string; restock?: boolean },
+  idempotencyKey?: string
+): Promise<{ data: ReturnRequest }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/returns`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listReturns(params: {
+  orderId?: string;
+  buyerId?: string;
+  status?: ReturnStatus;
+} = {}): Promise<{ data: ReturnRequest[] }> {
+  return apiFetch('/returns', { query: { ...params } });
+}
+
+export function transitionReturn(id: string, status: ReturnStatus): Promise<{ data: ReturnRequest }> {
+  return apiFetch(`/returns/${encodeURIComponent(id)}/transition`, {
+    method: 'POST',
+    body: { status }
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listDraftOrders(params: {
+  buyerId?: string;
+  sellerId?: string;
+  status?: DraftOrder['status'];
+} = {}): Promise<{ data: DraftOrder[] }> {
+  return apiFetch('/draft-orders', { query: { ...params } });
+}
+
+export function confirmDraftOrder(id: string): Promise<{ data: { draft: DraftOrder; order: Order } }> {
+  return apiFetch(`/draft-orders/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listListingReviews(listingId: string): Promise<{ data: ProductReview[] }> {
+  return apiFetch(`/listings/${encodeURIComponent(listingId)}/reviews`);
+}
+
+export function createListingReview(
+  listingId: string,
+  input: { orderId: string; buyerId: string; rating: number; comment?: string },
+  idempotencyKey?: string
+): Promise<{ data: ProductReview }> {
+  return apiFetch(`/listings/${encodeURIComponent(listingId)}/reviews`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function fetchSellerRating(userId: string): Promise<{ data: SellerRating }> {
+  return apiFetch(`/sellers/${encodeURIComponent(userId)}/rating`);
+}
+
+export function fetchSellerAnalytics(sellerId: string): Promise<{ data: SellerAnalytics }> {
+  return apiFetch(`/analytics/sellers/${encodeURIComponent(sellerId)}`);
 }

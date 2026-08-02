@@ -13,7 +13,8 @@ import { AuditService } from '../../core/audit.service.js';
 import {
   LISTING_REPOSITORY,
   ORDER_REPOSITORY,
-  REVIEW_REPOSITORY
+  REVIEW_REPOSITORY,
+  SELLER_RATING_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
   ListingCriteria,
@@ -21,6 +22,8 @@ import type {
 } from '../../database/repositories/listing.repository.js';
 import type { OrderCriteria, OrderRepository } from '../../database/repositories/order.repository.js';
 import type { ReviewRepository } from '../../database/repositories/review.repository.js';
+import type { SellerRatingRepository } from '../../database/repositories/commerce-depth.repository.js';
+import type { SellerRating } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { OrderReview } from '../../database/seed-data.js';
 import { EscrowService } from './escrow.service.js';
@@ -104,13 +107,16 @@ export class MarketplaceService {
     @Optional() private readonly escrow?: EscrowService,
     @Optional() private readonly invoices?: InvoiceService,
     @Optional() private readonly metrics?: MetricsService,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    // Wave M: materialized seller ratings enrich listing search responses
+    // (optional so bare service constructions in tests keep working).
+    @Optional() @Inject(SELLER_RATING_REPOSITORY) private readonly sellerRatings?: SellerRatingRepository
   ) {}
 
   async listListings(
     filter: ListingCriteria & { page?: number; pageSize?: number }
-  ): Promise<ApiListResponse<MarketplaceListing>> {
-    return this.listings.searchPage(
+  ): Promise<ApiListResponse<MarketplaceListing & { sellerRating?: SellerRating }>> {
+    const page = await this.listings.searchPage(
       {
         kind: filter.kind,
         state: filter.state,
@@ -121,6 +127,21 @@ export class MarketplaceService {
       filter.page,
       filter.pageSize
     );
+    if (!this.sellerRatings) {
+      return page;
+    }
+    // Wave M: expose the materialized seller rating in search responses.
+    const ratings = new Map<string, SellerRating>();
+    for (const sellerId of new Set(page.data.map((listing) => listing.sellerId))) {
+      const rating = await this.sellerRatings.findById(sellerId);
+      if (rating) {
+        ratings.set(sellerId, rating);
+      }
+    }
+    return {
+      ...page,
+      data: page.data.map((listing) => ({ ...listing, sellerRating: ratings.get(listing.sellerId) }))
+    };
   }
 
   async allListings(): Promise<MarketplaceListing[]> {
