@@ -26,7 +26,9 @@ export const RECOMMENDATION_REASONS = [
   'category_affinity',
   'purchased_category',
   'completed_prerequisite',
-  'trending_fallback'
+  'trending_fallback',
+  /** Cold-start item matched a top trending search query (wave P6b). */
+  'trending_query'
 ] as const;
 export type RecommendationReason = (typeof RECOMMENDATION_REASONS)[number];
 
@@ -253,24 +255,64 @@ export function rankCandidates(
 }
 
 /**
- * Cold-start fallback: popularity-ranked "trending" items. Every item gets
- * the `trending_fallback` reason; score is log-scaled popularity.
+ * Additive cold-start boost for items matching a top trending search query
+ * (wave P6b). Large enough to always outrank the pure popularity fallback,
+ * so trending-matched items lead the cold-start list and popularity decides
+ * within each tier.
+ */
+export const TRENDING_QUERY_BOOST = 10;
+
+/**
+ * Matches a trending query against candidate metadata. Every whitespace-
+ * separated term must appear in the title, summary, category, crop or tags
+ * (all comparisons lower-cased, substring semantics).
+ */
+export function candidateMatchesQuery(candidate: RecommendationCandidate, query: string): boolean {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return false;
+  }
+  const fields = [
+    candidate.title,
+    candidate.summary,
+    candidate.category,
+    candidate.crop,
+    ...candidate.tags
+  ]
+    .filter((value): value is string => value !== undefined)
+    .map((value) => value.toLowerCase());
+  return terms.every((term) => fields.some((field) => field.includes(term)));
+}
+
+/**
+ * Cold-start fallback: popularity-ranked "trending" items. Items whose
+ * metadata matches a trending search query (`trendingMatched` keys
+ * `type:id`) rank first with the `trending_query` reason and the
+ * TRENDING_QUERY_BOOST; everything else gets `trending_fallback` with
+ * log-scaled popularity.
  */
 export function coldStartRank(
   candidates: RecommendationCandidate[],
   limit = 10,
-  excludeIds?: ReadonlySet<string>
+  excludeIds?: ReadonlySet<string>,
+  trendingMatched?: ReadonlySet<string>
 ): ScoredRecommendation[] {
   return candidates
     .filter((candidate) => !excludeIds?.has(`${candidate.type}:${candidate.id}`))
-    .map((candidate) => ({
-      type: candidate.type,
-      id: candidate.id,
-      title: candidate.title,
-      summary: candidate.summary,
-      score: Math.round(Math.log10(candidate.popularity + 1) * 10000) / 10000,
-      reasons: ['trending_fallback' as RecommendationReason]
-    }))
+    .map((candidate) => {
+      const matched = trendingMatched?.has(`${candidate.type}:${candidate.id}`) ?? false;
+      return {
+        type: candidate.type,
+        id: candidate.id,
+        title: candidate.title,
+        summary: candidate.summary,
+        score:
+          Math.round(
+            (Math.log10(candidate.popularity + 1) + (matched ? TRENDING_QUERY_BOOST : 0)) * 10000
+          ) / 10000,
+        reasons: [(matched ? 'trending_query' : 'trending_fallback') as RecommendationReason]
+      };
+    })
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
     .slice(0, limit);
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { Course, Enrolment, MarketplaceListing, Profile } from '@agric-platform/shared';
+import type {
+  Course,
+  Enrolment,
+  MarketplaceListing,
+  Profile,
+  TrendingQuery
+} from '@agric-platform/shared';
 import { createInMemoryRecommendationFeedbackRepository } from '../../database/repositories/recommendation-feedback.repository.js';
 import type { KnowledgeResourceRepository } from '../../database/repositories/knowledge.repository.js';
 import type { LearningService } from '../learning/learning.service.js';
@@ -7,6 +13,7 @@ import type { MarketplaceService } from '../marketplace/marketplace.service.js';
 import type { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import type { ProfilesService } from '../profiles/profiles.service.js';
 import { RecommendationService } from './recommendation.service.js';
+import type { SearchService } from './search.service.js';
 
 const maizeCourse: Course = {
   id: 'course-maize',
@@ -44,6 +51,7 @@ function makeService(options: {
   profile?: Profile;
   enrolments?: Enrolment[];
   courses?: Course[];
+  trending?: TrendingQuery[];
 }) {
   const feedback = createInMemoryRecommendationFeedbackRepository();
   const service = new RecommendationService(
@@ -66,7 +74,8 @@ function makeService(options: {
       listOrders: async () => []
     } as unknown as MarketplaceService,
     { all: async () => [] } as unknown as KnowledgeResourceRepository,
-    feedback
+    feedback,
+    { trending: async () => options.trending ?? [] } as unknown as SearchService
   );
   return { service, feedback };
 }
@@ -79,6 +88,65 @@ describe('RecommendationService.recommendFor', () => {
     expect(results.every((r) => r.reasons.includes('trending_fallback'))).toBe(true);
     // Popularity order: maize course (120 enrolments) first.
     expect(results[0].id).toBe('course-maize');
+  });
+
+  it('cold-start members get trending-query matches first with the trending_query reason', async () => {
+    const { service } = makeService({
+      trending: [
+        { query: 'poultry', score: 2.5, occurrences: 4 },
+        { query: 'cassava stems', score: 1.2, occurrences: 2 }
+      ]
+    });
+    const results = await service.recommendFor('user-new');
+    // poultry course (popularity 5) matches 'poultry' and outranks the more
+    // popular maize course (120 enrolments, unmatched).
+    expect(results[0].id).toBe('course-poultry');
+    expect(results[0].reasons).toEqual(['trending_query']);
+    const maize = results.find((r) => r.id === 'course-maize');
+    expect(maize?.reasons).toEqual(['trending_fallback']);
+    // Trending-matched items all lead the unmatched fallback items.
+    const lastMatched = results.map((r) => r.reasons[0]).lastIndexOf('trending_query');
+    const firstFallback = results.map((r) => r.reasons[0]).indexOf('trending_fallback');
+    expect(lastMatched).toBeLessThan(firstFallback);
+  });
+
+  it('multi-word trending queries only match items carrying every term', async () => {
+    const { service } = makeService({
+      trending: [{ query: 'maize agronomy', score: 3, occurrences: 5 }]
+    });
+    const results = await service.recommendFor('user-new');
+    const course = results.find((r) => r.id === 'course-maize');
+    const listing = results.find((r) => r.id === 'listing-maize');
+    // Title 'Maize Agronomy' carries both terms; 'Maize 100kg' lacks 'agronomy'.
+    expect(course?.reasons).toEqual(['trending_query']);
+    expect(listing?.reasons).toEqual(['trending_fallback']);
+    expect(results[0].id).toBe('course-maize');
+  });
+
+  it('falls back to pure popularity when no trending query matches', async () => {
+    const { service } = makeService({
+      trending: [{ query: 'apiculture', score: 1, occurrences: 1 }]
+    });
+    const results = await service.recommendFor('user-new');
+    expect(results.every((r) => r.reasons.includes('trending_fallback'))).toBe(true);
+    expect(results[0].id).toBe('course-maize');
+  });
+
+  it('trending blend does not affect members with signals', async () => {
+    const { service } = makeService({
+      profile: {
+        userId: 'user-1',
+        location: { state: 'Kano', lga: 'Dala' },
+        farmingInterests: ['maize'],
+        valueChains: [],
+        completionScore: 60,
+        badges: ['complete']
+      },
+      trending: [{ query: 'poultry', score: 5, occurrences: 9 }]
+    });
+    const results = await service.recommendFor('user-1');
+    expect(results.every((r) => !r.reasons.includes('trending_query'))).toBe(true);
+    expect(results[0].id).toBe('listing-maize');
   });
 
   it('member signals rank matching items first with reason codes', async () => {
