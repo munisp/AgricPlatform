@@ -93,7 +93,29 @@ This matrix traces PRD v3.3 requirements (18 modules, epics E1–E10, four canon
 | Phase 2 | Post-launch | M7, M8, M9, M11, M12, M14, M16 (full), M17 (full); WhatsApp structured replies; mobile app; TigerBeetle/Mojaloop/Temporal adapters | Phase 2 gate checklist: 100+ marketplace transactions/30 days, escrow QA-approved, ⚖ legal items cleared (see security-compliance doc) |
 | Phase 3 | Later | Recommendations, lakehouse analytics, USSD/IVR, commodity exchange (NCX/AFEX) ACL, farmOS sync, public SDK | Phase 3 gate checklist incl. ⚖ exchange/WRS/data-licensing legal reviews |
 
-## 6. Verification rules
+## 6. Stage 8 implementation-status addendum (2026-08-02, full-production push)
+
+The table below supersedes the "Initial planning status" column wherever they disagree. Waves: P1 provider adapters (merge 5f6a08f), P2a commerce/finance (19fd7ad), P2b engagement modules (e0994e5), P3 NFR tooling (805ffb7), P4 frontend wiring (wave-p4-frontend). Merged-main validation: 412 API + 17 shared + 68 web tests green, lint:sql 6 migration files, typecheck/lint/build green.
+
+| Item | Post-Stage-8 status |
+| --- | --- |
+| M5 Advisory | OpenMeteo weather is the LIVE default (keyless, 37-state Nigeria centroid table, 15-min Redis cache, wired into advisory weather path). FEWS NET/NiMet ingestion scaffold implemented (gated on `MARKET_DATA_DRIVER` + feed keys) persisting to `advisory.commodity_prices` (migration 006). NiMet live feed remains External dependency. |
+| M7 Produce Marketplace (full) | Escrow state machine (HELD→RELEASED/REFUNDED/DISPUTED + admin dispute resolution, audit-logged), invoicing (per-seller sequence, VAT 7.5%, integer-kobo), logistics (PICKUP_SCHEDULED→…→CONFIRMED; delivery-confirm releases escrow). `PAYMENT_PROVIDER` port; Paystack/Flutterwave drivers implemented (P1) incl. refund/transfer/escrow-release + webhook signature verification. Live settlement External dependency. |
+| M8 Input & Service Marketplace | Implemented (services-marketplace module): supplier directory (7 categories), offerings, booking state machine with date-window conflict checks, one-review-per-completed-booking + supplier aggregate. 004 migration. |
+| M9 Finance & Credit (full) | Double-entry ledger runtime (≥2 balanced postings invariant in service, integer kobo, reversal-via-counter-entry, idempotency-key replay), deterministic credit scoring, lender directory + matching, loan workflow state machine, equal-installment repayment calendar (exact BigInt amortisation) with mark-paid postings. 003 migration. BVN/NIN verification External dependency. |
+| M10 Chapter Ops | QR attendance implemented: HMAC-SHA256 signed rotating codes (15-min window + grace), scan endpoint, duplicate member+event → 409, fail-closed signing secret in production. 005 migration. |
+| M11 Women & Youth | Implemented (programmes module): cohort lifecycle, eligibility-gated enrolment, milestones + progress, judging (rubric, unique judge+entry+criterion scores, leaderboard), protected spaces with tested denial paths. |
+| M12 Student & NYSC | Implemented (pathways module): STUDENT/NYSC templates with evidence-required stage progression, campus clubs with coordinator roster + NYSC CDS flag. |
+| M13 Analytics | CSV (RFC 4180) + PDF (pdfkit) exports, admin-guarded, audit-logged (`GET /analytics/export?format=`). Lakehouse/advanced analytics remain Phase 3. |
+| M14 Knowledge Base | Implemented (knowledge module): resource library (tags/language/format/offline flag, view counts), podcast episodes with transcript attach, webinars (Africa/Lagos TZ validation, registrations, post-event recording). Directus live sync External dependency. |
+| M15 Notifications | Live drivers implemented fail-closed (P1): Termii SMS + Twilio failover, 360dialog WhatsApp (+inbound normalisation), Mailgun + SendGrid, OneSignal. Stub default preserved; production boot throws without credentials. Live delivery-rate evidence External dependency. |
+| M16 Search | Trending queries (7-day window, 2-day half-life decay) + related items (tag co-occurrence) implemented; `SEARCH_PROVIDER` port; Meilisearch driver implemented (P1). AI recommendations Phase 3. |
+| M18 Security/Integrations | Idempotency hardened (body-mismatch 409 + replay envelopes, Redis 24h TTL). Moodle/Discourse/Directus fail-closed bridge clients (P1). Pen test/DPO remain External dependency. |
+| Appendix F (P1 rows) | Idempotency ✓; bundle budget gate ✓ (CI script, verified 202.4KB < 250KB); WebP/lazy-load audit ✓ (`npm run audit:media`); IndexedDB form persistence + data-usage indicator + offline packs → wave P4 (in flight); USSD live on Africa's Talking External dependency. |
+| Appendix G | Integration ACL principle realised via the adapter/port layer (no raw external calls in business logic); OpenAPI-versioned `/api/v1` surface; price/weather feeds row (G.3 P1) implemented as above. Partner API onboarding, SDK publish, embedded widgets remain Phase 2/3 + External dependency. |
+| NFR tooling | k6 smoke/gate scripts (p95<500 threshold), Lighthouse CI config (mobile 3G, a11y≥0.95 error gate), bundle-budget CI gate, media audit — all in repo; execution against staging/live URLs is environment-dependent. |
+
+## 7. Verification rules
 
 1. **Code-complete evidence** (unit/integration/E2E tests, CI checks, Lighthouse, axe, k6) must pass in CI or staging without third-party credentials, using stub drivers. This is the only evidence class available at the current baseline.
 2. **Sandbox evidence** requires test credentials (e.g., Paystack test keys, Moodle sandbox, Discourse staging). It verifies the adapter contract, not production behaviour, and must be labelled `sandbox` in test reports.
