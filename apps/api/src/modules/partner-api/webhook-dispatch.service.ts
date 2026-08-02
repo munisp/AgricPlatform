@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
@@ -61,7 +61,7 @@ export class WebhookDispatchService implements OnModuleInit {
     private readonly events: DomainEventsService,
     @Inject(WEBHOOK_SUBSCRIPTION_REPOSITORY)
     private readonly subscriptions: WebhookSubscriptionRepository,
-    fetchImpl?: WebhookFetch
+    @Optional() fetchImpl?: WebhookFetch
   ) {
     this.fetchImpl = fetchImpl ?? (globalThis.fetch as unknown as WebhookFetch);
   }
