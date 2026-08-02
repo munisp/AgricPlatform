@@ -308,3 +308,216 @@ export interface ApiListResponse<T> {
 export interface ApiItemResponse<T> {
   data: T;
 }
+
+/* ---------------------------------------------------------------------------
+ * Wave P2a: Produce Marketplace depth + Finance/Credit contracts.
+ * Money is always integer kobo (1 NGN = 100 kobo); no float money arithmetic.
+ * ------------------------------------------------------------------------- */
+
+export const ESCROW_STATUSES = ['held', 'released', 'refunded', 'disputed'] as const;
+export type EscrowStatus = (typeof ESCROW_STATUSES)[number];
+
+/** Escrow record held against a marketplace order (provider-agnostic). */
+export interface EscrowRecord {
+  id: string;
+  orderId: string;
+  amountKobo: number;
+  status: EscrowStatus;
+  /** Opaque reference returned by the payment provider adapter, when attached. */
+  providerReference?: string;
+  heldAt: string;
+  resolvedAt?: string;
+}
+
+/**
+ * Payment provider port (Wave P2a defines the interface only; Paystack /
+ * Flutterwave adapters land in a later wave). Implementations must never be
+ * called with float amounts.
+ */
+export interface PaymentHoldCommand {
+  orderId: string;
+  amountKobo: number;
+  currency: 'NGN';
+  /** Platform reference the provider echoes back for reconciliation. */
+  reference: string;
+}
+
+export interface PaymentProviderResult {
+  providerReference: string;
+}
+
+export interface PaymentProviderPort {
+  readonly name: string;
+  hold(command: PaymentHoldCommand): Promise<PaymentProviderResult>;
+  release(providerReference: string): Promise<void>;
+  refund(providerReference: string): Promise<void>;
+}
+
+export const INVOICE_STATUSES = ['draft', 'issued', 'paid', 'cancelled'] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
+
+export interface InvoiceLineItem {
+  description: string;
+  quantity: number;
+  unitPriceKobo: number;
+  totalKobo: number;
+}
+
+export interface Invoice {
+  id: string;
+  /** Sequential per seller, e.g. INV-<seller>-000042. */
+  invoiceNumber: string;
+  orderId: string;
+  sellerId: string;
+  buyerId: string;
+  status: InvoiceStatus;
+  currency: 'NGN';
+  subtotalKobo: number;
+  /** VAT at 7.5% (Nigeria) computed in integer kobo. */
+  vatKobo: number;
+  totalKobo: number;
+  lineItems: InvoiceLineItem[];
+  issuedAt?: string;
+  paidAt?: string;
+  createdAt: string;
+}
+
+export const SHIPMENT_STATUSES = [
+  'pickup_scheduled',
+  'in_transit',
+  'delivered',
+  'confirmed',
+  'failed'
+] as const;
+export type ShipmentStatus = (typeof SHIPMENT_STATUSES)[number];
+
+export interface Shipment {
+  id: string;
+  orderId: string;
+  status: ShipmentStatus;
+  carrier?: string;
+  trackingReference?: string;
+  scheduledPickupAt?: string;
+  pickedUpAt?: string;
+  deliveredAt?: string;
+  confirmedAt?: string;
+  failureReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const LEDGER_ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
+export type LedgerAccountType = (typeof LEDGER_ACCOUNT_TYPES)[number];
+
+export interface LedgerAccount {
+  id: string;
+  /** Unique natural key, e.g. platform:cash, member:<userId>:loan_receivable. */
+  code: string;
+  /** Owning member for member-scoped accounts; undefined for platform accounts. */
+  ownerId?: string;
+  type: LedgerAccountType;
+  currency: 'NGN';
+  createdAt: string;
+}
+
+export const LEDGER_DIRECTIONS = ['debit', 'credit'] as const;
+export type LedgerDirection = (typeof LEDGER_DIRECTIONS)[number];
+
+export interface LedgerPosting {
+  accountCode: string;
+  direction: LedgerDirection;
+  amountKobo: number;
+}
+
+/**
+ * Immutable double-entry journal entry. Sum of debits always equals sum of
+ * credits (enforced by the service before persistence). Corrections happen
+ * only through a reversal entry referencing `reversesEntryId`.
+ */
+export interface LedgerJournalEntry {
+  id: string;
+  idempotencyKey: string;
+  referenceType?: string;
+  referenceId?: string;
+  description?: string;
+  reversesEntryId?: string;
+  postedAt: string;
+  postings: LedgerPosting[];
+}
+
+export interface LedgerBalance {
+  accountCode: string;
+  debitsKobo: number;
+  creditsKobo: number;
+  /** debitsKobo - creditsKobo (debit-positive convention). */
+  balanceKobo: number;
+}
+
+export const LOAN_STATUSES = [
+  'draft',
+  'submitted',
+  'under_review',
+  'approved',
+  'declined',
+  'disbursed',
+  'repaying',
+  'closed',
+  'defaulted'
+] as const;
+export type LoanStatus = (typeof LOAN_STATUSES)[number];
+
+export interface LoanApplication {
+  id: string;
+  applicantId: string;
+  lenderId: string;
+  productName?: string;
+  amountKobo: number;
+  termMonths: number;
+  /** Annual interest in basis points (integer; 2750 = 27.5%). */
+  annualRateBps: number;
+  purpose?: string;
+  status: LoanStatus;
+  submittedAt?: string;
+  decidedAt?: string;
+  disbursedAt?: string;
+  closedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const INSTALLMENT_STATUSES = ['pending', 'paid', 'late'] as const;
+export type InstallmentStatus = (typeof INSTALLMENT_STATUSES)[number];
+
+export interface RepaymentInstallment {
+  id: string;
+  loanId: string;
+  sequence: number;
+  /** ISO date (YYYY-MM-DD). */
+  dueDate: string;
+  principalKobo: number;
+  interestKobo: number;
+  totalKobo: number;
+  status: InstallmentStatus;
+  paidAt?: string;
+}
+
+export interface Lender {
+  id: string;
+  name: string;
+  product: string;
+  minTicketKobo: number;
+  maxTicketKobo: number;
+  /** Minimum versioned credit score required for eligibility. */
+  minScore: number;
+  criteria: string[];
+  isActive: boolean;
+}
+
+export interface CreditScoreResult {
+  userId: string;
+  /** Scoring function version, e.g. credit-score/v1. */
+  version: string;
+  score: number;
+  components: Record<string, number>;
+  computedAt: string;
+}
