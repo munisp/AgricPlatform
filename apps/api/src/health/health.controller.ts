@@ -1,5 +1,7 @@
-import { Controller, Get, Inject, Optional } from '@nestjs/common';
+import { Controller, Get, Inject, Optional, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Roles } from '../common/auth/roles.decorator.js';
+import { RolesGuard } from '../common/auth/roles.guard.js';
 import { IntegrationsService } from '../modules/integrations/integrations.service.js';
 import {
   DEPENDENCY_INDICATORS,
@@ -21,6 +23,9 @@ function toPersistenceStatus(status: DependencyStatus | undefined): PersistenceS
 
 @ApiTags('health')
 @Controller('health')
+// The guard is a no-op on routes without @Roles metadata, so the probe
+// endpoints stay public while sensitive diagnostics can be locked down.
+@UseGuards(RolesGuard)
 export class HealthController {
   constructor(
     private readonly integrations: IntegrationsService,
@@ -47,7 +52,10 @@ export class HealthController {
     return { status: 'ok' };
   }
 
+  // Admin-only (G14): the per-module matrix discloses internal topology,
+  // backlog depths and integration health — useful recon for an attacker.
   @Get('modules')
+  @Roles('admin')
   @ApiOperation({
     summary:
       'Per-module readiness matrix (Wave P): cheap probes only — connectivity pings ' +

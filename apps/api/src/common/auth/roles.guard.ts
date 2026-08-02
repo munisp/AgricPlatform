@@ -15,8 +15,20 @@ import { ROLES_KEY } from './roles.decorator.js';
 interface AuthenticatedRequest {
   headers: Record<string, string | string[] | undefined>;
   query?: Record<string, string | string[] | undefined>;
+  /** Express/Fastify request path (url used as fallback in tests). */
+  path?: string;
+  url?: string;
   user?: unknown;
 }
+
+/**
+ * The ONLY route allowed to receive credentials as query parameters.
+ * Browser EventSource clients cannot set headers, so the notification SSE
+ * stream passes the bearer token as ?access_token= (RFC 6750 §2.3). Query
+ * strings leak via access logs, browser history and Referer headers, so
+ * every other route must use the Authorization header.
+ */
+const QUERY_CREDENTIALS_PATH = '/notifications/stream';
 
 /**
  * RBAC guard. Prefers `Authorization: Bearer` (Keycloak OIDC JWT, verified
@@ -54,10 +66,10 @@ export class RolesGuard implements CanActivate {
   private async resolveIdentity(request: AuthenticatedRequest): Promise<User> {
     const authorization = request.headers['authorization'];
     const header = Array.isArray(authorization) ? authorization[0] : authorization;
-    // RFC 6750 §2.3: browser EventSource clients cannot set headers, so the
-    // SSE stream passes the same bearer token as ?access_token=. The OIDC
-    // verification path is identical — no semantic change for header auth.
-    const queryToken = request.query?.['access_token'];
+    // endsWith tolerates the global /api/v1 prefix (bootstrap.ts).
+    const requestPath = request.path ?? request.url?.split('?')[0] ?? '';
+    const queryCredentialsAllowed = requestPath.endsWith(QUERY_CREDENTIALS_PATH);
+    const queryToken = queryCredentialsAllowed ? request.query?.['access_token'] : undefined;
     const queryBearer = Array.isArray(queryToken) ? queryToken[0] : queryToken;
     const bearer = header?.startsWith('Bearer ')
       ? header.slice('Bearer '.length).trim()
@@ -77,8 +89,11 @@ export class RolesGuard implements CanActivate {
 
     if (devHeaderAuthAllowed()) {
       // EventSource clients (SSE) send the same development identity as a
-      // query parameter; honoured only where the header itself is allowed.
-      const devHeader = request.headers['x-user-id'] ?? request.query?.['x-user-id'];
+      // query parameter; honoured only on the SSE route and only where the
+      // header itself is allowed.
+      const devHeader =
+        request.headers['x-user-id'] ??
+        (queryCredentialsAllowed ? request.query?.['x-user-id'] : undefined);
       const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
       const user = userId ? await this.users.findById(userId) : undefined;
       if (user) {

@@ -18,13 +18,23 @@ let jwks: JSONWebKeySet;
 
 function makeGuard(required: UserRole[] | undefined): {
   activate: () => Promise<boolean>;
-  request: { headers: Record<string, string>; user?: unknown };
+  request: {
+    headers: Record<string, string>;
+    query?: Record<string, string>;
+    path?: string;
+    user?: unknown;
+  };
   users: UsersService;
 } {
   const reflector = new Reflector();
   // Avoid decorator plumbing: stub the metadata lookup per scenario.
   reflector.getAllAndOverride = () => required;
-  const request: { headers: Record<string, string>; user?: unknown } = { headers: {} };
+  const request: {
+    headers: Record<string, string>;
+    query?: Record<string, string>;
+    path?: string;
+    user?: unknown;
+  } = { headers: {} };
   const users = new UsersService(createInMemoryUserRepository());
   const guard = new RolesGuard(
     reflector,
@@ -184,5 +194,38 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
     await users.setStatus('user-admin', 'active');
     await expect(activate()).resolves.toBe(true);
+  });
+
+  it('accepts ?access_token= ONLY on the notification SSE route (EventSource cannot set headers)', async () => {
+    const token = await sign({ realm_access: { roles: ['admin'] } });
+
+    // The SSE stream route (with the global /api/v1 prefix): allowed.
+    const sse = makeGuard(['admin']);
+    sse.request.path = '/api/v1/notifications/stream';
+    sse.request.query = { access_token: token };
+    await expect(sse.activate()).resolves.toBe(true);
+
+    // The same query token anywhere else is ignored -> 401.
+    for (const path of ['/api/v1/orders', '/api/v1/notifications', '']) {
+      const other = makeGuard(['admin']);
+      other.request.path = path;
+      other.request.query = { access_token: token };
+      await expect(other.activate()).rejects.toBeInstanceOf(UnauthorizedException);
+    }
+  });
+
+  it('accepts query x-user-id only on the SSE route in development', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+
+    const sse = makeGuard(['admin']);
+    sse.request.path = '/api/v1/notifications/stream';
+    sse.request.query = { 'x-user-id': 'user-admin' };
+    await expect(sse.activate()).resolves.toBe(true);
+
+    const other = makeGuard(['admin']);
+    other.request.path = '/api/v1/admin/users';
+    other.request.query = { 'x-user-id': 'user-admin' };
+    await expect(other.activate()).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });
