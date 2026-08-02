@@ -8,6 +8,7 @@ import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import { listChapterEvents, listChapters, rsvpToEvent } from '@/lib/api/endpoints';
 import { demoEvents } from '@/lib/content';
 import { Card, StatusBadge } from '@/components/ui';
+import { AttendanceQr } from '@/components/attendance-code';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 
 // Offline fallbacks only — live data from GET /api/v1/chapters and
@@ -78,20 +79,23 @@ function EventCard({ event }: { event: ChapterEvent }) {
       </p>
       <div className="cluster" style={{ justifyContent: 'space-between' }}>
         <StatusBadge tone="info">{event.rsvpCount} RSVPs</StatusBadge>
-        {rsvpMutation.status === 'success' ? (
-          <StatusBadge tone="success">RSVP confirmed</StatusBadge>
-        ) : rsvpMutation.status === 'queued' ? (
-          <StatusBadge tone="warning">RSVP queued</StatusBadge>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary btn-small"
-            disabled={rsvpMutation.status === 'pending'}
-            onClick={() => void rsvpMutation.mutate()}
-          >
-            {rsvpMutation.status === 'pending' ? 'Sending…' : 'RSVP'}
-          </button>
-        )}
+        <span className="cluster">
+          {rsvpMutation.status === 'success' ? (
+            <StatusBadge tone="success">RSVP confirmed</StatusBadge>
+          ) : rsvpMutation.status === 'queued' ? (
+            <StatusBadge tone="warning">RSVP queued</StatusBadge>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary btn-small"
+              disabled={rsvpMutation.status === 'pending'}
+              onClick={() => void rsvpMutation.mutate()}
+            >
+              {rsvpMutation.status === 'pending' ? 'Sending…' : 'RSVP'}
+            </button>
+          )}
+          <AttendanceQr eventId={event.id} />
+        </span>
       </div>
       {rsvpMutation.status === 'error' ? <ApiErrorNotice error={rsvpMutation.error} /> : null}
     </Card>

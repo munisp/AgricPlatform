@@ -2,27 +2,66 @@ import type {
   AdvisoryItem,
   ApiListResponse,
   AuditEvent,
+  BookingStatus,
+  CampusClub,
+  CampusClubMembership,
   Certificate,
   Chapter,
   ChapterEvent,
+  CohortThread,
+  CohortThreadPost,
   ConsentRecord,
   Course,
   CreditProfile,
+  CreditScoreResult,
   Enrolment,
+  EscrowRecord,
   ForumTopic,
+  InstallmentStatus,
   IntegrationStatus,
+  Invoice,
+  KnowledgeFormat,
+  KnowledgeResource,
+  LanguageCode,
+  LeaderboardEntry,
+  Lender,
+  LoanApplication,
   MarketplaceListing,
   MentorRequest,
+  MilestoneProgress,
+  MilestoneProgressStatus,
   NotificationMessage,
   NotificationPreference,
   Opportunity,
   OpportunityApplication,
   Order,
+  PathwayEnrolment,
+  PathwayStage,
+  PathwayTemplate,
+  PathwayTrack,
   PlatformMetric,
+  PodcastEpisode,
   Profile,
+  ProgrammeCohort,
+  ProgrammeEnrolment,
+  ProgrammeMilestone,
+  ProgrammeType,
+  RepaymentInstallment,
+  ServiceBooking,
+  ServiceOffering,
+  ServiceReview,
+  ServiceSupplier,
+  Shipment,
+  StageProgress,
+  SupplierCategory,
+  SupplierVerificationStatus,
+  TrendingQuery,
   User,
   UserRole,
-  VaultDocument
+  VaultDocument,
+  Webinar,
+  WebinarRegistration,
+  WebinarStatus
 } from '@agric-platform/shared';
 import { apiFetch } from './client';
 
@@ -476,4 +515,441 @@ export function listIntegrations(): Promise<{ data: IntegrationStatus[] }> {
 
 export function fetchPlatformMetrics(): Promise<{ data: PlatformMetric[] }> {
   return apiFetch('/analytics/metrics');
+}
+
+/* ------------------------- services marketplace ------------------------ */
+
+export function listServiceSuppliers(params: {
+  category?: SupplierCategory;
+  state?: string;
+  verificationStatus?: SupplierVerificationStatus;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<ApiListResponse<ServiceSupplier>> {
+  return apiFetch('/service-suppliers', { query: { ...params } });
+}
+
+export function fetchServiceSupplier(id: string): Promise<{ data: ServiceSupplier }> {
+  return apiFetch(`/service-suppliers/${encodeURIComponent(id)}`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listSupplierOfferings(supplierId: string): Promise<{ data: ServiceOffering[] }> {
+  return apiFetch(`/service-suppliers/${encodeURIComponent(supplierId)}/offerings`);
+}
+
+export function createServiceBooking(
+  offeringId: string,
+  input: {
+    customerId: string;
+    quantity?: number;
+    scheduledStart: string;
+    scheduledEnd: string;
+    notes?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: ServiceBooking }> {
+  return apiFetch(`/service-offerings/${encodeURIComponent(offeringId)}/bookings`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function fetchServiceBooking(id: string): Promise<{ data: ServiceBooking }> {
+  return apiFetch(`/service-bookings/${encodeURIComponent(id)}`);
+}
+
+export function quoteServiceBooking(
+  id: string,
+  totalNaira: number
+): Promise<{ data: ServiceBooking }> {
+  return apiFetch(`/service-bookings/${encodeURIComponent(id)}/quote`, {
+    method: 'POST',
+    body: { totalNaira }
+  });
+}
+
+export function setServiceBookingStatus(
+  id: string,
+  status: BookingStatus
+): Promise<{ data: ServiceBooking }> {
+  return apiFetch(`/service-bookings/${encodeURIComponent(id)}/status`, {
+    method: 'POST',
+    body: { status }
+  });
+}
+
+export function createServiceReview(
+  bookingId: string,
+  input: { authorId: string; rating: number; comment?: string },
+  idempotencyKey?: string
+): Promise<{ data: ServiceReview }> {
+  return apiFetch(`/service-bookings/${encodeURIComponent(bookingId)}/review`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listSupplierReviews(supplierId: string): Promise<{ data: ServiceReview[] }> {
+  return apiFetch(`/service-suppliers/${encodeURIComponent(supplierId)}/reviews`);
+}
+
+/* ------------------------------ programmes ----------------------------- */
+
+export function listProgrammeCohorts(params: {
+  programmeType?: ProgrammeType;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<ApiListResponse<ProgrammeCohort>> {
+  return apiFetch('/programme-cohorts', { query: { ...params } });
+}
+
+export function fetchProgrammeCohort(id: string): Promise<{ data: ProgrammeCohort }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(id)}`);
+}
+
+export function enrolInCohort(
+  cohortId: string,
+  input: { userId: string; declaredAge?: number; declaredGender?: 'female' | 'male' | 'other' },
+  idempotencyKey?: string
+): Promise<{ data: ProgrammeEnrolment }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/enrolments`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function withdrawFromCohort(
+  cohortId: string,
+  userId: string
+): Promise<{ data: ProgrammeEnrolment }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/enrolments/withdraw`, {
+    method: 'POST',
+    body: { userId }
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listCohortMilestones(cohortId: string): Promise<{ data: ProgrammeMilestone[] }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/milestones`);
+}
+
+export function setMilestoneProgress(
+  milestoneId: string,
+  input: { userId: string; status: MilestoneProgressStatus }
+): Promise<{ data: MilestoneProgress }> {
+  return apiFetch(`/programme-milestones/${encodeURIComponent(milestoneId)}/progress`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchCohortProgress(
+  cohortId: string,
+  userId: string
+): Promise<{ data: MilestoneProgress[] }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/progress`, {
+    query: { userId }
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchCohortLeaderboard(cohortId: string): Promise<{ data: LeaderboardEntry[] }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/leaderboard`);
+}
+
+/** Enrolled members + moderators only (403 otherwise). Plain `{ data: T[] }`. */
+export function listCohortThreads(cohortId: string): Promise<{ data: CohortThread[] }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/threads`);
+}
+
+export function createCohortThread(
+  cohortId: string,
+  input: { title: string; authorId: string }
+): Promise<{ data: CohortThread }> {
+  return apiFetch(`/programme-cohorts/${encodeURIComponent(cohortId)}/threads`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listThreadPosts(threadId: string): Promise<{ data: CohortThreadPost[] }> {
+  return apiFetch(`/programme-threads/${encodeURIComponent(threadId)}/posts`);
+}
+
+export function createThreadPost(
+  threadId: string,
+  input: { authorId: string; body: string }
+): Promise<{ data: CohortThreadPost }> {
+  return apiFetch(`/programme-threads/${encodeURIComponent(threadId)}/posts`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/* ------------------------------- pathways ------------------------------ */
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listPathwayTemplates(params: {
+  track?: PathwayTrack;
+} = {}): Promise<{ data: PathwayTemplate[] }> {
+  return apiFetch('/pathway-templates', { query: { ...params } });
+}
+
+export function fetchPathwayTemplate(
+  id: string
+): Promise<{ data: { template: PathwayTemplate; stages: PathwayStage[] } }> {
+  return apiFetch(`/pathway-templates/${encodeURIComponent(id)}`);
+}
+
+export function enrolInPathway(
+  templateId: string,
+  userId: string,
+  idempotencyKey?: string
+): Promise<{ data: PathwayEnrolment }> {
+  return apiFetch(`/pathway-templates/${encodeURIComponent(templateId)}/enrol`, {
+    method: 'POST',
+    body: { userId },
+    idempotencyKey
+  });
+}
+
+export function fetchPathwayEnrolment(
+  id: string
+): Promise<{ data: { enrolment: PathwayEnrolment; progress: StageProgress[] } }> {
+  return apiFetch(`/pathway-enrolments/${encodeURIComponent(id)}`);
+}
+
+/** Completes the current stage (evidence required) and advances. */
+export function completePathwayStage(
+  enrolmentId: string,
+  evidence: string
+): Promise<{ data: PathwayEnrolment }> {
+  return apiFetch(`/pathway-enrolments/${encodeURIComponent(enrolmentId)}/complete-stage`, {
+    method: 'POST',
+    body: { evidence }
+  });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listCampusClubs(params: {
+  state?: string;
+  institution?: string;
+  nyscOnly?: boolean;
+} = {}): Promise<{ data: CampusClub[] }> {
+  return apiFetch('/campus-clubs', { query: { ...params } });
+}
+
+export function fetchCampusClub(id: string): Promise<{ data: CampusClub }> {
+  return apiFetch(`/campus-clubs/${encodeURIComponent(id)}`);
+}
+
+export function joinCampusClub(
+  clubId: string,
+  userId: string,
+  idempotencyKey?: string
+): Promise<{ data: CampusClubMembership }> {
+  return apiFetch(`/campus-clubs/${encodeURIComponent(clubId)}/members`, {
+    method: 'POST',
+    body: { userId },
+    idempotencyKey
+  });
+}
+
+/* ------------------------------- knowledge ----------------------------- */
+
+export function listKnowledgeResources(params: {
+  tag?: string;
+  language?: LanguageCode;
+  format?: KnowledgeFormat;
+  offlineAvailable?: boolean;
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<ApiListResponse<KnowledgeResource>> {
+  return apiFetch('/knowledge-resources', { query: { ...params } });
+}
+
+export function fetchKnowledgeResource(id: string): Promise<{ data: KnowledgeResource }> {
+  return apiFetch(`/knowledge-resources/${encodeURIComponent(id)}`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listPodcastEpisodes(): Promise<{ data: PodcastEpisode[] }> {
+  return apiFetch('/podcast-episodes');
+}
+
+export function fetchPodcastEpisode(id: string): Promise<{ data: PodcastEpisode }> {
+  return apiFetch(`/podcast-episodes/${encodeURIComponent(id)}`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listWebinars(params: {
+  status?: WebinarStatus;
+} = {}): Promise<{ data: Webinar[] }> {
+  return apiFetch('/webinars', { query: { ...params } });
+}
+
+export function fetchWebinar(id: string): Promise<{ data: Webinar }> {
+  return apiFetch(`/webinars/${encodeURIComponent(id)}`);
+}
+
+export function registerForWebinar(
+  webinarId: string,
+  userId: string,
+  idempotencyKey?: string
+): Promise<{ data: WebinarRegistration }> {
+  return apiFetch(`/webinars/${encodeURIComponent(webinarId)}/registrations`, {
+    method: 'POST',
+    body: { userId },
+    idempotencyKey
+  });
+}
+
+/* --------------------------- finance depth ----------------------------- */
+
+export function fetchCreditScore(userId: string): Promise<{ data: CreditScoreResult }> {
+  return apiFetch(`/finance/credit-score/${encodeURIComponent(userId)}`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listLenders(): Promise<{ data: Lender[] }> {
+  return apiFetch('/finance/lenders');
+}
+
+export interface LenderRanking {
+  lender: Lender;
+  eligible: boolean;
+  matchScore: number;
+  reason: string;
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchLenderMatches(userId: string): Promise<{ data: LenderRanking[] }> {
+  return apiFetch(`/finance/lenders/match/${encodeURIComponent(userId)}`);
+}
+
+export function applyForLoan(
+  input: {
+    applicantId: string;
+    lenderId: string;
+    amountKobo: number;
+    termMonths: number;
+    annualRateBps: number;
+    purpose?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: LoanApplication }> {
+  return apiFetch('/finance/loans', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listLoans(params: {
+  applicantId?: string;
+  lenderId?: string;
+  status?: string;
+}): Promise<{ data: LoanApplication[] }> {
+  return apiFetch('/finance/loans', { query: { ...params } });
+}
+
+export function fetchLoan(id: string): Promise<{ data: LoanApplication }> {
+  return apiFetch(`/finance/loans/${encodeURIComponent(id)}`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchLoanSchedule(loanId: string): Promise<{ data: RepaymentInstallment[] }> {
+  return apiFetch(`/finance/loans/${encodeURIComponent(loanId)}/schedule`);
+}
+
+export function payLoanInstallment(
+  loanId: string,
+  sequence: number,
+  idempotencyKey?: string
+): Promise<{ data: RepaymentInstallment }> {
+  return apiFetch(
+    `/finance/loans/${encodeURIComponent(loanId)}/installments/${sequence}/pay`,
+    { method: 'POST', idempotencyKey }
+  );
+}
+
+/* -------------------------- marketplace depth -------------------------- */
+
+export function fetchOrderEscrow(orderId: string): Promise<{ data: EscrowRecord | null }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/escrow`);
+}
+
+export function holdOrderEscrow(orderId: string): Promise<{ data: EscrowRecord }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/escrow`, { method: 'POST' });
+}
+
+export function fetchOrderShipment(orderId: string): Promise<{ data: Shipment | null }> {
+  return apiFetch(`/orders/${encodeURIComponent(orderId)}/shipment`);
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listInvoices(params: {
+  sellerId?: string;
+  buyerId?: string;
+  status?: string;
+}): Promise<{ data: Invoice[] }> {
+  return apiFetch('/invoices', { query: { ...params } });
+}
+
+export function fetchInvoice(id: string): Promise<{ data: Invoice }> {
+  return apiFetch(`/invoices/${encodeURIComponent(id)}`);
+}
+
+/* --------------------------- chapter attendance ------------------------ */
+
+export interface AttendanceCodeInfo {
+  code: string;
+  eventId: string;
+  window: number;
+  issuedAt: string;
+  expiresAt: string;
+}
+
+/** Chapter leads and admins only (403 otherwise). */
+export function fetchEventAttendanceCode(eventId: string): Promise<{ data: AttendanceCodeInfo }> {
+  return apiFetch(`/events/${encodeURIComponent(eventId)}/attendance-code`);
+}
+
+/**
+ * Scan check-in. Duplicate scans return 409 (ConflictError) — callers must
+ * render that case gracefully ("already checked in").
+ */
+export function scanEventAttendance(
+  eventId: string,
+  input: { code: string; memberId?: string },
+  idempotencyKey?: string
+): Promise<{ data: unknown }> {
+  return apiFetch(`/events/${encodeURIComponent(eventId)}/attendance/scan`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/* ------------------------------ search depth --------------------------- */
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchTrendingQueries(params: {
+  limit?: number;
+} = {}): Promise<{ data: TrendingQuery[] }> {
+  return apiFetch('/search/trending', { query: { ...params } });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function fetchRelatedItems(params: {
+  type: SearchResult['type'];
+  id: string;
+  limit?: number;
+}): Promise<{ data: SearchResult[] }> {
+  return apiFetch('/search/related', { query: { ...params } });
 }

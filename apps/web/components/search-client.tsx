@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { formatNaira, seedAdvisory, seedChapters, seedCourses, seedListings, seedOpportunities } from '@agric-platform/shared';
 import { useApiQuery } from '@/lib/api/hooks';
-import { searchPlatform } from '@/lib/api/endpoints';
+import { fetchRelatedItems, fetchTrendingQueries, searchPlatform } from '@/lib/api/endpoints';
 import type { SearchResult } from '@/lib/api/endpoints';
 import { TextInput } from '@/components/forms';
 import { EmptyState, StatusBadge } from '@/components/ui';
@@ -16,6 +16,9 @@ interface SearchEntry {
   detail: string;
   href: string;
   badge?: string;
+  /** Set for live API results — enables the "related items" detail. */
+  resultType?: SearchResult['type'];
+  resultId?: string;
 }
 
 const INDEX: SearchEntry[] = [
@@ -70,6 +73,92 @@ const TYPE_META: Record<SearchResult['type'], { group: string; href: string }> =
   topic: { group: 'Community', href: '/community' }
 };
 
+/** Related items for one API result (shared-tag co-occurrence). */
+function RelatedItems({ entry }: { entry: SearchEntry }) {
+  const [open, setOpen] = useState(false);
+  const query = useApiQuery(
+    open && entry.resultType && entry.resultId
+      ? `related:${entry.resultType}:${entry.resultId}`
+      : null,
+    () =>
+      fetchRelatedItems({ type: entry.resultType!, id: entry.resultId!, limit: 5 }).then(
+        (res) => res.data
+      ),
+    { enabled: open, fallbackData: [] }
+  );
+
+  if (!entry.resultType || !entry.resultId) return null;
+
+  return (
+    <div style={{ marginTop: '0.35rem' }}>
+      <button
+        type="button"
+        className="btn btn-ghost btn-small"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-label={`Related items for ${entry.title}`}
+      >
+        {open ? 'Hide related' : 'Related'}
+      </button>
+      {open ? (
+        query.data && query.data.length > 0 ? (
+          <ul className="row-list" style={{ marginTop: '0.35rem' }}>
+            {query.data.map((item) => (
+              <li className="row-item" key={`${item.type}-${item.id}`}>
+                <div className="row-main">
+                  <Link href={TYPE_META[item.type].href} className="row-title">
+                    {item.title}
+                  </Link>
+                  <div className="small muted">{item.summary}</div>
+                </div>
+                <StatusBadge tone="neutral">{item.type}</StatusBadge>
+              </li>
+            ))}
+          </ul>
+        ) : query.error ? (
+          <p className="small muted" role="status">
+            Related items are unavailable offline.
+          </p>
+        ) : (
+          <p className="small muted">No related items yet.</p>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+/** Trending queries strip (decayed 7-day counts) — doubles as quick search. */
+function TrendingStrip({ onPick }: { onPick: (query: string) => void }) {
+  const query = useApiQuery(
+    'search:trending',
+    () => fetchTrendingQueries({ limit: 6 }).then((res) => res.data),
+    { fallbackData: [], staleTimeMs: 120_000 }
+  );
+
+  if (!query.data || query.data.length === 0) return null;
+
+  return (
+    <section aria-label="Trending searches">
+      <h3 className="small" style={{ marginBottom: '0.35rem' }}>
+        Trending now
+      </h3>
+      <div className="cluster">
+        {query.data.map((trend) => (
+          <button
+            key={trend.query}
+            type="button"
+            className="btn btn-ghost btn-small"
+            onClick={() => onPick(trend.query)}
+            aria-label={`Search for trending topic ${trend.query}`}
+          >
+            {trend.query}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function SearchClient() {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -100,7 +189,9 @@ export function SearchClient() {
         title: result.title,
         detail: result.summary,
         href: TYPE_META[result.type].href,
-        badge: result.type
+        badge: result.type,
+        resultType: result.type,
+        resultId: result.id
       }));
     } else {
       const lower = needle.toLowerCase();
@@ -138,6 +229,8 @@ export function SearchClient() {
         </span>
       </div>
 
+      {needle.length < 2 ? <TrendingStrip onPick={(picked) => setQuery(picked)} /> : null}
+
       {needle.length >= 2 && apiQuery.error ? (
         <p className="notice notice-info" role="status">
           Search service unreachable — searching cached offline data instead.
@@ -161,6 +254,7 @@ export function SearchClient() {
                     {entry.title}
                   </Link>
                   <div className="small muted">{entry.detail}</div>
+                  <RelatedItems entry={entry} />
                 </div>
                 {entry.badge ? <StatusBadge tone="neutral">{entry.badge}</StatusBadge> : null}
               </li>

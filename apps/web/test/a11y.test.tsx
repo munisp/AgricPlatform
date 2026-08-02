@@ -8,6 +8,7 @@ import { CheckRow, Field, TextInput } from '@/components/forms';
 import { EmptyState, ProgressBar, StatusBadge } from '@/components/ui';
 import { OpportunityBrowser } from '@/components/opportunity-browser';
 import { OnboardingWizard } from '@/components/onboarding-wizard';
+import { SupplierDirectory } from '@/components/services-live';
 
 expect.extend(toHaveNoViolations);
 
@@ -26,6 +27,19 @@ const OPPORTUNITY = {
   eligibility: ['Verified profile'],
   deadline: '2026-12-01T00:00:00.000Z',
   isActive: true
+};
+
+const SUPPLIER = {
+  id: 'supplier-axe',
+  ownerUserId: 'user-supplier',
+  businessName: 'Axe Test Tractor Hire',
+  categories: ['machinery_hire'],
+  statesCovered: ['Kano'],
+  lgasCovered: [],
+  verificationStatus: 'verified',
+  averageRating: 4.5,
+  ratingCount: 12,
+  createdAt: '2026-01-01T00:00:00.000Z'
 };
 
 function jsonResponse(body: unknown) {
@@ -47,6 +61,9 @@ describe('axe smoke tests (headless, jsdom)', () => {
       const parsed = new URL(url);
       if (parsed.pathname.endsWith('/api/v1/opportunities')) {
         return jsonResponse({ data: [OPPORTUNITY], total: 1, page: 1, pageSize: 100 });
+      }
+      if (parsed.pathname.endsWith('/api/v1/service-suppliers')) {
+        return jsonResponse({ data: [SUPPLIER], total: 1, page: 1, pageSize: 60 });
       }
       return jsonResponse({ data: [] });
     });
@@ -128,6 +145,21 @@ describe('axe smoke tests (headless, jsdom)', () => {
     await waitFor(() => {
       expect(container.textContent).toContain('Full name');
     });
+    expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
+  });
+
+  it('SupplierDirectory composite (Wave P4 surface) has no violations', async () => {
+    const { container } = render(
+      <AppProvider>
+        <I18nProvider>
+          <SupplierDirectory />
+        </I18nProvider>
+      </AppProvider>
+    );
+    await waitFor(() => {
+      expect(container.textContent).toContain('Axe Test Tractor Hire');
+    });
+    expect(container.querySelector('fieldset legend')?.textContent).toBe('Filter suppliers');
     expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
   });
 });

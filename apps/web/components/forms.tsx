@@ -92,3 +92,23 @@ export function QueuedNotice({ label }: { label: string }) {
     </div>
   );
 }
+
+/**
+ * Subtle "draft restored" indicator (IndexedDB form persistence). Rendered
+ * above a form when a stored draft was reloaded on mount.
+ */
+export function DraftRestoredNotice({ onDismiss }: { onDismiss?: () => void }) {
+  return (
+    <p className="notice notice-info" role="status" data-testid="draft-restored">
+      Draft restored from this device.
+      {onDismiss ? (
+        <>
+          {' '}
+          <button type="button" className="btn btn-ghost btn-small" onClick={onDismiss}>
+            Discard draft
+          </button>
+        </>
+      ) : null}
+    </p>
+  );
+}

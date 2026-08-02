@@ -11,13 +11,13 @@ import {
 import type { LanguageCode, UserRole } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
 import { useSession } from '@/lib/session';
-import { usePersistentState } from '@/lib/use-persistent-state';
+import { useFormDraft } from '@/lib/drafts';
 import { useT } from '@/lib/i18n';
 import type { TranslationKey } from '@/lib/i18n';
 import { NetworkError, TimeoutError } from '@/lib/api/errors';
 import { register, upsertProfile } from '@/lib/api/endpoints';
 import { ROLE_LABELS } from '@/lib/content';
-import { Field, QueuedNotice, Select, TextArea, TextInput } from '@/components/forms';
+import { DraftRestoredNotice, Field, QueuedNotice, Select, TextArea, TextInput } from '@/components/forms';
 import { ApiErrorNotice } from '@/components/api-state';
 import { ProgressBar, StatusBadge } from '@/components/ui';
 
@@ -68,12 +68,33 @@ function toggle(list: string[], item: string): string[] {
   return list.includes(item) ? list.filter((entry) => entry !== item) : [...list, item];
 }
 
+/** The draft only counts as real content once a text field has been typed in. */
+function isEmptyDraft(draft: OnboardingDraft): boolean {
+  return (
+    draft.fullName.trim() === '' &&
+    draft.phone.trim() === '' &&
+    draft.state === '' &&
+    draft.lga.trim() === '' &&
+    draft.farmingInterests.length === 0 &&
+    draft.valueChains.length === 0 &&
+    draft.bio.trim() === '' &&
+    draft.farmSizeHectares === '' &&
+    draft.yearsExperience === ''
+  );
+}
+
 export function OnboardingWizard() {
   const { t } = useT();
   const { enqueue, setRole } = useAppState();
   const { signIn } = useSession();
   const [step, setStep] = useState(0);
-  const [draft, setDraft] = usePersistentState<OnboardingDraft>('agric.onboarding-draft', EMPTY_DRAFT);
+  // IndexedDB draft persistence: autosaves on keystroke and restores after a
+  // reload (Appendix F Phase-1). Cleared on successful registration.
+  const { draft, setDraft, restored, clearDraft } = useFormDraft<OnboardingDraft>(
+    'registration',
+    EMPTY_DRAFT,
+    isEmptyDraft
+  );
   const [submitted, setSubmitted] = useState<'online' | 'queued' | false>(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<unknown>(undefined);
@@ -144,6 +165,7 @@ export function OnboardingWizard() {
         });
       }
       setSubmitted('online');
+      clearDraft();
     } catch (error) {
       if (error instanceof NetworkError || error instanceof TimeoutError) {
         // Offline-first: park the registration and keep the local draft.
@@ -187,7 +209,7 @@ export function OnboardingWizard() {
             type="button"
             className="btn btn-ghost"
             onClick={() => {
-              setDraft(EMPTY_DRAFT);
+              clearDraft();
               setStep(0);
               setSubmitted(false);
               setSubmitError(undefined);
@@ -202,6 +224,7 @@ export function OnboardingWizard() {
 
   return (
     <div className="stack">
+      {restored ? <DraftRestoredNotice onDismiss={clearDraft} /> : null}
       <ol className="steps" aria-label={t('onboarding.stepsAria')}>
         {STEPS.map((labelKey, index) => (
           <li

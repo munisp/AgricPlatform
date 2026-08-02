@@ -1,6 +1,12 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { formatNaira } from '@agric-platform/shared';
 import type { IntegrationStatus, PlatformMetric } from '@agric-platform/shared';
+
+/** Display-only kobo → naira formatting (money math itself stays in kobo). */
+export function formatKobo(kobo: number): string {
+  return formatNaira(kobo / 100);
+}
 
 export type Tone = 'success' | 'warning' | 'critical' | 'info' | 'neutral';
 

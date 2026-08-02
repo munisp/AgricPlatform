@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { KYC_TIERS } from '@agric-platform/shared';
 import { CreditProfileSection, DocumentVault } from '@/components/finance-live';
+import { CreditScoreSection, LenderMatchSection, MyLoansSection } from '@/components/finance-credit';
 import { Card, PageHeader, Section, StatusBadge } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -26,6 +27,22 @@ export default function FinancePage() {
 
       <Section kicker="Credit profile" title="Your readiness score">
         <CreditProfileSection />
+      </Section>
+
+      <Section
+        kicker="Credit score"
+        title="Versioned score breakdown"
+        description="Training, trade history, repayments and documentation feed one deterministic score."
+      >
+        <CreditScoreSection />
+      </Section>
+
+      <Section kicker="Lenders" title="Lender matches">
+        <LenderMatchSection />
+      </Section>
+
+      <Section kicker="Loans" title="My loans and repayments">
+        <MyLoansSection />
       </Section>
 
       <Section kicker="KYC" title="Verification tiers" description="Higher tiers unlock larger lender matches and escrow limits.">

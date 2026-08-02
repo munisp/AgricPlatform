@@ -6,6 +6,8 @@ var VERSION = 'agric-sw-v3';
 var STATIC_CACHE = VERSION + '-static';
 var PAGE_CACHE = VERSION + '-pages';
 var API_CACHE = VERSION + '-api-public';
+/* User-chosen offline content pack (knowledge resources saved from Settings). */
+var OFFLINE_CACHE = VERSION + '-offline-pack';
 
 /* Cap the page cache: low-storage Android devices must not fill up with
    visited pages. Only the newest entries are kept (FIFO eviction). */
@@ -24,7 +26,10 @@ var PUBLIC_API_PATHS = [
   '/api/v1/courses',
   '/api/v1/chapters',
   '/api/v1/listings',
-  '/api/v1/advisory'
+  '/api/v1/advisory',
+  /* Public knowledge GETs: also serves offline-pack downloads. */
+  '/api/v1/knowledge-resources',
+  '/api/v1/podcast-episodes'
 ];
 
 function isPublicApiGet(url, request) {
@@ -67,6 +72,30 @@ self.addEventListener('install', function (event) {
 self.addEventListener('message', function (event) {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+  /* Offline content pack: the Settings page posts {type:'CACHE_URLS', urls}
+     with a MessagePort for the ack. Only GET URLs are cached, matching the
+     fetch handler's never-cache-mutations rule. */
+  if (event.data && event.data.type === 'CACHE_URLS' && Array.isArray(event.data.urls)) {
+    var replyPort = event.ports && event.ports[0];
+    var urls = event.data.urls.filter(function (url) {
+      return typeof url === 'string';
+    });
+    event.waitUntil(
+      caches
+        .open(OFFLINE_CACHE)
+        .then(function (cache) {
+          return cache.addAll(urls);
+        })
+        .then(function () {
+          if (replyPort) replyPort.postMessage({ ok: true, count: urls.length });
+        })
+        .catch(function (error) {
+          if (replyPort) {
+            replyPort.postMessage({ ok: false, error: String(error && error.message ? error.message : error) });
+          }
+        })
+    );
   }
 });
 
