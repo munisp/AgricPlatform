@@ -48,7 +48,10 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
     NEXT_TELEMETRY_DISABLED=1
-RUN addgroup -S agric && adduser -S agric -G agric
+# Runtime hardening: see api.Dockerfile — Alpine updates + strip npm CLI.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+    && addgroup -S agric && adduser -S agric -G agric
 # Next.js standalone output embeds the subset of node_modules it needs.
 COPY --from=build --chown=agric:agric /app/apps/web/.next/standalone ./
 COPY --from=build --chown=agric:agric /app/apps/web/.next/static ./apps/web/.next/static
