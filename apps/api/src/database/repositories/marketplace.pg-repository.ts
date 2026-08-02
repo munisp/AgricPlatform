@@ -50,8 +50,6 @@ export function orderCriteriaSql(criteria: OrderCriteria): WhereClause {
   );
 }
 
-const ORDER_COLUMNS = orderMapper.columns.join(', ');
-
 export class PgOrderRepository
   extends PgRepositoryBase<Order, OrderCriteria>
   implements OrderRepository

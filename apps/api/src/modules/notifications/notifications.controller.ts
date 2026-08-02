@@ -11,7 +11,7 @@ import {
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertSelfOrAdmin, isSelfOrAdmin } from '../../common/auth/ownership.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { NotificationsService, type SendNotificationInput } from './notifications.service.js';

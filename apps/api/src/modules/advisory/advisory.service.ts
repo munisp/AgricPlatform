@@ -69,8 +69,12 @@ export class AdvisoryService {
     return created;
   }
 
-  /** Weather readiness via the weather provider adapter (stub: deterministic). */
-  weatherFor(state: string): WeatherSnapshot {
+  /**
+   * Weather readiness via the weather provider adapter. The stub driver
+   * returns a deterministic fixture; a non-stub WEATHER_DRIVER resolves to
+   * the live Open-Meteo feed (cached 15 minutes) — wave P1.
+   */
+  weatherFor(state: string): Promise<WeatherSnapshot> {
     return this.integrations.weatherSnapshot(state);
   }
 
