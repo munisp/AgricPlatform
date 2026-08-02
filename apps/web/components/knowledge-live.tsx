@@ -13,6 +13,7 @@ import { useAppState } from '@/lib/app-state';
 import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import {
   listKnowledgeResources,
+  listMyWebinarRegistrations,
   listPodcastEpisodes,
   listWebinars,
   registerForWebinar
@@ -301,6 +302,84 @@ export function WebinarList() {
             <WebinarCard key={webinar.id} webinar={webinar} />
           ))}
         </div>
+      </QueryState>
+    </>
+  );
+}
+
+/* --------------------------- my registrations --------------------------- */
+
+/**
+ * The signed-in member's webinar registrations (GET /webinars/mine/registrations)
+ * joined with the webinar catalogue for titles, dates and recording links.
+ * Registrations carry no join URL field on the API, so upcoming sessions show
+ * a note instead of a dead link; past sessions link the recording.
+ */
+export function MyWebinarRegistrations() {
+  const { hydrated } = useAppState();
+  const registrationsQuery = useApiQuery(
+    hydrated ? 'webinars:mine' : null,
+    () => listMyWebinarRegistrations().then((res) => res.data),
+    { enabled: hydrated }
+  );
+  const webinarsQuery = useApiQuery(
+    'webinars',
+    () => listWebinars().then((res) => res.data),
+    { fallbackData: [] }
+  );
+
+  const webinarsById = new Map((webinarsQuery.data ?? []).map((webinar) => [webinar.id, webinar]));
+  const registrations = registrationsQuery.data ?? [];
+
+  return (
+    <>
+      <QueryState
+        isLoading={registrationsQuery.isLoading}
+        error={registrationsQuery.error}
+        data={registrations}
+        onRetry={registrationsQuery.refresh}
+        empty={
+          <EmptyState
+            title="No registrations yet"
+            hint="Register for an upcoming webinar above and it appears here."
+          />
+        }
+      >
+        <ul className="row-list">
+          {registrations.map((registration) => {
+            const webinar = webinarsById.get(registration.webinarId);
+            const startsAt = webinar ? new Date(webinar.startsAt) : null;
+            const past =
+              webinar !== undefined &&
+              (webinar.status === 'completed' || (startsAt !== null && startsAt.getTime() < Date.now()));
+            return (
+              <li className="row-item" key={registration.id}>
+                <div className="row-main">
+                  <div className="row-title">{webinar?.title ?? registration.webinarId}</div>
+                  <div className="small muted">
+                    {startsAt
+                      ? startsAt.toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })
+                      : 'Schedule unavailable'}
+                    {' · '}registered{' '}
+                    {new Date(registration.registeredAt).toLocaleDateString('en-NG', {
+                      dateStyle: 'medium'
+                    })}
+                  </div>
+                </div>
+                <span className="cluster">
+                  {webinar ? <AutoBadge value={webinar.status} /> : null}
+                  {past && webinar?.recordingUrl ? (
+                    <a className="btn btn-ghost btn-small" href={webinar.recordingUrl}>
+                      Watch recording
+                    </a>
+                  ) : !past ? (
+                    <span className="small muted">Join details are shared before the session</span>
+                  ) : null}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       </QueryState>
     </>
   );

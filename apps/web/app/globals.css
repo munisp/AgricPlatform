@@ -1252,3 +1252,113 @@ fieldset.card legend {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* ---------- Recommendations rail (Wave P6c) ---------- */
+.reco-rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.reco-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100%;
+}
+
+.reco-chip {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--green-100);
+  color: var(--green-900);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* ---------- Funnel bars (Wave P6c) ---------- */
+.funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.funnel-row {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  grid-template-areas:
+    'label track'
+    'label value';
+  align-items: center;
+  column-gap: 0.75rem;
+}
+
+.funnel-label {
+  grid-area: label;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--green-950);
+}
+
+.funnel-track {
+  grid-area: track;
+  display: block;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--sand-200);
+  overflow: hidden;
+}
+
+.funnel-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--green-600);
+}
+
+.funnel-value {
+  grid-area: value;
+  font-size: 0.85rem;
+}
+
+/* ---------- Retention heatmap (Wave P6c) ---------- */
+.retention-table td {
+  text-align: center;
+}
+
+.retention-table td:first-child,
+.retention-table td:nth-child(2) {
+  text-align: left;
+}
+
+/* ---------- Modal (Wave P6c) ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 37, 27, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 60;
+}
+
+.modal-card {
+  max-width: 460px;
+  width: 100%;
+  box-shadow: var(--shadow-m);
+}
+
+/* ---------- QR scanner (Wave P6c) ---------- */
+.qr-scanner {
+  margin: 0.75rem 0;
+}
+
+.qr-video {
+  width: 100%;
+  max-width: 420px;
+  border-radius: var(--radius-m);
+  background: var(--green-950);
+  display: block;
+}
