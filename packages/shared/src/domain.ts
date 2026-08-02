@@ -5,7 +5,11 @@ export const USER_ROLES = [
   'supplier',
   'chapter_lead',
   'partner',
-  'admin'
+  'admin',
+  // Wave L1b (ALTP): field veterinarian (Dr. Chidinma persona) and
+  // regulator/state-vet auditor (Mrs. Comfort persona).
+  'vet',
+  'regulator'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
