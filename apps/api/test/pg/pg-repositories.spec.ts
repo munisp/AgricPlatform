@@ -37,6 +37,7 @@ const pool = process.env.DATABASE_URL
 
 const CONTRACT_TABLES = [
   'opportunities.applications',
+  'opportunities.opportunities',
   'marketplace.reviews',
   'marketplace.orders',
   'marketplace.listings',

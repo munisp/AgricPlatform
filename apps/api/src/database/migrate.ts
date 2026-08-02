@@ -15,8 +15,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
+// migrate.ts lives at <repo>/apps/api/src/database (tsx) or
+// <repo>/apps/api/dist/database (compiled): four levels up reaches the repo
+// root where infra/postgres lives.
 const MIGRATIONS_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
+  '..',
   '..',
   '..',
   '..',
