@@ -30,6 +30,9 @@ import { PathwaysModule } from './modules/pathways/pathways.module.js';
 import { ProgrammesModule } from './modules/programmes/programmes.module.js';
 import { ServicesMarketplaceModule } from './modules/services-marketplace/services-marketplace.module.js';
 import { RedisModule } from './redis/redis.module.js';
+// Wave P5d (additive).
+import { EmbedModule } from './modules/embed/embed.module.js';
+import { PartnerApiModule } from './modules/partner-api/partner-api.module.js';
 
 @Module({
   imports: [
@@ -66,7 +69,10 @@ import { RedisModule } from './redis/redis.module.js';
     ServicesMarketplaceModule,
     ProgrammesModule,
     PathwaysModule,
-    KnowledgeModule
+    KnowledgeModule,
+    // Wave P5d modules — appended to minimise merge conflicts.
+    PartnerApiModule,
+    EmbedModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

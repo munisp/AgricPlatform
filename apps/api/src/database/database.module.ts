@@ -241,6 +241,22 @@ import {
   createPgLoanApplicationRepository,
   createPgRepaymentScheduleRepository
 } from './repositories/credit.pg-repository.js';
+// Wave P5d: partner API persistence (additive).
+import {
+  API_KEY_REPOSITORY,
+  PARTNER_CLIENT_REPOSITORY,
+  WEBHOOK_SUBSCRIPTION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryApiKeyRepository,
+  createInMemoryPartnerClientRepository,
+  createInMemoryWebhookSubscriptionRepository
+} from './repositories/partner-api.repository.js';
+import {
+  createPgApiKeyRepository,
+  createPgPartnerClientRepository,
+  createPgWebhookSubscriptionRepository
+} from './repositories/partner-api.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -620,6 +636,27 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
       inject: [PG_POOL]
+    },
+    // Wave P5d: partner API repositories (appended; see partner-api module).
+    {
+      provide: PARTNER_CLIENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPartnerClientRepository(pool) : createInMemoryPartnerClientRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: API_KEY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgApiKeyRepository(pool) : createInMemoryApiKeyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBHOOK_SUBSCRIPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgWebhookSubscriptionRepository(pool)
+          : createInMemoryWebhookSubscriptionRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -684,7 +721,10 @@ import {
     LENDER_REPOSITORY,
     LOAN_APPLICATION_REPOSITORY,
     REPAYMENT_SCHEDULE_REPOSITORY,
-    SHIPMENT_REPOSITORY
+    SHIPMENT_REPOSITORY,
+    PARTNER_CLIENT_REPOSITORY,
+    API_KEY_REPOSITORY,
+    WEBHOOK_SUBSCRIPTION_REPOSITORY
   ]
 })
 export class DatabaseModule {}
