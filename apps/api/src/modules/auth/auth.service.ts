@@ -8,6 +8,7 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import { OTP_STORE } from '../../database/persistence.tokens.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
 import { UsersService, type CreateUserInput } from '../users/users.service.js';
+import { SessionService } from './session.service.js';
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 /** Per-challenge verification attempts before the challenge is locked out. */
@@ -40,7 +41,8 @@ export class AuthService {
     private readonly users: UsersService,
     private readonly events: DomainEventsService,
     private readonly metrics: MetricsService,
-    @Inject(OTP_STORE) private readonly otp: OtpChallengeStore
+    @Inject(OTP_STORE) private readonly otp: OtpChallengeStore,
+    private readonly sessions: SessionService
   ) {}
 
   async requestOtp(phone: string): Promise<OtpRequestResult> {
@@ -71,7 +73,11 @@ export class AuthService {
     return result;
   }
 
-  async verifyOtp(requestId: string, code: string): Promise<{ token: string; user: User }> {
+  async verifyOtp(
+    requestId: string,
+    code: string,
+    meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
     const challenge = await this.otp.get(requestId);
     if (!challenge || challenge.expiresAt < Date.now()) {
       await this.otp.delete(requestId);
@@ -113,13 +119,16 @@ export class AuthService {
       throw new UnauthorizedException('No account for this phone number. Register first.');
     }
     this.metrics.otpVerification('success');
-    return { token: this.issueStubToken(user), user };
+    return this.withRefreshToken(user, meta);
   }
 
-  async register(input: CreateUserInput): Promise<{ token: string; user: User }> {
+  async register(
+    input: CreateUserInput,
+    meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
     const user = await this.users.create(input);
     await this.events.publish('identity.user.registered', { userId: user.id, roles: user.roles }, user.id);
-    return { token: this.issueStubToken(user), user };
+    return this.withRefreshToken(user, meta);
   }
 
   async session(userId: string): Promise<{ user: User }> {
@@ -130,9 +139,26 @@ export class AuthService {
    * Issues a session for an identity already verified by another factor
    * (wave P5b shared-device PIN swap). Same stub-token contract as OTP.
    */
-  async issueSessionFor(userId: string): Promise<{ token: string; user: User }> {
+  async issueSessionFor(
+    userId: string,
+    meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
     const user = await this.users.getById(userId);
-    return { token: this.issueStubToken(user), user };
+    return this.withRefreshToken(user, meta);
+  }
+
+  /** Access token plus a rotated refresh-token session (Wave P). */
+  private async withRefreshToken(
+    user: User,
+    meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
+    const session = await this.sessions.issue(user.id, meta ?? {});
+    return {
+      token: this.issueStubToken(user),
+      user,
+      refreshToken: session.refreshToken,
+      refreshTokenExpiresAt: session.expiresAt
+    };
   }
 
   private issueStubToken(user: User): string {

@@ -2,21 +2,25 @@ import { UnauthorizedException } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { InMemoryKeyValueStore } from '../../redis/key-value-store.js';
 import { KeyValueOtpChallengeStore } from '../../redis/otp-challenge.store.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService, OTP_MAX_ATTEMPTS } from './auth.service.js';
+import { SessionService } from './session.service.js';
 
 const PHONE = '+2348010000001'; // seeded farmer user
 
 function makeService() {
+  const users = new UsersService(createInMemoryUserRepository());
   return new AuthService(
-    new UsersService(createInMemoryUserRepository()),
+    users,
     new DomainEventsService(createInMemoryOutboxRepository()),
     new MetricsService(),
-    new KeyValueOtpChallengeStore(new InMemoryKeyValueStore())
+    new KeyValueOtpChallengeStore(new InMemoryKeyValueStore()),
+    new SessionService(users, createInMemoryAuthSessionRepository())
   );
 }
 

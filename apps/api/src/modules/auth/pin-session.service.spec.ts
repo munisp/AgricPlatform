@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import type { MetricsService } from '../../common/metrics/metrics.service.js';
 import type { DomainEventsService } from '../../core/domain-events.service.js';
+import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import { createInMemoryPinProfileRepository } from '../../database/repositories/pin-profile.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
 import { PinSessionService } from './pin-session.service.js';
+import { SessionService } from './session.service.js';
 
 const DEVICE = 'device-token-aaaa';
 
@@ -17,7 +19,13 @@ function build() {
   const events = { publish: vi.fn(async () => ({})) } as unknown as DomainEventsService;
   const metrics = {} as unknown as MetricsService;
   const otp = {} as unknown as OtpChallengeStore;
-  const auth = new AuthService(users, events, metrics, otp);
+  const auth = new AuthService(
+    users,
+    events,
+    metrics,
+    otp,
+    new SessionService(users, createInMemoryAuthSessionRepository())
+  );
   const profiles = createInMemoryPinProfileRepository();
   const service = new PinSessionService(profiles, users, auth, events);
   return { service, users, profiles, events };

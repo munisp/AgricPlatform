@@ -381,6 +381,20 @@ import {
   createPgOfftakeContractRepository,
   createPgOfftakeTemplateRepository
 } from './repositories/livestock-trade.pg-repository.js';
+// Wave P: platform foundation persistence (additive).
+import {
+  AUTH_SESSION_REPOSITORY,
+  FEATURE_FLAG_REPOSITORY,
+  PROCESSED_EVENT_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAuthSessionRepository } from './repositories/auth-session.repository.js';
+import { createPgAuthSessionRepository } from './repositories/auth-session.pg-repository.js';
+import { createInMemoryFeatureFlagRepository } from './repositories/feature-flag.repository.js';
+import { createInMemoryProcessedEventRepository } from './repositories/processed-event.repository.js';
+import {
+  createPgFeatureFlagRepository,
+  createPgProcessedEventRepository
+} from './repositories/platform.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -990,6 +1004,25 @@ import {
       useFactory: (liens: unknown) =>
         createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
       inject: [LIEN_REPOSITORY]
+    },
+    // Wave P: platform foundation (appended).
+    {
+      provide: AUTH_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAuthSessionRepository(pool) : createInMemoryAuthSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FEATURE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFeatureFlagRepository(pool) : createInMemoryFeatureFlagRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROCESSED_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProcessedEventRepository(pool) : createInMemoryProcessedEventRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1088,7 +1121,10 @@ import {
     DISBURSEMENT_REPOSITORY,
     AGGREGATION_POINT_REPOSITORY,
     COLD_CHAIN_LOG_REPOSITORY,
-    LIVESTOCK_TRANSFER_GUARD
+    LIVESTOCK_TRANSFER_GUARD,
+    AUTH_SESSION_REPOSITORY,
+    FEATURE_FLAG_REPOSITORY,
+    PROCESSED_EVENT_REPOSITORY
   ]
 })
 export class DatabaseModule {}
