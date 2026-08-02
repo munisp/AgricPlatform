@@ -9,18 +9,44 @@
  *    unreachable, always behind an offline notice.
  */
 import type {
+  AggregationPoint,
+  Animal,
+  AnimalHealthRecord,
+  AnimalMovement,
   AuditEvent,
   Certificate,
+  CertifiedListing,
   ChapterEvent,
   CreditProfile,
+  DiseaseFlag,
+  DiseaseMapEntry,
+  DonorDisbursement,
+  ExportDocument,
   ForumTopic,
+  InsuranceClaim,
+  InsurancePolicy,
   IntegrationStatus,
+  LivestockLien,
+  LivestockLot,
+  LivestockRecall,
   MentorRequest,
+  MovementPermit,
   NotificationMessage,
+  OfftakeContract,
+  OfftakeTemplate,
   Order,
+  OwnershipTransfer,
+  PastoralistProfile,
   UserRole,
   VaultDocument
 } from '@agric-platform/shared';
+import type {
+  AnimalGradeResult,
+  HealthRecordVerification,
+  LotWithAnimals,
+  PermitVerificationResult,
+  RecallWithAnimals
+} from '@/lib/api/endpoints';
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   farmer: 'Farmer',
@@ -144,6 +170,27 @@ export const MODULES: ModuleDef[] = [
     description: 'Offline-ready resources, podcasts with transcripts and webinars.',
     tag: 'Library',
     roles: ['farmer', 'student', 'chapter_lead']
+  },
+  {
+    href: '/livestock',
+    title: 'Livestock Registry',
+    description: 'Register animals with national IDs, manage lots and transfer ownership.',
+    tag: 'ALTP',
+    roles: ['farmer']
+  },
+  {
+    href: '/livestock/health',
+    title: 'Animal Health & Traceability',
+    description: 'Vet-signed records, movement permits, recalls and disease surveillance.',
+    tag: 'Traceability',
+    roles: ['farmer', 'vet', 'regulator', 'admin']
+  },
+  {
+    href: '/livestock/trade',
+    title: 'Certified Livestock Trade',
+    description: 'Certified listings, offtake contracts, liens, insurance and disbursements.',
+    tag: 'ALTP',
+    roles: ['farmer', 'lender', 'insurer', 'donor', 'partner', 'regulator', 'admin']
   },
   {
     href: '/partner',
@@ -466,3 +513,522 @@ export const CONSENT_PURPOSES = [
   { id: 'analytics', label: 'Product analytics', description: 'Anonymous usage data that helps improve the platform.', locked: false },
   { id: 'partner-sharing', label: 'Partner programme sharing', description: 'Share your profile signals with programmes you apply to.', locked: false }
 ] as const;
+
+/* ------------------------------------------------------------------------
+ * ALTP LIVESTOCK FALLBACK FIXTURES (waves L1a–L1c)
+ * Offline-only reference data for the livestock registry, health and trade
+ * surfaces — rendered behind OfflineDataNotice when the API is unreachable.
+ * Shapes mirror the NestJS controllers under apps/api/src/modules/livestock*.
+ * ---------------------------------------------------------------------- */
+
+export const demoAnimals: Animal[] = [
+  {
+    id: 'NG-BOV-KD-000123',
+    species: 'cattle',
+    breed: 'White Fulani',
+    sex: 'female',
+    birthDate: '2022-03-15',
+    tagId: 'TAG-KD-0412',
+    eid: 'RFID-982-000123',
+    ownerUserId: 'user-adamu',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    status: 'alive',
+    sireId: 'NG-BOV-KD-000011',
+    damId: 'NG-BOV-KD-000087',
+    notes: 'Lead cow of the Zaria herd.',
+    createdAt: '2026-05-02T08:00:00.000Z',
+    updatedAt: '2026-07-20T09:30:00.000Z'
+  },
+  {
+    id: 'NG-CAP-KD-000045',
+    species: 'goat',
+    breed: 'Red Sokoto',
+    sex: 'male',
+    birthDate: '2024-09-01',
+    tagId: 'TAG-KD-0788',
+    ownerUserId: 'user-adamu',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    status: 'alive',
+    createdAt: '2026-05-02T08:10:00.000Z',
+    updatedAt: '2026-05-02T08:10:00.000Z'
+  },
+  {
+    id: 'NG-OVI-KN-000067',
+    species: 'sheep',
+    breed: 'Yankasa',
+    sex: 'female',
+    ownerUserId: 'user-adamu',
+    state: 'Kano',
+    lga: 'Dala',
+    status: 'sold',
+    createdAt: '2026-04-11T10:00:00.000Z',
+    updatedAt: '2026-07-01T12:00:00.000Z'
+  },
+  {
+    id: 'NG-BOV-KD-000087',
+    species: 'cattle',
+    breed: 'Sokoto Gudali',
+    sex: 'female',
+    birthDate: '2019-06-20',
+    ownerUserId: 'user-adamu',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    status: 'alive',
+    createdAt: '2026-04-01T08:00:00.000Z',
+    updatedAt: '2026-04-01T08:00:00.000Z'
+  }
+];
+
+export const demoLots: LivestockLot[] = [
+  {
+    id: 'LOT-AVI-KD-000007',
+    species: 'chicken',
+    quantity: 120,
+    ownerUserId: 'user-adamu',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    formationRule: 'Broiler cycle 2026-Q3, same hatch date',
+    status: 'open',
+    createdAt: '2026-06-15T07:00:00.000Z',
+    updatedAt: '2026-07-28T07:00:00.000Z'
+  },
+  {
+    id: 'LOT-CAP-KD-000003',
+    species: 'goat',
+    quantity: 14,
+    ownerUserId: 'user-adamu',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    status: 'open',
+    createdAt: '2026-05-20T07:00:00.000Z',
+    updatedAt: '2026-05-20T07:00:00.000Z'
+  }
+];
+
+export const demoLotDetail: LotWithAnimals = {
+  ...demoLots[1],
+  animalIds: ['NG-CAP-KD-000045']
+};
+
+export const demoTransfers: OwnershipTransfer[] = [
+  {
+    id: 'transfer-1',
+    animalId: 'NG-BOV-KD-000123',
+    fromUserId: 'user-hassan',
+    toUserId: 'user-adamu',
+    transferType: 'sale',
+    effectiveAt: '2026-05-02T08:00:00.000Z',
+    recordedBy: 'user-hassan',
+    createdAt: '2026-05-02T08:00:00.000Z'
+  },
+  {
+    id: 'transfer-2',
+    animalId: 'NG-BOV-KD-000123',
+    fromUserId: 'user-adamu',
+    toUserId: 'user-adamu',
+    transferType: 'programme',
+    effectiveAt: '2026-06-10T09:00:00.000Z',
+    recordedBy: 'user-admin',
+    createdAt: '2026-06-10T09:00:00.000Z'
+  }
+];
+
+export const demoPastoralistProfile: PastoralistProfile = {
+  userId: 'user-adamu',
+  grazingZoneId: 'GZ-NORTH-KADUNA-04',
+  migrationPattern: 'Dry-season transhumance south towards Kachia; wet-season return to Zaria.',
+  primarySpecies: ['cattle', 'goat'],
+  updatedAt: '2026-07-01T08:00:00.000Z'
+};
+
+export const demoHealthRecords: AnimalHealthRecord[] = [
+  {
+    id: 'hr-1',
+    animalId: 'NG-BOV-KD-000123',
+    recordType: 'vaccination',
+    product: 'FMD',
+    batchNumber: 'FMD-2026-041',
+    dose: '2 ml',
+    administeredAt: '2026-06-01T09:00:00.000Z',
+    vetUserId: 'user-vet',
+    notes: 'Annual FMD round, Zaria zone.',
+    signature: 'm8Q1vDEMO-signature-fmd',
+    signedAt: '2026-06-01T09:01:00.000Z',
+    createdAt: '2026-06-01T09:01:00.000Z'
+  },
+  {
+    id: 'hr-2',
+    animalId: 'NG-BOV-KD-000123',
+    recordType: 'treatment',
+    product: 'Oxytetracycline',
+    batchNumber: 'OXY-2026-118',
+    dose: '10 ml',
+    administeredAt: '2026-07-10T14:00:00.000Z',
+    withdrawalUntil: '2026-07-24T14:00:00.000Z',
+    vetUserId: 'user-vet',
+    signature: 'x2K9pDEMO-signature-oxy',
+    signedAt: '2026-07-10T14:02:00.000Z',
+    createdAt: '2026-07-10T14:02:00.000Z'
+  },
+  {
+    id: 'hr-3',
+    animalId: 'NG-BOV-KD-000123',
+    recordType: 'vaccination',
+    product: 'Anthrax',
+    batchNumber: 'ANT-2025-066',
+    dose: '1 ml',
+    administeredAt: '2025-11-12T09:00:00.000Z',
+    vetUserId: 'user-vet',
+    notes: 'Reversed: cold-chain breach on batch ANT-2025-066.',
+    signature: 'q7R3tDEMO-signature-ant',
+    signedAt: '2025-11-12T09:01:00.000Z',
+    createdAt: '2025-11-12T09:01:00.000Z'
+  },
+  {
+    id: 'hr-4',
+    animalId: 'NG-BOV-KD-000123',
+    recordType: 'vaccination',
+    product: 'Anthrax',
+    batchNumber: 'ANT-2025-066',
+    dose: '1 ml',
+    administeredAt: '2025-11-12T09:00:00.000Z',
+    vetUserId: 'user-vet',
+    notes: 'Reversal of hr-3 (batch recall).',
+    signature: 'z5W8yDEMO-signature-ant-rev',
+    signedAt: '2025-11-19T10:00:00.000Z',
+    reversalOfId: 'hr-3',
+    createdAt: '2025-11-19T10:00:00.000Z'
+  }
+];
+
+export const demoHealthVerification: HealthRecordVerification = {
+  recordId: 'hr-1',
+  ok: true,
+  reversed: false
+};
+
+export const demoMovements: AnimalMovement[] = [
+  {
+    id: 'move-1',
+    animalId: 'NG-BOV-KD-000123',
+    fromState: 'Kaduna',
+    fromLga: 'Zaria',
+    toState: 'Kano',
+    toLga: 'Dala',
+    departedAt: '2026-06-20T06:00:00.000Z',
+    arrivedAt: '2026-06-22T17:30:00.000Z',
+    transportMode: 'truck',
+    purpose: 'market',
+    permitId: 'permit-1',
+    recordedBy: 'user-adamu',
+    createdAt: '2026-06-20T06:00:00.000Z'
+  },
+  {
+    id: 'move-2',
+    animalId: 'NG-BOV-KD-000123',
+    fromState: 'Kano',
+    fromLga: 'Dala',
+    toState: 'Kaduna',
+    toLga: 'Zaria',
+    departedAt: '2026-07-26T05:30:00.000Z',
+    transportMode: 'trek',
+    purpose: 'grazing',
+    recordedBy: 'user-adamu',
+    createdAt: '2026-07-26T05:30:00.000Z'
+  }
+];
+
+export const demoPermits: MovementPermit[] = [
+  {
+    id: 'permit-1',
+    permitNumber: 'PMT-KD-KN-3F9A2C71',
+    fromState: 'Kaduna',
+    toState: 'Kano',
+    validFrom: '2026-06-18T00:00:00.000Z',
+    validUntil: '2026-06-25T00:00:00.000Z',
+    status: 'issued',
+    issuedBy: 'user-vet',
+    createdAt: '2026-06-18T10:00:00.000Z',
+    updatedAt: '2026-06-18T10:00:00.000Z'
+  }
+];
+
+export const demoPermitVerification: PermitVerificationResult = {
+  permit: demoPermits[0],
+  subjects: [{ permitId: 'permit-1', subjectType: 'animal', subjectId: 'NG-BOV-KD-000123' }],
+  verification: 'expired'
+};
+
+export const demoRecalls: LivestockRecall[] = [
+  {
+    id: 'recall-1',
+    scope: 'region',
+    state: 'Kaduna',
+    fromDate: '2026-07-01',
+    toDate: '2026-07-15',
+    batchNumber: 'OXY-2026-118',
+    reason: 'Antibiotic batch OXY-2026-118 failed quality control; trace treated animals.',
+    status: 'notified',
+    initiatedBy: 'user-regulator',
+    createdAt: '2026-07-18T11:00:00.000Z',
+    notifiedAt: '2026-07-18T11:05:00.000Z'
+  },
+  {
+    id: 'recall-2',
+    scope: 'lot',
+    lotId: 'LOT-AVI-KD-000007',
+    reason: 'Suspected Newcastle exposure at source hatchery.',
+    status: 'initiated',
+    initiatedBy: 'user-regulator',
+    createdAt: '2026-07-30T09:00:00.000Z'
+  }
+];
+
+export const demoRecallDetail: RecallWithAnimals = {
+  recall: demoRecalls[0],
+  animals: [{ recallId: 'recall-1', animalId: 'NG-BOV-KD-000123', ownerUserId: 'user-adamu' }]
+};
+
+export const demoDiseaseFlags: DiseaseFlag[] = [
+  {
+    id: 'flag-1',
+    disease: 'PPR',
+    state: 'Kaduna',
+    lga: 'Kachia',
+    suspectedSpecies: 'goat',
+    reporterUserId: 'user-adamu',
+    status: 'confirmed',
+    confirmedBy: 'user-vet',
+    createdAt: '2026-07-22T08:00:00.000Z',
+    updatedAt: '2026-07-23T10:00:00.000Z'
+  },
+  {
+    id: 'flag-2',
+    disease: 'Newcastle',
+    state: 'Kano',
+    suspectedSpecies: 'chicken',
+    reporterUserId: 'user-vet',
+    status: 'reported',
+    createdAt: '2026-07-29T15:00:00.000Z',
+    updatedAt: '2026-07-29T15:00:00.000Z'
+  }
+];
+
+export const demoDiseaseMap: DiseaseMapEntry[] = [
+  {
+    state: 'Kaduna',
+    disease: 'PPR',
+    confirmedFlags: 3,
+    latestReportedAt: '2026-07-23T10:00:00.000Z'
+  },
+  {
+    state: 'Sokoto',
+    disease: 'CBPP',
+    confirmedFlags: 1,
+    latestReportedAt: '2026-07-12T09:00:00.000Z'
+  }
+];
+
+export const demoAnimalGrade: AnimalGradeResult = {
+  animalId: 'NG-BOV-KD-000123',
+  species: 'cattle',
+  grade: 'B',
+  score: 68,
+  components: {
+    vaccinationCoverage: 2 / 3,
+    vaccinationPoints: 30,
+    treatmentPoints: 12,
+    movementPoints: 10,
+    agePoints: 16,
+    movementCount: 2,
+    requiredVaccinations: ['FMD', 'CBPP', 'Anthrax'],
+    completedVaccinations: ['FMD', 'Anthrax']
+  },
+  computedAt: '2026-07-31T08:00:00.000Z'
+};
+
+export const demoCertifiedListings: CertifiedListing[] = [
+  {
+    id: 'listing-cert-1',
+    subjectType: 'animal',
+    subjectId: 'NG-BOV-KD-000123',
+    sellerUserId: 'user-adamu',
+    species: 'cattle',
+    breed: 'White Fulani',
+    askingPriceKobo: 450_000_00,
+    status: 'active',
+    provenance: {
+      subjectType: 'animal',
+      subjectId: 'NG-BOV-KD-000123',
+      species: 'cattle',
+      breed: 'White Fulani',
+      ownershipDepth: 1,
+      consentGranted: true
+    },
+    createdAt: '2026-07-20T09:00:00.000Z',
+    updatedAt: '2026-07-21T09:00:00.000Z'
+  }
+];
+
+export const demoOfftakeTemplates: OfftakeTemplate[] = [
+  {
+    id: 'template-1',
+    name: 'Festive season beef offtake',
+    description: 'Standard Q4 beef offtake for certified cattle, Lagos abattoirs.',
+    species: 'cattle',
+    defaultQuantity: 20,
+    defaultPricePerUnitKobo: 420_000_00,
+    deliveryWindowDays: 45,
+    defaultQualityGrade: 'B',
+    status: 'active',
+    createdByUserId: 'user-partner',
+    createdAt: '2026-06-01T08:00:00.000Z',
+    updatedAt: '2026-06-01T08:00:00.000Z'
+  }
+];
+
+export const demoOfftakeContracts: OfftakeContract[] = [
+  {
+    id: 'contract-1',
+    templateId: 'template-1',
+    farmerUserId: 'user-adamu',
+    buyerUserId: 'user-buyer',
+    species: 'cattle',
+    quantity: 10,
+    pricePerUnitKobo: 420_000_00,
+    totalKobo: 4_200_000_00,
+    deliveryWindowStart: '2026-10-01T00:00:00.000Z',
+    deliveryWindowEnd: '2026-11-15T00:00:00.000Z',
+    qualityGrade: 'B',
+    status: 'active',
+    createdAt: '2026-07-25T10:00:00.000Z',
+    updatedAt: '2026-07-25T10:00:00.000Z'
+  }
+];
+
+export const demoExportDocuments: ExportDocument[] = [
+  {
+    id: 'export-doc-1',
+    documentType: 'certificate_of_origin',
+    subjectType: 'animal',
+    subjectId: 'NG-BOV-KD-000123',
+    version: 1,
+    status: 'draft',
+    payload: {
+      watermark: 'DRAFT — generated for review only; not submitted to any authority',
+      documentType: 'certificate_of_origin',
+      version: 1,
+      consignment: {
+        subjectType: 'animal',
+        subjectId: 'NG-BOV-KD-000123',
+        species: 'cattle',
+        breed: 'White Fulani',
+        quantity: 1,
+        originState: 'Kaduna',
+        originLga: 'Zaria',
+        ownerUserId: 'user-adamu'
+      },
+      certificateOfOrigin: {
+        originCountry: 'Nigeria',
+        exporterUserId: 'user-adamu',
+        destinationCountry: 'Ghana',
+        hsCode: '0102'
+      },
+      generatedAt: '2026-07-28T12:00:00.000Z'
+    },
+    createdByUserId: 'user-adamu',
+    createdAt: '2026-07-28T12:00:00.000Z'
+  }
+];
+
+export const demoLiens: LivestockLien[] = [
+  {
+    id: 'lien-1',
+    subjectType: 'animal',
+    subjectId: 'NG-BOV-KD-000123',
+    lenderUserId: 'user-lender',
+    borrowerUserId: 'user-adamu',
+    principalKobo: 300_000_00,
+    terms: '6-month input credit; lien discharges on full repayment.',
+    status: 'active',
+    registeredAt: '2026-06-05T09:00:00.000Z',
+    createdAt: '2026-06-05T09:00:00.000Z',
+    updatedAt: '2026-06-05T09:00:00.000Z'
+  }
+];
+
+export const demoInsurancePolicies: InsurancePolicy[] = [
+  {
+    id: 'policy-1',
+    holderUserId: 'user-adamu',
+    insurerUserId: 'user-insurer',
+    subjectType: 'animal',
+    subjectId: 'NG-BOV-KD-000123',
+    species: 'cattle',
+    premiumKobo: 22_500_00,
+    coverageKobo: 450_000_00,
+    status: 'bound',
+    startsAt: '2026-07-01T00:00:00.000Z',
+    endsAt: '2027-06-30T00:00:00.000Z',
+    createdAt: '2026-06-28T10:00:00.000Z',
+    updatedAt: '2026-07-01T08:00:00.000Z'
+  }
+];
+
+export const demoInsuranceClaims: InsuranceClaim[] = [
+  {
+    id: 'claim-1',
+    policyId: 'policy-1',
+    claimantUserId: 'user-adamu',
+    trigger: 'recall',
+    recallId: 'recall-1',
+    animalIds: ['NG-BOV-KD-000123'],
+    status: 'submitted',
+    notes: 'Recall recall-1 (batch OXY-2026-118) — withdrawal losses.',
+    createdAt: '2026-07-19T09:00:00.000Z',
+    updatedAt: '2026-07-19T09:00:00.000Z'
+  }
+];
+
+export const demoDisbursements: DonorDisbursement[] = [
+  {
+    id: 'disb-1',
+    donorUserId: 'user-donor',
+    programmeId: 'prog-women-poultry',
+    milestone: 'vaccination',
+    amountKobo: 50_000_00,
+    beneficiaryUserId: 'user-adamu',
+    status: 'scheduled',
+    createdAt: '2026-07-26T08:00:00.000Z',
+    updatedAt: '2026-07-26T08:00:00.000Z'
+  },
+  {
+    id: 'disb-2',
+    donorUserId: 'user-donor',
+    programmeId: 'prog-women-poultry',
+    milestone: 'registration',
+    amountKobo: 25_000_00,
+    beneficiaryUserId: 'user-adamu',
+    status: 'released',
+    releasedAt: '2026-07-02T09:00:00.000Z',
+    createdAt: '2026-06-28T08:00:00.000Z',
+    updatedAt: '2026-07-02T09:00:00.000Z'
+  }
+];
+
+export const demoAggregationPoints: AggregationPoint[] = [
+  {
+    id: 'point-1',
+    name: 'Zaria Livestock Collection Hub',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    managerUserId: 'user-partner',
+    capacity: 500,
+    lotIds: ['LOT-AVI-KD-000007'],
+    status: 'active',
+    createdAt: '2026-06-10T08:00:00.000Z',
+    updatedAt: '2026-07-28T07:00:00.000Z'
+  }
+];
