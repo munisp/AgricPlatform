@@ -14,6 +14,7 @@ import type { NotificationPreferenceRepository } from '../../database/repositori
 import type { NotificationRepository } from '../../database/repositories/notification.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { IntegrationsService } from '../integrations/integrations.service.js';
+import { DELIVERY_RETRY_BASE_MS } from './delivery-retry.service.js';
 
 export type { DeliveryLogEntry };
 
@@ -71,14 +72,20 @@ export class NotificationsService {
     );
 
     const result = this.integrations.deliver(input.channel);
-    // Delivery log + status flip commit as one unit.
+    // Delivery log + status flip commit as one unit. Failures schedule the
+    // first retry (Wave P backoff); the sweeper picks them up when due.
+    const at = new Date();
     return this.messages.recordDelivery(
       message.id,
       result.delivered ? 'sent' : 'failed',
       {
         notificationId: message.id,
         result,
-        at: new Date().toISOString()
+        at: at.toISOString(),
+        attempt: 1,
+        ...(result.delivered
+          ? {}
+          : { nextRetryAt: new Date(at.getTime() + DELIVERY_RETRY_BASE_MS).toISOString() })
       }
     );
   }

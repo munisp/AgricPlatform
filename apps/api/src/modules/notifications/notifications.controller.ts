@@ -14,6 +14,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { DeliveryRetryService } from './delivery-retry.service.js';
 import { NotificationsService, type SendNotificationInput } from './notifications.service.js';
 
 class SendNotificationDto implements SendNotificationInput {
@@ -55,7 +56,10 @@ class SetPreferencesDto {
 @Controller('notifications')
 @UseGuards(RolesGuard)
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly retries: DeliveryRetryService
+  ) {}
 
   @Get()
   @Authenticated()
@@ -121,5 +125,31 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Delivery log across provider adapters (admin only)' })
   async deliveries() {
     return { data: await this.notifications.deliveries() };
+  }
+
+  @Get('deliveries/dead-letters')
+  @Roles('admin')
+  @ApiOperation({ summary: 'Dead-lettered notification deliveries (admin only)' })
+  async deadLetters() {
+    return { data: await this.retries.listDeadLetters() };
+  }
+
+  @Post('deliveries/sweep')
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Run one delivery-retry sweep: retries due failures with exponential backoff and ' +
+      'dead-letters exhausted entries. An external scheduler should invoke this endpoint ' +
+      'periodically; the API starts no timers of its own.'
+  })
+  async sweepDeliveries() {
+    return { data: await this.retries.sweep() };
+  }
+
+  @Post('deliveries/:notificationId/retry')
+  @Roles('admin')
+  @ApiOperation({ summary: 'Manually retry a failed/dead-lettered delivery now (admin only)' })
+  async retryDelivery(@Param('notificationId') notificationId: string) {
+    return { data: await this.retries.retryNow(notificationId) };
   }
 }

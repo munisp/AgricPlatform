@@ -10,6 +10,7 @@ import {
   type DependencyIndicator
 } from './dependency-indicator.js';
 import { HealthController } from './health.controller.js';
+import { ModuleHealthService } from './module-health.service.js';
 
 /**
  * Health/readiness endpoints (observability plan §A.5). The persistence
@@ -21,6 +22,7 @@ import { HealthController } from './health.controller.js';
   imports: [IntegrationsModule],
   controllers: [HealthController],
   providers: [
+    ModuleHealthService,
     {
       provide: DEPENDENCY_INDICATORS,
       useFactory: (pool: pg.Pool | null, redis: Redis | null): DependencyIndicator[] => [

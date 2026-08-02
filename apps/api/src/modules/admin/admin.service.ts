@@ -3,6 +3,8 @@ import type { PlatformMetric, User, UserRole } from '@agric-platform/shared';
 import { platformMetrics } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { OutboxSweeperService, type OutboxSweepResult } from '../../core/outbox-sweeper.service.js';
+import type { OutboxRecord } from '../../database/repositories/outbox.repository.js';
 import type { AccountStatus } from '../../database/repositories/user.repository.js';
 import { CommunityService } from '../community/community.service.js';
 import { FinanceService } from '../finance/finance.service.js';
@@ -35,7 +37,8 @@ export class AdminService {
     private readonly finance: FinanceService,
     private readonly opportunities: OpportunitiesService,
     private readonly learning: LearningService,
-    private readonly marketplace: MarketplaceService
+    private readonly marketplace: MarketplaceService,
+    private readonly outboxSweeper: OutboxSweeperService
   ) {}
 
   async listUsers(role?: UserRole): Promise<AdminUserView[]> {
@@ -131,8 +134,18 @@ export class AdminService {
   }
 
   /** Tamper-evidence check over the audit hash chain (observability plan §A.6). */
-  async verifyAuditLog() {
-    return this.audit.verify();
+  async verifyAuditLog(range?: { fromId?: string; toId?: string }) {
+    return this.audit.verify(range);
+  }
+
+  /** Wave P: one outbox sweeper pass (retries + dead-lettering). */
+  async sweepOutbox(): Promise<OutboxSweepResult> {
+    return this.outboxSweeper.sweep();
+  }
+
+  /** Wave P: dead-lettered outbox rows awaiting operator action. */
+  async outboxDeadLetters(): Promise<OutboxRecord[]> {
+    return this.outboxSweeper.deadLetters();
   }
 
   async eventOutbox(): Promise<DomainEvent[]> {

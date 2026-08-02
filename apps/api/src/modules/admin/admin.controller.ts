@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ArrayNotEmpty, IsBoolean, IsIn } from 'class-validator';
 import { USER_ROLES, type UserRole } from '@agric-platform/shared';
@@ -79,15 +79,34 @@ export class AdminController {
 
   @Get('audit-log/verify')
   @ApiOperation({
-    summary: 'Verify the tamper-evident audit hash chain ({valid, brokenAt?})'
+    summary:
+      'Verify the tamper-evident audit hash chain ({valid, brokenAt?, checked}). ' +
+      'Optional fromId/toId bound the walk to a contiguous range (regulator spot-checks).'
   })
-  async verifyAuditLog() {
-    return { data: await this.admin.verifyAuditLog() };
+  async verifyAuditLog(@Query('fromId') fromId?: string, @Query('toId') toId?: string) {
+    return { data: await this.admin.verifyAuditLog({ fromId, toId }) };
   }
 
   @Get('events')
   @ApiOperation({ summary: 'Domain event outbox ({domain}.{entity}.{verb} taxonomy)' })
   async events() {
     return { data: await this.admin.eventOutbox() };
+  }
+
+  @Post('outbox/sweep')
+  @ApiOperation({
+    summary:
+      'Run one outbox sweeper pass: retries stalled unpublished rows with backoff and ' +
+      'dead-letters exhausted rows. An external scheduler should invoke this endpoint ' +
+      'periodically; the API starts no timers of its own.'
+  })
+  async sweepOutbox() {
+    return { data: await this.admin.sweepOutbox() };
+  }
+
+  @Get('outbox/dead-letters')
+  @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
+  async outboxDeadLetters() {
+    return { data: await this.admin.outboxDeadLetters() };
   }
 }

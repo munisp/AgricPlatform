@@ -14,6 +14,7 @@ import { ROLES_KEY } from './roles.decorator.js';
 
 interface AuthenticatedRequest {
   headers: Record<string, string | string[] | undefined>;
+  query?: Record<string, string | string[] | undefined>;
   user?: unknown;
 }
 
@@ -53,7 +54,14 @@ export class RolesGuard implements CanActivate {
   private async resolveIdentity(request: AuthenticatedRequest): Promise<User> {
     const authorization = request.headers['authorization'];
     const header = Array.isArray(authorization) ? authorization[0] : authorization;
-    const bearer = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : undefined;
+    // RFC 6750 §2.3: browser EventSource clients cannot set headers, so the
+    // SSE stream passes the same bearer token as ?access_token=. The OIDC
+    // verification path is identical — no semantic change for header auth.
+    const queryToken = request.query?.['access_token'];
+    const queryBearer = Array.isArray(queryToken) ? queryToken[0] : queryToken;
+    const bearer = header?.startsWith('Bearer ')
+      ? header.slice('Bearer '.length).trim()
+      : queryBearer?.trim() || undefined;
 
     if (bearer) {
       let identity: OidcIdentity;
@@ -68,7 +76,9 @@ export class RolesGuard implements CanActivate {
     }
 
     if (devHeaderAuthAllowed()) {
-      const devHeader = request.headers['x-user-id'];
+      // EventSource clients (SSE) send the same development identity as a
+      // query parameter; honoured only where the header itself is allowed.
+      const devHeader = request.headers['x-user-id'] ?? request.query?.['x-user-id'];
       const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
       const user = userId ? await this.users.findById(userId) : undefined;
       if (user) {

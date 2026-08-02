@@ -9,6 +9,7 @@ import { useT } from '@/lib/i18n';
 import type { TranslationKey } from '@/lib/i18n';
 import { ROLE_LABELS } from '@/lib/content';
 import { LocaleSwitcher } from '@/components/locale-switcher';
+import { NotificationBell } from '@/components/notification-bell';
 
 const TOP_LINKS: { href: string; labelKey: TranslationKey }[] = [
   { href: '/dashboard', labelKey: 'nav.dashboard' },
@@ -62,6 +63,8 @@ export function Nav() {
             ))}
           </nav>
           <div className="nav-actions">
+            {/* Wave P: live notification bell (SSE with polling fallback). */}
+            <NotificationBell />
             <LocaleSwitcher id="locale-nav" />
             <Link href="/search" className="btn btn-ghost btn-small" aria-label={t('nav.searchLabel')}>
               {t('nav.search')}

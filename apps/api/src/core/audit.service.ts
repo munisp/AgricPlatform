@@ -19,6 +19,8 @@ export interface AuditVerification {
   valid: boolean;
   /** Id of the first event whose hash/link check failed. */
   brokenAt?: string;
+  /** Number of events verified in this walk (Wave P). */
+  checked?: number;
 }
 
 /** prevHash of the first event in the chain. */
@@ -90,23 +92,41 @@ export class AuditService {
    * Re-walks the persisted chain. An event is broken when it lacks hash
    * fields, its prevHash does not match the running tail, or its payload no
    * longer hashes to the stored value (i.e. it was tampered with).
+   *
+   * Wave P: optional [fromId, toId] range bounds the walk to a contiguous
+   * slice. Inside a range the first event's prevHash is trusted (it links
+   * to history outside the slice); every later link and every payload hash
+   * is still verified, and the first broken link is reported.
    */
-  async verify(): Promise<AuditVerification> {
-    let expected = GENESIS_HASH;
-    for (const event of await this.audits.list()) {
+  async verify(range?: { fromId?: string; toId?: string }): Promise<AuditVerification> {
+    const all = await this.audits.list();
+    const start = range?.fromId ? all.findIndex((event) => event.id === range.fromId) : 0;
+    if (start < 0) {
+      return { valid: false, brokenAt: range?.fromId, checked: 0 };
+    }
+    const end = range?.toId ? all.findIndex((event) => event.id === range.toId) : all.length - 1;
+    if (range?.toId && end < 0) {
+      return { valid: false, brokenAt: range.toId, checked: 0 };
+    }
+    const slice = all.slice(start, end + 1);
+    // Full-chain walks anchor at genesis; ranged walks trust the slice head's link.
+    let expected = start === 0 ? GENESIS_HASH : (slice[0]?.prevHash ?? GENESIS_HASH);
+    let checked = 0;
+    for (const event of slice) {
       if (!event.hash || !event.prevHash) {
-        return { valid: false, brokenAt: event.id };
+        return { valid: false, brokenAt: event.id, checked };
       }
       if (event.prevHash !== expected) {
-        return { valid: false, brokenAt: event.id };
+        return { valid: false, brokenAt: event.id, checked };
       }
       const { hash, ...unsigned } = event;
       if (hashAuditEvent(unsigned, event.prevHash) !== event.hash) {
-        return { valid: false, brokenAt: event.id };
+        return { valid: false, brokenAt: event.id, checked };
       }
       expected = event.hash;
+      checked += 1;
     }
-    return { valid: true };
+    return { valid: true, checked };
   }
 
   /** Tail hash, lazily resumed from the repository after a restart. */

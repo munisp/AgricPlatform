@@ -228,6 +228,47 @@ export const en = {
   common: {
     loading: 'Loading…',
     retry: 'Retry'
+  },
+  notifications: {
+    bell: 'Alerts',
+    bellLabel: 'Open notifications',
+    panelLabel: 'Unread notifications',
+    empty: 'No new alerts.',
+    live: 'Live updates on',
+    polling: 'Checking every 30 seconds'
+  },
+  adminStatus: {
+    title: 'Module status',
+    kicker: 'Admin console',
+    description: 'Readiness of each platform module. Cheap checks only.',
+    checkedAt: 'Checked at {time}',
+    overall: 'Overall: {status}',
+    refresh: 'Check again'
+  },
+  adminFlags: {
+    title: 'Feature flags',
+    kicker: 'Admin console',
+    description: 'Turn features on or off. Limit by role or rollout percent.',
+    key: 'Flag key',
+    enabled: 'On',
+    percentage: 'Rollout %',
+    roles: 'Roles (comma separated)',
+    descriptionLabel: 'Description',
+    save: 'Save flag',
+    delete: 'Delete',
+    saved: 'Flag saved.',
+    deleted: 'Flag deleted.'
+  },
+  adminAuditVerify: {
+    title: 'Audit chain check',
+    kicker: 'Admin console',
+    description: 'Check the audit log has not been changed.',
+    fromId: 'First event id (optional)',
+    toId: 'Last event id (optional)',
+    run: 'Run check',
+    valid: 'Chain is intact. {checked} events checked.',
+    broken: 'Chain broken at event {id}.',
+    invalidRange: 'Check failed. Event id not found.'
   }
 };
 
