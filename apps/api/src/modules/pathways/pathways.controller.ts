@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsBoolean, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -121,6 +121,18 @@ export class PathwaysController {
   async enrol(@Param('id') id: string, @Body() dto: EnrolPathwayDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.userId);
     return { data: await this.pathways.enrol(id, dto.userId) };
+  }
+
+  // Declared before `pathway-enrolments/:id` so 'mine' is not captured as an id.
+  @Get('pathway-enrolments/mine')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List the current user\'s pathway enrolments with template and stage progress summary' })
+  async listMyEnrolments(@CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    return { data: await this.pathways.listMyEnrolments(actor.id) };
   }
 
   @Get('pathway-enrolments/:id')

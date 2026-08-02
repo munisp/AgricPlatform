@@ -16,12 +16,13 @@ import type {
   SupplierCategory
 } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
-import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
+import { invalidateApiQueries, useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import {
   createServiceBooking,
   createServiceReview,
   fetchServiceBooking,
   fetchServiceSupplier,
+  listMyServiceBookings,
   listServiceSuppliers,
   listSupplierOfferings,
   listSupplierReviews,
@@ -32,7 +33,10 @@ import { Field, Select, TextArea, TextInput } from '@/components/forms';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 import { AutoBadge, Card, EmptyState, StatusBadge, Timeline } from '@/components/ui';
 
-/** Booking ids created on this device — the API has no "my bookings" list. */
+/**
+ * Booking ids created on this device — offline fallback only. The
+ * `GET /service-bookings/mine` endpoint is the source of truth when reachable.
+ */
 const MY_BOOKINGS_KEY = 'agric.my-service-bookings';
 
 function categoryLabel(category: string): string {
@@ -326,9 +330,10 @@ export function SupplierDetail({ supplierId }: { supplierId: string }) {
                     <BookingRequestForm
                       offering={offering}
                       supplier={supplier}
-                      onBooked={(booking) =>
-                        setMyBookings((current) => [booking.id, ...current])
-                      }
+                      onBooked={(booking) => {
+                        setMyBookings((current) => [booking.id, ...current]);
+                        invalidateApiQueries('my-service-bookings');
+                      }}
                     />
                   ) : null}
                 </div>
@@ -423,30 +428,17 @@ function ReviewForm({ booking, onReviewed }: { booking: ServiceBooking; onReview
   );
 }
 
-function BookingCard({ bookingId, onChanged }: { bookingId: string; onChanged: () => void }) {
-  const query = useApiQuery(
-    `service-booking:${bookingId}`,
-    () => fetchServiceBooking(bookingId).then((res) => res.data),
-    { fallbackData: undefined }
-  );
+/** Renders one booking (timeline, quote actions, review form) from a loaded booking object. */
+function BookingView({ booking, onChanged }: { booking: ServiceBooking; onChanged: () => void }) {
   const [reviewed, setReviewed] = useState(false);
 
   const statusMutation = useApiMutation<{ status: BookingStatus }, ServiceBooking>({
-    mutationFn: ({ status }) => setServiceBookingStatus(bookingId, status).then((res) => res.data),
+    mutationFn: ({ status }) => setServiceBookingStatus(booking.id, status).then((res) => res.data),
     onSuccess: () => {
-      query.refresh();
+      invalidateApiQueries(`service-booking:${booking.id}`, 'my-service-bookings');
       onChanged();
     }
   });
-
-  const booking = query.data;
-  if (!booking) {
-    return query.error ? (
-      <ApiErrorNotice error={query.error} onRetry={query.refresh} />
-    ) : (
-      <p className="small muted">Loading booking…</p>
-    );
-  }
 
   return (
     <Card>
@@ -502,10 +494,65 @@ function BookingCard({ bookingId, onChanged }: { bookingId: string; onChanged: (
   );
 }
 
+/** Offline fallback: fetch a booking by id recorded on this device. */
+function BookingCard({ bookingId, onChanged }: { bookingId: string; onChanged: () => void }) {
+  const query = useApiQuery(
+    `service-booking:${bookingId}`,
+    () => fetchServiceBooking(bookingId).then((res) => res.data),
+    { fallbackData: undefined }
+  );
+
+  const booking = query.data;
+  if (!booking) {
+    return query.error ? (
+      <ApiErrorNotice error={query.error} onRetry={query.refresh} />
+    ) : (
+      <p className="small muted">Loading booking…</p>
+    );
+  }
+  return (
+    <BookingView
+      booking={booking}
+      onChanged={() => {
+        query.refresh();
+        onChanged();
+      }}
+    />
+  );
+}
+
 export function MyBookings() {
+  // Source of truth: the per-user API list. Device-local ids remain as the
+  // offline fallback for bookings not yet synced.
+  const query = useApiQuery('my-service-bookings', () =>
+    listMyServiceBookings().then((res) => res.data)
+  );
   const [bookingIds, setBookingIds] = usePersistentState<string[]>(MY_BOOKINGS_KEY, []);
   const [, setTick] = useState(0);
 
+  if (query.data) {
+    if (query.data.length === 0) {
+      return (
+        <EmptyState
+          title="No bookings yet"
+          hint="Bookings you request from a supplier appear here."
+        />
+      );
+    }
+    return (
+      <div className="stack">
+        {query.data.map((booking) => (
+          <BookingView key={booking.id} booking={booking} onChanged={query.refresh} />
+        ))}
+      </div>
+    );
+  }
+
+  if (query.isLoading) {
+    return <p className="small muted">Loading your bookings…</p>;
+  }
+
+  // Offline fallback: bookings recorded on this device.
   if (bookingIds.length === 0) {
     return (
       <EmptyState
@@ -517,6 +564,7 @@ export function MyBookings() {
 
   return (
     <div className="stack">
+      <OfflineDataNotice />
       <div className="cluster" style={{ justifyContent: 'flex-end' }}>
         <button
           type="button"

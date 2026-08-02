@@ -152,4 +152,19 @@ describe('KnowledgeService webinars', () => {
       ConflictException
     );
   });
+
+  it('lists only the requesting user\'s own registrations', async () => {
+    const service = makeService();
+    const webinar = await service.createWebinar(
+      { title: 'w', hostUserId: 'user-admin', startsAt: '2026-10-01T10:00:00+01:00' },
+      'user-admin'
+    );
+    const mine = await service.registerForWebinar(webinar.id, 'user-aisha');
+    await service.registerForWebinar(webinar.id, 'user-adamu');
+
+    const registrations = await service.listMyRegistrations('user-aisha');
+    expect(registrations.map((entry) => entry.id)).toEqual([mine.id]);
+    expect(registrations.every((entry) => entry.userId === 'user-aisha')).toBe(true);
+    expect(await service.listMyRegistrations('user-unknown')).toEqual([]);
+  });
 });

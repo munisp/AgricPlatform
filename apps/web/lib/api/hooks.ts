@@ -27,6 +27,13 @@ export function clearApiCache(): void {
   cache.clear();
 }
 
+/** Drop specific cache keys so the next `useApiQuery` mount revalidates (e.g. after a mutation). */
+export function invalidateApiQueries(...keys: string[]): void {
+  for (const key of keys) {
+    cache.delete(key);
+  }
+}
+
 export type QuerySource = 'api' | 'cache' | 'fallback';
 
 export interface UseApiQueryResult<T> {

@@ -10,7 +10,7 @@ import type {
   PathwayTrack
 } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
-import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
+import { invalidateApiQueries, useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import {
   completePathwayStage,
   enrolInPathway,
@@ -18,6 +18,7 @@ import {
   fetchPathwayTemplate,
   joinCampusClub,
   listCampusClubs,
+  listMyPathwayEnrolments,
   listPathwayTemplates
 } from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
@@ -25,7 +26,10 @@ import { Field, Select, TextArea } from '@/components/forms';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 import { AutoBadge, Card, EmptyState, StatusBadge } from '@/components/ui';
 
-/** Pathway enrolments recorded on this device: enrolmentId → template name. */
+/**
+ * Pathway enrolments recorded on this device (enrolmentId → template name) —
+ * offline fallback only. `GET /pathway-enrolments/mine` is the source of truth.
+ */
 const MY_PATHWAYS_KEY = 'agric.my-pathway-enrolments';
 
 function trackLabel(track: PathwayTrack): string {
@@ -57,6 +61,7 @@ function TemplateDetail({ template }: { template: PathwayTemplate }) {
     },
     onSuccess: (enrolment) => {
       setMyPathways((current) => ({ ...current, [enrolment.id]: template.name }));
+      invalidateApiQueries('my-pathway-enrolments');
       setJustEnrolled(true);
     },
     onQueued: () => setJustEnrolled(true)
@@ -188,6 +193,7 @@ function MyPathwayCard({ enrolmentId, templateName }: { enrolmentId: string; tem
     onSuccess: () => {
       setEvidence('');
       query.refresh();
+      invalidateApiQueries('my-pathway-enrolments');
     },
     onQueued: () => setEvidence('')
   });
@@ -272,9 +278,41 @@ function MyPathwayCard({ enrolmentId, templateName }: { enrolmentId: string; tem
 }
 
 export function MyPathways() {
+  // Source of truth: the per-user API list (template + stage progress summary).
+  // Device-local entries remain as the offline fallback.
+  const query = useApiQuery('my-pathway-enrolments', () =>
+    listMyPathwayEnrolments().then((res) => res.data)
+  );
   const [myPathways] = usePersistentState<Record<string, string>>(MY_PATHWAYS_KEY, {});
-  const entries = Object.entries(myPathways);
 
+  if (query.data) {
+    if (query.data.length === 0) {
+      return (
+        <EmptyState
+          title="No pathway enrolments yet"
+          hint="Enrol on a student or NYSC pathway above to track your stage progress here."
+        />
+      );
+    }
+    return (
+      <div className="stack">
+        {query.data.map((summary) => (
+          <MyPathwayCard
+            key={summary.enrolment.id}
+            enrolmentId={summary.enrolment.id}
+            templateName={summary.template.name}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (query.isLoading) {
+    return <p className="small muted">Loading your pathways…</p>;
+  }
+
+  // Offline fallback: enrolments recorded on this device.
+  const entries = Object.entries(myPathways);
   if (entries.length === 0) {
     return (
       <EmptyState
@@ -286,6 +324,7 @@ export function MyPathways() {
 
   return (
     <div className="stack">
+      <OfflineDataNotice />
       {entries.map(([enrolmentId, templateName]) => (
         <MyPathwayCard key={enrolmentId} enrolmentId={enrolmentId} templateName={templateName} />
       ))}

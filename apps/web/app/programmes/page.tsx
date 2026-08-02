@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { CohortDirectory } from '@/components/programmes-live';
+import { CohortDirectory, MyCohorts } from '@/components/programmes-live';
 import { PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -19,6 +19,14 @@ export default function ProgrammesPage() {
 
       <Section kicker="Directory" title="Programme cohorts">
         <CohortDirectory />
+      </Section>
+
+      <Section
+        kicker="Your programmes"
+        title="My cohorts"
+        description="Your enrolments and milestone progress, synced from your account when online."
+      >
+        <MyCohorts />
       </Section>
     </div>
   );

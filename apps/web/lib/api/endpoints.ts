@@ -560,6 +560,13 @@ export function fetchServiceBooking(id: string): Promise<{ data: ServiceBooking 
   return apiFetch(`/service-bookings/${encodeURIComponent(id)}`);
 }
 
+/** Own bookings, newest first. Plain `{ data: T[] }` envelope. */
+export function listMyServiceBookings(params: {
+  status?: BookingStatus;
+} = {}): Promise<{ data: ServiceBooking[] }> {
+  return apiFetch('/service-bookings/mine', { query: { ...params } });
+}
+
 export function quoteServiceBooking(
   id: string,
   totalNaira: number
@@ -610,6 +617,19 @@ export function listProgrammeCohorts(params: {
 
 export function fetchProgrammeCohort(id: string): Promise<{ data: ProgrammeCohort }> {
   return apiFetch(`/programme-cohorts/${encodeURIComponent(id)}`);
+}
+
+/** Own cohort enrolment with milestone progress summary (`/programme-cohorts/mine`). */
+export interface MyCohortEnrolmentSummary {
+  enrolment: ProgrammeEnrolment;
+  cohort: ProgrammeCohort;
+  milestonesTotal: number;
+  milestonesCompleted: number;
+}
+
+/** Own cohort enrolments, newest first. Plain `{ data: T[] }` envelope. */
+export function listMyCohortEnrolments(): Promise<{ data: MyCohortEnrolmentSummary[] }> {
+  return apiFetch('/programme-cohorts/mine');
 }
 
 export function enrolInCohort(
@@ -727,6 +747,20 @@ export function fetchPathwayEnrolment(
   return apiFetch(`/pathway-enrolments/${encodeURIComponent(id)}`);
 }
 
+/** Own pathway enrolment with template + stage progress summary (`/pathway-enrolments/mine`). */
+export interface MyPathwayEnrolmentSummary {
+  enrolment: PathwayEnrolment;
+  template: PathwayTemplate;
+  stagesTotal: number;
+  stagesCompleted: number;
+  currentStageTitle?: string;
+}
+
+/** Own pathway enrolments, newest first. Plain `{ data: T[] }` envelope. */
+export function listMyPathwayEnrolments(): Promise<{ data: MyPathwayEnrolmentSummary[] }> {
+  return apiFetch('/pathway-enrolments/mine');
+}
+
 /** Completes the current stage (evidence required) and advances. */
 export function completePathwayStage(
   enrolmentId: string,
@@ -810,6 +844,11 @@ export function registerForWebinar(
     body: { userId },
     idempotencyKey
   });
+}
+
+/** Own webinar registrations, newest first. Plain `{ data: T[] }` envelope. */
+export function listMyWebinarRegistrations(): Promise<{ data: WebinarRegistration[] }> {
+  return apiFetch('/webinars/mine/registrations');
 }
 
 /* --------------------------- finance depth ----------------------------- */

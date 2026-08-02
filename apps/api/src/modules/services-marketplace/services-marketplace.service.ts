@@ -233,6 +233,12 @@ export class ServicesMarketplaceService {
     return this.bookings.find(filter);
   }
 
+  /** Own bookings for the `/service-bookings/mine` endpoint (ownership-scoped by user id). */
+  async listBookingsForCustomer(customerId: string, status?: BookingStatus): Promise<ServiceBooking[]> {
+    const bookings = await this.bookings.find({ customerId, status });
+    return bookings.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
   /** Supplier issues a quote (requested → quoted) with the total price. */
   async quoteBooking(id: string, totalNaira: number, actor: Actor): Promise<ServiceBooking> {
     const booking = await this.bookings.getById(id);

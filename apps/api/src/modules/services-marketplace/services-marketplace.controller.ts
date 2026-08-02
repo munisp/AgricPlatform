@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsIn, IsISO8601, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import type { BookingStatus, SupplierCategory, User } from '@agric-platform/shared';
@@ -94,6 +94,12 @@ class CreateBookingDto implements Omit<CreateBookingInput, 'offeringId'> {
   notes?: string;
 }
 
+class ListMyBookingsQuery {
+  @IsOptional()
+  @IsIn(BOOKING_STATUSES)
+  status?: BookingStatus;
+}
+
 class QuoteBookingDto {
   @IsNumber()
   totalNaira!: number;
@@ -185,6 +191,18 @@ export class ServicesMarketplaceController {
   async createBooking(@Param('id') id: string, @Body() dto: CreateBookingDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.customerId);
     return { data: await this.servicesMarketplace.createBooking({ ...dto, offeringId: id }) };
+  }
+
+  // Declared before `service-bookings/:id` so 'mine' is not captured as an id.
+  @Get('service-bookings/mine')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List the current user\'s bookings (optional status filter)' })
+  async listMyBookings(@Query() query: ListMyBookingsQuery, @CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    return { data: await this.servicesMarketplace.listBookingsForCustomer(actor.id, query.status) };
   }
 
   @Get('service-bookings/:id')

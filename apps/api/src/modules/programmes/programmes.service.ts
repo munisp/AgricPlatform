@@ -60,6 +60,14 @@ export interface CreateCohortInput {
   moderatorIds?: string[];
 }
 
+/** Per-user enrolment with cohort + milestone progress summary for `/programme-cohorts/mine`. */
+export interface MyCohortEnrolmentSummary {
+  enrolment: ProgrammeEnrolment;
+  cohort: ProgrammeCohort;
+  milestonesTotal: number;
+  milestonesCompleted: number;
+}
+
 export interface EnrolInput {
   userId: string;
   declaredAge?: number;
@@ -203,6 +211,30 @@ export class ProgrammesService {
   async listEnrolments(cohortId: string): Promise<ProgrammeEnrolment[]> {
     await this.cohorts.getById(cohortId);
     return this.enrolments.find({ cohortId });
+  }
+
+  /** Own enrolments (ownership-scoped by user id) with cohort and milestone progress summary. */
+  async listMyEnrolments(userId: string): Promise<MyCohortEnrolmentSummary[]> {
+    const enrolments = await this.enrolments.find({ userId });
+    const summaries: MyCohortEnrolmentSummary[] = [];
+    for (const enrolment of enrolments) {
+      const cohort = await this.cohorts.findById(enrolment.cohortId);
+      if (!cohort) {
+        continue; // dangling enrolment — skip rather than leak
+      }
+      const milestones = await this.milestones.find({ cohortId: enrolment.cohortId });
+      const milestoneIds = new Set(milestones.map((milestone) => milestone.id));
+      const completed = (await this.progress.find({ userId })).filter(
+        (entry) => milestoneIds.has(entry.milestoneId) && entry.status === 'completed'
+      ).length;
+      summaries.push({
+        enrolment,
+        cohort,
+        milestonesTotal: milestones.length,
+        milestonesCompleted: completed
+      });
+    }
+    return summaries.sort((a, b) => b.enrolment.enrolledAt.localeCompare(a.enrolment.enrolledAt));
   }
 
   async withdrawEnrolment(cohortId: string, userId: string, actor: Actor): Promise<ProgrammeEnrolment> {

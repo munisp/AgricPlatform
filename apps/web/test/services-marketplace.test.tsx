@@ -86,6 +86,9 @@ function router(url: string, init?: RequestInit) {
   if (path.endsWith(`/api/v1/service-suppliers/${SUPPLIER.id}`)) {
     return jsonResponse({ data: SUPPLIER });
   }
+  if (path.endsWith('/api/v1/service-bookings/mine')) {
+    return jsonResponse({ data: [BOOKING] });
+  }
   if (path.endsWith(`/api/v1/service-offerings/${OFFERING.id}/bookings`) && init?.method === 'POST') {
     return jsonResponse({ data: BOOKING });
   }
@@ -177,13 +180,16 @@ describe('Services marketplace', () => {
     });
   });
 
-  it('shows the booking status timeline with accept-quote action for quoted bookings', async () => {
-    window.localStorage.setItem('agric.my-service-bookings', JSON.stringify(['booking-1']));
+  it('lists my bookings from the API with the status timeline and accept-quote action', async () => {
     renderWithProviders(<MyBookings />);
 
     await waitFor(() => {
       expect(screen.getByText('Booking #1')).toBeTruthy();
     });
+    // The per-user list endpoint was queried.
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/service-bookings/mine'))
+    ).toBe(true);
     // Timeline includes the pipeline stages up to "quoted" (status badge +
     // timeline step both render the word).
     expect(screen.getByText('requested')).toBeTruthy();
@@ -199,5 +205,22 @@ describe('Services marketplace', () => {
       expect(call).toBeTruthy();
       expect(JSON.parse((call![1] as RequestInit).body as string).status).toBe('accepted');
     });
+  });
+
+  it('falls back to device-local booking ids when the API is unreachable', async () => {
+    window.localStorage.setItem('agric.my-service-bookings', JSON.stringify(['booking-1']));
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/api/v1/service-bookings/mine')) {
+        return Promise.reject(new TypeError('fetch failed'));
+      }
+      return router(url, init);
+    });
+    renderWithProviders(<MyBookings />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Booking #1')).toBeTruthy();
+    });
+    // Offline fallback is signposted to the user.
+    expect(screen.getByText(/showing saved reference data/i)).toBeTruthy();
   });
 });

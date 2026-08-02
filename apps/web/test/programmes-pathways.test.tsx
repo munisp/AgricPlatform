@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { AppProvider } from '@/lib/app-state';
 import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
-import { CohortDirectory, CohortDetail } from '@/components/programmes-live';
+import { CohortDirectory, CohortDetail, MyCohorts } from '@/components/programmes-live';
 import { PathwayBrowser, MyPathways, ClubDirectory } from '@/components/pathways-live';
 
 function jsonResponse(body: unknown, status = 200) {
@@ -89,6 +89,10 @@ const CLUB = {
 function router(url: string, init?: RequestInit) {
   const parsed = new URL(url);
   const path = parsed.pathname;
+  if (path.endsWith('/api/v1/programme-cohorts/mine')) {
+    // Default: no enrolments — the MyCohorts tests opt into a populated list.
+    return jsonResponse({ data: [] });
+  }
   if (path.endsWith('/api/v1/programme-cohorts') && (!init?.method || init.method === 'GET')) {
     return jsonResponse({ data: [COHORT], total: 1, page: 1, pageSize: 60 });
   }
@@ -116,6 +120,19 @@ function router(url: string, init?: RequestInit) {
   }
   if (path.endsWith(`/api/v1/pathway-templates/${TEMPLATE.id}`)) {
     return jsonResponse({ data: { template: TEMPLATE, stages: STAGES } });
+  }
+  if (path.endsWith('/api/v1/pathway-enrolments/mine')) {
+    return jsonResponse({
+      data: [
+        {
+          enrolment: PATHWAY_ENROLMENT,
+          template: TEMPLATE,
+          stagesTotal: 2,
+          stagesCompleted: 0,
+          currentStageTitle: 'Orientation'
+        }
+      ]
+    });
   }
   if (path.endsWith(`/api/v1/pathway-enrolments/${PATHWAY_ENROLMENT.id}/complete-stage`) && init?.method === 'POST') {
     return jsonResponse({
@@ -204,6 +221,45 @@ describe('Programmes', () => {
     });
     expect(screen.getByText('87')).toBeTruthy();
   });
+
+  it('lists my cohort enrolments from the API with milestone progress', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/api/v1/programme-cohorts/mine')) {
+        return jsonResponse({
+          data: [{ enrolment: ENROLMENT, cohort: COHORT, milestonesTotal: 1, milestonesCompleted: 0 }]
+        });
+      }
+      return router(url, init);
+    });
+    renderWithProviders(<MyCohorts />);
+    await waitFor(() => {
+      expect(screen.getByText('Women in Agribusiness — Kaduna 2026')).toBeTruthy();
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/programme-cohorts/mine'))
+    ).toBe(true);
+    expect(screen.getByText(/0 of 1 milestones complete/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open cohort' })).toBeTruthy();
+  });
+
+  it('falls back to device-local enrolments when the API is unreachable', async () => {
+    window.localStorage.setItem(
+      'agric.my-cohort-enrolments',
+      JSON.stringify({ [COHORT.id]: ENROLMENT })
+    );
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/api/v1/programme-cohorts/mine')) {
+        return Promise.reject(new TypeError('fetch failed'));
+      }
+      return router(url, init);
+    });
+    renderWithProviders(<MyCohorts />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Enrolled in cohort #1')).toBeTruthy();
+    });
+    expect(screen.getByText(/showing saved reference data/i)).toBeTruthy();
+  });
 });
 
 describe('Pathways', () => {
@@ -243,16 +299,16 @@ describe('Pathways', () => {
     });
   });
 
-  it('submits stage evidence from the my-pathway view', async () => {
-    window.localStorage.setItem(
-      'agric.my-pathway-enrolments',
-      JSON.stringify({ [PATHWAY_ENROLMENT.id]: TEMPLATE.name })
-    );
+  it('lists my pathway enrolments from the API and submits stage evidence', async () => {
     renderWithProviders(<MyPathways />);
 
     await waitFor(() => {
       expect(screen.getByLabelText(/Evidence for "Orientation"/)).toBeTruthy();
     });
+    // The per-user list endpoint drove the view (not the device-local record).
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/v1/pathway-enrolments/mine'))
+    ).toBe(true);
     fireEvent.change(screen.getByLabelText(/Evidence for "Orientation"/), {
       target: { value: 'Attended on 12 Feb at the state secretariat' }
     });
@@ -268,6 +324,25 @@ describe('Pathways', () => {
         JSON.parse((call![1] as RequestInit).body as string).evidence
       ).toBe('Attended on 12 Feb at the state secretariat');
     });
+  });
+
+  it('falls back to device-local enrolments when the API is unreachable', async () => {
+    window.localStorage.setItem(
+      'agric.my-pathway-enrolments',
+      JSON.stringify({ [PATHWAY_ENROLMENT.id]: TEMPLATE.name })
+    );
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/api/v1/pathway-enrolments/mine')) {
+        return Promise.reject(new TypeError('fetch failed'));
+      }
+      return router(url, init);
+    });
+    renderWithProviders(<MyPathways />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Evidence for "Orientation"/)).toBeTruthy();
+    });
+    expect(screen.getByText(/showing saved reference data/i)).toBeTruthy();
   });
 
   it('renders campus clubs with NYSC CDS badge and join action', async () => {

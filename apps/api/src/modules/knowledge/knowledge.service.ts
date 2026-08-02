@@ -249,4 +249,10 @@ export class KnowledgeService {
     await this.webinars.getById(webinarId);
     return this.registrations.find({ webinarId });
   }
+
+  /** Own webinar registrations (ownership-scoped by user id) for `/webinars/mine/registrations`. */
+  async listMyRegistrations(userId: string): Promise<WebinarRegistration[]> {
+    const registrations = await this.registrations.find({ userId });
+    return registrations.sort((a, b) => b.registeredAt.localeCompare(a.registeredAt));
+  }
 }
