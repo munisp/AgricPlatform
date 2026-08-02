@@ -6,12 +6,14 @@
  * budget (default 250 KB gzip).
  *
  * Estimate method (documented, deterministic):
- *   1. Read apps/web/.next/app-build-manifest.json (App Router) — falls back
- *      to build-manifest.json (Pages Router) when absent.
- *   2. Initial JS for the shell route = the manifest's file list for that
- *      route, plus `rootMainFiles` from build-manifest.json when present
- *      (framework/main chunks served on every route).
- *   3. Each unique .js file is gzipped INDIVIDUALLY with zlib.gzipSync
+ *   1. Initial JS file list for the shell route, resolved in order:
+ *      a. apps/web/.next/app-build-manifest.json (App Router, webpack builds)
+ *         plus rootMainFiles from build-manifest.json;
+ *      b. build-manifest.json pages[route] (Pages Router) plus rootMainFiles;
+ *      c. Next 16/Turbopack fallback: the <script src> tags of the
+ *         prerendered route HTML (server/app/<route>.html) — this is exactly
+ *         the set of JS files the browser executes on first load.
+ *   2. Each unique .js file is gzipped INDIVIDUALLY with zlib.gzipSync
  *      (level 9) and the sizes are summed. Per-file gzip slightly
  *      overestimates vs. a single concatenated stream, which is the safe
  *      direction for a budget gate.
@@ -74,6 +76,7 @@ function main() {
 
   /** @type {Set<string>} */
   const files = new Set();
+  let source = '';
 
   if (existsSync(appManifestPath)) {
     const manifest = JSON.parse(readFileSync(appManifestPath, 'utf8'));
@@ -86,29 +89,39 @@ function main() {
       process.exit(2);
     }
     for (const file of routeFiles) files.add(file);
+    source = 'app-build-manifest.json';
   } else if (existsSync(pagesManifestPath)) {
     const manifest = JSON.parse(readFileSync(pagesManifestPath, 'utf8'));
     const routeFiles = manifest.pages?.[args.route];
-    if (!routeFiles) {
-      console.error(
-        `check:bundle — route ${args.route} not found in build-manifest.json ` +
-          `(known: ${Object.keys(manifest.pages ?? {}).join(', ') || 'none'})`
-      );
-      process.exit(2);
+    if (routeFiles) {
+      for (const file of routeFiles) files.add(file);
+      source = 'build-manifest.json';
     }
-    for (const file of routeFiles) files.add(file);
-  } else {
-    console.error(
-      `check:bundle — no Next.js build manifest under ${nextDir}. ` +
-        'Run `npm run build -w apps/web` first.'
-    );
-    process.exit(2);
   }
 
   // Framework/main chunks ship on every route; include them when present.
-  if (existsSync(pagesManifestPath)) {
+  if (source && existsSync(pagesManifestPath)) {
     const manifest = JSON.parse(readFileSync(pagesManifestPath, 'utf8'));
     for (const file of manifest.rootMainFiles ?? []) files.add(file);
+  }
+
+  if (!source) {
+    // Next 16/Turbopack builds no longer emit per-route client manifests;
+    // read the initial JS straight from the prerendered route HTML.
+    const htmlName = args.route === '/' ? 'index.html' : `${args.route.replace(/^\//, '')}.html`;
+    const htmlPath = join(nextDir, 'server', 'app', htmlName);
+    if (!existsSync(htmlPath)) {
+      console.error(
+        `check:bundle — no route manifest and no prerendered HTML at ${htmlPath}. ` +
+          'Run `npm run build -w apps/web` first (dynamic routes need a manifest).'
+      );
+      process.exit(2);
+    }
+    const html = readFileSync(htmlPath, 'utf8');
+    for (const match of html.matchAll(/<script[^>]+src="\/_next\/([^"]+\.js)"/g)) {
+      files.add(match[1]);
+    }
+    source = `prerendered HTML (${htmlName})`;
   }
 
   const jsFiles = [...files].filter((file) => file.endsWith('.js')).sort();
@@ -134,7 +147,7 @@ function main() {
   const budgetBytes = args.budgetKb * 1024;
   const kb = (n) => (n / 1024).toFixed(1);
   console.log(
-    `check:bundle — route ${args.route}: ${jsFiles.length} JS file(s), ` +
+    `check:bundle — route ${args.route} via ${source}: ${jsFiles.length} JS file(s), ` +
       `${kb(totalGzip)} KB gzip-estimated (budget ${args.budgetKb} KB)`
   );
   for (const row of rows.sort((a, b) => b.gzip - a.gzip).slice(0, 10)) {
