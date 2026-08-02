@@ -11,7 +11,7 @@ import type {
   ProgrammeType
 } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
-import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
+import { invalidateApiQueries, useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import {
   createCohortThread,
   createThreadPost,
@@ -21,6 +21,7 @@ import {
   fetchProgrammeCohort,
   listCohortMilestones,
   listCohortThreads,
+  listMyCohortEnrolments,
   listProgrammeCohorts,
   listThreadPosts,
   setMilestoneProgress,
@@ -32,7 +33,10 @@ import { Field, Select, TextArea, TextInput } from '@/components/forms';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 import { AutoBadge, Card, EmptyState, ProgressBar, StatusBadge } from '@/components/ui';
 
-/** Enrolments recorded on this device: cohortId → enrolment. */
+/**
+ * Enrolments recorded on this device (cohortId → enrolment) — offline
+ * fallback only. `GET /programme-cohorts/mine` is the source of truth.
+ */
 const MY_ENROLMENTS_KEY = 'agric.my-cohort-enrolments';
 
 type EnrolmentMap = Record<string, ProgrammeEnrolment>;
@@ -97,6 +101,95 @@ export function CohortDirectory() {
         </div>
       </QueryState>
     </>
+  );
+}
+
+/* ------------------------------ my cohorts ------------------------------ */
+
+/**
+ * "My cohorts" — enrolments with cohort + milestone progress summary from
+ * `GET /programme-cohorts/mine`. Device-local enrolment ids are the offline
+ * fallback (progress summary unavailable offline).
+ */
+export function MyCohorts() {
+  const query = useApiQuery('my-cohort-enrolments', () =>
+    listMyCohortEnrolments().then((res) => res.data)
+  );
+  const [enrolments] = usePersistentState<EnrolmentMap>(MY_ENROLMENTS_KEY, {});
+
+  if (query.data) {
+    if (query.data.length === 0) {
+      return (
+        <EmptyState
+          title="No cohort enrolments yet"
+          hint="Enrol in an open cohort above to track your milestone progress here."
+        />
+      );
+    }
+    return (
+      <div className="grid grid-2">
+        {query.data.map((summary) => {
+          const percent =
+            summary.milestonesTotal > 0
+              ? Math.round((summary.milestonesCompleted / summary.milestonesTotal) * 100)
+              : 0;
+          return (
+            <Card key={summary.enrolment.id} title={summary.cohort.name}>
+              <div className="cluster" style={{ justifyContent: 'space-between' }}>
+                <AutoBadge value={summary.enrolment.status} />
+                <AutoBadge value={summary.cohort.status} />
+              </div>
+              <p className="small muted">
+                Enrolled{' '}
+                {new Date(summary.enrolment.enrolledAt).toLocaleDateString('en-NG', { dateStyle: 'medium' })} ·{' '}
+                {summary.milestonesCompleted} of {summary.milestonesTotal} milestones complete
+              </p>
+              <ProgressBar value={percent} label="Milestone progress" />
+              <div className="cluster" style={{ justifyContent: 'flex-end', marginTop: '0.6rem' }}>
+                <Link className="btn btn-ghost btn-small" href={`/programmes/${summary.cohort.id}`}>
+                  Open cohort
+                </Link>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (query.isLoading) {
+    return <p className="small muted">Loading your cohorts…</p>;
+  }
+
+  // Offline fallback: cohort ids recorded on this device.
+  const entries = Object.values(enrolments).filter((entry) => entry.status === 'enrolled');
+  if (entries.length === 0) {
+    return (
+      <EmptyState
+        title="No cohort enrolments yet"
+        hint="Enrol in an open cohort above to track your milestone progress here."
+      />
+    );
+  }
+  return (
+    <div className="stack">
+      <OfflineDataNotice />
+      <ul className="row-list">
+        {entries.map((entry) => (
+          <li className="row-item" key={entry.id}>
+            <div className="row-main">
+              <div className="row-title">Enrolled in cohort {entry.cohortId.replace('cohort-', '#')}</div>
+              <div className="small muted">
+                Since {new Date(entry.enrolledAt).toLocaleDateString('en-NG', { dateStyle: 'medium' })}
+              </div>
+            </div>
+            <Link className="btn btn-ghost btn-small" href={`/programmes/${entry.cohortId}`}>
+              Open cohort
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -262,7 +355,14 @@ export function CohortDetail({ cohortId }: { cohortId: string }) {
   const [declaredAge, setDeclaredAge] = useState('');
   const [declaredGender, setDeclaredGender] = useState<'' | 'female' | 'male' | 'other'>('');
 
-  const myEnrolment = enrolments[cohortId];
+  // Source of truth: the per-user API list; device-local map is the offline fallback.
+  const myEnrolmentsQuery = useApiQuery('my-cohort-enrolments', () =>
+    listMyCohortEnrolments().then((res) => res.data)
+  );
+  const apiEnrolment = myEnrolmentsQuery.data?.find(
+    (summary) => summary.enrolment.cohortId === cohortId
+  )?.enrolment;
+  const myEnrolment = apiEnrolment ?? enrolments[cohortId];
   const enrolled = Boolean(myEnrolment && myEnrolment.status === 'enrolled');
 
   const cohortQuery = useApiQuery(
@@ -298,14 +398,18 @@ export function CohortDetail({ cohortId }: { cohortId: string }) {
       path: () => `/programme-cohorts/${cohortId}/enrolments`,
       payload: (input) => ({ userId, ...input })
     },
-    onSuccess: (enrolment) =>
-      setEnrolments((current) => ({ ...current, [cohortId]: enrolment }))
+    onSuccess: (enrolment) => {
+      setEnrolments((current) => ({ ...current, [cohortId]: enrolment }));
+      invalidateApiQueries('my-cohort-enrolments');
+    }
   });
 
   const withdrawMutation = useApiMutation<void, ProgrammeEnrolment>({
     mutationFn: () => withdrawFromCohort(cohortId, userId).then((res) => res.data),
-    onSuccess: (enrolment) =>
-      setEnrolments((current) => ({ ...current, [cohortId]: enrolment }))
+    onSuccess: (enrolment) => {
+      setEnrolments((current) => ({ ...current, [cohortId]: enrolment }));
+      invalidateApiQueries('my-cohort-enrolments');
+    }
   });
 
   const progressMutation = useApiMutation<
@@ -321,7 +425,10 @@ export function CohortDetail({ cohortId }: { cohortId: string }) {
       path: ({ milestoneId }) => `/programme-milestones/${milestoneId}/progress`,
       payload: ({ status }) => ({ userId, status })
     },
-    onSuccess: () => progressQuery.refresh(),
+    onSuccess: () => {
+      progressQuery.refresh();
+      invalidateApiQueries('my-cohort-enrolments');
+    },
     onQueued: () => progressQuery.refresh()
   });
 
