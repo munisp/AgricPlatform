@@ -14,11 +14,15 @@ describe('next.config security headers', () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("connect-src 'self' http://localhost:3001");
     expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    // 'unsafe-inline' in script-src is deliberate: the App Router's inline
+    // hydration flight scripts are blocked by a static 'self'-only policy.
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'");
     expect(csp).not.toContain('unsafe-eval');
 
     expect(headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
-    expect(headers.get('Permissions-Policy')).toContain('camera=()');
+    // camera=(self) enables the QR attendance scanner; microphone stays off.
+    expect(headers.get('Permissions-Policy')).toContain('camera=(self)');
     expect(headers.get('Permissions-Policy')).toContain('microphone=()');
     expect(headers.get('Permissions-Policy')).toContain('geolocation=(self)');
   });
