@@ -31,6 +31,9 @@ import { ProgrammesModule } from './modules/programmes/programmes.module.js';
 import { ServicesMarketplaceModule } from './modules/services-marketplace/services-marketplace.module.js';
 import { UssdModule } from './modules/ussd/ussd.module.js';
 import { RedisModule } from './redis/redis.module.js';
+// Wave P5d (additive).
+import { EmbedModule } from './modules/embed/embed.module.js';
+import { PartnerApiModule } from './modules/partner-api/partner-api.module.js';
 
 @Module({
   imports: [
@@ -69,7 +72,10 @@ import { RedisModule } from './redis/redis.module.js';
     PathwaysModule,
     KnowledgeModule,
     // USSD channel + lightweight-channel depth wave (P5b) — appended.
-    UssdModule
+    UssdModule,
+    // Wave P5d modules — appended to minimise merge conflicts.
+    PartnerApiModule,
+    EmbedModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

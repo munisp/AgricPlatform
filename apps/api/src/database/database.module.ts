@@ -278,6 +278,22 @@ import {
   PIN_PROFILE_REPOSITORY,
   USSD_SESSION_REPOSITORY
 } from './persistence.tokens.js';
+// Wave P5d: partner API persistence (additive).
+import {
+  API_KEY_REPOSITORY,
+  PARTNER_CLIENT_REPOSITORY,
+  WEBHOOK_SUBSCRIPTION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryApiKeyRepository,
+  createInMemoryPartnerClientRepository,
+  createInMemoryWebhookSubscriptionRepository
+} from './repositories/partner-api.repository.js';
+import {
+  createPgApiKeyRepository,
+  createPgPartnerClientRepository,
+  createPgWebhookSubscriptionRepository
+} from './repositories/partner-api.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -717,6 +733,27 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
       inject: [PG_POOL]
+    },
+    // Wave P5d: partner API repositories (appended; see partner-api module).
+    {
+      provide: PARTNER_CLIENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPartnerClientRepository(pool) : createInMemoryPartnerClientRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: API_KEY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgApiKeyRepository(pool) : createInMemoryApiKeyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBHOOK_SUBSCRIPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgWebhookSubscriptionRepository(pool)
+          : createInMemoryWebhookSubscriptionRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -790,7 +827,10 @@ import {
     USSD_SESSION_REPOSITORY,
     PIN_PROFILE_REPOSITORY,
     RECOMMENDATION_FEEDBACK_REPOSITORY,
-    ANALYTICS_MART_REPOSITORY
+    ANALYTICS_MART_REPOSITORY,
+    PARTNER_CLIENT_REPOSITORY,
+    API_KEY_REPOSITORY,
+    WEBHOOK_SUBSCRIPTION_REPOSITORY
   ]
 })
 export class DatabaseModule {}

@@ -85,6 +85,10 @@ export const INBOUND_EVENT_REPOSITORY = Symbol('INBOUND_EVENT_REPOSITORY');
 // Wave P5b: USSD channel + shared-device PIN profiles.
 export const USSD_SESSION_REPOSITORY = Symbol('USSD_SESSION_REPOSITORY');
 export const PIN_PROFILE_REPOSITORY = Symbol('PIN_PROFILE_REPOSITORY');
+// Wave P5d: partner API (OAuth clients, developer API keys, webhooks).
+export const PARTNER_CLIENT_REPOSITORY = Symbol('PARTNER_CLIENT_REPOSITORY');
+export const API_KEY_REPOSITORY = Symbol('API_KEY_REPOSITORY');
+export const WEBHOOK_SUBSCRIPTION_REPOSITORY = Symbol('WEBHOOK_SUBSCRIPTION_REPOSITORY');
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
