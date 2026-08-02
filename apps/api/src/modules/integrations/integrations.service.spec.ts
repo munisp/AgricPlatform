@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createInMemoryWebhookDedupeStore } from '../../database/repositories/webhook-dedupe.repository.js';
 import { InMemoryKeyValueStore } from '../../redis/key-value-store.js';
@@ -95,6 +96,23 @@ describe('IntegrationsService live driver wiring (wave P1)', () => {
     vi.stubEnv('WEATHER_DRIVER', 'production');
     const service = new IntegrationsService();
     expect(service.weatherProvider()).toBeDefined();
+  });
+
+  it('refuses the weather stub fixture in production (503 fail-closed)', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const service = new IntegrationsService();
+    await expect(service.weatherSnapshot('Kano')).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    await expect(service.weatherSnapshot('Kano')).rejects.toThrow(/WEATHER_DRIVER/);
+  });
+
+  it('serves a clearly-labelled weather fixture outside production', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const service = new IntegrationsService();
+    const snapshot = await service.weatherSnapshot('Kano');
+    expect(snapshot.source).toContain('FIXTURE');
+    expect(snapshot.source).toContain('not live data');
   });
 });
 
