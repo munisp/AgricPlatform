@@ -29,7 +29,8 @@ import {
   PROFILE_REPOSITORY,
   REVIEW_REPOSITORY,
   TOPIC_FLAG_REPOSITORY,
-  USER_REPOSITORY
+  USER_REPOSITORY,
+  COMMODITY_PRICE_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -103,6 +104,8 @@ import {
 import { createInMemoryTopicFlagRepository } from './repositories/topic-flag.repository.js';
 import { createInMemoryUserRepository } from './repositories/user.repository.js';
 import { createPgUserRepository } from './repositories/user.pg-repository.js';
+import { createInMemoryCommodityPriceRepository } from './repositories/commodity-price.repository.js';
+import { createPgCommodityPriceRepository } from './repositories/commodity-price.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -282,6 +285,12 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
       provide: OUTBOX_REPOSITORY,
       useFactory: (pool: pg.Pool | null) => (pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository()),
       inject: [PG_POOL]
+    },
+    {
+      provide: COMMODITY_PRICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityPriceRepository(pool) : createInMemoryCommodityPriceRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -312,7 +321,8 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
     NOTIFICATION_PREFERENCE_REPOSITORY,
     DELIVERY_LOG_REPOSITORY,
     AUDIT_REPOSITORY,
-    OUTBOX_REPOSITORY
+    OUTBOX_REPOSITORY,
+    COMMODITY_PRICE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

@@ -1,7 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
+import { KEY_VALUE_STORE } from '../../database/persistence.tokens.js';
+import type { KeyValueStore } from '../../redis/key-value-store.js';
 import {
   ADAPTER_DEFINITIONS,
   createAdapter,
@@ -11,6 +13,27 @@ import {
   type IntegrationAdapter,
   type WeatherSnapshot
 } from './adapters.js';
+import {
+  createDirectusClient,
+  createDiscourseClient,
+  createMoodleClient,
+  type DirectusClient,
+  type DiscourseClient,
+  type MoodleClient
+} from './drivers/bridge.clients.js';
+import { createEmailDriver, type EmailDriver } from './drivers/email.drivers.js';
+import {
+  createPaymentDriver,
+  type PaymentDriver
+} from './drivers/payments.drivers.js';
+import { createPushDriver, type OneSignalPushDriver } from './drivers/push.drivers.js';
+import { createSearchProvider, type SearchProvider } from './drivers/search.drivers.js';
+import { createSmsDriver, type SmsDriver } from './drivers/sms.drivers.js';
+import { createWeatherProvider, type WeatherProvider } from './drivers/weather.drivers.js';
+import {
+  createWhatsAppDriver,
+  type Dialog360WhatsAppDriver
+} from './drivers/whatsapp.drivers.js';
 
 /** Channels mapped to their provider adapter. */
 const CHANNEL_PROVIDERS: Partial<Record<NotificationChannel, string>> = {
@@ -33,6 +56,29 @@ export interface WebhookReceipt {
   duplicate?: boolean;
 }
 
+/** Outbound message for the live delivery path (deliverMessage). */
+export interface OutboundMessage {
+  /** Phone number, email address or external user id depending on channel. */
+  to: string;
+  text: string;
+  /** Email subject / push title / WhatsApp template name. */
+  subject?: string;
+  html?: string;
+}
+
+/** Live driver instances, keyed by provider name. */
+type LiveDriver =
+  | SmsDriver
+  | Dialog360WhatsAppDriver
+  | EmailDriver
+  | OneSignalPushDriver
+  | PaymentDriver
+  | SearchProvider
+  | WeatherProvider
+  | MoodleClient
+  | DiscourseClient
+  | DirectusClient;
+
 /**
  * Provider registry (SPEC contract 4): adapter interfaces with local stub
  * implementations and documented production drivers. Secrets come from the
@@ -42,11 +88,133 @@ export interface WebhookReceipt {
 export class IntegrationsService {
   private readonly adapters = new Map<string, IntegrationAdapter>();
   private readonly seenWebhooks = new Map<string, string[]>();
+  private readonly liveDrivers = new Map<string, LiveDriver>();
 
-  constructor() {
+  constructor(
+    @Optional() @Inject(KEY_VALUE_STORE) private readonly kv?: KeyValueStore
+  ) {
     for (const definition of ADAPTER_DEFINITIONS) {
       this.adapters.set(definition.provider, createAdapter(definition));
     }
+    this.assertLiveDriversConfigured();
+  }
+
+  /**
+   * Boot-time fail closed (wave P1): in production, every non-stub driver
+   * is constructed eagerly so a missing credential aborts startup with a
+   * ProviderConfigError instead of surfacing on the first outbound call.
+   * Outside production, drivers build lazily so sandboxes can be partial.
+   */
+  private assertLiveDriversConfigured(): void {
+    if (!isProduction()) {
+      return;
+    }
+    for (const adapter of this.adapters.values()) {
+      if (adapter.driver !== 'stub') {
+        this.liveDriver(adapter.provider);
+      }
+    }
+  }
+
+  /** Builds (and caches) the live driver for a provider; undefined on stub. */
+  private liveDriver(provider: string): LiveDriver | undefined {
+    const adapter = this.get(provider);
+    if (adapter.driver === 'stub') {
+      return undefined;
+    }
+    const cached = this.liveDrivers.get(provider);
+    if (cached) {
+      return cached;
+    }
+    const env = process.env;
+    let driver: LiveDriver;
+    switch (provider) {
+      case 'termii':
+        driver = createSmsDriver(env, adapter.driver);
+        break;
+      case 'whatsapp':
+        driver = createWhatsAppDriver(env, adapter.driver);
+        break;
+      case 'mailgun':
+        driver = createEmailDriver(env, adapter.driver);
+        break;
+      case 'onesignal':
+        driver = createPushDriver(env, adapter.driver);
+        break;
+      case 'paystack':
+      case 'flutterwave':
+        driver = createPaymentDriver(provider, env);
+        break;
+      case 'search':
+        driver = createSearchProvider(env);
+        break;
+      case 'weather':
+        // Open-Meteo needs no credentials; the 15-minute cache rides the
+        // shared KeyValueStore (Redis when REDIS_URL is configured).
+        driver = createWeatherProvider(this.kv);
+        break;
+      case 'moodle':
+        driver = createMoodleClient(env);
+        break;
+      case 'discourse':
+        driver = createDiscourseClient(env);
+        break;
+      case 'directus':
+        driver = createDirectusClient(env);
+        break;
+      default:
+        return undefined;
+    }
+    this.liveDrivers.set(provider, driver);
+    return driver;
+  }
+
+  /** Live SMS driver (Termii + Twilio failover); undefined while stub. */
+  smsDriver(): SmsDriver | undefined {
+    return this.liveDriver('termii') as SmsDriver | undefined;
+  }
+
+  /** Live WhatsApp driver (360dialog); undefined while stub. */
+  whatsappDriver(): Dialog360WhatsAppDriver | undefined {
+    return this.liveDriver('whatsapp') as Dialog360WhatsAppDriver | undefined;
+  }
+
+  /** Live email driver (Mailgun or SendGrid); undefined while stub. */
+  emailDriver(): EmailDriver | undefined {
+    return this.liveDriver('mailgun') as EmailDriver | undefined;
+  }
+
+  /** Live push driver (OneSignal); undefined while stub. */
+  pushDriver(): OneSignalPushDriver | undefined {
+    return this.liveDriver('onesignal') as OneSignalPushDriver | undefined;
+  }
+
+  /** Live payment driver for paystack/flutterwave; undefined while stub. */
+  paymentDriver(provider: 'paystack' | 'flutterwave'): PaymentDriver | undefined {
+    return this.liveDriver(provider) as PaymentDriver | undefined;
+  }
+
+  /** Live search provider (Meilisearch); undefined while stub. */
+  searchProvider(): SearchProvider | undefined {
+    return this.liveDriver('search') as SearchProvider | undefined;
+  }
+
+  /** Live weather provider (Open-Meteo, cached); undefined while stub. */
+  weatherProvider(): WeatherProvider | undefined {
+    return this.liveDriver('weather') as WeatherProvider | undefined;
+  }
+
+  /** Fail-closed bridge clients for the self-hosted Phase 1 systems. */
+  moodleClient(): MoodleClient | undefined {
+    return this.liveDriver('moodle') as MoodleClient | undefined;
+  }
+
+  discourseClient(): DiscourseClient | undefined {
+    return this.liveDriver('discourse') as DiscourseClient | undefined;
+  }
+
+  directusClient(): DirectusClient | undefined {
+    return this.liveDriver('directus') as DirectusClient | undefined;
   }
 
   list(): IntegrationStatus[] {
@@ -76,9 +244,75 @@ export class IntegrationsService {
     return stubDelivery(provider, adapter?.driver ?? 'stub', channel);
   }
 
-  weatherSnapshot(state: string): WeatherSnapshot {
+  /**
+   * Live delivery path (wave P1): routes the message through the real
+   * provider driver when the channel's adapter is non-stub, and returns
+   * the deterministic stub result otherwise. Drivers throw
+   * ProviderConfigError/ProviderHttpError/ProviderRequestError — callers
+   * own retry policy.
+   */
+  async deliverMessage(
+    channel: NotificationChannel,
+    message: OutboundMessage
+  ): Promise<DeliveryResult> {
+    const provider = CHANNEL_PROVIDERS[channel] ?? 'local';
+    const adapter = this.adapters.get(provider);
+    if (!adapter || adapter.driver === 'stub') {
+      return stubDelivery(provider, adapter?.driver ?? 'stub', channel);
+    }
+    switch (channel) {
+      case 'sms':
+        return this.requiredDriver(this.smsDriver(), provider).sendSms({
+          to: message.to,
+          message: message.text
+        });
+      case 'whatsapp':
+        return this.requiredDriver(this.whatsappDriver(), provider).sendText({
+          to: message.to,
+          message: message.text
+        });
+      case 'email':
+        return this.requiredDriver(this.emailDriver(), provider).send({
+          to: message.to,
+          subject: message.subject ?? 'AgricPlatform notification',
+          text: message.text,
+          html: message.html
+        });
+      case 'push':
+        return this.requiredDriver(this.pushDriver(), provider).send({
+          userIds: [message.to],
+          title: message.subject ?? 'AgricPlatform',
+          body: message.text
+        });
+      default:
+        return stubDelivery(provider, adapter.driver, channel);
+    }
+  }
+
+  /** Fail closed when a non-stub adapter has no live driver (should not happen). */
+  private requiredDriver<T>(driver: T | undefined, provider: string): T {
+    if (!driver) {
+      throw new Error(`Live driver for provider '${provider}' is unavailable`);
+    }
+    return driver;
+  }
+
+  /**
+   * Weather readiness snapshot for the advisory path (wave P1). The stub
+   * driver returns the deterministic fixture; a non-stub WEATHER_DRIVER
+   * resolves to the Open-Meteo live feed (no credentials required) with a
+   * 15-minute cache on the shared KeyValueStore.
+   */
+  async weatherSnapshot(state: string): Promise<WeatherSnapshot> {
     const adapter = this.get('weather');
-    return stubWeatherSnapshot(state, `${adapter.provider} ${adapter.driver} driver`);
+    if (adapter.driver === 'stub') {
+      return stubWeatherSnapshot(state, `${adapter.provider} ${adapter.driver} driver`);
+    }
+    const provider = this.weatherProvider();
+    if (!provider) {
+      return stubWeatherSnapshot(state, `${adapter.provider} ${adapter.driver} driver`);
+    }
+    return provider.snapshot(state);
   }
 
   /**
