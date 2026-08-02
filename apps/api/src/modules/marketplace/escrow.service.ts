@@ -154,6 +154,15 @@ export class EscrowService {
     return this.applyTransition(record, 'released', actorId);
   }
 
+  /** System-path dispute freeze when the underlying order is disputed. */
+  async disputeForOrder(orderId: string, actorId: string): Promise<EscrowRecord | undefined> {
+    const record = await this.escrowForOrder(orderId);
+    if (!record || record.status !== 'held') {
+      return record;
+    }
+    return this.applyTransition(record, 'disputed', actorId);
+  }
+
   /** System-path refund (order cancellation). Held escrows only. */
   async refundForOrder(orderId: string, actorId: string): Promise<EscrowRecord | undefined> {
     const record = await this.escrowForOrder(orderId);

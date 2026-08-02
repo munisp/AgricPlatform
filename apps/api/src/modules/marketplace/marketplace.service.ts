@@ -262,6 +262,8 @@ export class MarketplaceService {
       await this.invoices?.issueForOrder(id, actor.id);
     } else if (status === 'deposit_paid' && updated.escrowRequired) {
       await this.escrow?.holdForOrder(id, actor.id);
+    } else if (status === 'disputed') {
+      await this.escrow?.disputeForOrder(id, actor.id);
     } else if (status === 'cancelled') {
       await this.escrow?.refundForOrder(id, actor.id);
       await this.invoices?.cancelForOrder(id, actor.id);

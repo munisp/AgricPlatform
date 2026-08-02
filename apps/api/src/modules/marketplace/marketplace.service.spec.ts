@@ -4,8 +4,13 @@ import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryListingRepository } from '../../database/repositories/listing.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
+import { computeVatKobo } from '@agric-platform/shared';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { createInMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
+import { createInMemoryInvoiceRepository } from '../../database/repositories/invoice.repository.js';
 import { createInMemoryReviewRepository } from '../../database/repositories/review.repository.js';
+import { EscrowService } from './escrow.service.js';
+import { InvoiceService } from './invoice.service.js';
 import { MarketplaceService } from './marketplace.service.js';
 
 const buyer: Pick<User, 'id' | 'roles'> = { id: 'user-buyer', roles: ['buyer'] };
@@ -88,6 +93,85 @@ describe('MarketplaceService order state machine', () => {
     const { marketplace } = makeService();
     await expect(marketplace.reviewOrder('order-buyer-cassava', 'user-buyer', 5)).rejects.toThrowError(
       BadRequestException
+    );
+  });
+});
+
+// Wave P2a: order lifecycle hooks into escrow + invoicing (wired optionally).
+describe('MarketplaceService commerce hooks', () => {
+  function makeWiredService() {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const listings = createInMemoryListingRepository();
+    const orders = createInMemoryOrderRepository();
+    const escrow = new EscrowService(events, orders, createInMemoryEscrowRepository());
+    const invoices = new InvoiceService(
+      events,
+      createInMemoryInvoiceRepository(),
+      orders,
+      listings
+    );
+    const marketplace = new MarketplaceService(
+      events,
+      listings,
+      orders,
+      createInMemoryReviewRepository(),
+      escrow,
+      invoices
+    );
+    return { marketplace, escrow, invoices };
+  }
+
+  // Seller of seed listing 'listing-maize-kano'.
+  const maizeSeller: Pick<User, 'id' | 'roles'> = { id: 'user-farmer-2', roles: ['farmer'] };
+
+  it('issues the invoice on confirm and holds escrow on deposit', async () => {
+    const { marketplace, escrow, invoices } = makeWiredService();
+    // Seed order starts 'confirmed'; re-confirm from a fresh order instead.
+    const order = await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
+    const invoice = await invoices.invoiceForOrder(order.id);
+    expect(invoice?.status).toBe('issued');
+    expect(invoice?.totalKobo).toBe(order.totalNaira * 100 + computeVatKobo(order.totalNaira * 100));
+
+    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer);
+    const held = await escrow.escrowForOrder(order.id);
+    expect(held?.status).toBe('held');
+    expect(held?.amountKobo).toBe(order.totalNaira * 100);
+  });
+
+  it('releases escrow and marks the invoice paid on completion', async () => {
+    const { marketplace, escrow, invoices } = makeWiredService();
+    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer);
+    expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+    await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer);
+    expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('released');
+    // Seed order was 'confirmed' before wiring, so no invoice exists → hook is a no-op.
+    expect(await invoices.invoiceForOrder('order-buyer-cassava')).toBeUndefined();
+  });
+
+  it('cancels the invoice on cancellation before deposit', async () => {
+    const { marketplace, escrow, invoices } = makeWiredService();
+    const order = await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
+    await marketplace.setOrderStatus(order.id, 'cancelled', buyer);
+    // No deposit was paid, so no escrow exists; the invoice is cancelled.
+    expect(await escrow.escrowForOrder(order.id)).toBeUndefined();
+    expect((await invoices.invoiceForOrder(order.id))?.status).toBe('cancelled');
+  });
+
+  it('keeps disputed escrows for admin resolution when a disputed order is cancelled', async () => {
+    const { marketplace, escrow } = makeWiredService();
+    const order = await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
+    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer);
+    await marketplace.setOrderStatus(order.id, 'disputed', buyer);
+    await marketplace.setOrderStatus(order.id, 'cancelled', admin);
+    // Escrow stays disputed (money movement requires admin mediation).
+    expect((await escrow.escrowForOrder(order.id))?.status).toBe('disputed');
+    expect((await escrow.transition((await escrow.escrowForOrder(order.id))!.id, 'refunded', admin)).status).toBe(
+      'refunded'
     );
   });
 });

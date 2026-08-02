@@ -351,16 +351,16 @@ export class LoanService {
     paidAt?: string
   ): Promise<RepaymentInstallment> {
     const loan = await this.loans.getById(loanId);
+    const installments = await this.scheduleForLoan(loanId);
+    const installment = installments.find((item) => item.sequence === sequence);
+    if (installment?.status === 'paid') {
+      return installment; // idempotent replay (also after the loan has closed)
+    }
     if (loan.status !== 'repaying') {
       throw new BadRequestException(`Loan ${loanId} is not repaying (status '${loan.status}')`);
     }
-    const installments = await this.scheduleForLoan(loanId);
-    const installment = installments.find((item) => item.sequence === sequence);
     if (!installment) {
       throw new NotFoundException(`Installment ${sequence} not found for loan ${loanId}`);
-    }
-    if (installment.status === 'paid') {
-      return installment; // idempotent replay
     }
     const now = paidAt ?? new Date().toISOString();
     const postings = [
