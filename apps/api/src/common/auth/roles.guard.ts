@@ -82,6 +82,7 @@ export class RolesGuard implements CanActivate {
       const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
       const user = userId ? await this.users.findById(userId) : undefined;
       if (user) {
+        await this.assertActive(user);
         return user;
       }
       throw new UnauthorizedException(
@@ -104,6 +105,7 @@ export class RolesGuard implements CanActivate {
   private async userFromToken(identity: OidcIdentity): Promise<User> {
     const existing = await this.users.findById(identity.subject);
     if (existing) {
+      await this.assertActive(existing);
       return existing;
     }
     const now = new Date().toISOString();
@@ -118,5 +120,16 @@ export class RolesGuard implements CanActivate {
       createdAt: now,
       lastActiveAt: now
     };
+  }
+
+  /**
+   * Suspended accounts (admin-set account status overlay) lose API access
+   * immediately, regardless of how the identity was presented: a still-valid
+   * Keycloak token or development header must not bypass a suspension.
+   */
+  private async assertActive(user: User): Promise<void> {
+    if ((await this.users.statusFor(user.id)) === 'suspended') {
+      throw new UnauthorizedException('Account is suspended');
+    }
   }
 }

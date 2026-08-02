@@ -9,7 +9,7 @@ function build() {
   const users = new UsersService(createInMemoryUserRepository());
   const repo = createInMemoryAuthSessionRepository();
   const service = new SessionService(users, repo);
-  return { service, repo };
+  return { service, repo, users };
 }
 
 describe('SessionService (refresh-token sessions)', () => {
@@ -95,6 +95,22 @@ describe('SessionService (refresh-token sessions)', () => {
     const rotated = await service.refresh(kiosk.refreshToken);
     expect(rotated.user.id).toBe('user-aisha');
     expect((await service.listForUser('user-aisha')).length).toBe(3);
+  });
+
+  it('rejects refresh for a suspended account and kills the family', async () => {
+    const { service, users } = build();
+    const issued = await service.issue('user-aisha');
+    await users.setStatus('user-aisha', 'suspended');
+    await expect(service.refresh(issued.refreshToken)).rejects.toThrow(/suspended/);
+    // Every generation in the family is dead — even after reactivation the
+    // pre-suspension token cannot be rotated (sign in again).
+    await users.setStatus('user-aisha', 'active');
+    await expect(service.refresh(issued.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    // ...but a fresh login works again.
+    const fresh = await service.issue('user-aisha');
+    await expect(service.refresh(fresh.refreshToken)).resolves.toMatchObject({
+      user: { id: 'user-aisha' }
+    });
   });
 });
 

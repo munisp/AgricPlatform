@@ -19,14 +19,16 @@ let jwks: JSONWebKeySet;
 function makeGuard(required: UserRole[] | undefined): {
   activate: () => Promise<boolean>;
   request: { headers: Record<string, string>; user?: unknown };
+  users: UsersService;
 } {
   const reflector = new Reflector();
   // Avoid decorator plumbing: stub the metadata lookup per scenario.
   reflector.getAllAndOverride = () => required;
   const request: { headers: Record<string, string>; user?: unknown } = { headers: {} };
+  const users = new UsersService(createInMemoryUserRepository());
   const guard = new RolesGuard(
     reflector,
-    new UsersService(createInMemoryUserRepository()),
+    users,
     OidcService.forConfig({
       issuer: ISSUER,
       jwksUri: 'unused-in-tests',
@@ -39,7 +41,7 @@ function makeGuard(required: UserRole[] | undefined): {
     getClass: () => undefined,
     switchToHttp: () => ({ getRequest: () => request })
   } as unknown as ExecutionContext;
-  return { activate: () => guard.canActivate(context), request };
+  return { activate: () => guard.canActivate(context), request, users };
 }
 
 async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean } = {}) {
@@ -143,5 +145,30 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
 
     const anon = makeGuard(['admin']);
     await expect(anon.activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a suspended user presenting a still-valid bearer token', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a suspended user presenting the development header', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['x-user-id'] = 'user-admin';
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('restores access when the suspension is lifted', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+    await users.setStatus('user-admin', 'active');
+    await expect(activate()).resolves.toBe(true);
   });
 });

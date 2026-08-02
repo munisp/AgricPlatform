@@ -27,6 +27,8 @@ export interface AuthSessionRepository {
   save(session: AuthSession): Promise<AuthSession>;
   /** Revokes every session in the family; returns the number newly revoked. */
   revokeFamily(familyId: string, revokedAt: string): Promise<number>;
+  /** Revokes every session the user holds (all families); returns the number newly revoked. */
+  revokeAllForUser(userId: string, revokedAt: string): Promise<number>;
   listForUser(userId: string): Promise<AuthSession[]>;
 }
 
@@ -56,6 +58,17 @@ export class InMemoryAuthSessionRepository implements AuthSessionRepository {
     let revoked = 0;
     for (const session of this.sessions.values()) {
       if (session.familyId === familyId && !session.revokedAt) {
+        session.revokedAt = revokedAt;
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+
+  async revokeAllForUser(userId: string, revokedAt: string): Promise<number> {
+    let revoked = 0;
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && !session.revokedAt) {
         session.revokedAt = revokedAt;
         revoked += 1;
       }

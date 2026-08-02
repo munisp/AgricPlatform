@@ -73,6 +73,12 @@ export class SessionService {
       await this.sessions.save({ ...session, revokedAt: new Date().toISOString() });
       throw new UnauthorizedException('Refresh token expired');
     }
+    // Suspended accounts must not extend their sessions: reject and kill the
+    // family so no generation minted before the suspension stays usable.
+    if ((await this.users.statusFor(session.userId)) === 'suspended') {
+      await this.sessions.revokeFamily(session.familyId, new Date().toISOString());
+      throw new UnauthorizedException('Account is suspended; the session family has been revoked.');
+    }
     // Rotate: revoke the presented generation, mint the next one.
     const now = new Date().toISOString();
     await this.sessions.save({ ...session, revokedAt: now, lastUsedAt: now });

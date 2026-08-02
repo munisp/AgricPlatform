@@ -87,6 +87,16 @@ export class PgAuthSessionRepository implements AuthSessionRepository {
     return result.rowCount ?? 0;
   }
 
+  async revokeAllForUser(userId: string, revokedAt: string): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE identity.auth_sessions
+          SET revoked_at = $2
+        WHERE user_id = $1 AND revoked_at IS NULL`,
+      [userId, revokedAt]
+    );
+    return result.rowCount ?? 0;
+  }
+
   async listForUser(userId: string): Promise<AuthSession[]> {
     const result = await this.pool.query(
       `SELECT ${COLUMNS} FROM identity.auth_sessions WHERE user_id = $1 ORDER BY created_at`,
