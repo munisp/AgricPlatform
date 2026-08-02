@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { COMMODITY_PRICE_PROVIDER } from '../../database/persistence.tokens.js';
 import { FinanceModule } from '../finance/finance.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
+import { createCommodityPriceProvider } from './drivers/commodity-price.provider.js';
 import { IntegrationsController } from './integrations.controller.js';
 import { IntegrationsService } from './integrations.service.js';
 import { MarketDataIngestionService } from './market-data-ingestion.service.js';
@@ -26,8 +28,10 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
     BeneficiaryImportService,
     LenderIntegrationService,
     ExtensionAdvisoryService,
-    ExchangeFeedIngestionService
+    ExchangeFeedIngestionService,
+    // Wave P: pluggable commodity-price provider (fail-closed by default).
+    { provide: COMMODITY_PRICE_PROVIDER, useFactory: () => createCommodityPriceProvider() }
   ],
-  exports: [IntegrationsService]
+  exports: [IntegrationsService, COMMODITY_PRICE_PROVIDER]
 })
 export class IntegrationsModule {}
