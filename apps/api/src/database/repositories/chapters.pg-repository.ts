@@ -133,11 +133,22 @@ export class PgEventRsvpRepository
   async recordAttendance(rsvp: EventRsvp): Promise<EventRsvp> {
     return this.withTransaction(async (client) => {
       const result = await client.query(
-        `INSERT INTO chapters.event_participation (id, event_id, user_id, status, created_at)
-         VALUES ($1, $2, $3, 'attended', $4)
-         ON CONFLICT (event_id, user_id) DO UPDATE SET status = 'attended'
+        `INSERT INTO chapters.event_participation
+           (id, event_id, user_id, status, created_at, scanned_at, scanner_id)
+         VALUES ($1, $2, $3, 'attended', $4, $5, $6)
+         ON CONFLICT (event_id, user_id) DO UPDATE SET
+           status = 'attended',
+           scanned_at = COALESCE(EXCLUDED.scanned_at, chapters.event_participation.scanned_at),
+           scanner_id = COALESCE(EXCLUDED.scanner_id, chapters.event_participation.scanner_id)
          RETURNING ${RSVP_COLUMNS}`,
-        [rsvp.id, rsvp.eventId, rsvp.userId, rsvp.createdAt]
+        [
+          rsvp.id,
+          rsvp.eventId,
+          rsvp.userId,
+          rsvp.createdAt,
+          rsvp.scannedAt ?? null,
+          rsvp.scannerId ?? null
+        ]
       );
       await client.query(
         'UPDATE chapters.events SET attendance_count = attendance_count + 1 WHERE id = $1',

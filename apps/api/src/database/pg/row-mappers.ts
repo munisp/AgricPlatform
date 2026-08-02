@@ -494,13 +494,15 @@ export const chapterEventMapper: RowMapper<ChapterEvent> = {
 };
 
 export const eventRsvpMapper: RowMapper<EventRsvp> = {
-  columns: ['id', 'event_id', 'user_id', 'status', 'created_at'],
+  columns: ['id', 'event_id', 'user_id', 'status', 'created_at', 'scanned_at', 'scanner_id'],
   fromRow: (row) => ({
     id: row.id as string,
     eventId: row.event_id as string,
     userId: row.user_id as string,
     status: row.status as EventRsvp['status'],
-    createdAt: ts(row.created_at)
+    createdAt: ts(row.created_at),
+    ...(row.scanned_at ? { scannedAt: ts(row.scanned_at) } : {}),
+    ...(row.scanner_id ? { scannerId: row.scanner_id as string } : {})
   }),
   toRow: (item) =>
     present(item, {
@@ -508,7 +510,9 @@ export const eventRsvpMapper: RowMapper<EventRsvp> = {
       event_id: 'eventId',
       user_id: 'userId',
       status: 'status',
-      created_at: 'createdAt'
+      created_at: 'createdAt',
+      scanned_at: 'scannedAt',
+      scanner_id: 'scannerId'
     })
 };
 

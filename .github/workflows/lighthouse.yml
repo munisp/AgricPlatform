@@ -1,0 +1,52 @@
+name: Lighthouse CI
+
+# Wave P3 NFR tooling: mobile, throttled-3G Lighthouse assertions on the key
+# web routes (/, /login, /courses, /marketplace) against a deployed preview.
+#
+# - pull_request / main: advisory (continue-on-error) — results are uploaded
+#   to temporary public storage for inspection but never block.
+# - release/** branches: REQUIRED — accessibility >= 0.95 is an error-level
+#   assertion and the job fails the branch when lhci autorun exits non-zero.
+#
+# The preview origin comes from the PREVIEW_URL repository variable
+# (Settings > Variables), e.g. https://preview.agricplatform.example.com.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  lighthouse:
+    name: Lighthouse audit (mobile, throttled 3G)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Blocking on release branches; advisory everywhere else.
+    continue-on-error: ${{ !startsWith(github.ref, 'refs/heads/release/') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Require PREVIEW_URL
+        run: |
+          if [ -z "${PREVIEW_URL}" ]; then
+            echo "::error::Set the PREVIEW_URL repository variable to the deployed preview origin."
+            exit 1
+          fi
+        env:
+          PREVIEW_URL: ${{ vars.PREVIEW_URL }}
+      - name: Run Lighthouse CI
+        env:
+          PREVIEW_URL: ${{ vars.PREVIEW_URL }}
+        run: |
+          npm install --no-save @lhci/cli@0.14.x
+          npx lhci autorun \
+            --collect.url="${PREVIEW_URL}/" \
+            --collect.url="${PREVIEW_URL}/login" \
+            --collect.url="${PREVIEW_URL}/courses" \
+            --collect.url="${PREVIEW_URL}/marketplace"

@@ -52,6 +52,8 @@ jobs:
         run: npm run build --workspace=apps/api --if-present
       - name: Build web
         run: npm run build --workspace=apps/web --if-present
+      - name: Bundle budget gate (initial JS ≤ 250KB gzip-estimated)
+        run: npm run check:bundle
       - name: Upload build artifacts
         if: hashFiles('apps/api/dist') != '' || hashFiles('apps/web/.next') != ''
         uses: actions/upload-artifact@v4
