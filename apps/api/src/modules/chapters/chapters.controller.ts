@@ -163,6 +163,16 @@ export class ChaptersController {
     return { data: await this.chapters.createAnnouncement(id, dto) };
   }
 
+  @Get('events/:id/roster')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({
+    summary: 'Event attendance roster (RSVP list with member names; chapter leads and admins)'
+  })
+  async eventRoster(@Param('id') id: string) {
+    return { data: await this.chapters.eventRoster(id) };
+  }
+
   @Get('events/:id')
   @ApiOperation({ summary: 'Event detail' })
   async getEvent(@Param('id') id: string) {

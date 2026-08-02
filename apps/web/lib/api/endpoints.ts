@@ -337,6 +337,21 @@ export function recordAttendance(
   });
 }
 
+/** Roster row for the attendance recorder (GET /events/:id/roster). */
+export interface EventRosterEntry {
+  userId: string;
+  fullName: string;
+  status: 'rsvp' | 'attended';
+}
+
+/**
+ * Real attendance roster (chapter leads/admins): members who RSVPed to the
+ * event. Replaces the demo-roster fixture in the attendance recorder.
+ */
+export function listEventRoster(eventId: string): Promise<{ data: EventRosterEntry[] }> {
+  return apiFetch(`/events/${encodeURIComponent(eventId)}/roster`);
+}
+
 /* ------------------------------ community ------------------------------ */
 
 export function listTopics(params: {

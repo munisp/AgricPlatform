@@ -3,16 +3,30 @@
 import { useMemo, useState } from 'react';
 import { useAppState } from '@/lib/app-state';
 import { useApiQuery } from '@/lib/api/hooks';
-import { listChapterEvents, listChapters, recordAttendance } from '@/lib/api/endpoints';
+import {
+  listChapterEvents,
+  listChapters,
+  listEventRoster,
+  recordAttendance,
+  type EventRosterEntry
+} from '@/lib/api/endpoints';
 import { NetworkError, TimeoutError } from '@/lib/api/errors';
 import { usePersistentState } from '@/lib/use-persistent-state';
 import { demoEvents, demoRoster } from '@/lib/content';
 import { QueuedNotice, Select, Field } from '@/components/forms';
-import { ApiErrorNotice } from '@/components/api-state';
+import { ApiErrorNotice, OfflineDataNotice } from '@/components/api-state';
+
+// Offline fallbacks only — the real roster comes from GET /events/:id/roster
+// (RSVP list). Rendered only behind source === 'fallback' + OfflineDataNotice.
+const FALLBACK_ROSTER: EventRosterEntry[] = demoRoster.map((member) => ({
+  userId: member.id,
+  fullName: `${member.name} (demo)`,
+  status: 'rsvp'
+}));
 
 export function AttendanceRecorder() {
   const { enqueue } = useAppState();
-  // Events come from the API; demo events are the offline placeholder.
+  // Events come from the API; demo events are the labelled offline fallback.
   const eventsQuery = useApiQuery(
     'attendance:events',
     async () => {
@@ -33,6 +47,16 @@ export function AttendanceRecorder() {
   const [error, setError] = useState<unknown>(undefined);
   const [saving, setSaving] = useState(false);
 
+  // Real roster: members who RSVPed to the selected event (chapter leads /
+  // admins). The demo roster appears only when the API is unreachable, and is
+  // clearly labelled via OfflineDataNotice.
+  const rosterQuery = useApiQuery(
+    selectedEventId ? `attendance:roster:${selectedEventId}` : null,
+    () => listEventRoster(selectedEventId).then((res) => res.data),
+    { fallbackData: FALLBACK_ROSTER, enabled: Boolean(selectedEventId) }
+  );
+  const roster = rosterQuery.data ?? FALLBACK_ROSTER;
+
   const present = useMemo(() => records[selectedEventId] ?? [], [records, selectedEventId]);
   const event = events.find((item) => item.id === selectedEventId);
 
@@ -51,10 +75,10 @@ export function AttendanceRecorder() {
   const queueAll = () => {
     if (!event) return;
     for (const memberId of present) {
-      const member = demoRoster.find((m) => m.id === memberId);
+      const member = roster.find((m) => m.userId === memberId);
       enqueue({
         kind: 'chapter.event.attendance_recorded',
-        label: `Attendance: ${member?.name ?? memberId} at "${event.title}"`,
+        label: `Attendance: ${member?.fullName ?? memberId} at "${event.title}"`,
         method: 'POST',
         path: `/events/${event.id}/attendance`,
         payload: { userId: memberId }
@@ -93,27 +117,35 @@ export function AttendanceRecorder() {
           ))}
         </Select>
       </Field>
+      {eventsQuery.source === 'fallback' ? (
+        <OfflineDataNotice>Live events unavailable — showing reference events.</OfflineDataNotice>
+      ) : null}
+      {rosterQuery.source === 'fallback' ? (
+        <OfflineDataNotice>Live roster unavailable — showing reference members.</OfflineDataNotice>
+      ) : null}
 
       <ul className="row-list" aria-label="Attendance roster">
-        {demoRoster.map((member) => {
-          const isPresent = present.includes(member.id);
+        {roster.map((member) => {
+          const isPresent = present.includes(member.userId);
           return (
-            <li className="row-item" key={member.id}>
+            <li className="row-item" key={member.userId}>
               <span className="avatar-dot" aria-hidden="true">
-                {member.name
+                {member.fullName
                   .split(' ')
                   .map((part) => part[0])
                   .join('')}
               </span>
               <div className="row-main">
-                <div className="row-title">{member.name}</div>
-                <div className="small muted">{member.state} chapter</div>
+                <div className="row-title">{member.fullName}</div>
+                <div className="small muted">
+                  {member.status === 'attended' ? 'Already checked in' : 'RSVP confirmed'}
+                </div>
               </div>
               <button
                 type="button"
                 className="chip"
                 aria-pressed={isPresent}
-                onClick={() => toggle(member.id)}
+                onClick={() => toggle(member.userId)}
               >
                 {isPresent ? 'Present' : 'Mark present'}
               </button>
@@ -124,7 +156,7 @@ export function AttendanceRecorder() {
 
       <div className="cluster" style={{ justifyContent: 'space-between' }}>
         <span className="small muted" role="status">
-          {present.length} of {demoRoster.length} marked present
+          {present.length} of {roster.length} marked present
         </span>
         <button
           type="button"

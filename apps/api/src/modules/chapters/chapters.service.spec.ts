@@ -10,6 +10,7 @@ import { createInMemoryChapterEventRepository } from '../../database/repositorie
 import { createInMemoryChapterRepository } from '../../database/repositories/chapter.repository.js';
 import { createInMemoryEventRsvpRepository } from '../../database/repositories/event-rsvp.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { ChaptersService } from './chapters.service.js';
 
 const EVENT_ID = 'event-kaduna-training'; // seeded chapter event
@@ -93,5 +94,42 @@ describe('ChaptersService QR attendance', () => {
     expect(record.status).toBe('attended');
     expect(record.scannerId).toBeUndefined();
     await expect(chapters.recordAttendance(EVENT_ID, MEMBER)).rejects.toThrowError(ConflictException);
+  });
+});
+
+describe('ChaptersService event roster (G7)', () => {
+  it('returns the RSVP roster joined with real member names', async () => {
+    const events = createInMemoryChapterEventRepository();
+    const rsvps = createInMemoryEventRsvpRepository(events);
+    const chapters = new ChaptersService(
+      new DomainEventsService(createInMemoryOutboxRepository()),
+      createInMemoryChapterRepository(),
+      events,
+      rsvps,
+      createInMemoryAnnouncementRepository(),
+      createInMemoryUserRepository()
+    );
+    const roster = await chapters.eventRoster(EVENT_ID);
+    // Seed RSVP: user-adamu -> Adamu Bello.
+    expect(roster).toEqual([
+      { userId: 'user-adamu', fullName: 'Adamu Bello', status: 'rsvp' }
+    ]);
+  });
+
+  it('marks roster rows attended after check-in and rejects unknown events', async () => {
+    const events = createInMemoryChapterEventRepository();
+    const rsvps = createInMemoryEventRsvpRepository(events);
+    const chapters = new ChaptersService(
+      new DomainEventsService(createInMemoryOutboxRepository()),
+      createInMemoryChapterRepository(),
+      events,
+      rsvps,
+      createInMemoryAnnouncementRepository(),
+      createInMemoryUserRepository()
+    );
+    await chapters.recordAttendance(EVENT_ID, 'user-adamu');
+    const roster = await chapters.eventRoster(EVENT_ID);
+    expect(roster[0]?.status).toBe('attended');
+    await expect(chapters.eventRoster('event-missing')).rejects.toThrow();
   });
 });
