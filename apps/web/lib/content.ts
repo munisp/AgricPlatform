@@ -205,6 +205,28 @@ export const MODULES: ModuleDef[] = [
     description: 'User operations, review queues, platform KPIs and audit trail.',
     tag: 'Operations',
     roles: ['admin']
+  },
+  // Wave P (append-only): platform operations surfaces.
+  {
+    href: '/admin/status',
+    title: 'Module status',
+    description: 'Per-module readiness: database, cache, outbox backlog, queues.',
+    tag: 'Operations',
+    roles: ['admin']
+  },
+  {
+    href: '/admin/feature-flags',
+    title: 'Feature flags',
+    description: 'Enable surfaces, restrict by role, roll out by percentage.',
+    tag: 'Operations',
+    roles: ['admin']
+  },
+  {
+    href: '/admin/audit-verify',
+    title: 'Audit chain check',
+    description: 'Verify the tamper-evident audit hash chain over a range.',
+    tag: 'Operations',
+    roles: ['admin']
   }
 ];
 

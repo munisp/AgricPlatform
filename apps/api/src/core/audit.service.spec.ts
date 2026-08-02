@@ -35,7 +35,7 @@ describe('AuditService hash chain', () => {
     const { hash, ...unsigned } = second;
     expect(hash).toBe(hashAuditEvent(unsigned, second.prevHash!));
 
-    await expect(audit.verify()).resolves.toEqual({ valid: true });
+    await expect(audit.verify()).resolves.toEqual({ valid: true, checked: 2 });
   });
 
   it('reports brokenAt when an event payload is tampered with', async () => {
@@ -60,19 +60,19 @@ describe('AuditService hash chain', () => {
     (await repository.list())[1].prevHash = GENESIS_HASH;
 
     const result = await audit.verify();
-    expect(result).toEqual({ valid: false, brokenAt: second.id });
+    expect(result).toEqual({ valid: false, brokenAt: second.id, checked: 1 });
   });
 
   it('flags records without hash fields (legacy or stripped)', async () => {
     const { audit, repository } = makeService();
     const event = await audit.record(input('a', 'e-1'));
     delete (await repository.list())[0].hash;
-    await expect(audit.verify()).resolves.toEqual({ valid: false, brokenAt: event.id });
+    await expect(audit.verify()).resolves.toEqual({ valid: false, brokenAt: event.id, checked: 0 });
   });
 
   it('verifies an empty log as valid', async () => {
     const { audit } = makeService();
-    await expect(audit.verify()).resolves.toEqual({ valid: true });
+    await expect(audit.verify()).resolves.toEqual({ valid: true, checked: 0 });
   });
 
   it('resumes the chain from the repository after a restart', async () => {
@@ -83,7 +83,7 @@ describe('AuditService hash chain', () => {
     const restarted = new AuditService(repository);
     const second = await restarted.record(input('b', 'e-2'));
     expect(second.prevHash).toBe(first.hash);
-    await expect(restarted.verify()).resolves.toEqual({ valid: true });
+    await expect(restarted.verify()).resolves.toEqual({ valid: true, checked: 2 });
   });
 
   it('carries an optional requestId into the record', async () => {
@@ -92,6 +92,6 @@ describe('AuditService hash chain', () => {
     const withoutId = await audit.record(input('b', 'e-2'));
     expect(withId.requestId).toBe('req-42');
     expect(withoutId.requestId).toBeUndefined();
-    await expect(audit.verify()).resolves.toEqual({ valid: true });
+    await expect(audit.verify()).resolves.toEqual({ valid: true, checked: 2 });
   });
 });

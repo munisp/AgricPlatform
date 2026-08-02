@@ -105,8 +105,8 @@ export class AuditService {
       return { valid: false, brokenAt: range?.fromId, checked: 0 };
     }
     const end = range?.toId ? all.findIndex((event) => event.id === range.toId) : all.length - 1;
-    if (end < 0) {
-      return { valid: false, brokenAt: range?.toId, checked: 0 };
+    if (range?.toId && end < 0) {
+      return { valid: false, brokenAt: range.toId, checked: 0 };
     }
     const slice = all.slice(start, end + 1);
     // Full-chain walks anchor at genesis; ranged walks trust the slice head's link.

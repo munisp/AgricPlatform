@@ -100,7 +100,7 @@ import type {
   WebinarRegistration,
   WebinarStatus
 } from '@agric-platform/shared';
-import { apiFetch } from './client';
+import { apiFetch, apiUrl, type AuthIdentity } from './client';
 
 /**
  * Typed endpoint wrappers mirroring the NestJS controllers under
@@ -2044,4 +2044,138 @@ export function listColdChainReadings(pointId: string): Promise<{ data: ColdChai
   return apiFetch(
     `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/cold-chain`
   );
+}
+
+/* --------------------- Wave P: platform foundation --------------------- */
+
+/** DB-backed feature flag (platform.feature_flags). */
+export interface FeatureFlag {
+  key: string;
+  enabled: boolean;
+  roleAllowlist: string[];
+  percentage: number;
+  description: string;
+  updatedAt: string;
+}
+
+export interface FeatureFlagEvaluation {
+  key: string;
+  enabled: boolean;
+}
+
+export interface ModuleHealthProbe {
+  name: string;
+  status: 'up' | 'down' | 'disabled';
+  details?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ModuleHealthReport {
+  status: 'ok' | 'degraded';
+  checkedAt: string;
+  modules: ModuleHealthProbe[];
+}
+
+export interface AuditVerificationResult {
+  valid: boolean;
+  brokenAt?: string;
+  checked?: number;
+}
+
+export interface DeliveryQueueEntry {
+  notificationId: string;
+  attempt: number;
+  lastResult: { delivered: boolean; provider: string; note: string };
+  lastAttemptAt: string;
+  nextRetryAt?: string;
+  deadLetteredAt?: string;
+}
+
+export interface OutboxSweepSummary {
+  published: number;
+  failed: number;
+  deadLettered: number;
+  deferred: number;
+}
+
+export interface NotificationStreamPayload {
+  unreadCount: number;
+  notifications: NotificationMessage[];
+  emittedAt: string;
+}
+
+/** Evaluate a feature flag for the current caller (fail-closed server-side). */
+export function evaluateFeatureFlag(key: string): Promise<{ data: FeatureFlagEvaluation }> {
+  return apiFetch(`/feature-flags/${encodeURIComponent(key)}/evaluate`);
+}
+
+export function adminListFeatureFlags(): Promise<{ data: FeatureFlag[] }> {
+  return apiFetch('/feature-flags');
+}
+
+export function adminUpsertFeatureFlag(flag: {
+  key: string;
+  enabled: boolean;
+  roleAllowlist?: string[];
+  percentage: number;
+  description?: string;
+}): Promise<{ data: FeatureFlag }> {
+  return apiFetch(`/feature-flags/${encodeURIComponent(flag.key)}`, {
+    method: 'PUT',
+    body: { roleAllowlist: [], description: '', ...flag }
+  });
+}
+
+export function adminDeleteFeatureFlag(key: string): Promise<{ data: { key: string; removed: boolean } }> {
+  return apiFetch(`/feature-flags/${encodeURIComponent(key)}`, { method: 'DELETE' });
+}
+
+/** Per-module readiness matrix (cheap probes only). */
+export function fetchModuleHealth(): Promise<ModuleHealthReport> {
+  return apiFetch('/health/modules');
+}
+
+/** Tamper-evident audit chain verification over an optional id range. */
+export function adminVerifyAuditLog(range?: {
+  fromId?: string;
+  toId?: string;
+}): Promise<{ data: AuditVerificationResult }> {
+  return apiFetch('/admin/audit-log/verify', { query: { ...range } });
+}
+
+export function adminSweepOutbox(): Promise<{ data: OutboxSweepSummary }> {
+  return apiFetch('/admin/outbox/sweep', { method: 'POST' });
+}
+
+export function adminDeliveryDeadLetters(): Promise<{ data: DeliveryQueueEntry[] }> {
+  return apiFetch('/notifications/deliveries/dead-letters');
+}
+
+export function adminSweepDeliveries(): Promise<{
+  data: { retried: number; delivered: number; deadLettered: number; deferred: number };
+}> {
+  return apiFetch('/notifications/deliveries/sweep', { method: 'POST' });
+}
+
+export function adminRetryDelivery(
+  notificationId: string
+): Promise<{ data: DeliveryQueueEntry }> {
+  return apiFetch(`/notifications/deliveries/${encodeURIComponent(notificationId)}/retry`, {
+    method: 'POST'
+  });
+}
+
+/**
+ * SSE stream URL for the notification bell (EventSource cannot set headers,
+ * so the identity travels as RFC 6750 query parameters — same verification
+ * server-side). Returns null when no identity is available.
+ */
+export function notificationStreamUrl(identity: AuthIdentity | null): string | null {
+  if (!identity?.token && !identity?.userId) {
+    return null;
+  }
+  return apiUrl('/notifications/stream', {
+    access_token: identity.token,
+    'x-user-id': identity.token ? undefined : identity.userId
+  });
 }
