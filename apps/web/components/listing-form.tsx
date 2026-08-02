@@ -7,8 +7,9 @@ import { useAppState } from '@/lib/app-state';
 import { useApiMutation } from '@/lib/api/hooks';
 import { createListing } from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
+import { useFormDraft } from '@/lib/drafts';
 import { useT } from '@/lib/i18n';
-import { Field, QueuedNotice, Select, TextInput } from '@/components/forms';
+import { DraftRestoredNotice, Field, QueuedNotice, Select, TextInput } from '@/components/forms';
 import { ApiErrorNotice } from '@/components/api-state';
 import { AutoBadge } from '@/components/ui';
 
@@ -36,10 +37,21 @@ const EMPTY: ListingDraft = {
   lga: ''
 };
 
+/** The draft counts as real content once title, price or quantity is typed. */
+function isEmptyDraft(draft: ListingDraft): boolean {
+  return draft.title.trim() === '' && draft.priceNaira === '' && draft.quantity === '';
+}
+
 export function ListingForm() {
   const { t } = useT();
   const { userId } = useAppState();
-  const [draft, setDraft] = useState<ListingDraft>(EMPTY);
+  // IndexedDB draft persistence (Appendix F Phase-1): autosave on keystroke,
+  // restore on reload, clear on successful submit.
+  const { draft, setDraft, restored, clearDraft } = useFormDraft<ListingDraft>(
+    'listing-create',
+    EMPTY,
+    isEmptyDraft
+  );
   const [myListings, setMyListings] = usePersistentState<MarketplaceListing[]>('agric.my-listings', []);
   const [notice, setNotice] = useState<{ title: string; queued: boolean } | null>(null);
 
@@ -73,7 +85,10 @@ export function ListingForm() {
       path: () => '/listings',
       payload: (payload) => payload
     },
-    onSuccess: (result, payload) => setNotice({ title: payload.title, queued: false }),
+    onSuccess: (result, payload) => {
+      setNotice({ title: payload.title, queued: false });
+      clearDraft();
+    },
     onQueued: (payload) => {
       // Keep a device-local copy of offline-created listings.
       const listing: MarketplaceListing = {
@@ -83,13 +98,17 @@ export function ListingForm() {
       };
       setMyListings((current) => [listing, ...current]);
       setNotice({ title: listing.title, queued: true });
+      // Queued submissions hold the full payload in the sync queue, so the
+      // form draft can be cleared safely.
+      clearDraft();
     }
   });
 
   const submit = () => {
     if (!valid) return;
+    // Keep the draft while saving; it is cleared on success/queued and kept
+    // on failure so nothing typed is lost.
     void mutation.mutate(listingPayload());
-    setDraft(EMPTY);
   };
 
   return (
@@ -99,6 +118,7 @@ export function ListingForm() {
         <p className="small muted">
           {t('marketplace.formIntro')}
         </p>
+        {restored ? <DraftRestoredNotice onDismiss={clearDraft} /> : null}
         <div className="form-grid cols-2">
           <Field id="lf-kind" label={t('marketplace.kindLabel')}>
             <Select id="lf-kind" value={draft.kind} onChange={(e) => patch({ kind: e.target.value })}>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { seedCourses } from '@agric-platform/shared';
 import type { Course } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
@@ -12,7 +13,9 @@ import {
   updateEnrolmentProgress
 } from '@/lib/api/endpoints';
 import { demoCertificates } from '@/lib/content';
+import { useFormDraft } from '@/lib/drafts';
 import { AutoBadge, Card, ProgressBar, StatusBadge } from '@/components/ui';
+import { DraftRestoredNotice, Field, TextInput } from '@/components/forms';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 
 // Offline fallbacks only — live data from GET /api/v1/courses,
@@ -152,14 +155,15 @@ export function CourseCatalogue() {
                   </StatusBadge>
                   <StatusBadge tone="info">{course.level}</StatusBadge>
                 </span>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-small"
-                  disabled={enrolledIds.has(course.id) || enrolMutation.status === 'pending'}
-                  onClick={() => void enrolMutation.mutate({ course })}
-                >
-                  {enrolledIds.has(course.id) ? 'Enrolled' : 'Enrol'}
-                </button>
+                {enrolledIds.has(course.id) ? (
+                  <StatusBadge tone="success">Enrolled</StatusBadge>
+                ) : (
+                  <EnrolWithGoal
+                    course={course}
+                    pending={enrolMutation.status === 'pending'}
+                    onConfirm={() => void enrolMutation.mutate({ course })}
+                  />
+                )}
               </div>
             </Card>
           ))}
@@ -167,6 +171,77 @@ export function CourseCatalogue() {
       </QueryState>
       {enrolMutation.status === 'error' ? <ApiErrorNotice error={enrolMutation.error} /> : null}
     </>
+  );
+}
+
+/**
+ * Enrol action with an optional "learning goal" note. The note is a
+ * keystroke-autosaved IndexedDB draft (Appendix F Phase-1) so an interrupted
+ * enrolment never loses the typed goal; it clears on successful enrolment.
+ */
+function EnrolWithGoal({
+  course,
+  pending,
+  onConfirm
+}: {
+  course: Course;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { draft, setDraft, restored, clearDraft } = useFormDraft<{ goal: string }>(
+    `course-enrol-${course.id}`,
+    { goal: '' },
+    (value) => value.goal.trim() === ''
+  );
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="btn btn-primary btn-small"
+        disabled={pending}
+        onClick={() => setOpen(true)}
+        aria-label={`Enrol in ${course.title}`}
+      >
+        Enrol
+      </button>
+    );
+  }
+
+  return (
+    <div className="stack" style={{ width: '100%' }}>
+      {restored ? <DraftRestoredNotice onDismiss={clearDraft} /> : null}
+      <Field id={`goal-${course.id}`} label="Your goal for this course (optional)">
+        <TextInput
+          id={`goal-${course.id}`}
+          value={draft.goal}
+          onChange={(e) => setDraft({ goal: e.target.value })}
+          placeholder="e.g. Learn dry-season irrigation"
+        />
+      </Field>
+      <div className="cluster" style={{ justifyContent: 'flex-end' }}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-small"
+          disabled={pending}
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-small"
+          disabled={pending}
+          onClick={() => {
+            clearDraft();
+            onConfirm();
+          }}
+        >
+          {pending ? 'Enrolling…' : 'Confirm enrolment'}
+        </button>
+      </div>
+    </div>
   );
 }
 

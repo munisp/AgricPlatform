@@ -28,6 +28,16 @@ export function setAuthProvider(provider: AuthProvider): void {
   authProvider = provider;
 }
 
+/** Current auth identity (used by binary download helpers outside apiFetch). */
+export function getAuthIdentity(): AuthIdentity | null {
+  return authProvider();
+}
+
+/** Absolute API URL for a path + query (shared with download helpers). */
+export function apiUrl(path: string, query?: Record<string, QueryValue>): string {
+  return buildUrl(path, query);
+}
+
 export type QueryValue = string | number | boolean | undefined | null;
 
 export interface ApiRequestOptions {
