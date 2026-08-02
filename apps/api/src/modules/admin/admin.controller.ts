@@ -77,6 +77,14 @@ export class AdminController {
     return { data: await this.admin.auditLog(actorId, entityType) };
   }
 
+  @Get('audit-log/verify')
+  @ApiOperation({
+    summary: 'Verify the tamper-evident audit hash chain ({valid, brokenAt?})'
+  })
+  async verifyAuditLog() {
+    return { data: await this.admin.verifyAuditLog() };
+  }
+
   @Get('events')
   @ApiOperation({ summary: 'Domain event outbox ({domain}.{entity}.{verb} taxonomy)' })
   async events() {

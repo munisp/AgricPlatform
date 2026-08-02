@@ -130,6 +130,11 @@ export class AdminService {
     return this.audit.list({ actorId, entityType });
   }
 
+  /** Tamper-evidence check over the audit hash chain (observability plan §A.6). */
+  async verifyAuditLog() {
+    return this.audit.verify();
+  }
+
   async eventOutbox(): Promise<DomainEvent[]> {
     return this.domainEvents.listOutbox();
   }

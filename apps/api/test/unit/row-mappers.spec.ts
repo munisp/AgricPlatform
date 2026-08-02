@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MarketplaceListing, Profile } from '@agric-platform/shared';
 import {
+  auditMapper,
   deliveryLogMapper,
   listingMapper,
   opportunityMapper,
@@ -128,5 +129,42 @@ describe('row mappers', () => {
     const back = deliveryLogMapper.fromRow({ ...row, attempted_at: new Date(entry.at) });
     expect(back.notificationId).toBe('notif-1');
     expect(back.at).toBe(entry.at);
+  });
+
+  it('audit: hash-chain columns round-trip (observability §A.6)', () => {
+    const event = {
+      id: 'audit-1',
+      actorId: 'admin-1',
+      action: 'user.suspend',
+      entityType: 'user',
+      entityId: 'user-1',
+      metadata: { reason: 'fraud' },
+      createdAt: '2026-02-19T10:00:00.000Z',
+      prevHash: '0'.repeat(64),
+      hash: 'a'.repeat(64),
+      requestId: 'req-1'
+    };
+    const row = auditMapper.toRow(event);
+    expect(auditMapper.columns).toContain('prev_hash');
+    expect(auditMapper.columns).toContain('hash');
+    expect(auditMapper.columns).toContain('request_id');
+    expect(row.prev_hash).toBe(event.prevHash);
+    expect(row.hash).toBe(event.hash);
+    expect(row.request_id).toBe('req-1');
+
+    const back = auditMapper.fromRow({ ...row, created_at: new Date(event.createdAt) });
+    expect(back).toEqual(event);
+
+    // Legacy rows without hash columns map to undefined (additive contract).
+    const legacy = auditMapper.fromRow({
+      ...row,
+      prev_hash: null,
+      hash: null,
+      request_id: null,
+      created_at: new Date(event.createdAt)
+    });
+    expect(legacy.prevHash).toBeUndefined();
+    expect(legacy.hash).toBeUndefined();
+    expect(legacy.requestId).toBeUndefined();
   });
 });

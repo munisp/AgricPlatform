@@ -756,7 +756,18 @@ export const deliveryLogMapper: RowMapper<DeliveryLogEntry & { id: string }> = {
 };
 
 export const auditMapper: RowMapper<AuditEvent> = {
-  columns: ['id', 'actor_id', 'action', 'entity_type', 'entity_id', 'metadata', 'created_at'],
+  columns: [
+    'id',
+    'actor_id',
+    'action',
+    'entity_type',
+    'entity_id',
+    'metadata',
+    'created_at',
+    'prev_hash',
+    'hash',
+    'request_id'
+  ],
   fromRow: (row) => ({
     id: row.id as string,
     actorId: row.actor_id as string,
@@ -764,7 +775,10 @@ export const auditMapper: RowMapper<AuditEvent> = {
     entityType: row.entity_type as string,
     entityId: row.entity_id as string,
     metadata: (row.metadata as Record<string, unknown>) ?? {},
-    createdAt: ts(row.created_at)
+    createdAt: ts(row.created_at),
+    prevHash: (row.prev_hash as string) ?? undefined,
+    hash: (row.hash as string) ?? undefined,
+    requestId: (row.request_id as string) ?? undefined
   }),
   toRow: (item) => ({
     id: item.id,
@@ -773,7 +787,10 @@ export const auditMapper: RowMapper<AuditEvent> = {
     entity_type: item.entityType,
     entity_id: item.entityId,
     metadata: item.metadata,
-    created_at: item.createdAt
+    created_at: item.createdAt,
+    prev_hash: item.prevHash ?? null,
+    hash: item.hash ?? null,
+    request_id: item.requestId ?? null
   })
 };
 
