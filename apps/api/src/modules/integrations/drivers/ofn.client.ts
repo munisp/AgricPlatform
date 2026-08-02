@@ -11,8 +11,6 @@ import { httpJson, requireEnv } from './http.js';
 /** Listing payload pushed to OFN (normalised from MarketplaceListing). */
 export interface OfnListingPush {
   name: string;
-  /** OFN enterprise (hub) id the product is listed under. */
-  enterpriseId: string;
   price: number;
   /** Platform listing id carried as the OFN SKU for order correlation. */
   sku: string;
@@ -46,7 +44,7 @@ export class OfnClient {
         name: listing.name,
         price: listing.price,
         sku: listing.sku,
-        supplier_id: listing.enterpriseId,
+        supplier_id: this.enterpriseId,
         description: listing.description ?? ''
       }
     });

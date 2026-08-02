@@ -23,7 +23,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const listing = { name: 'Maize 50kg', enterpriseId: 'ent-1', price: 42000, sku: 'listing-1' };
+const listing = { name: 'Maize 50kg', price: 42000, sku: 'listing-1' };
 
 describe('OfnClient', () => {
   const client = () => new OfnClient('https://ofn.example.com', 'spree-token', 'ent-1');
