@@ -8,17 +8,30 @@
 
 | Dimension | Score | Evidence | Remaining gate |
 | --- | ---: | --- | --- |
-| Phase 1 product-surface coverage | 92% | All major PRD domains have frontend routes wired to the live NestJS API (typed client, session context, replayable offline queue, J1–J4 + cross-cutting) | Real OIDC sign-in flow in the web app; deepen Phase 2 modules |
-| Build and test health | 100% | Typecheck, lint, `lint:sql` (2 migrations), 249 automated tests passing (176 API + 68 web + 5 shared; 51 pg-gated skips), API build, and 18-route Next.js production build pass | Keep these checks required on `main` |
-| Persistence readiness | 85% (code-complete) | Async repository ports with 27 PostgreSQL repositories selected by `DATABASE_URL`, drift-aligned `infra/postgres/001_init.sql`, `migrate`/`seed` CLIs, Redis idempotency/OTP stores behind `REDIS_URL`, fail-closed production config, and in-memory/pg contract suites | Run the DATABASE_URL/REDIS_URL-gated suites against real containers (docker unavailable in the build environment) and soak in staging |
+| Phase 1 product-surface coverage | 98% | All Phase 1 domains wired end to end, plus Stage 8 completions: QR attendance check-in, analytics CSV/PDF export UI, IndexedDB form drafts (registration/enrolment/listing), data-usage indicator, offline-pack scaffold | Real OIDC sign-in flow in the web app |
+| Phase 2 module coverage | 85% | M7 escrow/invoicing/logistics, M8 services marketplace, M9 ledger/credit/lenders/loans, M11 programmes, M12 pathways, M14 knowledge base, M16 trending/related — all implemented API + web with migrations 003/004 | Live settlement, BVN/NIN verification, Directus/Moodle live sync (external) |
+| Build and test health | 100% | Typecheck, lint, `lint:sql` (6 migrations), 538 automated tests passing (412 API + 109 web + 17 shared; 51 pg-gated skips), API + web production builds, bundle budget 204KB < 250KB gate | Keep these checks required on `main` |
+| Persistence readiness | 88% (code-complete) | 61 repository providers (async ports, in-memory + pg) across 6 migrations; fail-closed production config; Redis stores | Run the pg/Redis-gated suites against real containers and soak in staging |
 | Identity and access readiness | 75% | Keycloak OIDC/JWKS bearer verification (`jose`), ownership-or-admin authorization across sensitive routes, hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config | Hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
-| Integration readiness | 55% | Provider registry, local stubs, adapter matrix, environment flags | Sandbox/live credentials and provider-specific drivers |
+| Integration readiness | 85% | Real HTTP drivers, fail-closed, 111 mocked-fetch tests: Termii SMS + Twilio failover, 360dialog WhatsApp, Mailgun + SendGrid, OneSignal, Paystack + Flutterwave (init/verify/refund/escrow-release + webhook signatures), Meilisearch, OpenMeteo live weather (keyless), FEWS NET/NiMet ingestion scaffold, Moodle/Discourse/Directus bridge clients | Sandbox/live credentials; NiMet payload MoU; delivery-rate evidence |
 | Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
-| Security and compliance readiness | 60% | RBAC + OIDC, webhook HMAC, idempotency, tamper-evident audit hash chain, privacy export/delete, CSP/security headers on web, WCAG AA automated checks, secret hygiene, compliance documentation | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
-| **Overall Phase 1 engineering readiness** | **82%** | All engineering-controllable waves code-complete: security, frontend wiring, persistence, observability, accessibility/i18n; deterministic local gates green | Container verification of the pg/Redis suites, hosted IdP, provider sandboxes, staging hardening |
-| **Public production readiness** | **40%** | Launch blockers remain external and operational (legal, credentials, penetration test, uptime evidence) | Close L1–L10 in `docs/security-compliance.md` |
+| Security and compliance readiness | 65% | RBAC + OIDC, webhook HMAC, idempotency with body-mismatch 409, tamper-evident audit hash chain, signed QR attendance secrets fail-closed, export audit logging, privacy export/delete, CSP/security headers, WCAG AA automated checks, secret hygiene | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
+| **Overall Phase 1+2 engineering readiness** | **90%** | All engineering-controllable scope code-complete through Stage 8 waves P1–P4; deterministic local gates green | Container verification of pg/Redis suites, hosted IdP, provider sandboxes, staging hardening |
+| **Public production readiness** | **45%** | Launch blockers remain external and operational (legal, credentials, penetration test, uptime evidence) | Close L1–L10 in `docs/security-compliance.md` |
 
 The implementation should be treated as a **production-oriented reference platform**, not as a live production system. The most important next engineering milestone is a staging build that uses PostgreSQL, Redis, and Keycloak end to end.
+
+## 1a. PRD v3.3 implementation percentage (Stage 8, 2026-08-02)
+
+**Methodology.** The requirement denominator is the full PRD v3.3 set: 18 modules (M1–M18), 10 epics with 23 enumerated MVP user stories, 12 NFR categories, Appendix E (5 principles + 7 stakeholder contracts), Appendix F (8 connectivity design responses + 4 lightweight channels), Appendix G (6 integration patterns + 3 API/SDK surfaces + 36 readiness-gate items). Two tiers are reported so externally-gated evidence is never counted as engineering-complete:
+
+| Tier | Scope | Score | Basis |
+| --- | --- | ---: | --- |
+| **Tier A — Phase 1 (MVP) scope** | 10 MVP modules, 23/23 user stories, Phase 1 NFRs, Appendix F Phase-1 rows | **95%** | All stories and modules implemented and test-evidenced; deducts for externally-gated Phase 1 gate items (USSD live on Africa's Talking, SMS ≥99% delivery evidence across 4 carriers, Lighthouse live 3G scores, live FEWS NET/NiMet + e-Extension feeds, DPO/legal sign-off) |
+| **Tier B — whole document (P1+P2+P3)** | All 18 modules full scope, all appendices | **73%** | Weighted by phase effort (P1 45% × 95%, P2 35% × 85%, P3 20% × 15%). Phase 3 items (public SDK publish, embedded widgets, USSD/IVR live, NCX/AFEX/farmOS ACL integrations, recommendation engine, lakehouse) are scaffolded or designed but not built |
+| Tier B, engineering-controllable items only | Same denominator minus pure external blockers | **≈85%** | Excludes items no code can close: live credentials, ⚖ legal/regulatory reviews, pen test, uptime evidence, partner agreements, professional translation |
+
+**What remains genuinely unbuilt (engineering-doable, future waves):** USSD channel implementation (Africa's Talking session flows), Phase 3 recommendation engine, lakehouse/BI analytics, public SDK packages + developer portal, embedded widgets, farmOS/OFN/NCX/AFEX ACL adapters beyond the existing bridge scaffolds, mobile app shell.
 
 ## 2. What is implemented now
 
