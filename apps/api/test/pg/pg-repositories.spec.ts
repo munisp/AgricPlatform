@@ -17,6 +17,7 @@ import {
   createPgOrderRepository
 } from '../../src/database/repositories/marketplace.pg-repository.js';
 import { createPgEscrowRepository } from '../../src/database/repositories/commerce.pg-repository.js';
+import { createPgListingVariantRepository } from '../../src/database/repositories/commerce-depth.pg-repository.js';
 import { createPgWebhookDedupeStore } from '../../src/database/repositories/phase3.pg-repository.js';
 import { createPgUserRepository } from '../../src/database/repositories/user.pg-repository.js';
 import { contractCases } from '../contract/cases.js';
@@ -53,6 +54,10 @@ const CONTRACT_TABLES = [
 
 async function cleanContractRows(): Promise<void> {
   if (!pool) return;
+  // Children of contract rows whose PK is not a plain `id` column (or which
+  // FK-reference contract listings) must go first.
+  await pool.query(`DELETE FROM marketplace.order_extensions WHERE order_id LIKE 'contract-%'`);
+  await pool.query(`DELETE FROM marketplace.listing_variants WHERE id LIKE 'contract-%'`);
   for (const table of CONTRACT_TABLES) {
     const idColumn = table === 'identity.user_roles' ? 'user_id' : 'id';
     await pool.query(
@@ -145,14 +150,23 @@ describePg('pg funds-integrity guarantees', () => {
        VALUES ('contract-oversell-listing', 'contract-parent-seller', 'produce', 'Oversell guard', 10, 'tonnes', 1000)
        ON CONFLICT (id) DO NOTHING`
     );
+    await pool.query(
+      `INSERT INTO marketplace.listing_variants (id, listing_id, sku, name, price_kobo, quantity, is_active)
+       VALUES ('contract-variant-oversell', 'contract-oversell-listing', 'contract-sku-oversell', 'Oversell variant', 100000, 10, true)
+       ON CONFLICT (id) DO NOTHING`
+    );
   });
 
   afterEach(async () => {
     if (!pool) return;
     await pool.query(`DELETE FROM marketplace.escrow_records WHERE id LIKE 'contract-%'`);
     await pool.query(`DELETE FROM integrations.inbound_events WHERE system LIKE 'contract-%'`);
+    await pool.query(`DELETE FROM marketplace.order_extensions WHERE order_id LIKE 'contract-%'`);
     await pool.query(`DELETE FROM marketplace.orders WHERE id LIKE 'contract-%'`);
     await pool.query(`UPDATE marketplace.listings SET quantity = 10 WHERE id = 'contract-oversell-listing'`);
+    await pool.query(
+      `UPDATE marketplace.listing_variants SET quantity = 10 WHERE id = 'contract-variant-oversell'`
+    );
   });
 
   it('conditional UPDATE defeats the concurrent release+refund race', async () => {
@@ -213,6 +227,101 @@ describePg('pg funds-integrity guarantees', () => {
     expect(loser.reason).toBeInstanceOf(BadRequestException);
     const stock = await pool.query(`SELECT quantity FROM marketplace.listings WHERE id = 'contract-oversell-listing'`);
     expect(Number(stock.rows[0].quantity)).toBe(3);
+  });
+
+  it('variant checkout commits decrement+order+extension in one tx and rejects oversell (G8)', async () => {
+    if (!pool) return;
+    const variants = createPgListingVariantRepository(pool);
+    const place = (id: string, quantity: number) =>
+      variants.placeVariantOrder(
+        {
+          id,
+          listingId: 'contract-oversell-listing',
+          buyerId: 'contract-buyer',
+          sellerId: 'contract-parent-seller',
+          quantity,
+          totalNaira: quantity * 1000,
+          status: 'requested',
+          escrowRequired: false,
+          createdAt: new Date().toISOString()
+        },
+        {
+          id,
+          orderId: id,
+          variantId: 'contract-variant-oversell',
+          channel: 'web',
+          unitPriceKobo: 100_000,
+          subtotalKobo: quantity * 100_000,
+          discountKobo: 0,
+          totalKobo: quantity * 100_000,
+          createdBy: 'contract-buyer',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      );
+    // 10 in stock: concurrent 7 + 7 cannot both succeed.
+    const [first, second] = await Promise.allSettled([
+      place('contract-order-variant-a', 7),
+      place('contract-order-variant-b', 7)
+    ]);
+    const outcomes = [first, second];
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(BadRequestException);
+    const stock = await pool.query(
+      `SELECT quantity FROM marketplace.listing_variants WHERE id = 'contract-variant-oversell'`
+    );
+    expect(Number(stock.rows[0].quantity)).toBe(3);
+    // The winner's order AND extension committed together.
+    const extension = await pool.query(
+      `SELECT order_id, variant_id, channel FROM marketplace.order_extensions
+        WHERE order_id IN ('contract-order-variant-a', 'contract-order-variant-b')`
+    );
+    expect(extension.rows).toHaveLength(1);
+    expect(extension.rows[0].variant_id).toBe('contract-variant-oversell');
+  });
+
+  it('variant checkout rolls back stock and leaves no extension when the insert fails (G8)', async () => {
+    if (!pool) return;
+    const variants = createPgListingVariantRepository(pool);
+    const buildOrder = (id: string) => ({
+      id,
+      listingId: 'contract-oversell-listing',
+      buyerId: 'contract-buyer',
+      sellerId: 'contract-parent-seller',
+      quantity: 4,
+      totalNaira: 4000,
+      status: 'requested' as const,
+      escrowRequired: false,
+      createdAt: new Date().toISOString()
+    });
+    const buildExtension = (id: string) => ({
+      id,
+      orderId: id,
+      variantId: 'contract-variant-oversell',
+      channel: 'agent' as const,
+      unitPriceKobo: 100_000,
+      subtotalKobo: 400_000,
+      discountKobo: 0,
+      totalKobo: 400_000,
+      createdBy: 'contract-agent',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    await variants.placeVariantOrder(buildOrder('contract-order-variant-dup'), buildExtension('contract-order-variant-dup'));
+    // Second checkout reusing the same order id: the INSERT hits the PK
+    // mid-transaction — the decrement MUST roll back with it.
+    await expect(
+      variants.placeVariantOrder(buildOrder('contract-order-variant-dup'), buildExtension('contract-order-variant-dup'))
+    ).rejects.toThrow();
+    const stock = await pool.query(
+      `SELECT quantity FROM marketplace.listing_variants WHERE id = 'contract-variant-oversell'`
+    );
+    expect(Number(stock.rows[0].quantity)).toBe(6); // only the first 4-unit checkout held
+    const extensions = await pool.query(
+      `SELECT count(*)::int AS n FROM marketplace.order_extensions WHERE order_id = 'contract-order-variant-dup'`
+    );
+    expect(extensions.rows[0].n).toBe(1);
   });
 
   it('persists webhook dedupe receipts across instances (UNIQUE system,dedupe_key)', async () => {

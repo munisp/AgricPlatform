@@ -7,6 +7,7 @@ import { createInMemoryOrderRepository } from '../../database/repositories/order
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import {
   createInMemoryBuyerGroupMembershipRepository,
+  type AtomicVariantCheckoutRepository,
   createInMemoryBuyerGroupRepository,
   createInMemoryListingVariantRepository,
   createInMemoryOrderExtensionRepository,
@@ -234,5 +235,65 @@ describe('CheckoutService listing-level orders (no variants)', () => {
       checkout.placeOrder({ listingId: 'listing-maize-kano', buyerId: 'user-buyer', quantity: 1 }, buyer)
     ).rejects.toThrowError(/simulated/);
     expect((await stack.listings.getById('listing-maize-kano')).quantity).toBe(2); // restocked
+  });
+});
+
+describe('CheckoutService atomic variant checkout capability (G8)', () => {
+  /**
+   * Wraps the in-memory variants repo with the AtomicVariantCheckoutRepository
+   * capability the pg repo provides: one commit for decrement + order +
+   * extension (the pg test/pg spec proves the real transactional semantics).
+   */
+  function makeAtomicStack() {
+    const stack = makeStack();
+    const calls: string[] = [];
+    const atomic = Object.create(stack.variants) as typeof stack.variants &
+      AtomicVariantCheckoutRepository;
+    atomic.placeVariantOrder = async (order, extension) => {
+      calls.push('placeVariantOrder');
+      // Mirrors the pg single-transaction semantics.
+      await stack.variants.decrementStock(extension.variantId!, order.quantity);
+      await stack.orders.create(order);
+      await stack.extensions.create(extension);
+      return order;
+    };
+    const checkout = new CheckoutService(
+      stack.events,
+      stack.listings,
+      stack.orders,
+      atomic,
+      stack.extensions,
+      stack.pricing,
+      stack.promotions
+    );
+    return { ...stack, atomic, checkout, calls };
+  }
+
+  it('routes variant checkout through the single atomic commit (extension written once)', async () => {
+    const { checkout, calls, variants, extensions } = makeAtomicStack();
+    const result = await checkout.placeOrder(
+      { listingId: 'listing-maize-kano', variantId: VARIANT.id, buyerId: 'user-buyer', quantity: 1 },
+      buyer
+    );
+    expect(calls).toEqual(['placeVariantOrder']);
+    expect((await variants.getById(VARIANT.id)).quantity).toBe(2);
+    // The extension was persisted by the atomic commit, not duplicated after.
+    expect((await extensions.all()).filter((row) => row.orderId === result.order.id)).toHaveLength(1);
+    expect(result.extension.channel).toBe('web');
+  });
+
+  it('atomic oversell rejection leaves no order or extension rows', async () => {
+    const { checkout, variants, orders, extensions } = makeAtomicStack();
+    const ordersBefore = (await orders.all()).length;
+    const extensionsBefore = (await extensions.all()).length;
+    await expect(
+      checkout.placeOrder(
+        { listingId: 'listing-maize-kano', variantId: VARIANT.id, buyerId: 'user-buyer', quantity: 99 },
+        buyer
+      )
+    ).rejects.toThrowError(BadRequestException);
+    expect((await variants.getById(VARIANT.id)).quantity).toBe(3); // untouched
+    expect((await orders.all()).length).toBe(ordersBefore);
+    expect((await extensions.all()).length).toBe(extensionsBefore);
   });
 });

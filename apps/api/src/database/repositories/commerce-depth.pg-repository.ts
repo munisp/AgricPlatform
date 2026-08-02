@@ -5,6 +5,7 @@ import type {
   BuyerGroupMembership,
   DraftOrder,
   ListingVariant,
+  Order,
   OrderExtension,
   PriceList,
   PriceListEntry,
@@ -35,7 +36,9 @@ import {
   returnRequestMapper,
   sellerRatingMapper
 } from '../pg/commerce-mappers.js';
+import { orderMapper } from '../pg/row-mappers.js';
 import type {
+  AtomicVariantCheckoutRepository,
   BuyerGroupCriteria,
   BuyerGroupMembershipCriteria,
   BuyerGroupRepository,
@@ -76,7 +79,7 @@ export function listingVariantCriteriaSql(criteria: ListingVariantCriteria): Whe
 
 export class PgListingVariantRepository
   extends PgRepositoryBase<ListingVariant, ListingVariantCriteria>
-  implements ListingVariantRepository
+  implements ListingVariantRepository, AtomicVariantCheckoutRepository
 {
   constructor(pool: pg.Pool) {
     super(pool, {
@@ -128,6 +131,65 @@ export class PgListingVariantRepository
       throw new BadRequestException(`Variant '${id}' does not exist`);
     }
     return listingVariantMapper.fromRow(result.rows[0]);
+  }
+
+  /**
+   * Variant checkout in ONE transaction (G8): conditional decrement
+   * (`quantity >= $n`, so concurrent checkouts cannot oversell — the loser
+   * gets 0 rows), then the order row and its order_extensions row. Any
+   * failure rolls back ALL THREE writes; there is no decrement→insert
+   * compensation window to leak stock through.
+   */
+  async placeVariantOrder(order: Order, extension: OrderExtension): Promise<Order> {
+    return this.withTransaction(async (client) => {
+      const variantId = extension.variantId;
+      if (!variantId) {
+        throw new BadRequestException('Variant checkout requires extension.variantId');
+      }
+      const decremented = await client.query(
+        `UPDATE marketplace.listing_variants
+            SET quantity = quantity - $2, updated_at = now()
+          WHERE id = $1 AND is_active AND quantity >= $2 AND $2 > 0
+          RETURNING id`,
+        [variantId, order.quantity]
+      );
+      if (!decremented.rows[0]) {
+        // Re-read to surface the precise rejection reason.
+        const current = await client.query(
+          `SELECT is_active, quantity, sku FROM marketplace.listing_variants WHERE id = $1`,
+          [variantId]
+        );
+        const row = current.rows[0] as
+          | { is_active: boolean; quantity: number; sku: string }
+          | undefined;
+        if (!row) {
+          throw new BadRequestException(`Variant '${variantId}' does not exist`);
+        }
+        if (!row.is_active) {
+          throw new BadRequestException(`Variant '${row.sku}' is not active`);
+        }
+        throw new BadRequestException(`Quantity must be between 1 and ${row.quantity}`);
+      }
+      const orderRow = orderMapper.toRow(order);
+      const orderColumns = Object.keys(orderRow);
+      try {
+        await client.query(
+          `INSERT INTO marketplace.orders (${orderColumns.join(', ')})
+           VALUES (${orderColumns.map((_, i) => `$${i + 1}`).join(', ')})`,
+          orderColumns.map((column) => orderRow[column])
+        );
+        const extensionRow = orderExtensionMapper.toRow(extension);
+        const extensionColumns = Object.keys(extensionRow);
+        await client.query(
+          `INSERT INTO marketplace.order_extensions (${extensionColumns.join(', ')})
+           VALUES (${extensionColumns.map((_, i) => `$${i + 1}`).join(', ')})`,
+          extensionColumns.map((column) => extensionRow[column])
+        );
+      } catch (error) {
+        mapPgError(error);
+      }
+      return order;
+    });
   }
 }
 

@@ -18,6 +18,7 @@ import {
 import type { ListingRepository } from '../../database/repositories/listing.repository.js';
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 import type {
+  AtomicVariantCheckoutRepository,
   ListingVariantRepository,
   OrderExtensionRepository
 } from '../../database/repositories/commerce-depth.repository.js';
@@ -59,9 +60,9 @@ export function settleWholeNaira(totalKobo: number, discountKobo: number): [numb
 /**
  * Wave M checkout (features 1, 2, 3, 8): order placement against a listing
  * variant with price-list resolution, promotion evaluation and a sales
- * channel. Stock is decremented atomically per variant (conditional UPDATE
- * on pg / synchronous check-and-set in memory); a failed order insert
- * compensates with a restock so stock is never lost.
+ * channel. On pg the variant decrement, order insert and order-extension
+ * insert commit in ONE transaction (G8 — no compensation window); in memory
+ * the decrement is a synchronous check-and-set and a failed insert restocks.
  */
 @Injectable()
 export class CheckoutService {
@@ -128,24 +129,10 @@ export class CheckoutService {
       escrowRequired: totalNaira >= ESCROW_THRESHOLD_NAIRA,
       createdAt: new Date().toISOString()
     };
-    let created: Order;
-    if (variantId) {
-      // Atomic per-variant decrement, then insert; a failed insert restocks.
-      await this.variants.decrementStock(variantId, input.quantity);
-      try {
-        created = await this.orders.create(order);
-      } catch (error) {
-        await this.variants.restock(variantId, input.quantity);
-        throw error;
-      }
-    } else {
-      // Listing-level orders use the existing atomic decrement+insert path.
-      created = await this.orders.placeOrder(order);
-    }
     const now = new Date().toISOString();
     const extension: OrderExtension = {
-      id: created.id,
-      orderId: created.id,
+      id: order.id,
+      orderId: order.id,
       variantId,
       channel: input.channel ?? 'web',
       unitPriceKobo,
@@ -157,18 +144,49 @@ export class CheckoutService {
       createdAt: now,
       updatedAt: now
     };
+    let created: Order;
+    let extensionPersisted = false;
+    const atomicVariants = this.variants as ListingVariantRepository &
+      Partial<AtomicVariantCheckoutRepository>;
+    if (variantId && typeof atomicVariants.placeVariantOrder === 'function') {
+      // pg path (G8): conditional decrement + order insert + extension
+      // insert commit in ONE transaction — all-or-nothing, no compensation
+      // window that can leak stock on a mid-path crash.
+      created = await atomicVariants.placeVariantOrder(order, extension);
+      extensionPersisted = true;
+    } else if (variantId) {
+      // In-memory path: decrementStock is a synchronous check-and-set, so
+      // the decrement→insert sequence cannot interleave; a failed insert
+      // still restocks defensively.
+      await this.variants.decrementStock(variantId, input.quantity);
+      try {
+        created = await this.orders.create(order);
+      } catch (error) {
+        await this.variants.restock(variantId, input.quantity);
+        throw error;
+      }
+    } else {
+      // Listing-level orders use the existing atomic decrement+insert path.
+      created = await this.orders.placeOrder(order);
+    }
     try {
-      await this.extensions.create(extension);
+      if (!extensionPersisted) {
+        await this.extensions.create(extension);
+      }
       await this.recordApplied(created.id, evaluation.applied);
     } catch (error) {
       // Compensation: release the stock held for this order and drop the
-      // order row so a failed checkout leaves no partial state.
+      // order (and extension, when it already committed) so a failed
+      // checkout leaves no partial state.
       if (variantId) {
         await this.variants.restock(variantId, input.quantity);
       } else {
         await this.listings.restock(listing.id, input.quantity);
       }
       await this.orders.remove(created.id);
+      if (extensionPersisted) {
+        await this.extensions.remove(extension.id);
+      }
       throw error;
     }
     await this.events.publish(
