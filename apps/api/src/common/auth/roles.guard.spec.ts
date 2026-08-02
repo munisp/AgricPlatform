@@ -44,10 +44,10 @@ function makeGuard(required: UserRole[] | undefined): {
   return { activate: () => guard.canActivate(context), request, users };
 }
 
-async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean } = {}) {
+async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean; subject?: string } = {}) {
   let jwt = new SignJWT(claims)
     .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-    .setSubject('user-admin')
+    .setSubject(options.subject ?? 'user-admin')
     .setIssuer(options.issuer ?? ISSUER)
     .setAudience(options.audience ?? AUDIENCE)
     .setIssuedAt();
@@ -89,6 +89,20 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
       resource_access: { [AUDIENCE]: { roles: ['admin'] } }
     })}`;
     await expect(activate()).resolves.toBe(true);
+  });
+
+  it('ignores client roles granted to OTHER clients when an audience is configured', async () => {
+    // Attack: a user with an admin role on some other realm client presents
+    // that token here. With an audience configured, roles are read only from
+    // resource_access[audience] — never aggregated across clients.
+    // Subject unknown to the user repository so the identity is synthesised
+    // purely from token roles (a repo lookup would mask the extraction bug).
+    const { activate, request } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign(
+      { resource_access: { 'other-client': { roles: ['admin'] } } },
+      { subject: 'user-keycloak-only' }
+    )}`;
+    await expect(activate()).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('rejects tokens with the wrong issuer, audience or expiry', async () => {

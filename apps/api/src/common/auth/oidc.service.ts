@@ -99,10 +99,14 @@ export class OidcService {
     }
     const clientId = this.config?.audience;
     if (clientId) {
+      // Audience configured (mandatory in production via
+      // assertProductionAuthConfig): ONLY this client's roles count —
+      // roles granted to other clients of the realm must not leak in.
       for (const role of claims.resource_access?.[clientId]?.roles ?? []) {
         raw.add(role);
       }
     } else {
+      // Development-only fallback (no audience configured): aggregate.
       for (const entry of Object.values(claims.resource_access ?? {})) {
         for (const role of entry.roles ?? []) {
           raw.add(role);
