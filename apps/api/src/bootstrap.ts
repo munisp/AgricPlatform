@@ -3,8 +3,10 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
 import helmet from 'helmet';
+import { ErrorTrackingService } from './common/error-tracking/error-tracking.service.js';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter.js';
-import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor.js';
+import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor.js';
+import { MetricsService } from './common/metrics/metrics.service.js';
 
 /** Request augmented with the raw JSON body (needed for webhook HMAC verification). */
 export interface RawBodyRequest extends Request {
@@ -41,9 +43,13 @@ export function configureApp(app: NestExpressApplication): void {
       forbidUnknownValues: false
     })
   );
-  app.useGlobalFilters(new ApiExceptionFilter());
+  app.useGlobalFilters(
+    new ApiExceptionFilter(app.get(MetricsService), app.get(ErrorTrackingService))
+  );
   // IdempotencyInterceptor is registered via APP_INTERCEPTOR (DI-managed store).
-  app.useGlobalInterceptors(new RequestLoggingInterceptor());
+  // Request metrics replaced request logging in this slot (plan §A.3); pino-http
+  // handles structured request logging itself.
+  app.useGlobalInterceptors(app.get(HttpMetricsInterceptor));
 
   // API documentation is disabled in production unless explicitly enabled.
   if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {

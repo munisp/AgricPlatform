@@ -1,5 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
@@ -14,6 +15,7 @@ function makeService() {
   return new AuthService(
     new UsersService(createInMemoryUserRepository()),
     new DomainEventsService(createInMemoryOutboxRepository()),
+    new MetricsService(),
     new KeyValueOtpChallengeStore(new InMemoryKeyValueStore())
   );
 }
