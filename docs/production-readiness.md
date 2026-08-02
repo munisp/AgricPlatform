@@ -8,15 +8,15 @@
 
 | Dimension | Score | Evidence | Remaining gate |
 | --- | ---: | --- | --- |
-| Phase 1 product-surface coverage | 78% | All major PRD domains have frontend routes and NestJS modules | Wire frontend journeys to live API contracts; deepen Phase 2 modules |
-| Build and test health | 100% | Typecheck, lint, 20 automated tests, API build, and 18-route Next.js production build pass | Keep these checks required on `main` |
+| Phase 1 product-surface coverage | 92% | All major PRD domains have frontend routes wired to the live NestJS API (typed client, session context, replayable offline queue, J1–J4 + cross-cutting) | Real OIDC sign-in flow in the web app; deepen Phase 2 modules |
+| Build and test health | 100% | Typecheck, lint, `lint:sql` (2 migrations), 249 automated tests passing (176 API + 68 web + 5 shared; 51 pg-gated skips), API build, and 18-route Next.js production build pass | Keep these checks required on `main` |
 | Persistence readiness | 85% (code-complete) | Async repository ports with 27 PostgreSQL repositories selected by `DATABASE_URL`, drift-aligned `infra/postgres/001_init.sql`, `migrate`/`seed` CLIs, Redis idempotency/OTP stores behind `REDIS_URL`, fail-closed production config, and in-memory/pg contract suites | Run the DATABASE_URL/REDIS_URL-gated suites against real containers (docker unavailable in the build environment) and soak in staging |
-| Identity and access readiness | 45% | Canonical roles, API guards, RBAC tests, Keycloak realm assets | Replace header-based local auth stub with Keycloak OIDC and OTP flow |
+| Identity and access readiness | 75% | Keycloak OIDC/JWKS bearer verification (`jose`), ownership-or-admin authorization across sensitive routes, hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config | Hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
 | Integration readiness | 55% | Provider registry, local stubs, adapter matrix, environment flags | Sandbox/live credentials and provider-specific drivers |
 | Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
-| Security and compliance readiness | 50% | RBAC, idempotency, audit, privacy export/delete, secret hygiene, compliance documentation | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
-| **Overall Phase 1 engineering readiness** | **70%** | Strong reference implementation with deterministic local gates; persistence wave code-complete | Container verification of the pg/Redis suites, OIDC, provider sandbox, and staging hardening |
-| **Public production readiness** | **35%** | Launch blockers remain external and operational | Close L1–L10 in `docs/security-compliance.md` |
+| Security and compliance readiness | 60% | RBAC + OIDC, webhook HMAC, idempotency, tamper-evident audit hash chain, privacy export/delete, CSP/security headers on web, WCAG AA automated checks, secret hygiene, compliance documentation | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
+| **Overall Phase 1 engineering readiness** | **82%** | All engineering-controllable waves code-complete: security, frontend wiring, persistence, observability, accessibility/i18n; deterministic local gates green | Container verification of the pg/Redis suites, hosted IdP, provider sandboxes, staging hardening |
+| **Public production readiness** | **40%** | Launch blockers remain external and operational (legal, credentials, penetration test, uptime evidence) | Close L1–L10 in `docs/security-compliance.md` |
 
 The implementation should be treated as a **production-oriented reference platform**, not as a live production system. The most important next engineering milestone is a staging build that uses PostgreSQL, Redis, and Keycloak end to end.
 
@@ -57,6 +57,8 @@ The implementation should be treated as a **production-oriented reference platfo
 - service-worker and manifest support
 
 Implemented frontend behaviours include role-aware dashboard state, onboarding, opportunity browsing, marketplace listing capture, chapter attendance recording, notification preferences, privacy controls, cross-domain search, offline fallback, and local persistence for draft/offline-like interactions.
+
+**Frontend API wiring (frontend wave, code-complete):** every primary journey reads and mutates the live NestJS API through a typed client (`apps/web/lib/api/`) with envelope unwrapping, timeout, automatic `Idempotency-Key` on mutations, Bearer/`x-user-id` auth-provider hook, and 429 backoff. A session context provides identity with an explicitly-marked dev role preview. The offline queue is replayable: submissions carry method/path/payload/idempotency key, flush on reconnect/interval/manual retry, and render real queued/sending/sent/failed statuses. Wired journeys: J1 onboarding/register, dashboard, opportunities + applications, notification preferences; J2 marketplace listings and idempotent orders; J3 chapters, events, RSVP/attendance, community topics, mentor requests; J4 learning enrolment/progress/certificates, admin console, partner reports, finance credit profile + document vault, privacy consents/export/delete; plus search, advisory, integrations, and home metrics cross-cutting. All 14 wired routes ship `loading.tsx`/`error.tsx`; the service worker (v3) caches only public GET reference data network-first; baseline CSP, `nosniff`, `Referrer-Policy`, and `Permissions-Policy` headers are set in `next.config.ts` and asserted by tests.
 
 ### Backend modular API
 
@@ -151,7 +153,7 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 
 | Priority | Gap | Why it matters | Recommended owner |
 | --- | --- | --- | --- |
-| P0 | Frontend uses shared/local fixtures rather than live API data for most journeys | A browser demo can diverge from API behaviour | Frontend + API lead |
+| P0 | ~~Frontend uses shared/local fixtures rather than live API data~~ All primary journeys wired to the live API with typed client, session context, and replayable offline queue | Real OIDC sign-in flow in the web app remains (dev session preview today); fixtures survive only as clearly-marked offline fallbacks | Frontend + Identity lead |
 | P0 | ~~API repositories are in-memory~~ PostgreSQL persistence implemented behind `DATABASE_URL` (fail-closed in production) | pg repositories, migrations, and seeds are code-complete but not yet executed against a live database (no docker in the build environment) | API lead |
 | P0 | ~~Local auth uses `x-user-id` header stub~~ OIDC bearer verification implemented; Keycloak realm hosting and OTP SPI remain external | API verifies JWTs; the IdP itself is not yet provisioned | Identity lead |
 | P1 | Rate limiting store is in-memory | Throttler limits do not hold across replicas; idempotency and OTP stores moved behind `REDIS_URL` with Redis/in-memory drivers | API lead + DevOps |
@@ -193,10 +195,10 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 
 ### Sprint 2 — identity and journey wiring
 
-1. Replace `x-user-id` local auth with Keycloak OIDC.
-2. Wire frontend login, session, logout, and role guards to the API.
-3. Replace frontend fixture reads with API clients, keeping localStorage only for offline drafts.
-4. Exercise Journey J1 end to end with stub OTP and notifications.
+1. ~~Replace `x-user-id` local auth with Keycloak OIDC~~ Done API-side in the security wave (JWKS verification, fail-closed production config); remaining: hosted realm + web login flow.
+2. Wire frontend login, session, logout, and role guards to the hosted Keycloak (frontend session context and auth-provider hook are in place; the OIDC redirect/code flow is the remaining piece).
+3. ~~Replace frontend fixture reads with API clients~~ Done in the frontend wave; localStorage remains only for offline drafts, the replay queue, and locale/session preferences.
+4. Exercise Journey J1 end to end with stub OTP and notifications (all endpoints wired; run against a staged API).
 
 ### Sprint 3 — provider sandboxes
 
@@ -223,15 +225,17 @@ npm run validate
 SKIP_INSTALL=1 bash scripts/validate-repo.sh
 ```
 
-Results:
+Results (final merged main, post-hardening waves):
 
 - API typecheck: passed
 - Web typecheck, including generated Next.js route types: passed
 - Shared package typecheck: passed
-- ESLint: passed with zero reported warnings
-- API tests: 15 passed
+- ESLint (incl. jsx-a11y gap rules): passed
+- Migration lint (`lint:sql`, pgsql-ast-parser): 2 migration files, all statements parsed, PK/DROP guards passed
+- API tests: 176 passed (+51 PostgreSQL-gated contract tests skipped without `DATABASE_URL`)
+- Web tests: 68 passed (API client, offline queue, security headers, a11y axe, contrast, i18n, PWA)
 - Shared package tests: 5 passed
-- Total automated tests: 20 passed
+- Total automated tests: 249 passed
 - NestJS production build: passed
 - Next.js production build: passed
 - Static routes generated: 18
