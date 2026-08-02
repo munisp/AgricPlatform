@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { AdminAuditList, AdminKpis, AdminReviewQueueTable, AdminUserList } from '@/components/admin-live';
+import { AnalyticsExportButtons } from '@/components/analytics-export';
 import { Card, PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -26,6 +27,14 @@ export default function AdminPage() {
 
       <Section kicker="Operations" title="Review queue">
         <AdminReviewQueueTable />
+      </Section>
+
+      <Section
+        kicker="Reporting"
+        title="Analytics export"
+        description="Downloads the full metrics bundle as CSV or PDF. Every export is audit-logged on the API."
+      >
+        <AnalyticsExportButtons />
       </Section>
 
       <Section kicker="Audit" title="Recent audit events" description="Immutable audit log for admin and sensitive operations.">

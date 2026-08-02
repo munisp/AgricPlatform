@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { AttendanceRecorder } from '@/components/attendance-recorder';
 import { ChapterEvents, ChapterNetwork } from '@/components/chapters-live';
 import { Card, PageHeader, Section } from '@/components/ui';
@@ -36,7 +37,16 @@ export default function ChaptersPage() {
         <ChapterNetwork />
       </Section>
 
-      <Section kicker="Events" title="Upcoming events and RSVP">
+      <Section
+        kicker="Events"
+        title="Upcoming events and RSVP"
+        description={
+          <>
+            Attending an event?{' '}
+            <Link href="/chapters/check-in">Check in with the lead&apos;s QR code</Link>.
+          </>
+        }
+      >
         <ChapterEvents />
       </Section>
 

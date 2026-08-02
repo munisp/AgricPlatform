@@ -8,6 +8,7 @@ import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import { listListings, listOrders, placeOrder } from '@/lib/api/endpoints';
 import { demoOrders } from '@/lib/content';
 import { AutoBadge, Card, StatusBadge } from '@/components/ui';
+import { OrderCommercePanel } from '@/components/order-commerce';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 
 // Offline fallback only — live listings come from GET /api/v1/listings.
@@ -126,6 +127,7 @@ export function OrderList() {
                 <span style={{ fontWeight: 700 }}>{formatNaira(order.totalNaira)}</span>
                 {order.escrowRequired ? <StatusBadge tone="warning">escrow held</StatusBadge> : null}
               </div>
+              <OrderCommercePanel order={order} />
             </Card>
           ))}
         </div>
