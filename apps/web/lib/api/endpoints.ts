@@ -1,23 +1,42 @@
 import type {
   AdvisoryItem,
+  AggregationPoint,
+  Animal,
+  AnimalGrade,
+  AnimalHealthRecord,
+  AnimalMovement,
+  AnimalSex,
+  AnimalStatus,
   ApiListResponse,
   AuditEvent,
   BookingStatus,
   CampusClub,
   CampusClubMembership,
   Certificate,
+  CertifiedListing,
   Chapter,
   ChapterEvent,
   CohortThread,
   CohortThreadPost,
+  ColdChainLog,
   ConsentRecord,
   Course,
   CreditProfile,
   CreditScoreResult,
+  DiseaseFlag,
+  DiseaseFlagStatus,
+  DiseaseMapEntry,
+  DonorDisbursement,
+  DisbursementMilestone,
   Enrolment,
   EscrowRecord,
+  ExportDocument,
+  ExportDocumentType,
   ForumTopic,
+  HealthRecordType,
   InstallmentStatus,
+  InsuranceClaim,
+  InsurancePolicy,
   IntegrationStatus,
   Invoice,
   KnowledgeFormat,
@@ -25,20 +44,36 @@ import type {
   LanguageCode,
   LeaderboardEntry,
   Lender,
+  LivestockLien,
+  LivestockLot,
+  LivestockRecall,
+  LivestockSpecies,
+  LivestockSubjectType,
   LoanApplication,
   MarketplaceListing,
   MentorRequest,
   MilestoneProgress,
   MilestoneProgressStatus,
+  MovementPermit,
+  MovementPurpose,
+  MovementTransportMode,
   NotificationMessage,
   NotificationPreference,
+  OfftakeContract,
+  OfftakeContractStatus,
+  OfftakeTemplate,
   Opportunity,
   OpportunityApplication,
   Order,
+  OwnershipTransfer,
+  OwnershipTransferType,
+  PastoralistProfile,
   PathwayEnrolment,
   PathwayStage,
   PathwayTemplate,
   PathwayTrack,
+  PermitSubject,
+  PermitVerification,
   PlatformMetric,
   PodcastEpisode,
   Profile,
@@ -46,6 +81,8 @@ import type {
   ProgrammeEnrolment,
   ProgrammeMilestone,
   ProgrammeType,
+  RecallAnimal,
+  RecallStatus,
   RepaymentInstallment,
   ServiceBooking,
   ServiceOffering,
@@ -1234,4 +1271,777 @@ export function pullBeneficiaryImport(input: {
   donorSource: string;
 }): Promise<{ data: { batchIds: string[] } }> {
   return apiFetch('/integrations/federation/import/pull', { method: 'POST', body: input });
+}
+
+/* ========================================================================
+ * ALTP livestock platform (waves L1a–L1c).
+ * Mirrors apps/api/src/modules/livestock, livestock-health and
+ * livestock-trade (trade/finance/partners/compliance controllers).
+ * All list endpoints here return a plain `{ data: T[] }` envelope.
+ * ====================================================================== */
+
+/* ------------------------- livestock registry -------------------------- */
+
+export interface LivestockEnrolmentResult {
+  userId: string;
+  /** True when the farmer role marker had to be added by this call. */
+  roleBound: boolean;
+  consentId: string;
+  alreadyEnrolled: boolean;
+}
+
+/** Enrol into the livestock domain (binds farmer marker + livestock_records consent). */
+export function enrolLivestock(
+  userId: string,
+  idempotencyKey?: string
+): Promise<{ data: LivestockEnrolmentResult }> {
+  return apiFetch('/livestock/enrol', { method: 'POST', body: { userId }, idempotencyKey });
+}
+
+export interface RegisterAnimalInput {
+  species: LivestockSpecies;
+  breed: string;
+  sex: AnimalSex;
+  birthDate?: string;
+  tagId?: string;
+  eid?: string;
+  /** Nigerian state name (e.g. 'Kaduna'); the issued ID embeds the two-letter code. */
+  state: string;
+  lga?: string;
+  sireId?: string;
+  damId?: string;
+  notes?: string;
+}
+
+export function registerAnimal(
+  input: RegisterAnimalInput,
+  idempotencyKey?: string
+): Promise<{ data: Animal }> {
+  return apiFetch('/livestock/animals', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Caller's own animals. Plain `{ data: T[] }` envelope. */
+export function listMyAnimals(params: {
+  species?: LivestockSpecies;
+  status?: AnimalStatus;
+  state?: string;
+} = {}): Promise<{ data: Animal[] }> {
+  return apiFetch('/livestock/animals/mine', { query: { ...params } });
+}
+
+export function fetchAnimal(id: string): Promise<{ data: Animal }> {
+  return apiFetch(`/livestock/animals/${encodeURIComponent(id)}`);
+}
+
+export function updateAnimal(
+  id: string,
+  patch: { breed?: string; notes?: string; eid?: string; status?: AnimalStatus }
+): Promise<{ data: Animal }> {
+  return apiFetch(`/livestock/animals/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch
+  });
+}
+
+export function transferAnimal(
+  id: string,
+  input: { toUserId: string; transferType: OwnershipTransferType; effectiveAt?: string },
+  idempotencyKey?: string
+): Promise<{ data: OwnershipTransfer }> {
+  return apiFetch(`/livestock/animals/${encodeURIComponent(id)}/transfer`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listAnimalTransfers(id: string): Promise<{ data: OwnershipTransfer[] }> {
+  return apiFetch(`/livestock/animals/${encodeURIComponent(id)}/transfers`);
+}
+
+export function createLot(
+  input: {
+    species: LivestockSpecies;
+    quantity: number;
+    state: string;
+    lga?: string;
+    formationRule?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: LivestockLot }> {
+  return apiFetch('/livestock/lots', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listMyLots(): Promise<{ data: LivestockLot[] }> {
+  return apiFetch('/livestock/lots/mine');
+}
+
+/** Lot detail including member animal IDs. */
+export type LotWithAnimals = LivestockLot & { animalIds: string[] };
+
+export function fetchLot(id: string): Promise<{ data: LotWithAnimals }> {
+  return apiFetch(`/livestock/lots/${encodeURIComponent(id)}`);
+}
+
+export function setLotAnimals(
+  id: string,
+  input: { add?: string[]; remove?: string[] }
+): Promise<{ data: LotWithAnimals }> {
+  return apiFetch(`/livestock/lots/${encodeURIComponent(id)}/animals`, {
+    method: 'PUT',
+    body: input
+  });
+}
+
+export function fetchMyPastoralistProfile(): Promise<{ data: PastoralistProfile }> {
+  return apiFetch('/livestock/pastoralist-profile');
+}
+
+export function upsertPastoralistProfile(input: {
+  grazingZoneId?: string;
+  migrationPattern?: string;
+  primarySpecies: LivestockSpecies[];
+}): Promise<{ data: PastoralistProfile }> {
+  return apiFetch('/livestock/pastoralist-profile', { method: 'PUT', body: input });
+}
+
+/* --------------------------- livestock health -------------------------- */
+
+export interface RecordHealthInput {
+  animalId: string;
+  recordType: HealthRecordType;
+  product: string;
+  batchNumber: string;
+  dose: string;
+  administeredAt: string;
+  withdrawalUntil?: string;
+  notes?: string;
+}
+
+/** Append a vet-signed vaccination/treatment record (vet role). */
+export function recordHealth(
+  input: RecordHealthInput,
+  idempotencyKey?: string
+): Promise<{ data: AnimalHealthRecord }> {
+  return apiFetch('/livestock-health/records', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Append a reversing entry that annuls a health record (original never mutated). */
+export function reverseHealthRecord(
+  id: string,
+  notes?: string
+): Promise<{ data: AnimalHealthRecord }> {
+  return apiFetch(`/livestock-health/records/${encodeURIComponent(id)}/reverse`, {
+    method: 'POST',
+    body: notes ? { notes } : {}
+  });
+}
+
+export interface HealthRecordVerification {
+  recordId: string;
+  ok: boolean;
+  reason?: 'signature';
+  reversed: boolean;
+  reversalOfId?: string;
+}
+
+/** Recompute the HMAC signature over a health record (tamper detection). */
+export function verifyHealthRecord(id: string): Promise<{ data: HealthRecordVerification }> {
+  return apiFetch(`/livestock-health/records/${encodeURIComponent(id)}/verify`);
+}
+
+/** Append-only health ledger for an animal. Plain `{ data: T[] }` envelope. */
+export function listAnimalHealthRecords(
+  animalId: string
+): Promise<{ data: AnimalHealthRecord[] }> {
+  return apiFetch(`/livestock-health/animals/${encodeURIComponent(animalId)}/records`);
+}
+
+export interface StartMovementInput {
+  animalId?: string;
+  lotId?: string;
+  fromState: string;
+  fromLga?: string;
+  toState: string;
+  toLga?: string;
+  departedAt?: string;
+  transportMode: MovementTransportMode;
+  purpose: MovementPurpose;
+  permitId?: string;
+}
+
+export function startMovement(
+  input: StartMovementInput,
+  idempotencyKey?: string
+): Promise<{ data: AnimalMovement }> {
+  return apiFetch('/livestock-health/movements', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function recordMovementArrival(
+  id: string,
+  arrivedAt?: string
+): Promise<{ data: AnimalMovement }> {
+  return apiFetch(`/livestock-health/movements/${encodeURIComponent(id)}/arrive`, {
+    method: 'POST',
+    body: arrivedAt ? { arrivedAt } : {}
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listAnimalMovements(animalId: string): Promise<{ data: AnimalMovement[] }> {
+  return apiFetch(`/livestock-health/animals/${encodeURIComponent(animalId)}/movements`);
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listLotMovements(lotId: string): Promise<{ data: AnimalMovement[] }> {
+  return apiFetch(`/livestock-health/lots/${encodeURIComponent(lotId)}/movements`);
+}
+
+/** Issue a state movement permit covering animals and/or lots (vet or regulator). */
+export function issueMovementPermit(
+  input: {
+    animalIds?: string[];
+    lotIds?: string[];
+    fromState: string;
+    toState: string;
+    validFrom: string;
+    validUntil: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: MovementPermit }> {
+  return apiFetch('/livestock-health/permits', { method: 'POST', body: input, idempotencyKey });
+}
+
+export interface PermitVerificationResult {
+  permit: MovementPermit;
+  subjects: PermitSubject[];
+  verification: PermitVerification;
+}
+
+/** Verify a permit by id or permit number. */
+export function verifyMovementPermit(
+  idOrNumber: string
+): Promise<{ data: PermitVerificationResult }> {
+  return apiFetch(`/livestock-health/permits/${encodeURIComponent(idOrNumber)}/verify`);
+}
+
+export function revokeMovementPermit(
+  id: string,
+  reason: string
+): Promise<{ data: MovementPermit }> {
+  return apiFetch(`/livestock-health/permits/${encodeURIComponent(id)}/revoke`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+export interface InitiateRecallInput {
+  animalId?: string;
+  lotId?: string;
+  ownerUserId?: string;
+  state?: string;
+  fromDate?: string;
+  toDate?: string;
+  batchNumber?: string;
+  reason: string;
+}
+
+export interface RecallWithAnimals {
+  recall: LivestockRecall;
+  animals: RecallAnimal[];
+}
+
+/** Initiate a recall scoped by animal, lot, owner or state+date range (regulator/admin). */
+export function initiateRecall(
+  input: InitiateRecallInput,
+  idempotencyKey?: string
+): Promise<{ data: RecallWithAnimals }> {
+  return apiFetch('/livestock-health/recalls', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Regulator/admin. Plain `{ data: T[] }` envelope. */
+export function listRecalls(params: {
+  status?: RecallStatus;
+} = {}): Promise<{ data: LivestockRecall[] }> {
+  return apiFetch('/livestock-health/recalls', { query: { ...params } });
+}
+
+export function fetchRecall(id: string): Promise<{ data: RecallWithAnimals }> {
+  return apiFetch(`/livestock-health/recalls/${encodeURIComponent(id)}`);
+}
+
+export function resolveRecall(id: string): Promise<{ data: LivestockRecall }> {
+  return apiFetch(`/livestock-health/recalls/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST'
+  });
+}
+
+/** Report a suspected disease outbreak flag (any authenticated user). */
+export function reportDiseaseFlag(input: {
+  disease: string;
+  state: string;
+  lga?: string;
+  suspectedSpecies?: LivestockSpecies;
+}): Promise<{ data: DiseaseFlag }> {
+  return apiFetch('/livestock-health/disease-flags', { method: 'POST', body: input });
+}
+
+/** Confirm a reported flag (vet/regulator/admin). */
+export function confirmDiseaseFlag(id: string): Promise<{ data: DiseaseFlag }> {
+  return apiFetch(`/livestock-health/disease-flags/${encodeURIComponent(id)}/confirm`, {
+    method: 'POST'
+  });
+}
+
+/** Retract a flag as a false positive with a mandatory reason. */
+export function retractDiseaseFlag(id: string, reason: string): Promise<{ data: DiseaseFlag }> {
+  return apiFetch(`/livestock-health/disease-flags/${encodeURIComponent(id)}/retract`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listDiseaseFlags(params: {
+  status?: DiseaseFlagStatus;
+  state?: string;
+} = {}): Promise<{ data: DiseaseFlag[] }> {
+  return apiFetch('/livestock-health/disease-flags', { query: { ...params } });
+}
+
+/** State-level disease map: confirmed flags grouped by state and disease. Plain `{ data: T[] }`. */
+export function fetchDiseaseMap(params: {
+  state?: string;
+} = {}): Promise<{ data: DiseaseMapEntry[] }> {
+  return apiFetch('/livestock-health/disease-map', { query: { ...params } });
+}
+
+export interface GradeComponents {
+  /** Fraction of the species vaccination schedule covered (0..1). */
+  vaccinationCoverage: number;
+  vaccinationPoints: number;
+  treatmentPoints: number;
+  movementPoints: number;
+  agePoints: number;
+  movementCount: number;
+  requiredVaccinations: readonly string[];
+  completedVaccinations: string[];
+}
+
+export interface AnimalGradeResult {
+  animalId: string;
+  species: LivestockSpecies;
+  grade: AnimalGrade;
+  score: number;
+  components: GradeComponents;
+  computedAt: string;
+}
+
+/** Deterministic trust grade (A–D) for an animal. */
+export function fetchAnimalGrade(animalId: string): Promise<{ data: AnimalGradeResult }> {
+  return apiFetch(`/livestock-health/animals/${encodeURIComponent(animalId)}/grade`);
+}
+
+/* --------------------------- livestock trade --------------------------- */
+
+/** Create a certified listing from an owned animal/lot (provenance snapshot captured). */
+export function createCertifiedListing(
+  input: { subjectType: LivestockSubjectType; subjectId: string; askingPriceKobo?: number },
+  idempotencyKey?: string
+): Promise<{ data: CertifiedListing }> {
+  return apiFetch('/livestock-trade/listings', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listMyCertifiedListings(): Promise<{ data: CertifiedListing[] }> {
+  return apiFetch('/livestock-trade/listings/mine');
+}
+
+/** Active listings are discoverable; other states are owner/admin only. */
+export function fetchCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {
+  return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}`);
+}
+
+export function activateCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {
+  return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}/activate`, {
+    method: 'POST'
+  });
+}
+
+export function markCertifiedListingSold(id: string): Promise<{ data: CertifiedListing }> {
+  return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}/sold`, { method: 'POST' });
+}
+
+export function withdrawCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {
+  return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}/withdraw`, {
+    method: 'POST'
+  });
+}
+
+/** Admin only — revoke certification (e.g. provenance fraud). */
+export function revokeCertifiedListing(
+  id: string,
+  reason: string
+): Promise<{ data: CertifiedListing }> {
+  return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}/revoke`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+/** Partner/admin-managed contract template. */
+export function createOfftakeTemplate(
+  input: {
+    name: string;
+    description?: string;
+    species: LivestockSpecies;
+    defaultQuantity?: number;
+    defaultPricePerUnitKobo?: number;
+    deliveryWindowDays: number;
+    defaultQualityGrade?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: OfftakeTemplate }> {
+  return apiFetch('/livestock-trade/offtake-templates', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listOfftakeTemplates(params: {
+  status?: 'active' | 'archived';
+} = {}): Promise<{ data: OfftakeTemplate[] }> {
+  return apiFetch('/livestock-trade/offtake-templates', { query: { ...params } });
+}
+
+export function updateOfftakeTemplate(
+  id: string,
+  patch: {
+    name?: string;
+    description?: string;
+    defaultQuantity?: number;
+    defaultPricePerUnitKobo?: number;
+    deliveryWindowDays?: number;
+    defaultQualityGrade?: string;
+  }
+): Promise<{ data: OfftakeTemplate }> {
+  return apiFetch(`/livestock-trade/offtake-templates/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch
+  });
+}
+
+export function archiveOfftakeTemplate(id: string): Promise<{ data: OfftakeTemplate }> {
+  return apiFetch(`/livestock-trade/offtake-templates/${encodeURIComponent(id)}/archive`, {
+    method: 'POST'
+  });
+}
+
+/** Instantiate a contract from a template (variable slots may override defaults). */
+export function instantiateOfftakeContract(
+  templateId: string,
+  input: {
+    farmerUserId: string;
+    buyerUserId: string;
+    quantity?: number;
+    pricePerUnitKobo?: number;
+    deliveryWindowStart?: string;
+    qualityGrade?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: OfftakeContract }> {
+  return apiFetch(
+    `/livestock-trade/offtake-templates/${encodeURIComponent(templateId)}/contracts`,
+    { method: 'POST', body: input, idempotencyKey }
+  );
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listMyOfftakeContracts(): Promise<{ data: OfftakeContract[] }> {
+  return apiFetch('/livestock-trade/offtake-contracts/mine');
+}
+
+export function fetchOfftakeContract(id: string): Promise<{ data: OfftakeContract }> {
+  return apiFetch(`/livestock-trade/offtake-contracts/${encodeURIComponent(id)}`);
+}
+
+export function transitionOfftakeContract(
+  id: string,
+  to: OfftakeContractStatus
+): Promise<{ data: OfftakeContract }> {
+  return apiFetch(`/livestock-trade/offtake-contracts/${encodeURIComponent(id)}/transition`, {
+    method: 'POST',
+    body: { to }
+  });
+}
+
+/** Generate a DRAFT export document (AfCFTA/cross-border); payload is watermarked. */
+export function generateExportDocument(
+  input: {
+    documentType: ExportDocumentType;
+    subjectType: LivestockSubjectType;
+    subjectId: string;
+    destinationCountry?: string;
+    hsCode?: string;
+    sanitaryCertificateRef?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: ExportDocument }> {
+  return apiFetch('/livestock-trade/export-documents', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Version list per (subjectType, subjectId). Plain `{ data: T[] }` envelope. */
+export function listExportDocuments(params: {
+  subjectType: LivestockSubjectType;
+  subjectId: string;
+}): Promise<{ data: ExportDocument[] }> {
+  return apiFetch('/livestock-trade/export-documents', { query: { ...params } });
+}
+
+export function fetchExportDocument(id: string): Promise<{ data: ExportDocument }> {
+  return apiFetch(`/livestock-trade/export-documents/${encodeURIComponent(id)}`);
+}
+
+/* -------------------------- livestock finance -------------------------- */
+
+/** Register a lien over an animal/lot (lender). */
+export function registerLien(
+  input: {
+    subjectType: LivestockSubjectType;
+    subjectId: string;
+    principalKobo: number;
+    terms: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: LivestockLien }> {
+  return apiFetch('/livestock-finance/liens', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Caller's own registered liens (lender). Plain `{ data: T[] }` envelope. */
+export function listMyLiens(): Promise<{ data: LivestockLien[] }> {
+  return apiFetch('/livestock-finance/liens/mine');
+}
+
+/** Liens for a subject (owner, lender, admin). Plain `{ data: T[] }` envelope. */
+export function listLiens(params: {
+  subjectType: LivestockSubjectType;
+  subjectId: string;
+}): Promise<{ data: LivestockLien[] }> {
+  return apiFetch('/livestock-finance/liens', { query: { ...params } });
+}
+
+export function dischargeLien(id: string): Promise<{ data: LivestockLien }> {
+  return apiFetch(`/livestock-finance/liens/${encodeURIComponent(id)}/discharge`, {
+    method: 'POST'
+  });
+}
+
+export function defaultLien(id: string): Promise<{ data: LivestockLien }> {
+  return apiFetch(`/livestock-finance/liens/${encodeURIComponent(id)}/default`, {
+    method: 'POST'
+  });
+}
+
+/** Quote → policy in `quote` status; bind to activate cover. */
+export function quoteInsurancePolicy(
+  input: {
+    subjectType: LivestockSubjectType;
+    subjectId: string;
+    premiumKobo: number;
+    coverageKobo: number;
+    startsAt?: string;
+    endsAt?: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: InsurancePolicy }> {
+  return apiFetch('/livestock-finance/insurance/quotes', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function bindInsurancePolicy(id: string): Promise<{ data: InsurancePolicy }> {
+  return apiFetch(`/livestock-finance/insurance/policies/${encodeURIComponent(id)}/bind`, {
+    method: 'POST'
+  });
+}
+
+export function lapseInsurancePolicy(id: string): Promise<{ data: InsurancePolicy }> {
+  return apiFetch(`/livestock-finance/insurance/policies/${encodeURIComponent(id)}/lapse`, {
+    method: 'POST'
+  });
+}
+
+export function cancelInsurancePolicy(id: string): Promise<{ data: InsurancePolicy }> {
+  return apiFetch(`/livestock-finance/insurance/policies/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST'
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listMyInsurancePolicies(): Promise<{ data: InsurancePolicy[] }> {
+  return apiFetch('/livestock-finance/insurance/policies/mine');
+}
+
+export function fetchInsurancePolicy(id: string): Promise<{ data: InsurancePolicy }> {
+  return apiFetch(`/livestock-finance/insurance/policies/${encodeURIComponent(id)}`);
+}
+
+export function submitInsuranceClaim(
+  input: { policyId: string; animalIds: string[]; amountKobo?: number; notes?: string },
+  idempotencyKey?: string
+): Promise<{ data: InsuranceClaim }> {
+  return apiFetch('/livestock-finance/insurance/claims', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listInsuranceClaims(policyId: string): Promise<{ data: InsuranceClaim[] }> {
+  return apiFetch('/livestock-finance/insurance/claims', { query: { policyId } });
+}
+
+export function assessInsuranceClaim(
+  id: string,
+  input: { amountKobo?: number; notes?: string }
+): Promise<{ data: InsuranceClaim }> {
+  return apiFetch(`/livestock-finance/insurance/claims/${encodeURIComponent(id)}/assess`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function settleInsuranceClaim(
+  id: string,
+  outcome: 'paid' | 'rejected'
+): Promise<{ data: InsuranceClaim }> {
+  return apiFetch(`/livestock-finance/insurance/claims/${encodeURIComponent(id)}/settle`, {
+    method: 'POST',
+    body: { outcome }
+  });
+}
+
+/** Schedule a milestone-based donor disbursement. */
+export function scheduleDisbursement(
+  input: {
+    programmeId: string;
+    milestone: DisbursementMilestone;
+    amountKobo: number;
+    beneficiaryUserId: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: DonorDisbursement }> {
+  return apiFetch('/livestock-finance/disbursements', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function releaseDisbursement(id: string): Promise<{ data: DonorDisbursement }> {
+  return apiFetch(`/livestock-finance/disbursements/${encodeURIComponent(id)}/release`, {
+    method: 'POST'
+  });
+}
+
+export function confirmDisbursement(id: string): Promise<{ data: DonorDisbursement }> {
+  return apiFetch(`/livestock-finance/disbursements/${encodeURIComponent(id)}/confirm`, {
+    method: 'POST'
+  });
+}
+
+/** Donor's own disbursements. Plain `{ data: T[] }` envelope. */
+export function listMyDisbursements(): Promise<{ data: DonorDisbursement[] }> {
+  return apiFetch('/livestock-finance/disbursements/mine');
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listDisbursementsForBeneficiary(
+  userId: string
+): Promise<{ data: DonorDisbursement[] }> {
+  return apiFetch(`/livestock-finance/disbursements/beneficiary/${encodeURIComponent(userId)}`);
+}
+
+/* ---------------------- livestock partners (F7) ------------------------ */
+
+export function createAggregationPoint(
+  input: { name: string; state: string; lga: string; capacity?: number },
+  idempotencyKey?: string
+): Promise<{ data: AggregationPoint }> {
+  return apiFetch('/livestock-partners/aggregation-points', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listAggregationPoints(params: {
+  state?: string;
+} = {}): Promise<{ data: AggregationPoint[] }> {
+  return apiFetch('/livestock-partners/aggregation-points', { query: { ...params } });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listMyAggregationPoints(): Promise<{ data: AggregationPoint[] }> {
+  return apiFetch('/livestock-partners/aggregation-points/mine');
+}
+
+export function fetchAggregationPoint(id: string): Promise<{ data: AggregationPoint }> {
+  return apiFetch(`/livestock-partners/aggregation-points/${encodeURIComponent(id)}`);
+}
+
+/** Assign a lot to an aggregation point (single-species enforced). */
+export function assignLotToPoint(
+  pointId: string,
+  lotId: string
+): Promise<{ data: AggregationPoint }> {
+  return apiFetch(
+    `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/lots/${encodeURIComponent(lotId)}`,
+    { method: 'POST' }
+  );
+}
+
+export function unassignLotFromPoint(
+  pointId: string,
+  lotId: string
+): Promise<{ data: AggregationPoint }> {
+  return apiFetch(
+    `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/lots/${encodeURIComponent(lotId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export function deactivateAggregationPoint(id: string): Promise<{ data: AggregationPoint }> {
+  return apiFetch(`/livestock-partners/aggregation-points/${encodeURIComponent(id)}/deactivate`, {
+    method: 'POST'
+  });
+}
+
+export function ingestColdChainReading(
+  pointId: string,
+  input: { recordedAt: string; temperatureCelsius: number; humidityPercent?: number }
+): Promise<{ data: ColdChainLog }> {
+  return apiFetch(
+    `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/cold-chain`,
+    { method: 'POST', body: input }
+  );
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function listColdChainReadings(pointId: string): Promise<{ data: ColdChainLog[] }> {
+  return apiFetch(
+    `/livestock-partners/aggregation-points/${encodeURIComponent(pointId)}/cold-chain`
+  );
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { RoleDashboard } from '@/components/dashboard-client';
 import { LiveMetrics, LiveNotifications } from '@/components/dashboard-live';
+import { LivestockSummaryCard } from '@/components/livestock-dashboard-widget';
 import { RecommendationsRail } from '@/components/recommendations-rail';
 import { QueueList } from '@/components/queue-list';
 import { NotificationPreferences } from '@/components/notification-preferences';
@@ -22,6 +23,11 @@ export default function DashboardPage() {
       />
       <section className="section-tight">
         <RoleDashboard />
+      </section>
+
+      {/* Farmer persona only — the card hides itself for other roles. */}
+      <section className="section-tight" aria-label="Livestock">
+        <LivestockSummaryCard />
       </section>
 
       <RecommendationsRail />

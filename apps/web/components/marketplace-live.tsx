@@ -8,6 +8,7 @@ import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import { listListings, listOrders, placeOrder } from '@/lib/api/endpoints';
 import { demoOrders } from '@/lib/content';
 import { AutoBadge, Card, StatusBadge } from '@/components/ui';
+import { LivestockProvenanceBadge } from '@/components/livestock-provenance-badge';
 import { OrderCommercePanel } from '@/components/order-commerce';
 import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-state';
 
@@ -43,6 +44,7 @@ function ListingCard({ listing }: { listing: MarketplaceListing }) {
         <span style={{ fontWeight: 800, fontSize: '1.1rem' }}>{formatNaira(listing.priceNaira)}</span>
         <AutoBadge value={listing.kind} />
       </div>
+      <LivestockProvenanceBadge listing={listing} />
       <div className="cluster" style={{ justifyContent: 'flex-end', marginTop: '0.6rem' }}>
         {ordered === 'sent' ? (
           <StatusBadge tone="success">order placed</StatusBadge>

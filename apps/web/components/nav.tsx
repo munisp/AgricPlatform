@@ -17,6 +17,7 @@ const TOP_LINKS: { href: string; labelKey: TranslationKey }[] = [
   { href: '/opportunities', labelKey: 'nav.opportunities' },
   { href: '/chapters', labelKey: 'nav.chapters' },
   { href: '/marketplace', labelKey: 'nav.marketplace' },
+  { href: '/livestock', labelKey: 'nav.livestock' },
   { href: '/finance', labelKey: 'nav.finance' },
   { href: '/advisory', labelKey: 'nav.advisory' },
   { href: '/partner', labelKey: 'nav.partner' },

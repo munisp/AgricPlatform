@@ -93,6 +93,21 @@ export async function downloadAnalyticsExport(format: AnalyticsExportFormat): Pr
  * CSV). Admin only; audit-logged on the API. Matches the API's
  * Content-Disposition filename (`mart-<name>.csv`).
  */
+/**
+ * Downloads `GET /livestock-compliance/export.csv?state&from&to` (F6
+ * regulator compliance export — sectioned CSV of animals + ownership
+ * transfers). Regulator or admin role.
+ */
+export async function downloadLivestockComplianceExport(
+  range: { state?: string; from?: string; to?: string } = {}
+): Promise<string> {
+  return downloadAttachment(
+    '/livestock-compliance/export.csv',
+    { state: range.state, from: range.from, to: range.to },
+    'livestock-compliance-export.csv'
+  );
+}
+
 export async function downloadMartExport(
   mart: string,
   range: { from?: string; to?: string } = {}
