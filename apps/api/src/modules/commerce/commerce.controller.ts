@@ -439,9 +439,9 @@ export class CommerceController {
 
   @Get('buyer-groups')
   @Authenticated()
-  @ApiOperation({ summary: 'List buyer groups' })
-  async listBuyerGroups() {
-    return { data: await this.buyerGroups.listGroups() };
+  @ApiOperation({ summary: 'List buyer groups (managers: all; members: only their own)' })
+  async listBuyerGroups(@CurrentUser() actor: User | null) {
+    return { data: await this.buyerGroups.listGroups(requireActor(actor)) };
   }
 
   @Post('buyer-groups')
@@ -460,9 +460,9 @@ export class CommerceController {
 
   @Get('buyer-groups/:id/members')
   @Authenticated()
-  @ApiOperation({ summary: 'List buyer group members' })
-  async listMembers(@Param('id') id: string) {
-    return { data: await this.buyerGroups.listMembers(id) };
+  @ApiOperation({ summary: 'List buyer group members (managers, or members of that group)' })
+  async listMembers(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.buyerGroups.listMembers(id, requireActor(actor)) };
   }
 
   @Post('buyer-groups/:id/members')
