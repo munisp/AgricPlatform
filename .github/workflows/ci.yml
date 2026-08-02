@@ -129,6 +129,9 @@ jobs:
       - name: Gitleaks secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
+          # gitleaks-action v2 requires an explicit GITHUB_TOKEN to scan PRs
+          # (notably Dependabot PRs, whose default token is not injected).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_ENABLE_COMMENTS: "false"
       - uses: actions/setup-node@v4
@@ -201,7 +204,7 @@ jobs:
       # Blocking vulnerability gate on the built images. Unfixed findings are
       # ignored (no patch available); fixed HIGH/CRITICAL findings fail CI.
       - name: Trivy scan — API image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: agric-api:${{ github.sha }}
           severity: CRITICAL,HIGH
@@ -209,7 +212,7 @@ jobs:
           exit-code: "1"
           format: table
       - name: Trivy scan — web image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: agric-web:${{ github.sha }}
           severity: CRITICAL,HIGH
@@ -238,7 +241,10 @@ jobs:
       - name: Start production processes and smoke test
         run: |
           set -e
-          NODE_ENV=production PORT=3001 npm run start --workspace=apps/api &
+          # Production-mode boot is fail-closed without OIDC config (by design).
+          # A dummy issuer satisfies the boot check; health endpoints are
+          # unauthenticated so no JWKS fetch occurs during the smoke test.
+          NODE_ENV=production PORT=3001 OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform npm run start --workspace=apps/api &
           API_PID=$!
           NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
           WEB_PID=$!
