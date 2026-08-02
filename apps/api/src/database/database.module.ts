@@ -294,6 +294,10 @@ import {
   createPgPartnerClientRepository,
   createPgWebhookSubscriptionRepository
 } from './repositories/partner-api.pg-repository.js';
+// Wave P6a: IVR voice channel persistence (additive).
+import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
+import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -754,6 +758,13 @@ import {
           ? createPgWebhookSubscriptionRepository(pool)
           : createInMemoryWebhookSubscriptionRepository(),
       inject: [PG_POOL]
+    },
+    // Wave P6a: IVR voice channel (appended).
+    {
+      provide: IVR_CALL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgIvrCallRepository(pool) : createInMemoryIvrCallRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -830,7 +841,8 @@ import {
     ANALYTICS_MART_REPOSITORY,
     PARTNER_CLIENT_REPOSITORY,
     API_KEY_REPOSITORY,
-    WEBHOOK_SUBSCRIPTION_REPOSITORY
+    WEBHOOK_SUBSCRIPTION_REPOSITORY,
+    IVR_CALL_REPOSITORY
   ]
 })
 export class DatabaseModule {}
