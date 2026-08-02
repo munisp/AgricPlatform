@@ -97,6 +97,8 @@ Current automated tests verify these representative flows:
 - OpenAPI document availability
 - shared profile scoring, badge assignment, opportunity matching, and naira formatting
 
+**Observability (backend wave, code-complete):** structured JSON logging via pino with request-id propagation (`x-request-id` honored and echoed), secret/PII redaction, and quiet health probes; Prometheus metrics at `/api/v1/metrics` (`http_requests_total`, `http_request_duration_seconds`, and the `agric_*` domain series — see `docs/runbooks/observability.md`); env-gated Sentry error tracking (`SENTRY_DSN`; fully disabled without one, 5xx-only capture, `beforeSend` scrubbing); readiness generalized to a dependency-indicator registry (`skipped` never degrades, configured+down ⇒ `degraded`); and a tamper-evident audit hash chain with `GET /api/v1/admin/audit-log/verify` (migration `002_audit_hash_chain.sql`). Prometheus/Grafana dashboards, alert rules, and Sentry delivery with a real DSN remain external verification items.
+
 ## 3. Adapter-ready integrations
 
 The API contains a provider registry and local adapters in `apps/api/src/modules/integrations/`. `.env.example` defaults every external provider to a stub driver so the repository remains buildable and testable without secrets.
@@ -153,6 +155,7 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 | P0 | ~~API repositories are in-memory~~ PostgreSQL persistence implemented behind `DATABASE_URL` (fail-closed in production) | pg repositories, migrations, and seeds are code-complete but not yet executed against a live database (no docker in the build environment) | API lead |
 | P0 | ~~Local auth uses `x-user-id` header stub~~ OIDC bearer verification implemented; Keycloak realm hosting and OTP SPI remain external | API verifies JWTs; the IdP itself is not yet provisioned | Identity lead |
 | P1 | Rate limiting store is in-memory | Throttler limits do not hold across replicas; idempotency and OTP stores moved behind `REDIS_URL` with Redis/in-memory drivers | API lead + DevOps |
+| P1 | Observability pipeline is code-complete but unverified end-to-end | Metrics/logging/Sentry/audit-chain ship in the API; Prometheus scrape, Grafana dashboards, alert rules, and Sentry delivery with a real DSN need a live environment | API lead + DevOps |
 | P0 | Docker and Kubernetes assets have not been executed in this environment | Deployment bugs may remain | DevOps lead |
 | P1 | External providers are stubs only | OTP, payments, notifications, LMS, and community cannot be live-proven | Integrations lead |
 | P1 | Financial ledger is schema/spec ready but not the active runtime store | Marketplace and credit flows need durable balanced records | Finance engineering + counsel |

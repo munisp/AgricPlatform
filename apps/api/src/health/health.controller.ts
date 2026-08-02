@@ -1,26 +1,21 @@
 import { Controller, Get, Inject, Optional } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { Redis } from 'ioredis';
-import type pg from 'pg';
-import { PG_POOL, REDIS_CLIENT } from '../database/persistence.tokens.js';
 import { IntegrationsService } from '../modules/integrations/integrations.service.js';
+import {
+  DEPENDENCY_INDICATORS,
+  evaluateDependencies,
+  type DependencyIndicator,
+  type DependencyStatus
+} from './dependency-indicator.js';
 
-type DependencyStatus = 'up' | 'down' | 'disabled';
+/** Legacy persistence block status (kept for the existing readiness consumers). */
+type PersistenceStatus = 'up' | 'down' | 'disabled';
 
-const PROBE_TIMEOUT_MS = 1000;
-
-async function probe(check: () => Promise<unknown>): Promise<DependencyStatus> {
-  try {
-    await Promise.race([
-      check(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('probe timeout')), PROBE_TIMEOUT_MS)
-      )
-    ]);
-    return 'up';
-  } catch {
-    return 'down';
+function toPersistenceStatus(status: DependencyStatus | undefined): PersistenceStatus {
+  if (status === 'skipped' || status === undefined) {
+    return 'disabled';
   }
+  return status;
 }
 
 @ApiTags('health')
@@ -28,8 +23,9 @@ async function probe(check: () => Promise<unknown>): Promise<DependencyStatus> {
 export class HealthController {
   constructor(
     private readonly integrations: IntegrationsService,
-    @Optional() @Inject(PG_POOL) private readonly pool: pg.Pool | null = null,
-    @Optional() @Inject(REDIS_CLIENT) private readonly redis: Redis | null = null
+    @Optional()
+    @Inject(DEPENDENCY_INDICATORS)
+    private readonly dependencies: DependencyIndicator[] = []
   ) {}
 
   @Get()
@@ -50,21 +46,29 @@ export class HealthController {
   }
 
   @Get('ready')
-  @ApiOperation({ summary: 'Readiness probe including integration adapter and persistence status' })
+  @ApiOperation({
+    summary:
+      'Readiness probe: integration adapters plus the dependency indicator registry ' +
+      '(plan §A.5). Skipped (unconfigured) dependencies never degrade readiness.'
+  })
   async ready() {
     const statuses = this.integrations.list();
-    const persistence: { database: DependencyStatus; redis: DependencyStatus } = {
-      database: this.pool ? await probe(() => this.pool!.query('SELECT 1')) : 'disabled',
-      redis: this.redis ? await probe(() => this.redis!.ping()) : 'disabled'
+    const dependencies = await evaluateDependencies(this.dependencies);
+    const byName = new Map(dependencies.map((dep) => [dep.name, dep.status]));
+    // Backwards-compatible block from the persistence wave: same information,
+    // rendered from the registry ('skipped' reads as the legacy 'disabled').
+    const persistence: { database: PersistenceStatus; redis: PersistenceStatus } = {
+      database: toPersistenceStatus(byName.get('database')),
+      redis: toPersistenceStatus(byName.get('redis'))
     };
     const degraded =
-      persistence.database === 'down' ||
-      persistence.redis === 'down' ||
+      dependencies.some((dep) => dep.status === 'down') ||
       !statuses.every((s) => s.healthy);
     return {
       status: degraded ? 'degraded' : 'ok',
       integrations: statuses,
-      persistence
+      persistence,
+      dependencies
     };
   }
 }

@@ -258,4 +258,82 @@ describe('AgricPlatform API (e2e)', () => {
     const doc = await res.json();
     expect(doc.info.title).toBe('AgricPlatform API');
   });
+
+  it('serves Prometheus metrics under the api/v1 prefix', async () => {
+    const res = await fetch(`${base}/metrics`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('http_requests_total');
+    expect(text).toContain('service="agric-api"');
+  });
+
+  it('labels http metrics with parameterized routes (low cardinality)', async () => {
+    // Concrete IDs must never appear in the `route` label.
+    await fetch(`${base}/profiles/user-admin`);
+    await fetch(`${base}/profiles/user-aisha`);
+
+    const text = await (await fetch(`${base}/metrics`)).text();
+    expect(text).toContain('route="/api/v1/profiles/:userId"');
+    expect(text).not.toContain('route="/api/v1/profiles/user-admin"');
+    expect(text).not.toContain('route="/api/v1/profiles/user-aisha"');
+    // The 'unmatched' fallback itself is covered by the interceptor unit test
+    // (Express 404s for unknown paths bypass Nest interceptors).
+  });
+
+  it('propagates x-request-id onto responses and error envelopes', async () => {
+    const res = await fetch(`${base}/health`, { headers: { 'x-request-id': 'e2e-req-123' } });
+    expect(res.headers.get('x-request-id')).toBe('e2e-req-123');
+
+    const err = await fetch(`${base}/admin/users`, {
+      headers: { 'x-request-id': 'e2e-req-123' }
+    });
+    expect(err.status).toBe(401);
+    const body = await err.json();
+    expect(body.requestId).toBe('e2e-req-123');
+
+    // A generated id is returned when the client sends none.
+    const generated = await fetch(`${base}/health`);
+    expect(generated.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('reports readiness dependencies via the indicator registry', async () => {
+    const ready = await (await fetch(`${base}/health/ready`)).json();
+    expect(Array.isArray(ready.dependencies)).toBe(true);
+    const byName = new Map(
+      ready.dependencies.map((d: { name: string; status: string }) => [d.name, d.status])
+    );
+    // In-memory mode: persistence drivers are unconfigured -> skipped, and
+    // skipped never degrades readiness (plan §A.5).
+    expect(byName.get('database')).toBe('skipped');
+    expect(byName.get('redis')).toBe('skipped');
+    expect(ready.status).toBe('ok');
+    expect(ready.persistence).toEqual({ database: 'disabled', redis: 'disabled' });
+  });
+
+  it('verifies the audit hash chain via the admin endpoint', async () => {
+    expect(
+      (await fetch(`${base}/admin/audit-log/verify`, { headers: { 'x-user-id': 'user-adamu' } })).status
+    ).toBe(403);
+    const res = await fetch(`${base}/admin/audit-log/verify`, {
+      headers: { 'x-user-id': 'user-admin' }
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.valid).toBe(true);
+  });
+
+  it('counts domain events on the metrics endpoint', async () => {
+    // OTP request + failed verification.
+    const otp = await (
+      await post('/auth/otp/request', { phone: '+2348010000001' })
+    ).json();
+    expect(otp.data.requestId).toBeTruthy();
+    await post('/auth/otp/verify', { requestId: otp.data.requestId, code: '000000' });
+
+    const text = await (await fetch(`${base}/metrics`)).text();
+    expect(text).toContain('agric_otp_requests_total{channel="sms"');
+    expect(text).toContain('agric_otp_verifications_total{result="invalid"');
+    expect(text).toContain('agric_idempotent_replays_total');
+    expect(text).toContain('agric_errors_5xx_total');
+  });
 });

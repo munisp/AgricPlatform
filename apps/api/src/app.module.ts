@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
+import { LoggingModule } from './common/logging/logging.module.js';
+import { MetricsModule } from './common/metrics/metrics.module.js';
 import { CoreModule } from './core/core.module.js';
 import { DatabaseModule } from './database/database.module.js';
-import { HealthController } from './health/health.controller.js';
+import { HealthModule } from './health/health.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
 import { AdvisoryModule } from './modules/advisory/advisory.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
@@ -27,6 +29,9 @@ import { RedisModule } from './redis/redis.module.js';
 
 @Module({
   imports: [
+    // Logging first: every module/service log line flows through pino.
+    LoggingModule,
+    MetricsModule,
     // In-memory rate limiting (docs/security-compliance.md §7 "SSRF / rate
     // abuse"). TODO(prod): back the store with Redis so limits hold across
     // replicas — tracked in docs/production-readiness.md.
@@ -51,9 +56,9 @@ import { RedisModule } from './redis/redis.module.js';
     AnalyticsModule,
     PrivacyModule,
     SearchModule,
-    IntegrationsModule
+    IntegrationsModule,
+    HealthModule
   ],
-  controllers: [HealthController],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor }

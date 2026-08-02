@@ -3,6 +3,7 @@ import { HttpException, HttpStatus, Inject, Injectable, UnauthorizedException } 
 import type { User } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { newId } from '../../common/async-repository.js';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { OTP_STORE } from '../../database/persistence.tokens.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
@@ -38,6 +39,7 @@ export class AuthService {
   constructor(
     private readonly users: UsersService,
     private readonly events: DomainEventsService,
+    private readonly metrics: MetricsService,
     @Inject(OTP_STORE) private readonly otp: OtpChallengeStore
   ) {}
 
@@ -56,6 +58,8 @@ export class AuthService {
       attempts: 0
     };
     await this.otp.save(challenge, OTP_TTL_MS);
+    // Phase 1 delivers via SMS (Termii); the channel label stays low-cardinality.
+    this.metrics.otpRequested('sms');
     await this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
     const result: OtpRequestResult = {
       requestId: challenge.id,
@@ -71,10 +75,12 @@ export class AuthService {
     const challenge = await this.otp.get(requestId);
     if (!challenge || challenge.expiresAt < Date.now()) {
       await this.otp.delete(requestId);
+      this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
       await this.otp.delete(requestId);
+      this.metrics.otpVerification('locked');
       throw new HttpException(
         'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
         HttpStatus.TOO_MANY_REQUESTS
@@ -84,24 +90,29 @@ export class AuthService {
       challenge.attempts += 1;
       if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
         await this.otp.delete(requestId);
+        this.metrics.otpVerification('locked');
         throw new HttpException(
           'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
           HttpStatus.TOO_MANY_REQUESTS
         );
       }
       await this.otp.save(challenge, challenge.expiresAt - Date.now());
+      this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     // Atomic single-use consumption: concurrent verifications of the same
     // code cannot both succeed.
     const consumed = await this.otp.consume(requestId);
     if (!consumed) {
+      this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     const user = await this.users.findByPhone(consumed.phone);
     if (!user) {
+      this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('No account for this phone number. Register first.');
     }
+    this.metrics.otpVerification('success');
     return { token: this.issueStubToken(user), user };
   }
 

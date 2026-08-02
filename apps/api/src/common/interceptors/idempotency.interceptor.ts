@@ -9,6 +9,7 @@ import type { Request, Response } from 'express';
 import { Observable, of, tap } from 'rxjs';
 import { IDEMPOTENCY_STORE } from '../../database/persistence.tokens.js';
 import type { IdempotencyStore } from '../../redis/idempotency.store.js';
+import { MetricsService } from '../metrics/metrics.service.js';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -23,7 +24,8 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
   constructor(
-    @Inject(IDEMPOTENCY_STORE) private readonly store: IdempotencyStore
+    @Inject(IDEMPOTENCY_STORE) private readonly store: IdempotencyStore,
+    private readonly metrics: MetricsService
   ) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
@@ -43,6 +45,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const scopedKey = `${request.method}:${request.originalUrl}:${key}`;
     const cached = await this.store.get(scopedKey);
     if (cached !== undefined) {
+      this.metrics.idempotentReplay();
       response.setHeader('Idempotent-Replay', 'true');
       return of(cached);
     }

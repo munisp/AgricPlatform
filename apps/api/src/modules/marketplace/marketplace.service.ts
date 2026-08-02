@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, Optional } from '@nestjs/common';
 import type {
   ApiListResponse,
   LocationRef,
@@ -8,6 +8,8 @@ import type {
   User
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
+import { AuditService } from '../../core/audit.service.js';
 import {
   LISTING_REPOSITORY,
   ORDER_REPOSITORY,
@@ -94,7 +96,9 @@ export class MarketplaceService {
     private readonly events: DomainEventsService,
     @Inject(LISTING_REPOSITORY) private readonly listings: ListingRepository,
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
-    @Inject(REVIEW_REPOSITORY) private readonly reviews: ReviewRepository
+    @Inject(REVIEW_REPOSITORY) private readonly reviews: ReviewRepository,
+    @Optional() private readonly metrics?: MetricsService,
+    @Optional() private readonly audit?: AuditService
   ) {}
 
   async listListings(
@@ -174,6 +178,7 @@ export class MarketplaceService {
       createdAt: new Date().toISOString()
     };
     const created = await this.orders.placeOrder(order);
+    this.metrics?.orderCreated(created.escrowRequired);
     await this.events.publish(
       'marketplace.order.placed',
       { orderId: created.id, listingId, totalNaira, escrowRequired: created.escrowRequired },
@@ -227,6 +232,18 @@ export class MarketplaceService {
       }
     }
     const updated = await this.orders.update(id, { status });
+    // Payment-status transitions are metered and audited (observability plan
+    // §A.3/§A.6): deposit_paid = payment initiated, completed = confirmed.
+    if (status === 'deposit_paid' || status === 'completed') {
+      this.metrics?.paymentEvent(status === 'deposit_paid' ? 'initiated' : 'confirmed');
+      await this.audit?.record({
+        actorId: actor.id,
+        action: `marketplace.order.payment_${status === 'deposit_paid' ? 'initiated' : 'confirmed'}`,
+        entityType: 'order',
+        entityId: id,
+        metadata: { from: order.status, to: status }
+      });
+    }
     await this.events.publish(
       'marketplace.order.status_changed',
       { orderId: id, from: order.status, to: status },

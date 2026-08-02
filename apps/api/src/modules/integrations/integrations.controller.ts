@@ -5,6 +5,7 @@ import { ActorId } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import type { RawBodyRequest } from '../../bootstrap.js';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { IntegrationsService } from './integrations.service.js';
@@ -15,7 +16,8 @@ export class IntegrationsController {
   constructor(
     private readonly integrations: IntegrationsService,
     private readonly audit: AuditService,
-    private readonly events: DomainEventsService
+    private readonly events: DomainEventsService,
+    private readonly metrics: MetricsService
   ) {}
 
   @Get()
@@ -61,6 +63,10 @@ export class IntegrationsController {
       request.headers
     );
     const result = this.integrations.recordWebhook(provider, payload, digest);
+    // Payment webhooks drive the payments lifecycle metric (plan §A.3).
+    if (this.integrations.status(provider).capability === 'payments') {
+      this.metrics.paymentEvent(result.duplicate ? 'webhook_duplicate' : 'webhook_received');
+    }
     if (!result.duplicate) {
       await this.audit.record({
         actorId,
