@@ -30,29 +30,32 @@ describe('WhatsApp workflow router', () => {
   });
 
   describe('marketplace listing flow', () => {
-    it('collects crop, quantity and price, then emits create_listing on YES', () => {
-      const turns = run(['1', 'Maize', '500', '250000', 'YES']);
+    it('collects crop, quantity, price and LGA, then emits create_listing on YES', () => {
+      const turns = run(['1', 'Maize', '500', '250000', 'Dala', 'YES']);
       expect(turns[0].reply).toContain('What crop');
       expect(turns[1].reply).toContain('How many kg of Maize');
       expect(turns[2].reply).toContain('total price in NGN for 500 kg of Maize');
-      expect(turns[3].reply).toContain('500 kg Maize for NGN 250,000');
-      const final = turns[4];
+      expect(turns[3].reply).toContain('Which LGA');
+      expect(turns[4].reply).toContain('500 kg Maize for NGN 250,000 in Dala LGA');
+      const final = turns[5];
       expect(final.action).toEqual({
         type: 'create_listing',
         crop: 'Maize',
         quantityKg: 500,
-        priceNaira: 250000
+        priceNaira: 250000,
+        lga: 'Dala'
       });
       expect(final.flow).toBeUndefined();
     });
 
     it('accepts comma-formatted amounts', () => {
-      const turns = run(['listing', 'Rice', '1,000', '2,500,000', 'yes']);
-      expect(turns[4].action).toEqual({
+      const turns = run(['listing', 'Rice', '1,000', '2,500,000', 'Kano Municipal', 'yes']);
+      expect(turns[5].action).toEqual({
         type: 'create_listing',
         crop: 'Rice',
         quantityKg: 1000,
-        priceNaira: 2500000
+        priceNaira: 2500000,
+        lga: 'Kano Municipal'
       });
     });
 
@@ -74,17 +77,43 @@ describe('WhatsApp workflow router', () => {
       expect(turns[3].flow).toMatchObject({ step: 'price' });
     });
 
+    it('rejects an LGA over 60 chars and stays on the lga step', () => {
+      const turns = run(['1', 'Maize', '500', '250000', `A${'a'.repeat(60)}`]);
+      expect(turns[4].reply).toContain('LGA name');
+      expect(turns[4].flow).toMatchObject({ step: 'lga' });
+    });
+
+    it('rejects a non-letter LGA and stays on the lga step', () => {
+      const turns = run(['1', 'Maize', '500', '250000', '1234']);
+      expect(turns[4].reply).toContain('LGA name');
+      expect(turns[4].flow).toMatchObject({ step: 'lga' });
+    });
+
     it('cancels cleanly on NO at the confirmation step', () => {
-      const turns = run(['1', 'Maize', '500', '250000', 'NO']);
-      expect(turns[4].reply).toContain('Cancelled');
-      expect(turns[4].action).toBeUndefined();
-      expect(turns[4].flow).toBeUndefined();
+      const turns = run(['1', 'Maize', '500', '250000', 'Dala', 'NO']);
+      expect(turns[5].reply).toContain('Cancelled');
+      expect(turns[5].action).toBeUndefined();
+      expect(turns[5].flow).toBeUndefined();
     });
 
     it('re-prompts on an invalid confirmation answer', () => {
-      const turns = run(['1', 'Maize', '500', '250000', 'maybe']);
-      expect(turns[4].reply).toContain('Reply YES to publish or NO to cancel');
-      expect(turns[4].flow).toMatchObject({ step: 'confirm' });
+      const turns = run(['1', 'Maize', '500', '250000', 'Dala', 'maybe']);
+      expect(turns[5].reply).toContain('Reply YES to publish or NO to cancel');
+      expect(turns[5].flow).toMatchObject({ step: 'confirm' });
+    });
+
+    it('collects the LGA for confirm-state flows serialised before the step shipped', () => {
+      const legacy: WaFlow = {
+        kind: 'listing',
+        step: 'confirm',
+        crop: 'Maize',
+        quantityKg: 500,
+        priceNaira: 250000
+      };
+      const turn = routeWaMessage(legacy, 'YES');
+      expect(turn.action).toBeUndefined();
+      expect(turn.flow).toMatchObject({ step: 'lga' });
+      expect(turn.reply).toContain('Which LGA');
     });
   });
 

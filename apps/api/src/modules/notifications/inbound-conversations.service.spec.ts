@@ -7,6 +7,7 @@ import type { AdvisoryService } from '../advisory/advisory.service.js';
 import type { IntegrationsService } from '../integrations/integrations.service.js';
 import type { LearningService } from '../learning/learning.service.js';
 import type { MarketplaceService } from '../marketplace/marketplace.service.js';
+import type { ProfilesService } from '../profiles/profiles.service.js';
 import { UsersService } from '../users/users.service.js';
 import { InboundConversationsService } from './inbound-conversations.service.js';
 
@@ -49,6 +50,12 @@ function build() {
   } as unknown as AdvisoryService;
   const learning = { enrol: vi.fn(async () => ({ id: 'enrol-1' })) } as unknown as LearningService;
   const events = { on: vi.fn(), publish: vi.fn() } as unknown as DomainEventsService;
+  const profiles = {
+    get: vi.fn(async (userId: string) => ({
+      userId,
+      location: { state: 'Kano', lga: 'Dala' }
+    }))
+  } as unknown as ProfilesService;
   const kv = new InMemoryKeyValueStore();
   const service = new InboundConversationsService(
     integrations,
@@ -57,9 +64,10 @@ function build() {
     advisory,
     learning,
     events,
+    profiles,
     kv
   );
-  return { service, integrations, users, marketplace, advisory, learning, events, kv };
+  return { service, integrations, users, marketplace, advisory, learning, events, profiles, kv };
 }
 
 describe('InboundConversationsService', () => {
@@ -76,13 +84,22 @@ describe('InboundConversationsService', () => {
     await service.handleInbound([msg('m2', '+234810', 'Maize')]);
     await service.handleInbound([msg('m3', '+234810', '500')]);
     await service.handleInbound([msg('m4', '+234810', '250000')]);
-    const r5 = await service.handleInbound([msg('m5', '+234810', 'YES')]);
-    expect(r5[0].reply).toContain('Listing published (listing-1)');
+    const r5 = await service.handleInbound([msg('m5', '+234810', 'Dala')]);
+    expect(r5[0].reply).toContain('Dala LGA');
+    const r6 = await service.handleInbound([msg('m6', '+234810', 'YES')]);
+    expect(r6[0].reply).toContain('Listing published (listing-1)');
     expect(marketplace.createListing).toHaveBeenCalledWith(
-      expect.objectContaining({ crop: 'Maize', quantity: 500, priceNaira: 250000, unit: 'kg' })
+      expect.objectContaining({
+        crop: 'Maize',
+        quantity: 500,
+        priceNaira: 250000,
+        unit: 'kg',
+        // Chat-captured LGA + member-profile state — no 'unspecified' placeholder.
+        location: { state: 'Kano', lga: 'Dala' }
+      })
     );
     // Every step replied over the WhatsApp delivery seam.
-    expect(integrations.deliverMessage).toHaveBeenCalledTimes(5);
+    expect(integrations.deliverMessage).toHaveBeenCalledTimes(6);
     expect(integrations.deliverMessage).toHaveBeenLastCalledWith('whatsapp', {
       to: '+234810',
       text: expect.stringContaining('Listing published')
@@ -103,7 +120,8 @@ describe('InboundConversationsService', () => {
     await service.handleInbound([msg('m2', '234811', 'Rice')]);
     await service.handleInbound([msg('m3', '234811', '100')]);
     await service.handleInbound([msg('m4', '234811', '50000')]);
-    const r = await service.handleInbound([msg('m5', '234811', 'yes')]);
+    await service.handleInbound([msg('m5', '234811', 'Kano Municipal')]);
+    const r = await service.handleInbound([msg('m6', '234811', 'yes')]);
     expect(r[0].reply).toContain('Listing published');
     expect(marketplace.createListing).toHaveBeenCalled();
   });
@@ -114,9 +132,31 @@ describe('InboundConversationsService', () => {
     await service.handleInbound([msg('m2', '+234899', 'Maize')]);
     await service.handleInbound([msg('m3', '+234899', '10')]);
     await service.handleInbound([msg('m4', '+234899', '1000')]);
-    const r = await service.handleInbound([msg('m5', '+234899', 'YES')]);
+    await service.handleInbound([msg('m5', '+234899', 'Dala')]);
+    const r = await service.handleInbound([msg('m6', '+234899', 'YES')]);
     expect(r[0].reply).toContain('Register first');
     expect(marketplace.createListing).not.toHaveBeenCalled();
+  });
+
+  it('still publishes with the captured LGA when the member has no profile', async () => {
+    const { service, users, marketplace, profiles } = build();
+    await users.create({
+      phone: '+234813',
+      fullName: 'No Profile Farmer',
+      roles: ['farmer'],
+      preferredLanguage: 'en'
+    });
+    (profiles.get as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('no profile'));
+    await service.handleInbound([msg('m1', '+234813', '1')]);
+    await service.handleInbound([msg('m2', '+234813', 'Yam')]);
+    await service.handleInbound([msg('m3', '+234813', '80')]);
+    await service.handleInbound([msg('m4', '+234813', '12000')]);
+    await service.handleInbound([msg('m5', '+234813', 'Zaria')]);
+    const r = await service.handleInbound([msg('m6', '+234813', 'YES')]);
+    expect(r[0].reply).toContain('Listing published');
+    expect(marketplace.createListing).toHaveBeenCalledWith(
+      expect.objectContaining({ location: { state: 'unspecified', lga: 'Zaria' } })
+    );
   });
 
   it('answers the advisory workflow with matching advisories and weather', async () => {
