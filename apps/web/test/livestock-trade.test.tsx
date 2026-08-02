@@ -191,23 +191,19 @@ function router(url: string, init?: RequestInit) {
   return jsonResponse({ data: null });
 }
 
-// Fixture shape mirrors the livestock-trade API payload (a superset of the
-// shared MarketplaceListing contract).
-const CROP_LISTING = {
+const CROP_LISTING: MarketplaceListing = {
   id: 'listing-crop-1',
   sellerId: 'user-aisha',
-  sellerName: 'Aisha Bello',
-  sellerState: 'Kano',
   kind: 'produce',
   title: '50kg bags of maize',
   crop: 'Maize',
-  quantityKg: 500,
+  quantity: 500,
+  unit: 'kg',
   priceNaira: 210_000,
-  state: 'Kano',
-  freshness: 'new',
-  deliveryOption: 'pickup',
-  createdAt: '2026-07-01T09:00:00.000Z'
-} as unknown as MarketplaceListing;
+  location: { state: 'Kano', lga: 'Kano Municipal' },
+  harvestDate: '2026-07-01',
+  isActive: true
+};
 
 const LIVESTOCK_LISTING: MarketplaceListing = {
   ...CROP_LISTING,
