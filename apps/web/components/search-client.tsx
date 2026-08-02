@@ -142,12 +142,11 @@ function TrendingStrip({ onPick }: { onPick: (query: string) => void }) {
       <h3 className="small" style={{ marginBottom: '0.35rem' }}>
         Trending now
       </h3>
-      <div className="cluster" role="list">
+      <div className="cluster">
         {query.data.map((trend) => (
           <button
             key={trend.query}
             type="button"
-            role="listitem"
             className="btn btn-ghost btn-small"
             onClick={() => onPick(trend.query)}
             aria-label={`Search for trending topic ${trend.query}`}

@@ -1,6 +1,6 @@
 import { apiUrl, getAuthIdentity } from './client';
 import { DEFAULT_TIMEOUT_MS } from './config';
-import { NetworkError, TimeoutError, toApiError } from './errors';
+import { NetworkError, TimeoutError, isApiErrorEnvelope, toApiError } from './errors';
 
 export type AnalyticsExportFormat = 'csv' | 'pdf';
 
@@ -43,6 +43,15 @@ export async function downloadAnalyticsExport(format: AnalyticsExportFormat): Pr
   }
 
   if (!response.ok) {
+    let envelope: unknown = null;
+    try {
+      envelope = await response.json();
+    } catch {
+      // Non-JSON error body (proxy page, empty 502…)
+    }
+    if (isApiErrorEnvelope(envelope)) {
+      throw toApiError(envelope);
+    }
     throw toApiError({
       statusCode: response.status,
       error: response.statusText || 'HTTP Error',
