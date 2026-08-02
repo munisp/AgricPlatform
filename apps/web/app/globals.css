@@ -314,6 +314,31 @@ textarea {
   color: var(--green-100);
 }
 
+/* Service-worker update banner (sits above the mobile bottom nav). */
+.sw-update {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(52px + 0.75rem);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--green-900);
+  color: var(--sand-100);
+  border-radius: var(--radius-m);
+  padding: 0.6rem 0.9rem;
+  box-shadow: var(--shadow-m);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+@media (min-width: 760px) {
+  .sw-update {
+    bottom: 1.25rem;
+  }
+}
+
 /* Mobile bottom tab bar */
 .bottom-nav {
   position: fixed;
