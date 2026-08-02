@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
@@ -31,6 +31,30 @@ class SearchQuery {
   limit?: number;
 }
 
+class TrendingQueryDto {
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
+}
+
+class RelatedQuery {
+  @IsString()
+  type!: SearchResultType;
+
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
+}
+
 @ApiTags('search')
 @Controller('search')
 export class SearchController {
@@ -48,5 +72,20 @@ export class SearchController {
   @ApiOperation({ summary: 'Title suggestions for a partial query' })
   async suggest(@Query('q') q: string) {
     return { data: await this.searchService.suggest(q ?? '') };
+  }
+
+  @Get('trending')
+  @ApiOperation({ summary: 'Trending queries (decayed counts over a trailing 7-day window)' })
+  async trending(@Query() query: TrendingQueryDto) {
+    return { data: await this.searchService.trending({ limit: query.limit }) };
+  }
+
+  @Get('related')
+  @ApiOperation({ summary: 'Related items by shared-tag co-occurrence' })
+  async related(@Query() query: RelatedQuery) {
+    if (!RESULT_TYPES.includes(query.type)) {
+      throw new NotFoundException(`Unknown result type '${query.type}'`);
+    }
+    return { data: await this.searchService.related(query.type, query.id, query.limit) };
   }
 }

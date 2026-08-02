@@ -6,9 +6,13 @@ import {
   ANNOUNCEMENT_REPOSITORY,
   APPLICATION_REPOSITORY,
   AUDIT_REPOSITORY,
+  CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+  CAMPUS_CLUB_REPOSITORY,
   CERTIFICATE_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
   CHAPTER_REPOSITORY,
+  COHORT_THREAD_POST_REPOSITORY,
+  COHORT_THREAD_REPOSITORY,
   CONSENT_REPOSITORY,
   COURSE_REPOSITORY,
   CREDIT_PROFILE_REPOSITORY,
@@ -18,18 +22,38 @@ import {
   ENROLMENT_REPOSITORY,
   EVENT_RSVP_REPOSITORY,
   FORUM_TOPIC_REPOSITORY,
+  JUDGE_ASSIGNMENT_REPOSITORY,
+  JUDGE_SCORE_REPOSITORY,
+  KNOWLEDGE_RESOURCE_REPOSITORY,
   LISTING_REPOSITORY,
   MENTOR_REQUEST_REPOSITORY,
+  MILESTONE_PROGRESS_REPOSITORY,
   NOTIFICATION_PREFERENCE_REPOSITORY,
   NOTIFICATION_REPOSITORY,
   OPPORTUNITY_REPOSITORY,
   ORDER_REPOSITORY,
   OUTBOX_REPOSITORY,
+  PATHWAY_ENROLMENT_REPOSITORY,
+  PATHWAY_STAGE_REPOSITORY,
+  PATHWAY_TEMPLATE_REPOSITORY,
   PG_POOL,
+  PODCAST_EPISODE_REPOSITORY,
   PROFILE_REPOSITORY,
+  PROGRAMME_COHORT_REPOSITORY,
+  PROGRAMME_ENROLMENT_REPOSITORY,
+  PROGRAMME_MILESTONE_REPOSITORY,
   REVIEW_REPOSITORY,
+  RUBRIC_CRITERION_REPOSITORY,
+  SEARCH_QUERY_REPOSITORY,
+  SERVICE_BOOKING_REPOSITORY,
+  SERVICE_OFFERING_REPOSITORY,
+  SERVICE_REVIEW_REPOSITORY,
+  STAGE_PROGRESS_REPOSITORY,
+  SUPPLIER_REPOSITORY,
   TOPIC_FLAG_REPOSITORY,
-  USER_REPOSITORY
+  USER_REPOSITORY,
+  WEBINAR_REGISTRATION_REPOSITORY,
+  WEBINAR_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -103,6 +127,79 @@ import {
 import { createInMemoryTopicFlagRepository } from './repositories/topic-flag.repository.js';
 import { createInMemoryUserRepository } from './repositories/user.repository.js';
 import { createPgUserRepository } from './repositories/user.pg-repository.js';
+// Engagement wave (P2b) repositories.
+import {
+  createInMemoryCampusClubMembershipRepository,
+  createInMemoryCampusClubRepository
+} from './repositories/campus-club.repository.js';
+import {
+  createInMemoryCohortThreadPostRepository,
+  createInMemoryCohortThreadRepository
+} from './repositories/cohort-thread.repository.js';
+import {
+  createInMemoryJudgeAssignmentRepository,
+  createInMemoryJudgeScoreRepository,
+  createInMemoryRubricCriterionRepository
+} from './repositories/judging.repository.js';
+import {
+  createInMemoryKnowledgeResourceRepository,
+  createInMemoryPodcastEpisodeRepository
+} from './repositories/knowledge.repository.js';
+import {
+  createPgKnowledgeResourceRepository,
+  createPgPodcastEpisodeRepository,
+  createPgWebinarRegistrationRepository,
+  createPgWebinarRepository
+} from './repositories/knowledge.pg-repository.js';
+import {
+  createInMemoryPathwayEnrolmentRepository,
+  createInMemoryStageProgressRepository
+} from './repositories/pathway-enrolment.repository.js';
+import {
+  createInMemoryPathwayStageRepository,
+  createInMemoryPathwayTemplateRepository
+} from './repositories/pathway.repository.js';
+import {
+  createPgCampusClubMembershipRepository,
+  createPgCampusClubRepository,
+  createPgPathwayEnrolmentRepository,
+  createPgPathwayStageRepository,
+  createPgPathwayTemplateRepository,
+  createPgStageProgressRepository
+} from './repositories/pathways.pg-repository.js';
+import { createInMemoryProgrammeCohortRepository } from './repositories/programme-cohort.repository.js';
+import { createInMemoryProgrammeEnrolmentRepository } from './repositories/programme-enrolment.repository.js';
+import {
+  createInMemoryMilestoneProgressRepository,
+  createInMemoryProgrammeMilestoneRepository
+} from './repositories/programme-milestone.repository.js';
+import {
+  createPgCohortThreadPostRepository,
+  createPgCohortThreadRepository,
+  createPgJudgeAssignmentRepository,
+  createPgJudgeScoreRepository,
+  createPgMilestoneProgressRepository,
+  createPgProgrammeCohortRepository,
+  createPgProgrammeEnrolmentRepository,
+  createPgProgrammeMilestoneRepository,
+  createPgRubricCriterionRepository
+} from './repositories/programmes.pg-repository.js';
+import { createInMemorySearchQueryRepository } from './repositories/search-query.repository.js';
+import { createPgSearchQueryRepository } from './repositories/search.pg-repository.js';
+import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
+import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
+import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
+import {
+  createPgServiceBookingRepository,
+  createPgServiceOfferingRepository,
+  createPgServiceReviewRepository,
+  createPgSupplierRepository
+} from './repositories/services-marketplace.pg-repository.js';
+import { createInMemorySupplierRepository } from './repositories/supplier.repository.js';
+import {
+  createInMemoryWebinarRegistrationRepository,
+  createInMemoryWebinarRepository
+} from './repositories/webinar.repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -282,6 +379,149 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
       provide: OUTBOX_REPOSITORY,
       useFactory: (pool: pg.Pool | null) => (pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository()),
       inject: [PG_POOL]
+    },
+    // Engagement wave (P2b) providers.
+    {
+      provide: SUPPLIER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgSupplierRepository(pool) : createInMemorySupplierRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_OFFERING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceOfferingRepository(pool) : createInMemoryServiceOfferingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_BOOKING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceBookingRepository(pool) : createInMemoryServiceBookingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_REVIEW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceReviewRepository(pool) : createInMemoryServiceReviewRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_COHORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeCohortRepository(pool) : createInMemoryProgrammeCohortRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_ENROLMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeEnrolmentRepository(pool) : createInMemoryProgrammeEnrolmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_MILESTONE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeMilestoneRepository(pool) : createInMemoryProgrammeMilestoneRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MILESTONE_PROGRESS_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMilestoneProgressRepository(pool) : createInMemoryMilestoneProgressRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RUBRIC_CRITERION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRubricCriterionRepository(pool) : createInMemoryRubricCriterionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: JUDGE_ASSIGNMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgJudgeAssignmentRepository(pool) : createInMemoryJudgeAssignmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: JUDGE_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgJudgeScoreRepository(pool) : createInMemoryJudgeScoreRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COHORT_THREAD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCohortThreadRepository(pool) : createInMemoryCohortThreadRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COHORT_THREAD_POST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCohortThreadPostRepository(pool) : createInMemoryCohortThreadPostRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_TEMPLATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayTemplateRepository(pool) : createInMemoryPathwayTemplateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_STAGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayStageRepository(pool) : createInMemoryPathwayStageRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_ENROLMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayEnrolmentRepository(pool) : createInMemoryPathwayEnrolmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: STAGE_PROGRESS_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgStageProgressRepository(pool) : createInMemoryStageProgressRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CAMPUS_CLUB_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCampusClubRepository(pool) : createInMemoryCampusClubRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCampusClubMembershipRepository(pool) : createInMemoryCampusClubMembershipRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: KNOWLEDGE_RESOURCE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgKnowledgeResourceRepository(pool) : createInMemoryKnowledgeResourceRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PODCAST_EPISODE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPodcastEpisodeRepository(pool) : createInMemoryPodcastEpisodeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBINAR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgWebinarRepository(pool) : createInMemoryWebinarRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBINAR_REGISTRATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWebinarRegistrationRepository(pool) : createInMemoryWebinarRegistrationRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SEARCH_QUERY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSearchQueryRepository(pool) : createInMemorySearchQueryRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -312,7 +552,31 @@ import { createPgUserRepository } from './repositories/user.pg-repository.js';
     NOTIFICATION_PREFERENCE_REPOSITORY,
     DELIVERY_LOG_REPOSITORY,
     AUDIT_REPOSITORY,
-    OUTBOX_REPOSITORY
+    OUTBOX_REPOSITORY,
+    SUPPLIER_REPOSITORY,
+    SERVICE_OFFERING_REPOSITORY,
+    SERVICE_BOOKING_REPOSITORY,
+    SERVICE_REVIEW_REPOSITORY,
+    PROGRAMME_COHORT_REPOSITORY,
+    PROGRAMME_ENROLMENT_REPOSITORY,
+    PROGRAMME_MILESTONE_REPOSITORY,
+    MILESTONE_PROGRESS_REPOSITORY,
+    RUBRIC_CRITERION_REPOSITORY,
+    JUDGE_ASSIGNMENT_REPOSITORY,
+    JUDGE_SCORE_REPOSITORY,
+    COHORT_THREAD_REPOSITORY,
+    COHORT_THREAD_POST_REPOSITORY,
+    PATHWAY_TEMPLATE_REPOSITORY,
+    PATHWAY_STAGE_REPOSITORY,
+    PATHWAY_ENROLMENT_REPOSITORY,
+    STAGE_PROGRESS_REPOSITORY,
+    CAMPUS_CLUB_REPOSITORY,
+    CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+    KNOWLEDGE_RESOURCE_REPOSITORY,
+    PODCAST_EPISODE_REPOSITORY,
+    WEBINAR_REPOSITORY,
+    WEBINAR_REGISTRATION_REPOSITORY,
+    SEARCH_QUERY_REPOSITORY
   ]
 })
 export class DatabaseModule {}

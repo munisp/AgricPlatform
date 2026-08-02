@@ -1,23 +1,47 @@
 import type {
   AdvisoryItem,
+  CampusClub,
+  CampusClubMembership,
   Certificate,
   Chapter,
   ChapterEvent,
+  CohortThread,
+  CohortThreadPost,
   ConsentRecord,
   Course,
   CreditProfile,
   Enrolment,
   ForumTopic,
+  JudgeAssignment,
+  JudgeScore,
+  KnowledgeResource,
   LocationRef,
   MarketplaceListing,
   MentorRequest,
+  MilestoneProgress,
   NotificationMessage,
   NotificationPreference,
   Opportunity,
   OpportunityApplication,
   Order,
+  PathwayEnrolment,
+  PathwayStage,
+  PathwayTemplate,
+  PodcastEpisode,
   Profile,
-  VaultDocument
+  ProgrammeCohort,
+  ProgrammeEnrolment,
+  ProgrammeMilestone,
+  RubricCriterion,
+  SearchQueryEvent,
+  ServiceBooking,
+  ServiceOffering,
+  ServiceReview,
+  ServiceSupplier,
+  StageProgress,
+  VaultDocument,
+  Webinar,
+  WebinarRegistration
 } from '@agric-platform/shared';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { AuditEvent } from '@agric-platform/shared';
@@ -810,4 +834,589 @@ export const outboxMapper: RowMapper<DomainEvent> = {
     actor_id: item.actorId ?? null,
     occurred_at: item.occurredAt
   })
+};
+
+// ---------------------------------------------------------------------------
+// Engagement wave (P2b) mappers: services marketplace, programmes, pathways,
+// knowledge base, search depth. Same snake_case ↔ camelCase conventions.
+// ---------------------------------------------------------------------------
+
+export const serviceSupplierMapper: RowMapper<ServiceSupplier> = {
+  columns: [
+    'id',
+    'owner_user_id',
+    'business_name',
+    'categories',
+    'states_covered',
+    'lgas_covered',
+    'verification_status',
+    'average_rating',
+    'rating_count',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    ownerUserId: row.owner_user_id as string,
+    businessName: row.business_name as string,
+    categories: (row.categories as ServiceSupplier['categories']) ?? [],
+    statesCovered: (row.states_covered as string[]) ?? [],
+    lgasCovered: (row.lgas_covered as string[]) ?? [],
+    verificationStatus: row.verification_status as ServiceSupplier['verificationStatus'],
+    averageRating: num(row.average_rating),
+    ratingCount: num(row.rating_count),
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      owner_user_id: 'ownerUserId',
+      business_name: 'businessName',
+      categories: 'categories',
+      states_covered: 'statesCovered',
+      lgas_covered: 'lgasCovered',
+      verification_status: 'verificationStatus',
+      average_rating: 'averageRating',
+      rating_count: 'ratingCount',
+      created_at: 'createdAt'
+    })
+};
+
+export const serviceOfferingMapper: RowMapper<ServiceOffering> = {
+  columns: [
+    'id',
+    'supplier_id',
+    'category',
+    'title',
+    'description',
+    'price_naira',
+    'pricing_unit',
+    'is_active',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    supplierId: row.supplier_id as string,
+    category: row.category as ServiceOffering['category'],
+    title: row.title as string,
+    description: row.description as string,
+    priceNaira: num(row.price_naira),
+    pricingUnit: row.pricing_unit as ServiceOffering['pricingUnit'],
+    isActive: row.is_active as boolean,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      supplier_id: 'supplierId',
+      category: 'category',
+      title: 'title',
+      description: 'description',
+      price_naira: 'priceNaira',
+      pricing_unit: 'pricingUnit',
+      is_active: 'isActive',
+      created_at: 'createdAt'
+    })
+};
+
+export const serviceBookingMapper: RowMapper<ServiceBooking> = {
+  columns: [
+    'id',
+    'offering_id',
+    'supplier_id',
+    'customer_id',
+    'quantity',
+    'total_naira',
+    'scheduled_start',
+    'scheduled_end',
+    'status',
+    'notes',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    offeringId: row.offering_id as string,
+    supplierId: row.supplier_id as string,
+    customerId: row.customer_id as string,
+    quantity: num(row.quantity),
+    totalNaira: row.total_naira != null ? num(row.total_naira) : undefined,
+    scheduledStart: ts(row.scheduled_start),
+    scheduledEnd: ts(row.scheduled_end),
+    status: row.status as ServiceBooking['status'],
+    notes: (row.notes as string) ?? undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      offering_id: 'offeringId',
+      supplier_id: 'supplierId',
+      customer_id: 'customerId',
+      quantity: 'quantity',
+      total_naira: 'totalNaira',
+      scheduled_start: 'scheduledStart',
+      scheduled_end: 'scheduledEnd',
+      status: 'status',
+      notes: 'notes',
+      created_at: 'createdAt'
+    })
+};
+
+export const serviceReviewMapper: RowMapper<ServiceReview> = {
+  columns: ['id', 'booking_id', 'supplier_id', 'author_id', 'rating', 'comment', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    bookingId: row.booking_id as string,
+    supplierId: row.supplier_id as string,
+    authorId: row.author_id as string,
+    rating: num(row.rating),
+    comment: (row.comment as string) ?? undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      booking_id: 'bookingId',
+      supplier_id: 'supplierId',
+      author_id: 'authorId',
+      rating: 'rating',
+      comment: 'comment',
+      created_at: 'createdAt'
+    })
+};
+
+export const programmeCohortMapper: RowMapper<ProgrammeCohort> = {
+  columns: [
+    'id',
+    'name',
+    'programme_type',
+    'capacity',
+    'enrolment_opens_at',
+    'enrolment_closes_at',
+    'status',
+    'moderator_ids',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    programmeType: row.programme_type as ProgrammeCohort['programmeType'],
+    capacity: num(row.capacity),
+    enrolmentOpensAt: ts(row.enrolment_opens_at),
+    enrolmentClosesAt: ts(row.enrolment_closes_at),
+    status: row.status as ProgrammeCohort['status'],
+    moderatorIds: (row.moderator_ids as string[]) ?? [],
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      programme_type: 'programmeType',
+      capacity: 'capacity',
+      enrolment_opens_at: 'enrolmentOpensAt',
+      enrolment_closes_at: 'enrolmentClosesAt',
+      status: 'status',
+      moderator_ids: 'moderatorIds',
+      created_at: 'createdAt'
+    })
+};
+
+export const programmeEnrolmentMapper: RowMapper<ProgrammeEnrolment> = {
+  columns: ['id', 'cohort_id', 'user_id', 'declared_age', 'declared_gender', 'status', 'enrolled_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    userId: row.user_id as string,
+    declaredAge: row.declared_age != null ? num(row.declared_age) : undefined,
+    declaredGender: (row.declared_gender as ProgrammeEnrolment['declaredGender']) ?? undefined,
+    status: row.status as ProgrammeEnrolment['status'],
+    enrolledAt: ts(row.enrolled_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      user_id: 'userId',
+      declared_age: 'declaredAge',
+      declared_gender: 'declaredGender',
+      status: 'status',
+      enrolled_at: 'enrolledAt'
+    })
+};
+
+export const programmeMilestoneMapper: RowMapper<ProgrammeMilestone> = {
+  columns: ['id', 'cohort_id', 'title', 'sequence', 'due_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    title: row.title as string,
+    sequence: num(row.sequence),
+    dueAt: row.due_at ? ts(row.due_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      title: 'title',
+      sequence: 'sequence',
+      due_at: 'dueAt'
+    })
+};
+
+export const milestoneProgressMapper: RowMapper<MilestoneProgress> = {
+  columns: ['id', 'milestone_id', 'user_id', 'status', 'completed_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    milestoneId: row.milestone_id as string,
+    userId: row.user_id as string,
+    status: row.status as MilestoneProgress['status'],
+    completedAt: row.completed_at ? ts(row.completed_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      milestone_id: 'milestoneId',
+      user_id: 'userId',
+      status: 'status',
+      completed_at: 'completedAt'
+    })
+};
+
+export const rubricCriterionMapper: RowMapper<RubricCriterion> = {
+  columns: ['id', 'cohort_id', 'name', 'max_score'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    name: row.name as string,
+    maxScore: num(row.max_score)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      name: 'name',
+      max_score: 'maxScore'
+    })
+};
+
+export const judgeAssignmentMapper: RowMapper<JudgeAssignment> = {
+  columns: ['id', 'cohort_id', 'judge_user_id', 'assigned_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    judgeUserId: row.judge_user_id as string,
+    assignedAt: ts(row.assigned_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      judge_user_id: 'judgeUserId',
+      assigned_at: 'assignedAt'
+    })
+};
+
+export const judgeScoreMapper: RowMapper<JudgeScore> = {
+  columns: ['id', 'cohort_id', 'judge_user_id', 'entry_user_id', 'criterion_id', 'score', 'submitted_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    judgeUserId: row.judge_user_id as string,
+    entryUserId: row.entry_user_id as string,
+    criterionId: row.criterion_id as string,
+    score: num(row.score),
+    submittedAt: ts(row.submitted_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      judge_user_id: 'judgeUserId',
+      entry_user_id: 'entryUserId',
+      criterion_id: 'criterionId',
+      score: 'score',
+      submitted_at: 'submittedAt'
+    })
+};
+
+export const cohortThreadMapper: RowMapper<CohortThread> = {
+  columns: ['id', 'cohort_id', 'title', 'author_id', 'reply_count', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    cohortId: row.cohort_id as string,
+    title: row.title as string,
+    authorId: row.author_id as string,
+    replyCount: num(row.reply_count),
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      cohort_id: 'cohortId',
+      title: 'title',
+      author_id: 'authorId',
+      reply_count: 'replyCount',
+      created_at: 'createdAt'
+    })
+};
+
+export const cohortThreadPostMapper: RowMapper<CohortThreadPost> = {
+  columns: ['id', 'thread_id', 'author_id', 'body', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    threadId: row.thread_id as string,
+    authorId: row.author_id as string,
+    body: row.body as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      thread_id: 'threadId',
+      author_id: 'authorId',
+      body: 'body',
+      created_at: 'createdAt'
+    })
+};
+
+export const pathwayTemplateMapper: RowMapper<PathwayTemplate> = {
+  columns: ['id', 'track', 'name', 'description', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    track: row.track as PathwayTemplate['track'],
+    name: row.name as string,
+    description: (row.description as string) ?? undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      track: 'track',
+      name: 'name',
+      description: 'description',
+      created_at: 'createdAt'
+    })
+};
+
+export const pathwayStageMapper: RowMapper<PathwayStage> = {
+  columns: ['id', 'template_id', 'title', 'sequence', 'required_actions'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    templateId: row.template_id as string,
+    title: row.title as string,
+    sequence: num(row.sequence),
+    requiredActions: (row.required_actions as string[]) ?? []
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      template_id: 'templateId',
+      title: 'title',
+      sequence: 'sequence',
+      required_actions: 'requiredActions'
+    })
+};
+
+export const pathwayEnrolmentMapper: RowMapper<PathwayEnrolment> = {
+  columns: ['id', 'template_id', 'user_id', 'status', 'current_stage_id', 'enrolled_at', 'completed_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    templateId: row.template_id as string,
+    userId: row.user_id as string,
+    status: row.status as PathwayEnrolment['status'],
+    currentStageId: (row.current_stage_id as string) ?? undefined,
+    enrolledAt: ts(row.enrolled_at),
+    completedAt: row.completed_at ? ts(row.completed_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      template_id: 'templateId',
+      user_id: 'userId',
+      status: 'status',
+      current_stage_id: 'currentStageId',
+      enrolled_at: 'enrolledAt',
+      completed_at: 'completedAt'
+    })
+};
+
+export const stageProgressMapper: RowMapper<StageProgress> = {
+  columns: ['id', 'enrolment_id', 'stage_id', 'status', 'evidence', 'completed_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    enrolmentId: row.enrolment_id as string,
+    stageId: row.stage_id as string,
+    status: row.status as StageProgress['status'],
+    evidence: (row.evidence as string) ?? undefined,
+    completedAt: row.completed_at ? ts(row.completed_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      enrolment_id: 'enrolmentId',
+      stage_id: 'stageId',
+      status: 'status',
+      evidence: 'evidence',
+      completed_at: 'completedAt'
+    })
+};
+
+export const campusClubMapper: RowMapper<CampusClub> = {
+  columns: [
+    'id',
+    'name',
+    'institution',
+    'state',
+    'coordinator_user_id',
+    'is_nysc_cds_group',
+    'member_count',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    institution: row.institution as string,
+    state: row.state as string,
+    coordinatorUserId: row.coordinator_user_id as string,
+    isNyscCdsGroup: row.is_nysc_cds_group as boolean,
+    memberCount: num(row.member_count),
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      institution: 'institution',
+      state: 'state',
+      coordinator_user_id: 'coordinatorUserId',
+      is_nysc_cds_group: 'isNyscCdsGroup',
+      member_count: 'memberCount',
+      created_at: 'createdAt'
+    })
+};
+
+export const campusClubMembershipMapper: RowMapper<CampusClubMembership> = {
+  columns: ['id', 'club_id', 'user_id', 'role', 'joined_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    clubId: row.club_id as string,
+    userId: row.user_id as string,
+    role: row.role as CampusClubMembership['role'],
+    joinedAt: ts(row.joined_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      club_id: 'clubId',
+      user_id: 'userId',
+      role: 'role',
+      joined_at: 'joinedAt'
+    })
+};
+
+export const knowledgeResourceMapper: RowMapper<KnowledgeResource> = {
+  columns: ['id', 'title', 'body', 'tags', 'language', 'format', 'offline_available', 'view_count', 'published_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    title: row.title as string,
+    body: row.body as string,
+    tags: (row.tags as string[]) ?? [],
+    language: row.language as KnowledgeResource['language'],
+    format: row.format as KnowledgeResource['format'],
+    offlineAvailable: row.offline_available as boolean,
+    viewCount: num(row.view_count),
+    publishedAt: ts(row.published_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      title: 'title',
+      body: 'body',
+      tags: 'tags',
+      language: 'language',
+      format: 'format',
+      offline_available: 'offlineAvailable',
+      view_count: 'viewCount',
+      published_at: 'publishedAt'
+    })
+};
+
+export const podcastEpisodeMapper: RowMapper<PodcastEpisode> = {
+  columns: ['id', 'title', 'show_notes', 'audio_url', 'duration_seconds', 'transcript', 'published_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    title: row.title as string,
+    showNotes: row.show_notes as string,
+    audioUrl: row.audio_url as string,
+    durationSeconds: num(row.duration_seconds),
+    transcript: (row.transcript as string) ?? undefined,
+    publishedAt: ts(row.published_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      title: 'title',
+      show_notes: 'showNotes',
+      audio_url: 'audioUrl',
+      duration_seconds: 'durationSeconds',
+      transcript: 'transcript',
+      published_at: 'publishedAt'
+    })
+};
+
+export const webinarMapper: RowMapper<Webinar> = {
+  columns: ['id', 'title', 'host_user_id', 'starts_at', 'timezone', 'recording_url', 'status', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    title: row.title as string,
+    hostUserId: row.host_user_id as string,
+    startsAt: ts(row.starts_at),
+    timezone: row.timezone as string,
+    recordingUrl: (row.recording_url as string) ?? undefined,
+    status: row.status as Webinar['status'],
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      title: 'title',
+      host_user_id: 'hostUserId',
+      starts_at: 'startsAt',
+      timezone: 'timezone',
+      recording_url: 'recordingUrl',
+      status: 'status',
+      created_at: 'createdAt'
+    })
+};
+
+export const webinarRegistrationMapper: RowMapper<WebinarRegistration> = {
+  columns: ['id', 'webinar_id', 'user_id', 'registered_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    webinarId: row.webinar_id as string,
+    userId: row.user_id as string,
+    registeredAt: ts(row.registered_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      webinar_id: 'webinarId',
+      user_id: 'userId',
+      registered_at: 'registeredAt'
+    })
+};
+
+export const searchQueryMapper: RowMapper<SearchQueryEvent> = {
+  columns: ['id', 'query', 'occurred_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    query: row.query as string,
+    occurredAt: ts(row.occurred_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      query: 'query',
+      occurred_at: 'occurredAt'
+    })
 };

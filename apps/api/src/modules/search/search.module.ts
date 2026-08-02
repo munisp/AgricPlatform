@@ -6,6 +6,7 @@ import { LearningModule } from '../learning/learning.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
 import { OpportunitiesModule } from '../opportunities/opportunities.module.js';
 import { SearchController } from './search.controller.js';
+import { SEARCH_PROVIDER } from './search.provider.js';
 import { SearchService } from './search.service.js';
 
 @Module({
@@ -18,6 +19,7 @@ import { SearchService } from './search.service.js';
     CommunityModule
   ],
   controllers: [SearchController],
-  providers: [SearchService]
+  providers: [SearchService, { provide: SEARCH_PROVIDER, useExisting: SearchService }],
+  exports: [SearchService, SEARCH_PROVIDER]
 })
 export class SearchModule {}
