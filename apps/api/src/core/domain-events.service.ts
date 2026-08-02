@@ -32,23 +32,43 @@ export class DomainEventsService {
   ) {}
 
   async publish<T>(name: string, payload: T, actorId?: string): Promise<DomainEvent<T>> {
+    const event = this.build(name, payload, actorId);
+    await this.persist(event);
+    return event;
+  }
+
+  /**
+   * Validates and constructs the event WITHOUT persisting or emitting it.
+   * Funds-affecting flows hand the built event to a repository that appends
+   * it to events.outbox inside the same database transaction as the state
+   * change (AsyncRepository.updateExpected), then call emit() after commit.
+   */
+  build<T>(name: string, payload: T, actorId?: string): DomainEvent<T> {
     if (!EVENT_NAME_PATTERN.test(name)) {
       throw new Error(
         `Invalid domain event name '${name}'. Expected '{domain}.{entity}.{verb}' taxonomy.`
       );
     }
-    const event: DomainEvent<T> = {
+    return {
       id: newId('event'),
       name,
       payload,
       actorId,
       occurredAt: new Date().toISOString()
     };
+  }
+
+  /** Appends a pre-built event to the outbox, then fans out to listeners. */
+  async persist<T>(event: DomainEvent<T>): Promise<void> {
     await this.outbox.append(event as DomainEvent);
-    this.logger.log(`event ${name} (${event.id})`);
-    this.emitter.emit(name, event);
+    this.emit(event);
+  }
+
+  /** Listener fan-out only — for events already persisted transactionally. */
+  emit<T>(event: DomainEvent<T>): void {
+    this.logger.log(`event ${event.name} (${event.id})`);
+    this.emitter.emit(event.name, event);
     this.emitter.emit('*', event);
-    return event;
   }
 
   on(name: string, handler: (event: DomainEvent) => void): void {

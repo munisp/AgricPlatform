@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
 import type { ApiListResponse, User, UserRole } from '@agric-platform/shared';
 import { pageSlice } from '../../common/pagination.js';
@@ -126,6 +126,61 @@ export class PgUserRepository implements UserRepository {
     } catch (error) {
       await client.query('ROLLBACK');
       if (error instanceof NotFoundException) {
+        throw error;
+      }
+      mapPgError(error);
+    } finally {
+      client.release();
+    }
+    return this.getById(id);
+  }
+
+  /**
+   * Compare-and-set variant (funds-integrity wave): locks the user row,
+   * verifies the expected fields, then applies the standard update. A
+   * precondition mismatch surfaces as ConflictException.
+   */
+  async updateExpected(id: string, patch: Partial<User>, expected: Partial<User>): Promise<User> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query('SELECT id FROM identity.users WHERE id = $1 FOR UPDATE', [id]);
+      if (!locked.rows[0]) {
+        throw new NotFoundException(`Resource with id '${id}' not found`);
+      }
+      const current = userMapper.fromRow(
+        (await client.query(`${USER_SELECT} WHERE u.id = $1 GROUP BY u.id`, [id])).rows[0]
+      );
+      for (const [key, value] of Object.entries(expected)) {
+        if ((current as unknown as Record<string, unknown>)[key] !== value) {
+          throw new ConflictException(
+            `Concurrent state change on identity.users row '${id}'; re-read and retry the operation`
+          );
+        }
+      }
+      const row = userMapper.toRow(patch as User);
+      const columns = Object.keys(row).filter((column) => column !== 'id');
+      if (columns.length > 0) {
+        await client.query(
+          `UPDATE identity.users
+              SET ${columns.map((column, i) => `${column} = $${i + 2}`).join(', ')}
+            WHERE id = $1`,
+          [id, ...columns.map((column) => row[column])]
+        );
+      }
+      if (patch.roles) {
+        await client.query('DELETE FROM identity.user_roles WHERE user_id = $1', [id]);
+        for (const role of patch.roles) {
+          await client.query(
+            'INSERT INTO identity.user_roles (user_id, role_code) VALUES ($1, $2)',
+            [id, role]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error instanceof NotFoundException || error instanceof ConflictException) {
         throw error;
       }
       mapPgError(error);

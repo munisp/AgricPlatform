@@ -30,7 +30,7 @@ import {
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
@@ -213,19 +213,32 @@ export class MarketplaceController {
   }
 
   @Get('orders')
-  @ApiOperation({ summary: 'List orders by buyer, seller or status' })
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List orders by buyer, seller or status (own records or admin)' })
   async listOrders(
+    @CurrentUser() actor: User | null,
     @Query('buyerId') buyerId?: string,
     @Query('sellerId') sellerId?: string,
     @Query('status') status?: OrderStatus
   ) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    if (!actor.roles.includes('admin') && buyerId !== actor.id && sellerId !== actor.id) {
+      assertSelfOrAdmin(actor, buyerId ?? sellerId ?? '');
+    }
     return { data: await this.marketplace.listOrders({ buyerId, sellerId, status }) };
   }
 
   @Get('orders/:id')
-  @ApiOperation({ summary: 'Order detail' })
-  async getOrder(@Param('id') id: string) {
-    return { data: await this.marketplace.getOrder(id) };
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Order detail (order parties or admin)' })
+  async getOrder(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const order = await this.marketplace.getOrder(id);
+    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
+    return { data: order };
   }
 
   @Patch('orders/:id/status')

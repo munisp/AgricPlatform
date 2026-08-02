@@ -2,7 +2,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
-import { KEY_VALUE_STORE } from '../../database/persistence.tokens.js';
+import { KEY_VALUE_STORE, WEBHOOK_DEDUPE_STORE } from '../../database/persistence.tokens.js';
+import {
+  createInMemoryWebhookDedupeStore,
+  type WebhookDedupeStore
+} from '../../database/repositories/webhook-dedupe.repository.js';
 import type { KeyValueStore } from '../../redis/key-value-store.js';
 import {
   ADAPTER_DEFINITIONS,
@@ -46,9 +50,6 @@ const CHANNEL_PROVIDERS: Partial<Record<NotificationChannel, string>> = {
 /** Provider-specific signature headers in priority order. */
 const SIGNATURE_HEADERS = ['x-webhook-signature', 'x-paystack-signature', 'x-flutterwave-signature'];
 
-/** Bounded replay cache: recently seen webhook digests per provider. */
-const REPLAY_CACHE_LIMIT = 1000;
-
 export interface WebhookReceipt {
   received: true;
   provider: string;
@@ -87,11 +88,15 @@ type LiveDriver =
 @Injectable()
 export class IntegrationsService {
   private readonly adapters = new Map<string, IntegrationAdapter>();
-  private readonly seenWebhooks = new Map<string, string[]>();
+  private readonly fallbackDedupe = createInMemoryWebhookDedupeStore();
   private readonly liveDrivers = new Map<string, LiveDriver>();
 
   constructor(
-    @Optional() @Inject(KEY_VALUE_STORE) private readonly kv?: KeyValueStore
+    @Optional() @Inject(KEY_VALUE_STORE) private readonly kv?: KeyValueStore,
+    // Durable webhook dedupe (funds-integrity wave): pg-backed in
+    // production; the bounded in-memory cache remains the fallback when no
+    // store is wired (bare service constructions in unit tests).
+    @Optional() @Inject(WEBHOOK_DEDUPE_STORE) private readonly dedupe?: WebhookDedupeStore
   ) {
     for (const definition of ADAPTER_DEFINITIONS) {
       this.adapters.set(definition.provider, createAdapter(definition));
@@ -376,22 +381,22 @@ export class IntegrationsService {
   /**
    * Records a verified webhook. Replays of the exact signed payload are
    * idempotent: they return `duplicate: true` without re-triggering side
-   * effects (callers still get a 200 so providers stop retrying).
+   * effects (callers still get a 200 so providers stop retrying). Dedupe is
+   * durable when the WEBHOOK_DEDUPE_STORE is pg-backed — replays are
+   * suppressed across restarts and instances via
+   * integrations.inbound_events UNIQUE (system, dedupe_key).
    */
-  recordWebhook(provider: string, payload: unknown, signatureDigest?: string): WebhookReceipt {
+  async recordWebhook(
+    provider: string,
+    payload: unknown,
+    signatureDigest?: string
+  ): Promise<WebhookReceipt> {
     this.get(provider); // validates the provider exists
     const digest =
       signatureDigest ?? createHmac('sha256', 'unsigned').update(stableStringify(payload)).digest('hex');
-    const seen = this.seenWebhooks.get(provider) ?? [];
-    if (seen.includes(digest)) {
-      return { received: true, provider, duplicate: true };
-    }
-    seen.push(digest);
-    if (seen.length > REPLAY_CACHE_LIMIT) {
-      seen.shift();
-    }
-    this.seenWebhooks.set(provider, seen);
-    return { received: true, provider };
+    const store = this.dedupe ?? this.fallbackDedupe;
+    const isNew = await store.recordIfNew(provider, digest, payload);
+    return isNew ? { received: true, provider } : { received: true, provider, duplicate: true };
   }
 }
 

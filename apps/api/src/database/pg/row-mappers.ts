@@ -1452,6 +1452,7 @@ export const escrowMapper: RowMapper<EscrowRecord> = {
     'status',
     'provider_reference',
     'held_at',
+    'held_until',
     'resolved_at'
   ],
   fromRow: (row) => ({
@@ -1461,6 +1462,7 @@ export const escrowMapper: RowMapper<EscrowRecord> = {
     status: row.status as EscrowRecord['status'],
     providerReference: (row.provider_reference as string) ?? undefined,
     heldAt: ts(row.held_at),
+    heldUntil: row.held_until ? ts(row.held_until) : undefined,
     resolvedAt: row.resolved_at ? ts(row.resolved_at) : undefined
   }),
   toRow: (item) =>
@@ -1471,6 +1473,7 @@ export const escrowMapper: RowMapper<EscrowRecord> = {
       status: 'status',
       provider_reference: 'providerReference',
       held_at: 'heldAt',
+      held_until: 'heldUntil',
       resolved_at: 'resolvedAt'
     })
 };
@@ -1692,7 +1695,10 @@ export const installmentMapper: RowMapper<RepaymentInstallment> = {
     'interest_kobo',
     'total_kobo',
     'status',
-    'paid_at'
+    'paid_at',
+    'payment_reference',
+    'declared_by',
+    'declared_at'
   ],
   fromRow: (row) => ({
     id: row.id as string,
@@ -1703,7 +1709,10 @@ export const installmentMapper: RowMapper<RepaymentInstallment> = {
     interestKobo: num(row.interest_kobo),
     totalKobo: num(row.total_kobo),
     status: row.status as RepaymentInstallment['status'],
-    paidAt: row.paid_at ? ts(row.paid_at) : undefined
+    paidAt: row.paid_at ? ts(row.paid_at) : undefined,
+    paymentReference: (row.payment_reference as string) ?? undefined,
+    declaredBy: (row.declared_by as string) ?? undefined,
+    declaredAt: row.declared_at ? ts(row.declared_at) : undefined
   }),
   toRow: (item) =>
     present(item, {
@@ -1715,7 +1724,10 @@ export const installmentMapper: RowMapper<RepaymentInstallment> = {
       interest_kobo: 'interestKobo',
       total_kobo: 'totalKobo',
       status: 'status',
-      paid_at: 'paidAt'
+      paid_at: 'paidAt',
+      payment_reference: 'paymentReference',
+      declared_by: 'declaredBy',
+      declared_at: 'declaredAt'
     })
 };
 

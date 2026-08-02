@@ -237,7 +237,20 @@ export class MarketplaceService {
         );
       }
     }
-    const updated = await this.orders.update(id, { status });
+    // Guarded write (funds-integrity wave): a concurrent transition that
+    // already moved the order fails with a 409 instead of silently
+    // overwriting; on PostgreSQL the outbox event commits with the update.
+    const event = this.events.build(
+      'marketplace.order.status_changed',
+      { orderId: id, from: order.status, to: status },
+      actor.id
+    );
+    const updated = await this.orders.updateExpected(id, { status }, { status: order.status }, event);
+    if (this.orders.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
     // Payment-status transitions are metered and audited (observability plan
     // §A.3/§A.6): deposit_paid = payment initiated, completed = confirmed.
     if (status === 'deposit_paid' || status === 'completed') {
@@ -250,11 +263,6 @@ export class MarketplaceService {
         metadata: { from: order.status, to: status }
       });
     }
-    await this.events.publish(
-      'marketplace.order.status_changed',
-      { orderId: id, from: order.status, to: status },
-      actor.id
-    );
     // Wave P2a commerce hooks (all idempotent no-ops when nothing applies):
     // confirm → issue invoice; deposit → hold escrow; cancel → refund escrow
     // + cancel invoice; complete → release escrow + mark invoice paid.

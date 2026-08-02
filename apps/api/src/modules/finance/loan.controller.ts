@@ -55,6 +55,17 @@ class DisburseDto {
   firstDueDate?: string;
 }
 
+class PayInstallmentDto {
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
+}
+
+class DeclarePaymentDto {
+  @IsString()
+  paymentReference!: string;
+}
+
 function requireActor(actor: User | null): User {
   if (!actor) {
     throw new UnauthorizedException('Authentication required');
@@ -141,25 +152,67 @@ export class LoanController {
     return { data: await this.loans.scheduleForLoan(id) };
   }
 
+  /**
+   * CRIT-1 fix: confirming an installment payment posts real money into the
+   * ledger, so it is restricted to the lender side (platform admins acting
+   * for the lender). Borrowers use declare-payment instead — a borrower can
+   * no longer write off their own debt unilaterally.
+   */
   @Post(':id/installments/:sequence/pay')
   @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Mark a repayment installment paid; posts to the ledger' })
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Confirm a repayment installment as paid (lender-side/admin only); posts to the ledger'
+  })
   async payInstallment(
     @Param('id') id: string,
     @Param('sequence', ParseIntPipe) sequence: number,
+    @Body() dto: PayInstallmentDto,
     @CurrentUser() actor: User | null
   ) {
     const user = requireActor(actor);
-    const loan = await this.loans.getLoan(id);
-    assertSelfOrAdmin(user, loan.applicantId);
-    const installment = await this.loans.markInstallmentPaid(id, sequence, user.id);
+    const installment = await this.loans.markInstallmentPaid(id, sequence, user.id, {
+      paymentReference: dto?.paymentReference
+    });
     await this.audit.record({
       actorId: user.id,
       action: 'loan.installment_paid',
       entityType: 'repayment_installment',
       entityId: installment.id,
-      metadata: { loanId: id, sequence }
+      metadata: { loanId: id, sequence, paymentReference: dto?.paymentReference }
+    });
+    return { data: installment };
+  }
+
+  /**
+   * Borrower-side payment declaration: records the external payment
+   * reference and moves the installment to 'declared' (pending lender
+   * confirmation). No ledger posting happens until an admin confirms via
+   * the pay endpoint above.
+   */
+  @Post(':id/installments/:sequence/declare-payment')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Declare an installment payment with a verifiable reference (borrower or admin)'
+  })
+  async declarePayment(
+    @Param('id') id: string,
+    @Param('sequence', ParseIntPipe) sequence: number,
+    @Body() dto: DeclarePaymentDto,
+    @CurrentUser() actor: User | null
+  ) {
+    const user = requireActor(actor);
+    const loan = await this.loans.getLoan(id);
+    assertSelfOrAdmin(user, loan.applicantId);
+    const installment = await this.loans.declarePayment(id, sequence, user.id, dto.paymentReference);
+    await this.audit.record({
+      actorId: user.id,
+      action: 'loan.installment_payment_declared',
+      entityType: 'repayment_installment',
+      entityId: installment.id,
+      metadata: { loanId: id, sequence, paymentReference: dto.paymentReference }
     });
     return { data: installment };
   }
