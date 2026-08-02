@@ -260,6 +260,25 @@ export interface AuditEvent {
   entityId: string;
   metadata: Record<string, unknown>;
   createdAt: string;
+  /** Hash of the previous audit event in the tamper-evident chain (additive). */
+  prevHash?: string;
+  /** sha256 over the canonical event payload + prevHash (additive). */
+  hash?: string;
+  /** Correlates the audit event with the HTTP request that caused it (additive). */
+  requestId?: string;
+}
+
+/**
+ * Consistent API error envelope produced by the API exception filter.
+ * `requestId` is additive: older clients ignore it (observability wave).
+ */
+export interface ApiErrorResponse {
+  statusCode: number;
+  error: string;
+  message: string | string[];
+  path: string;
+  timestamp: string;
+  requestId?: string;
 }
 
 export interface PlatformMetric {
