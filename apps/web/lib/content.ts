@@ -1032,3 +1032,18 @@ export const demoAggregationPoints: AggregationPoint[] = [
     updatedAt: '2026-07-28T07:00:00.000Z'
   }
 ];
+
+/**
+ * Offline fallback for the farmer dashboard livestock summary card — the
+ * pre-computed shape of components/livestock-dashboard-widget's summary
+ * (kept in sync with demoAnimals + demoHealthRecords above).
+ */
+export const demoLivestockSummary = {
+  total: 3,
+  bySpecies: [
+    { species: 'cattle', count: 2 },
+    { species: 'goat', count: 1 }
+  ],
+  pendingHealthTasks: 3,
+  openRecalls: null as number | null
+};
