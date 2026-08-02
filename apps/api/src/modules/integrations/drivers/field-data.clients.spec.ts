@@ -3,8 +3,7 @@ import {
   createFieldDataSources,
   fieldDataDriverEnabled,
   KoboToolboxClient,
-  OdkCentralClient,
-  SftpFieldDataScaffold
+  OdkCentralClient
 } from './field-data.clients.js';
 import { ProviderConfigError, ProviderHttpError } from './http.js';
 
@@ -81,13 +80,6 @@ describe('OdkCentralClient', () => {
   });
 });
 
-describe('SftpFieldDataScaffold (fail closed)', () => {
-  it('refuses to pull until the SFTP transport is approved', () => {
-    const scaffold = new SftpFieldDataScaffold('sftp.partner.example', 'drop');
-    expect(() => scaffold.fetchSubmissions()).toThrow(ProviderConfigError);
-  });
-});
-
 describe('createFieldDataSources (fail closed)', () => {
   it('returns no sources while the driver is stub', () => {
     expect(createFieldDataSources({ FIELD_DATA_DRIVER: 'stub' })).toEqual([]);
@@ -100,10 +92,38 @@ describe('createFieldDataSources (fail closed)', () => {
     ).toThrow(ProviderConfigError);
   });
 
-  it('fails closed on an SFTP configuration until transport approval', () => {
+  it('fails closed when SFTP host is set but the SFTP driver flag is stub', () => {
     expect(() =>
-      createFieldDataSources({ FIELD_DATA_DRIVER: 'live', FIELD_DATA_SFTP_HOST: 'sftp.example' })
+      createFieldDataSources({
+        FIELD_DATA_DRIVER: 'live',
+        FIELD_DATA_SFTP_HOST: 'sftp.example',
+        FIELD_DATA_SFTP_USER: 'drop',
+        FIELD_DATA_SFTP_PASSWORD: 'pw'
+      })
     ).toThrow(ProviderConfigError);
+  });
+
+  it('fails closed when SFTP credentials are missing', () => {
+    expect(() =>
+      createFieldDataSources({
+        FIELD_DATA_DRIVER: 'live',
+        FIELD_DATA_SFTP_DRIVER: 'live',
+        FIELD_DATA_SFTP_HOST: 'sftp.example',
+        FIELD_DATA_SFTP_USER: 'drop'
+      })
+    ).toThrow(ProviderConfigError);
+  });
+
+  it('builds a keyed SFTP source without connecting at boot', () => {
+    const sources = createFieldDataSources({
+      FIELD_DATA_DRIVER: 'live',
+      FIELD_DATA_SFTP_DRIVER: 'sandbox',
+      FIELD_DATA_SFTP_HOST: 'sftp.example',
+      FIELD_DATA_SFTP_USER: 'drop',
+      FIELD_DATA_SFTP_PRIVATE_KEY: '-----BEGIN KEY-----\nfake\n-----END KEY-----'
+    });
+    expect(sources).toHaveLength(1);
+    expect(sources[0].name).toBe('sftp');
   });
 
   it('builds keyed sources and enables the driver', () => {

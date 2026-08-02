@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { createInMemoryWebhookSubscriptionRepository } from '../../database/repositories/partner-api.repository.js';
 import {
+  createInMemoryExternalAccountLinkRepository,
+  createInMemoryFarmRecordRepository,
+  createInMemoryInboundEventRepository,
+  type ExternalAccountLink
+} from '../../database/repositories/phase3.repository.js';
+import {
   PARTNER_SHARE_CONSENT_PURPOSE,
   PartnerApiService
 } from './partner-api.service.js';
@@ -20,7 +26,20 @@ function consent(userId: string, granted = true, revoked = false): ConsentRecord
   };
 }
 
-function makeService(options: { consents?: ConsentRecord[] } = {}) {
+function accountLink(userId: string, id = `link-${userId}`): ExternalAccountLink {
+  return {
+    id,
+    userId,
+    system: 'farmos',
+    externalId: `ext-${userId}`,
+    consentAt: new Date().toISOString(),
+    createdAt: new Date().toISOString()
+  };
+}
+
+function makeService(
+  options: { consents?: ConsentRecord[]; links?: ExternalAccountLink[] } = {}
+) {
   const opportunities = {
     applicationsForPartner: vi.fn(async () => [
       { id: 'app-1', userId: 'user-a', status: 'submitted' },
@@ -49,6 +68,9 @@ function makeService(options: { consents?: ConsentRecord[] } = {}) {
     )
   };
   const subscriptions = createInMemoryWebhookSubscriptionRepository();
+  const accountLinks = createInMemoryExternalAccountLinkRepository(options.links ?? []);
+  const farmRecords = createInMemoryFarmRecordRepository();
+  const inboundEvents = createInMemoryInboundEventRepository();
   const service = new PartnerApiService(
     opportunities as never,
     learning as never,
@@ -57,9 +79,12 @@ function makeService(options: { consents?: ConsentRecord[] } = {}) {
     audit as never,
     events as never,
     consentRepo as never,
-    subscriptions
+    subscriptions,
+    accountLinks,
+    farmRecords,
+    inboundEvents
   );
-  return { service, events, audit, subscriptions };
+  return { service, events, audit, subscriptions, accountLinks, farmRecords, inboundEvents };
 }
 
 describe('PartnerApiService', () => {
@@ -145,6 +170,73 @@ describe('PartnerApiService', () => {
     await expect(
       service.recordEnrolment('partner-1', { userId: 'user-a', programmeId: 'opp-x' }, 'pc_test')
     ).rejects.toThrow();
+  });
+
+  it('persists farm-data pushes against the member external account link', async () => {
+    const { service, events, farmRecords, inboundEvents } = makeService({
+      links: [accountLink('user-a')]
+    });
+    const result = await service.recordFarmDataPush(
+      'user-a',
+      { assets: [{ type: 'asset--land', name: 'Plot 4' }] },
+      'pc_test'
+    );
+    expect(result.linked).toBe(true);
+    expect(result.pendingLink).toBeUndefined();
+    const stored = await farmRecords.find({ linkId: 'link-user-a' });
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      id: result.farmRecordId,
+      recordType: 'partner_push',
+      externalId: result.id,
+      source: 'partner_api'
+    });
+    expect(stored[0].payload).toEqual({ assets: [{ type: 'asset--land', name: 'Plot 4' }] });
+    // Pending ledger stays empty on the linked path; the domain event survives.
+    expect(await inboundEvents.count({ system: 'partner_api' })).toBe(0);
+    expect(events.publish).toHaveBeenCalledWith(
+      'partner.farm_data.received',
+      expect.objectContaining({ id: result.id, linked: true, assetCount: 1 }),
+      'pc_test'
+    );
+  });
+
+  it('ledgers farm-data pushes with a pending-link marker when unlinked', async () => {
+    const { service, events, farmRecords, inboundEvents } = makeService();
+    const result = await service.recordFarmDataPush(
+      'user-b',
+      { logs: [{ type: 'log--harvest' }] },
+      'pc_test'
+    );
+    expect(result.linked).toBe(false);
+    expect(result.pendingLink).toBe(true);
+    expect(result.farmRecordId).toBeUndefined();
+    expect(await farmRecords.count({})).toBe(0);
+    const ledgered = await inboundEvents.find({ system: 'partner_api' });
+    expect(ledgered).toHaveLength(1);
+    expect(ledgered[0]).toMatchObject({
+      eventType: 'farm_data.pending_link',
+      dedupeKey: result.id
+    });
+    expect(ledgered[0].payload).toMatchObject({
+      userId: 'user-b',
+      linkId: 'pending-link:user-b',
+      logs: [{ type: 'log--harvest' }]
+    });
+    expect(events.publish).toHaveBeenCalledWith(
+      'partner.farm_data.received',
+      expect.objectContaining({ id: result.id, pendingLink: true }),
+      'pc_test'
+    );
+  });
+
+  it('ignores revoked links and ledgers the push as pending-link', async () => {
+    const { service, farmRecords } = makeService({
+      links: [{ ...accountLink('user-c'), revokedAt: new Date().toISOString() }]
+    });
+    const result = await service.recordFarmDataPush('user-c', { assets: [] }, 'pc_test');
+    expect(result.pendingLink).toBe(true);
+    expect(await farmRecords.count({})).toBe(0);
   });
 
   it('creates webhook subscriptions and never echoes secrets on list', async () => {

@@ -17,6 +17,7 @@ import {
   type FeedbackAction
 } from './recommendation-feedback.js';
 import {
+  candidateMatchesQuery,
   coldStartRank,
   emptySignals,
   isColdStart,
@@ -28,6 +29,7 @@ import {
   type RecommenderWeights,
   type ScoredRecommendation
 } from './recommender.js';
+import { SearchService } from './search.service.js';
 
 const norm = (value: string | undefined): string | undefined =>
   value && value.trim() !== '' ? value.trim().toLowerCase() : undefined;
@@ -47,7 +49,9 @@ export class RecommendationService {
     private readonly marketplace: MarketplaceService,
     @Inject(KNOWLEDGE_RESOURCE_REPOSITORY) private readonly knowledge: KnowledgeResourceRepository,
     @Inject(RECOMMENDATION_FEEDBACK_REPOSITORY)
-    private readonly feedback: RecommendationFeedbackRepository
+    private readonly feedback: RecommendationFeedbackRepository,
+    // Wave P6b: cold-start blend reads top trending queries from search.
+    private readonly search: SearchService
   ) {}
 
   /** Builds the member signal profile from profile, learning and order history. */
@@ -164,9 +168,10 @@ export class RecommendationService {
   }
 
   /**
-   * Per-member recommendations. Cold-start members get the popularity-based
-   * trending fallback; everyone else gets signal-scored ranking adjusted by
-   * global + own feedback.
+   * Per-member recommendations. Cold-start members get items matching the
+   * top trending search queries first (reason `trending_query`, wave P6b),
+   * then the popularity-based trending fallback; everyone else gets
+   * signal-scored ranking adjusted by global + own feedback.
    */
   async recommendFor(
     userId: string,
@@ -183,7 +188,7 @@ export class RecommendationService {
     const memberActions = ownActions(memberEvents);
 
     const ranked = isColdStart(signals)
-      ? coldStartRank(candidates, limit)
+      ? await this.coldStartBlend(candidates, limit, options.now)
       : rankCandidates(signals, candidates, { limit: limit * 3, weights: options.weights });
 
     // Feedback adjustment, then re-rank to the requested limit.
@@ -198,6 +203,34 @@ export class RecommendationService {
       }))
       .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
       .slice(0, limit);
+  }
+
+  /**
+   * Cold-start ranking (wave P6b): maps the top trending search queries to
+   * matching candidates and blends them ahead of the popularity fallback.
+   * A trending-read failure degrades to the plain popularity fallback.
+   */
+  private async coldStartBlend(
+    candidates: RecommendationCandidate[],
+    limit: number,
+    now?: Date
+  ): Promise<ScoredRecommendation[]> {
+    const trending = await this.search.trending({ limit: 10, ...(now ? { now } : {}) }).catch(
+      () => []
+    );
+    if (trending.length === 0) {
+      return coldStartRank(candidates, limit);
+    }
+    const matched = new Set<string>();
+    for (const candidate of candidates) {
+      if (trending.some((entry) => candidateMatchesQuery(candidate, entry.query))) {
+        matched.add(`${candidate.type}:${candidate.id}`);
+      }
+    }
+    if (matched.size === 0) {
+      return coldStartRank(candidates, limit);
+    }
+    return coldStartRank(candidates, limit, undefined, matched);
   }
 
   /** Item-to-item "similar content" across the four recommendation domains. */

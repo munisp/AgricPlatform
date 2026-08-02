@@ -59,7 +59,7 @@ export class PartnerAuthGuard implements CanActivate {
     }
 
     const limit = await this.rateLimitFor(identity);
-    const remaining = this.rate.consume(identity.clientId, limit);
+    const remaining = await this.rate.consume(identity.clientId, limit);
     if (remaining === null) {
       throw new HttpException(
         `Partner rate limit exceeded (${limit} requests per minute)`,

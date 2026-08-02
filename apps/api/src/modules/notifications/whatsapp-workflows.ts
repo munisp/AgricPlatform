@@ -10,15 +10,23 @@
 export type WaFlow =
   | {
       kind: 'listing';
-      step: 'crop' | 'quantity' | 'price' | 'confirm';
+      step: 'crop' | 'quantity' | 'price' | 'lga' | 'confirm';
       crop?: string;
       quantityKg?: number;
       priceNaira?: number;
+      lga?: string;
     }
   | { kind: 'advisory'; step: 'crop' | 'state'; crop?: string };
 
 export type WaAction =
-  | { type: 'create_listing'; crop: string; quantityKg: number; priceNaira: number }
+  | {
+      type: 'create_listing';
+      crop: string;
+      quantityKg: number;
+      priceNaira: number;
+      /** Local Government Area the produce is sold from (wave P6b). */
+      lga: string;
+    }
   | { type: 'advisory_request'; crop: string; state: string }
   | { type: 'confirm_action'; code: string };
 
@@ -44,6 +52,17 @@ function parseAmount(text: string): number | undefined {
 
 function isCropName(text: string): boolean {
   return /^[a-zA-Z][a-zA-Z' -]{1,39}$/.test(text.trim());
+}
+
+/**
+ * LGA capture (wave P6b): packages/shared ships no Nigeria LGA fixture, so
+ * the chat step accepts free text up to 60 chars (letters/spaces — matches
+ * real LGA names like "Kano Municipal" or "Obafemi Owode").
+ */
+export const WA_LGA_MAX_CHARS = 60;
+
+function isLgaName(text: string): boolean {
+  return /^[a-zA-Z][a-zA-Z' -]{0,59}$/.test(text.trim());
 }
 
 /**
@@ -114,13 +133,33 @@ function advanceListing(flow: Extract<WaFlow, { kind: 'listing' }>, text: string
         return { flow, reply: 'Enter the total price in NGN (numbers only, e.g. 250000):' };
       }
       return {
-        flow: { ...flow, step: 'confirm', priceNaira },
+        flow: { ...flow, step: 'lga', priceNaira },
+        reply: `Which LGA is this ${flow.crop} sold from? (e.g. Dala, Kano Municipal)`
+      };
+    }
+    case 'lga': {
+      if (!isLgaName(text)) {
+        return {
+          flow,
+          reply: `Enter the LGA name (letters only, up to ${WA_LGA_MAX_CHARS} chars, e.g. Dala):`
+        };
+      }
+      return {
+        flow: { ...flow, step: 'confirm', lga: text.trim() },
         reply:
-          `Listing: ${flow.quantityKg} kg ${flow.crop} for NGN ${priceNaira.toLocaleString('en-NG')}.\n` +
+          `Listing: ${flow.quantityKg} kg ${flow.crop} for ` +
+          `NGN ${(flow.priceNaira as number).toLocaleString('en-NG')} in ${text.trim()} LGA.\n` +
           'Reply YES to publish or NO to cancel.'
       };
     }
     case 'confirm': {
+      if (!flow.lga) {
+        // Flow serialised before the LGA step shipped (24h KV TTL): collect it.
+        return {
+          flow: { ...flow, step: 'lga' },
+          reply: `Which LGA is this ${flow.crop} sold from? (e.g. Dala, Kano Municipal)`
+        };
+      }
       if (YES.test(text)) {
         return {
           reply: 'Publishing your listing…',
@@ -128,7 +167,8 @@ function advanceListing(flow: Extract<WaFlow, { kind: 'listing' }>, text: string
             type: 'create_listing',
             crop: flow.crop as string,
             quantityKg: flow.quantityKg as number,
-            priceNaira: flow.priceNaira as number
+            priceNaira: flow.priceNaira as number,
+            lga: flow.lga as string
           }
         };
       }

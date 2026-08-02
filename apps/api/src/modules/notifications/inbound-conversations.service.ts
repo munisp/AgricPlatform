@@ -8,6 +8,7 @@ import { Dialog360WhatsAppDriver } from '../integrations/drivers/whatsapp.driver
 import { IntegrationsService } from '../integrations/integrations.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { MarketplaceService } from '../marketplace/marketplace.service.js';
+import { ProfilesService } from '../profiles/profiles.service.js';
 import { UsersService } from '../users/users.service.js';
 import { routeWaMessage, type WaAction, type WaFlow } from './whatsapp-workflows.js';
 
@@ -57,6 +58,7 @@ export class InboundConversationsService {
     private readonly advisory: AdvisoryService,
     private readonly learning: LearningService,
     private readonly events: DomainEventsService,
+    private readonly profiles: ProfilesService,
     @Inject(KEY_VALUE_STORE) private readonly kv: KeyValueStore,
     // Normalisation-only driver instance; no credentials, no network calls.
     @Optional()
@@ -143,6 +145,9 @@ export class InboundConversationsService {
     if (!user) {
       return 'We could not match this phone number to an account. Register first (app or USSD), then retry.';
     }
+    // LGA is captured in the chat flow (wave P6b); the state comes from the
+    // member profile when present so listings are discoverable by state.
+    const profile = await this.profiles.get(user.id).catch(() => undefined);
     const listing = await this.marketplace.createListing({
       sellerId: user.id,
       kind: 'produce',
@@ -151,8 +156,7 @@ export class InboundConversationsService {
       quantity: action.quantityKg,
       unit: 'kg',
       priceNaira: action.priceNaira,
-      // Location is refined in the app; chat collection stays 3-step.
-      location: { state: 'unspecified', lga: 'unspecified' }
+      location: { state: profile?.location?.state ?? 'unspecified', lga: action.lga }
     });
     return `Listing published (${listing.id}). Buyers can now find your ${action.crop}. Reply MENU for more.`;
   }
