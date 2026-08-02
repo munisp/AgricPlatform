@@ -2,7 +2,9 @@ import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
 import { WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import type {
   WebhookSubscription,
   WebhookSubscriptionRepository
@@ -61,7 +63,13 @@ export class WebhookDispatchService implements OnModuleInit {
     private readonly events: DomainEventsService,
     @Inject(WEBHOOK_SUBSCRIPTION_REPOSITORY)
     private readonly subscriptions: WebhookSubscriptionRepository,
-    @Optional() fetchImpl?: WebhookFetch
+    @Optional() fetchImpl?: WebhookFetch,
+    // @Optional: unit specs construct the service directly; Nest injects the
+    // shared EventDedupService (events.processed_events) at runtime.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {
     this.fetchImpl = fetchImpl ?? (globalThis.fetch as unknown as WebhookFetch);
   }
@@ -70,7 +78,7 @@ export class WebhookDispatchService implements OnModuleInit {
     this.events.on('*', (event: DomainEvent) => {
       const type = DOMAIN_EVENT_MAP[event.name];
       if (type) {
-        void this.dispatch(type, event).catch((error: unknown) => {
+        void this.dispatchOnce(type, event).catch((error: unknown) => {
           this.logger.warn(
             `webhook dispatch for ${event.name} failed: ${
               error instanceof Error ? error.message : String(error)
@@ -79,6 +87,18 @@ export class WebhookDispatchService implements OnModuleInit {
         });
       }
     });
+  }
+
+  /**
+   * Consumer-side dedup (Wave P): outbox-sweeper redeliveries of an
+   * already-dispatched event are ignored via events.processed_events.
+   */
+  private async dispatchOnce(type: PartnerEventType, event: DomainEvent): Promise<void> {
+    const fresh = await this.dedup.once('partner-webhook-dispatch', event.id);
+    if (!fresh) {
+      return;
+    }
+    await this.dispatch(type, event);
   }
 
   /** Delivers one partner event to every active subscribed client URL. */

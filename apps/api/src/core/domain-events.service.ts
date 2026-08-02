@@ -62,6 +62,9 @@ export class DomainEventsService {
   async persist<T>(event: DomainEvent<T>): Promise<void> {
     await this.outbox.append(event as DomainEvent);
     this.emit(event);
+    // Deterministic publish marking on the non-transactional path (the
+    // transactional path's post-commit emit marks fire-and-forget).
+    await this.markPublished(event.id);
   }
 
   /** Listener fan-out only — for events already persisted transactionally. */
@@ -69,6 +72,21 @@ export class DomainEventsService {
     this.logger.log(`event ${event.name} (${event.id})`);
     this.emitter.emit(event.name, event);
     this.emitter.emit('*', event);
+    // Wave P: mark the outbox row published after successful fan-out so the
+    // sweeper only retries rows whose delivery actually stalled.
+    void this.markPublished(event.id);
+  }
+
+  /**
+   * Best-effort published marking: repositories predating the sweeper (and
+   * test doubles) may lack the method; failures never break fan-out.
+   */
+  private async markPublished(eventId: string): Promise<void> {
+    try {
+      await this.outbox.markPublished?.(eventId, new Date().toISOString());
+    } catch {
+      // Non-fatal: the sweeper will retry the row later.
+    }
   }
 
   on(name: string, handler: (event: DomainEvent) => void): void {

@@ -3,7 +3,7 @@ import type { AuditEvent } from '@agric-platform/shared';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import { auditMapper, outboxMapper } from '../pg/row-mappers.js';
 import type { AuditCriteria, AuditRepository } from './audit.repository.js';
-import type { OutboxRepository } from './outbox.repository.js';
+import type { OutboxRecord, OutboxRepository } from './outbox.repository.js';
 
 /** Append-only audit event log over admin.audit_events. */
 export class PgAuditRepository implements AuditRepository {
@@ -60,6 +60,43 @@ export class PgOutboxRepository implements OutboxRepository {
       `SELECT ${outboxMapper.columns.join(', ')} FROM events.outbox ORDER BY occurred_at`
     );
     return result.rows.map((row) => outboxMapper.fromRow(row));
+  }
+
+  async listRecords(): Promise<OutboxRecord[]> {
+    const result = await this.pool.query(
+      `SELECT ${outboxMapper.columns.join(', ')}, published_at, attempts, dead_lettered_at
+         FROM events.outbox ORDER BY occurred_at`
+    );
+    return result.rows.map((row) => ({
+      event: outboxMapper.fromRow(row),
+      attempts: (row.attempts as number) ?? 0,
+      ...(row.published_at ? { publishedAt: (row.published_at as Date).toISOString() } : {}),
+      ...(row.dead_lettered_at
+        ? { deadLetteredAt: (row.dead_lettered_at as Date).toISOString() }
+        : {})
+    }));
+  }
+
+  async markPublished(id: string, publishedAt: string): Promise<void> {
+    await this.pool.query('UPDATE events.outbox SET published_at = $2 WHERE id = $1', [
+      id,
+      publishedAt
+    ]);
+  }
+
+  async recordAttempt(id: string): Promise<number> {
+    const result = await this.pool.query(
+      'UPDATE events.outbox SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts',
+      [id]
+    );
+    return (result.rows[0]?.attempts as number) ?? 0;
+  }
+
+  async markDeadLetter(id: string, deadLetteredAt: string): Promise<void> {
+    await this.pool.query('UPDATE events.outbox SET dead_lettered_at = $2 WHERE id = $1', [
+      id,
+      deadLetteredAt
+    ]);
   }
 }
 

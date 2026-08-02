@@ -1,6 +1,8 @@
 import { ConflictException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
 import { KEY_VALUE_STORE } from '../../database/persistence.tokens.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import type { KeyValueStore } from '../../redis/key-value-store.js';
 import { AdvisoryService } from '../advisory/advisory.service.js';
 import type { WhatsAppInboundMessage } from '../integrations/drivers/whatsapp.drivers.js';
@@ -66,6 +68,12 @@ export class InboundConversationsService {
       '',
       undefined,
       'stub'
+    ),
+    // @Optional: unit specs construct the service directly; Nest injects the
+    // shared EventDedupService (events.processed_events) at runtime.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
     )
   ) {}
 
@@ -75,10 +83,22 @@ export class InboundConversationsService {
       if (payload.provider !== 'whatsapp') {
         return;
       }
-      void this.processWebhookPayload(payload.payload).catch((error) =>
+      void this.processEventOnce(event.id, payload.payload).catch((error) =>
         this.logger.warn(`WhatsApp inbound processing failed: ${(error as Error).message}`)
       );
     });
+  }
+
+  /**
+   * Consumer-side dedup (Wave P): outbox-sweeper redeliveries of an
+   * already-processed webhook event are ignored via events.processed_events.
+   */
+  private async processEventOnce(eventId: string, payload: unknown): Promise<void> {
+    const fresh = await this.dedup.once('whatsapp-inbound-conversations', eventId);
+    if (!fresh) {
+      return;
+    }
+    await this.processWebhookPayload(payload);
   }
 
   /** Normalises a verified 360dialog webhook payload and handles its messages. */
