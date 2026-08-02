@@ -68,6 +68,19 @@ import type { RecommendationFeedbackEvent } from '../repositories/recommendation
 import type { DeliveryResult } from '../../modules/integrations/adapters.js';
 import type { RowMapper } from './pg-repository.base.js';
 import { num, ts } from './pg-repository.base.js';
+// Wave L1c: ALTP trade/finance entities (appended).
+import type {
+  AggregationPoint,
+  CertifiedListing,
+  ColdChainLog,
+  DonorDisbursement,
+  ExportDocument,
+  InsuranceClaim,
+  InsurancePolicy,
+  LivestockLien,
+  OfftakeContract,
+  OfftakeTemplate
+} from '@agric-platform/shared';
 
 /**
  * Explicit snake_case ↔ camelCase row mappers (plan §3.1). No auto-casing
@@ -1887,5 +1900,466 @@ export const pastoralistProfileMapper: RowMapper<PastoralistProfile> = {
       migration_pattern: 'migrationPattern',
       primary_species: 'primarySpecies',
       updated_at: 'updatedAt'
+    })
+};
+
+// ---------------------------------------------------------------------------
+// Wave L1c: ALTP trade/finance mappers (appended).
+
+export const certifiedListingMapper: RowMapper<CertifiedListing> = {
+  columns: [
+    'id',
+    'subject_type',
+    'subject_id',
+    'seller_user_id',
+    'species',
+    'breed',
+    'quantity',
+    'asking_price_kobo',
+    'status',
+    'provenance',
+    'revoked_by_user_id',
+    'revoked_at',
+    'revocation_reason',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    subjectType: row.subject_type as CertifiedListing['subjectType'],
+    subjectId: row.subject_id as string,
+    sellerUserId: row.seller_user_id as string,
+    species: row.species as string,
+    breed: (row.breed as string) ?? undefined,
+    quantity: row.quantity === null || row.quantity === undefined ? undefined : num(row.quantity),
+    askingPriceKobo:
+      row.asking_price_kobo === null || row.asking_price_kobo === undefined
+        ? undefined
+        : num(row.asking_price_kobo),
+    status: row.status as CertifiedListing['status'],
+    provenance: row.provenance as CertifiedListing['provenance'],
+    revokedByUserId: (row.revoked_by_user_id as string) ?? undefined,
+    revokedAt: row.revoked_at ? ts(row.revoked_at) : undefined,
+    revocationReason: (row.revocation_reason as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      subject_type: 'subjectType',
+      subject_id: 'subjectId',
+      seller_user_id: 'sellerUserId',
+      species: 'species',
+      breed: 'breed',
+      quantity: 'quantity',
+      asking_price_kobo: 'askingPriceKobo',
+      status: 'status',
+      provenance: 'provenance',
+      revoked_by_user_id: 'revokedByUserId',
+      revoked_at: 'revokedAt',
+      revocation_reason: 'revocationReason',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const offtakeTemplateMapper: RowMapper<OfftakeTemplate> = {
+  columns: [
+    'id',
+    'name',
+    'description',
+    'species',
+    'default_quantity',
+    'default_price_per_unit_kobo',
+    'delivery_window_days',
+    'default_quality_grade',
+    'status',
+    'created_by_user_id',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    description: (row.description as string) ?? undefined,
+    species: row.species as string,
+    defaultQuantity:
+      row.default_quantity === null || row.default_quantity === undefined
+        ? undefined
+        : num(row.default_quantity),
+    defaultPricePerUnitKobo:
+      row.default_price_per_unit_kobo === null || row.default_price_per_unit_kobo === undefined
+        ? undefined
+        : num(row.default_price_per_unit_kobo),
+    deliveryWindowDays: num(row.delivery_window_days),
+    defaultQualityGrade: (row.default_quality_grade as string) ?? undefined,
+    status: row.status as OfftakeTemplate['status'],
+    createdByUserId: row.created_by_user_id as string,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      description: 'description',
+      species: 'species',
+      default_quantity: 'defaultQuantity',
+      default_price_per_unit_kobo: 'defaultPricePerUnitKobo',
+      delivery_window_days: 'deliveryWindowDays',
+      default_quality_grade: 'defaultQualityGrade',
+      status: 'status',
+      created_by_user_id: 'createdByUserId',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const offtakeContractMapper: RowMapper<OfftakeContract> = {
+  columns: [
+    'id',
+    'template_id',
+    'farmer_user_id',
+    'buyer_user_id',
+    'species',
+    'quantity',
+    'price_per_unit_kobo',
+    'total_kobo',
+    'delivery_window_start',
+    'delivery_window_end',
+    'quality_grade',
+    'status',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    templateId: row.template_id as string,
+    farmerUserId: row.farmer_user_id as string,
+    buyerUserId: row.buyer_user_id as string,
+    species: row.species as string,
+    quantity: num(row.quantity),
+    pricePerUnitKobo: num(row.price_per_unit_kobo),
+    totalKobo: num(row.total_kobo),
+    deliveryWindowStart: ts(row.delivery_window_start),
+    deliveryWindowEnd: ts(row.delivery_window_end),
+    qualityGrade: (row.quality_grade as string) ?? undefined,
+    status: row.status as OfftakeContract['status'],
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      template_id: 'templateId',
+      farmer_user_id: 'farmerUserId',
+      buyer_user_id: 'buyerUserId',
+      species: 'species',
+      quantity: 'quantity',
+      price_per_unit_kobo: 'pricePerUnitKobo',
+      total_kobo: 'totalKobo',
+      delivery_window_start: 'deliveryWindowStart',
+      delivery_window_end: 'deliveryWindowEnd',
+      quality_grade: 'qualityGrade',
+      status: 'status',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const exportDocumentMapper: RowMapper<ExportDocument> = {
+  columns: [
+    'id',
+    'document_type',
+    'subject_type',
+    'subject_id',
+    'version',
+    'status',
+    'payload',
+    'created_by_user_id',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    documentType: row.document_type as ExportDocument['documentType'],
+    subjectType: row.subject_type as ExportDocument['subjectType'],
+    subjectId: row.subject_id as string,
+    version: num(row.version),
+    status: row.status as ExportDocument['status'],
+    payload: row.payload as ExportDocument['payload'],
+    createdByUserId: row.created_by_user_id as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      document_type: 'documentType',
+      subject_type: 'subjectType',
+      subject_id: 'subjectId',
+      version: 'version',
+      status: 'status',
+      payload: 'payload',
+      created_by_user_id: 'createdByUserId',
+      created_at: 'createdAt'
+    })
+};
+
+export const lienMapper: RowMapper<LivestockLien> = {
+  columns: [
+    'id',
+    'subject_type',
+    'subject_id',
+    'lender_user_id',
+    'borrower_user_id',
+    'principal_kobo',
+    'terms',
+    'status',
+    'registered_at',
+    'discharged_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    subjectType: row.subject_type as LivestockLien['subjectType'],
+    subjectId: row.subject_id as string,
+    lenderUserId: row.lender_user_id as string,
+    borrowerUserId: row.borrower_user_id as string,
+    principalKobo: num(row.principal_kobo),
+    terms: row.terms as string,
+    status: row.status as LivestockLien['status'],
+    registeredAt: ts(row.registered_at),
+    dischargedAt: row.discharged_at ? ts(row.discharged_at) : undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      subject_type: 'subjectType',
+      subject_id: 'subjectId',
+      lender_user_id: 'lenderUserId',
+      borrower_user_id: 'borrowerUserId',
+      principal_kobo: 'principalKobo',
+      terms: 'terms',
+      status: 'status',
+      registered_at: 'registeredAt',
+      discharged_at: 'dischargedAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const insurancePolicyMapper: RowMapper<InsurancePolicy> = {
+  columns: [
+    'id',
+    'holder_user_id',
+    'insurer_user_id',
+    'subject_type',
+    'subject_id',
+    'species',
+    'premium_kobo',
+    'coverage_kobo',
+    'status',
+    'starts_at',
+    'ends_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    holderUserId: row.holder_user_id as string,
+    insurerUserId: (row.insurer_user_id as string) ?? undefined,
+    subjectType: row.subject_type as InsurancePolicy['subjectType'],
+    subjectId: row.subject_id as string,
+    species: row.species as string,
+    premiumKobo: num(row.premium_kobo),
+    coverageKobo: num(row.coverage_kobo),
+    status: row.status as InsurancePolicy['status'],
+    startsAt: row.starts_at ? ts(row.starts_at) : undefined,
+    endsAt: row.ends_at ? ts(row.ends_at) : undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      holder_user_id: 'holderUserId',
+      insurer_user_id: 'insurerUserId',
+      subject_type: 'subjectType',
+      subject_id: 'subjectId',
+      species: 'species',
+      premium_kobo: 'premiumKobo',
+      coverage_kobo: 'coverageKobo',
+      status: 'status',
+      starts_at: 'startsAt',
+      ends_at: 'endsAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const insuranceClaimMapper: RowMapper<InsuranceClaim> = {
+  columns: [
+    'id',
+    'policy_id',
+    'claimant_user_id',
+    'trigger',
+    'recall_id',
+    'animal_ids',
+    'amount_kobo',
+    'status',
+    'notes',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    policyId: row.policy_id as string,
+    claimantUserId: row.claimant_user_id as string,
+    trigger: row.trigger as InsuranceClaim['trigger'],
+    recallId: (row.recall_id as string) ?? undefined,
+    animalIds: (row.animal_ids as string[]) ?? [],
+    amountKobo:
+      row.amount_kobo === null || row.amount_kobo === undefined
+        ? undefined
+        : num(row.amount_kobo),
+    status: row.status as InsuranceClaim['status'],
+    notes: (row.notes as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      policy_id: 'policyId',
+      claimant_user_id: 'claimantUserId',
+      trigger: 'trigger',
+      recall_id: 'recallId',
+      animal_ids: 'animalIds',
+      amount_kobo: 'amountKobo',
+      status: 'status',
+      notes: 'notes',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const disbursementMapper: RowMapper<DonorDisbursement> = {
+  columns: [
+    'id',
+    'donor_user_id',
+    'programme_id',
+    'milestone',
+    'amount_kobo',
+    'beneficiary_user_id',
+    'status',
+    'released_at',
+    'confirmed_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    donorUserId: row.donor_user_id as string,
+    programmeId: row.programme_id as string,
+    milestone: row.milestone as DonorDisbursement['milestone'],
+    amountKobo: num(row.amount_kobo),
+    beneficiaryUserId: row.beneficiary_user_id as string,
+    status: row.status as DonorDisbursement['status'],
+    releasedAt: row.released_at ? ts(row.released_at) : undefined,
+    confirmedAt: row.confirmed_at ? ts(row.confirmed_at) : undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      donor_user_id: 'donorUserId',
+      programme_id: 'programmeId',
+      milestone: 'milestone',
+      amount_kobo: 'amountKobo',
+      beneficiary_user_id: 'beneficiaryUserId',
+      status: 'status',
+      released_at: 'releasedAt',
+      confirmed_at: 'confirmedAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const aggregationPointMapper: RowMapper<AggregationPoint> = {
+  columns: [
+    'id',
+    'name',
+    'state',
+    'lga',
+    'manager_user_id',
+    'capacity',
+    'lot_ids',
+    'status',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    state: row.state as string,
+    lga: row.lga as string,
+    managerUserId: row.manager_user_id as string,
+    capacity:
+      row.capacity === null || row.capacity === undefined ? undefined : num(row.capacity),
+    lotIds: (row.lot_ids as string[]) ?? [],
+    status: row.status as AggregationPoint['status'],
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      state: 'state',
+      lga: 'lga',
+      manager_user_id: 'managerUserId',
+      capacity: 'capacity',
+      lot_ids: 'lotIds',
+      status: 'status',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const coldChainLogMapper: RowMapper<ColdChainLog> = {
+  columns: [
+    'id',
+    'point_id',
+    'recorded_at',
+    'temperature_celsius',
+    'humidity_percent',
+    'source',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    pointId: row.point_id as string,
+    recordedAt: ts(row.recorded_at),
+    temperatureCelsius: Number(row.temperature_celsius),
+    humidityPercent:
+      row.humidity_percent === null || row.humidity_percent === undefined
+        ? undefined
+        : Number(row.humidity_percent),
+    source: row.source as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      point_id: 'pointId',
+      recorded_at: 'recordedAt',
+      temperature_celsius: 'temperatureCelsius',
+      humidity_percent: 'humidityPercent',
+      source: 'source',
+      created_at: 'createdAt'
     })
 };

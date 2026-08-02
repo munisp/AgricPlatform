@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException
 } from '@nestjs/common';
 import type {
@@ -30,6 +31,7 @@ import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   ANIMAL_REPOSITORY,
+  LIVESTOCK_TRANSFER_GUARD,
   LOT_REPOSITORY,
   OWNERSHIP_TRANSFER_REPOSITORY,
   PASTORALIST_PROFILE_REPOSITORY
@@ -41,6 +43,7 @@ import type {
   OwnershipTransferRepository,
   PastoralistProfileRepository
 } from '../../database/repositories/livestock.repository.js';
+import type { LivestockTransferGuard } from '../../database/repositories/livestock-trade.repository.js';
 import { PrivacyService } from '../privacy/privacy.service.js';
 import { UsersService } from '../users/users.service.js';
 
@@ -125,7 +128,16 @@ export class LivestockService {
     @Inject(OWNERSHIP_TRANSFER_REPOSITORY)
     private readonly transfers: OwnershipTransferRepository,
     @Inject(PASTORALIST_PROFILE_REPOSITORY)
-    private readonly pastoralists: PastoralistProfileRepository
+    private readonly pastoralists: PastoralistProfileRepository,
+    /**
+     * Optional transfer guard port (wave L1c): when bound (lien-backed
+     * implementation registered by the DatabaseModule), transferAnimal
+     * consults it before committing. Optional so the livestock core never
+     * imports the trade module — no circular dependency.
+     */
+    @Optional()
+    @Inject(LIVESTOCK_TRANSFER_GUARD)
+    private readonly transferGuard?: LivestockTransferGuard
   ) {}
 
   /**
@@ -281,6 +293,11 @@ export class LivestockService {
     }
     if (input.toUserId === owner.id) {
       throw new BadRequestException('Cannot transfer an animal to yourself');
+    }
+    // Wave L1c integration point: an animal with an active lien cannot be
+    // transferred or sold (guard is a no-op when unbound).
+    if (this.transferGuard) {
+      await this.transferGuard.assertTransferable(id);
     }
     await this.users.getById(input.toUserId); // 404 for unknown recipients
     const now = new Date().toISOString();

@@ -96,6 +96,23 @@ export const ANIMAL_REPOSITORY = Symbol('ANIMAL_REPOSITORY');
 export const LOT_REPOSITORY = Symbol('LOT_REPOSITORY');
 export const OWNERSHIP_TRANSFER_REPOSITORY = Symbol('OWNERSHIP_TRANSFER_REPOSITORY');
 export const PASTORALIST_PROFILE_REPOSITORY = Symbol('PASTORALIST_PROFILE_REPOSITORY');
+// Wave L1c: ALTP trade, finance, compliance + partner aggregation.
+export const CERTIFIED_LISTING_REPOSITORY = Symbol('CERTIFIED_LISTING_REPOSITORY');
+export const OFFTAKE_TEMPLATE_REPOSITORY = Symbol('OFFTAKE_TEMPLATE_REPOSITORY');
+export const OFFTAKE_CONTRACT_REPOSITORY = Symbol('OFFTAKE_CONTRACT_REPOSITORY');
+export const EXPORT_DOCUMENT_REPOSITORY = Symbol('EXPORT_DOCUMENT_REPOSITORY');
+export const LIEN_REPOSITORY = Symbol('LIEN_REPOSITORY');
+export const INSURANCE_POLICY_REPOSITORY = Symbol('INSURANCE_POLICY_REPOSITORY');
+export const INSURANCE_CLAIM_REPOSITORY = Symbol('INSURANCE_CLAIM_REPOSITORY');
+export const DISBURSEMENT_REPOSITORY = Symbol('DISBURSEMENT_REPOSITORY');
+export const AGGREGATION_POINT_REPOSITORY = Symbol('AGGREGATION_POINT_REPOSITORY');
+export const COLD_CHAIN_LOG_REPOSITORY = Symbol('COLD_CHAIN_LOG_REPOSITORY');
+// Optional transfer guard port consulted by LivestockService.transferAnimal
+// (lien-backed implementation; see livestock-trade module).
+export const LIVESTOCK_TRANSFER_GUARD = Symbol('LIVESTOCK_TRANSFER_GUARD');
+// External provider adapters (fail-closed stubs without configuration).
+export const LIVESTOCK_INSURANCE_PROVIDER = Symbol('LIVESTOCK_INSURANCE_PROVIDER');
+export const COLD_CHAIN_PROVIDER = Symbol('COLD_CHAIN_PROVIDER');
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');

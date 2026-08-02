@@ -317,6 +317,45 @@ import {
   createPgOwnershipTransferRepository,
   createPgPastoralistProfileRepository
 } from './repositories/livestock.pg-repository.js';
+// Wave L1c: ALTP trade/finance/compliance persistence (additive).
+import {
+  AGGREGATION_POINT_REPOSITORY,
+  CERTIFIED_LISTING_REPOSITORY,
+  COLD_CHAIN_LOG_REPOSITORY,
+  DISBURSEMENT_REPOSITORY,
+  EXPORT_DOCUMENT_REPOSITORY,
+  INSURANCE_CLAIM_REPOSITORY,
+  INSURANCE_POLICY_REPOSITORY,
+  LIEN_REPOSITORY,
+  LIVESTOCK_TRANSFER_GUARD,
+  OFFTAKE_CONTRACT_REPOSITORY,
+  OFFTAKE_TEMPLATE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAggregationPointRepository,
+  createInMemoryCertifiedListingRepository,
+  createInMemoryColdChainLogRepository,
+  createInMemoryDisbursementRepository,
+  createInMemoryExportDocumentRepository,
+  createInMemoryInsuranceClaimRepository,
+  createInMemoryInsurancePolicyRepository,
+  createInMemoryLienRepository,
+  createInMemoryOfftakeContractRepository,
+  createInMemoryOfftakeTemplateRepository,
+  createLienTransferGuard
+} from './repositories/livestock-trade.repository.js';
+import {
+  createPgAggregationPointRepository,
+  createPgCertifiedListingRepository,
+  createPgColdChainLogRepository,
+  createPgDisbursementRepository,
+  createPgExportDocumentRepository,
+  createPgInsuranceClaimRepository,
+  createPgInsurancePolicyRepository,
+  createPgLienRepository,
+  createPgOfftakeContractRepository,
+  createPgOfftakeTemplateRepository
+} from './repositories/livestock-trade.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -812,6 +851,75 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgPastoralistProfileRepository(pool) : createInMemoryPastoralistProfileRepository(),
       inject: [PG_POOL]
+    },
+    // Wave L1c: ALTP trade/finance/compliance (appended).
+    {
+      provide: CERTIFIED_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedListingRepository(pool) : createInMemoryCertifiedListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_TEMPLATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeTemplateRepository(pool) : createInMemoryOfftakeTemplateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_CONTRACT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeContractRepository(pool) : createInMemoryOfftakeContractRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EXPORT_DOCUMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgExportDocumentRepository(pool) : createInMemoryExportDocumentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIEN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLienRepository(pool) : createInMemoryLienRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsurancePolicyRepository(pool) : createInMemoryInsurancePolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_CLAIM_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsuranceClaimRepository(pool) : createInMemoryInsuranceClaimRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DISBURSEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDisbursementRepository(pool) : createInMemoryDisbursementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGGREGATION_POINT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAggregationPointRepository(pool) : createInMemoryAggregationPointRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COLD_CHAIN_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgColdChainLogRepository(pool) : createInMemoryColdChainLogRepository(),
+      inject: [PG_POOL]
+    },
+    // Lien-backed transfer guard consulted (optionally) by
+    // LivestockService.transferAnimal; registered here so the livestock core
+    // module resolves it without importing the trade module (no cycle).
+    {
+      provide: LIVESTOCK_TRANSFER_GUARD,
+      useFactory: (liens: unknown) =>
+        createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
+      inject: [LIEN_REPOSITORY]
     }
   ],
   exports: [
@@ -893,7 +1001,18 @@ import {
     ANIMAL_REPOSITORY,
     LOT_REPOSITORY,
     OWNERSHIP_TRANSFER_REPOSITORY,
-    PASTORALIST_PROFILE_REPOSITORY
+    PASTORALIST_PROFILE_REPOSITORY,
+    CERTIFIED_LISTING_REPOSITORY,
+    OFFTAKE_TEMPLATE_REPOSITORY,
+    OFFTAKE_CONTRACT_REPOSITORY,
+    EXPORT_DOCUMENT_REPOSITORY,
+    LIEN_REPOSITORY,
+    INSURANCE_POLICY_REPOSITORY,
+    INSURANCE_CLAIM_REPOSITORY,
+    DISBURSEMENT_REPOSITORY,
+    AGGREGATION_POINT_REPOSITORY,
+    COLD_CHAIN_LOG_REPOSITORY,
+    LIVESTOCK_TRANSFER_GUARD
   ]
 })
 export class DatabaseModule {}

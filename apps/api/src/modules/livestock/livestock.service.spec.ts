@@ -12,10 +12,11 @@ import {
 import { LivestockService } from './livestock.service.js';
 
 type UserRef = Pick<User, 'id' | 'roles'>;
+const asUser = (ref: UserRef): User => ref as User;
 
-const farmer: UserRef = { id: 'farmer-1', roles: ['farmer'] };
-const otherFarmer: UserRef = { id: 'farmer-2', roles: ['farmer'] };
-const admin: UserRef = { id: 'admin-1', roles: ['admin'] };
+const farmer: User = asUser({ id: 'farmer-1', roles: ['farmer'] });
+const otherFarmer: User = asUser({ id: 'farmer-2', roles: ['farmer'] });
+const admin: User = asUser({ id: 'admin-1', roles: ['admin'] });
 
 const baseAnimalInput = {
   species: 'cattle' as const,
@@ -451,7 +452,7 @@ describe('LivestockService', () => {
     });
 
     it('keeps a chronological ownership history across hops', async () => {
-      const third: UserRef = { id: 'farmer-3', roles: ['farmer'] };
+      const third: User = asUser({ id: 'farmer-3', roles: ['farmer'] });
       const animal = await service.registerAnimal(farmer, baseAnimalInput);
       await service.transferAnimal(farmer, animal.id, {
         toUserId: otherFarmer.id,

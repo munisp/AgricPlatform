@@ -29,7 +29,11 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   supplier: 'Supplier',
   chapter_lead: 'Chapter Lead',
   partner: 'Partner',
-  admin: 'Admin'
+  admin: 'Admin',
+  lender: 'Lender',
+  insurer: 'Insurer',
+  regulator: 'Regulator',
+  donor: 'Donor'
 };
 
 export const ROLE_SUMMARIES: Record<UserRole, string> = {
@@ -39,7 +43,11 @@ export const ROLE_SUMMARIES: Record<UserRole, string> = {
   supplier: 'List inputs, equipment and services for farming communities.',
   chapter_lead: 'Run your chapter: members, events, attendance and announcements.',
   partner: 'Publish programmes and track participant impact in your scope.',
-  admin: 'Operate the platform: users, reviews, audit and integrations.'
+  admin: 'Operate the platform: users, reviews, audit and integrations.',
+  lender: 'Register and manage liens over livestock collateral.',
+  insurer: 'Bind livestock insurance policies and settle claims.',
+  regulator: 'Export compliance reports across the livestock registry.',
+  donor: 'Schedule and track milestone-based programme disbursements.'
 };
 
 export interface ModuleDef {

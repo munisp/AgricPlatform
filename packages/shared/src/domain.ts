@@ -5,7 +5,12 @@ export const USER_ROLES = [
   'supplier',
   'chapter_lead',
   'partner',
-  'admin'
+  'admin',
+  // Wave L1c ALTP personas (finance + compliance).
+  'lender',
+  'insurer',
+  'regulator',
+  'donor'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];

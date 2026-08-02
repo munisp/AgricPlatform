@@ -47,7 +47,11 @@ export const DEV_PREVIEW_USERS: Record<UserRole, { userId: string; displayName: 
   supplier: { userId: 'user-hassan', displayName: 'Hassan Abdullahi' },
   chapter_lead: { userId: 'user-lead-kaduna', displayName: 'Kaduna Chapter Lead' },
   partner: { userId: 'user-partner', displayName: 'Agri Partner Foundation' },
-  admin: { userId: 'user-admin', displayName: 'NYFN Platform Admin' }
+  admin: { userId: 'user-admin', displayName: 'NYFN Platform Admin' },
+  lender: { userId: 'user-lender', displayName: 'Livestock Credit Cooperative' },
+  insurer: { userId: 'user-insurer', displayName: 'Sahel Livestock Insurance' },
+  regulator: { userId: 'user-regulator', displayName: 'State Ministry of Livestock' },
+  donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' }
 };
 
 const SESSION_KEY = 'agric.session';

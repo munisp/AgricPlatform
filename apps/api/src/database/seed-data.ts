@@ -158,6 +158,51 @@ export const seedUsers: User[] = [
     isVerified: true,
     createdAt: '2025-10-01T09:00:00.000Z',
     lastActiveAt: NOW
+  },
+  // Wave L1c ALTP personas (appended): livestock finance + compliance actors.
+  {
+    id: 'user-lender',
+    phone: '+2348010000009',
+    fullName: 'Livestock Credit Cooperative',
+    roles: ['lender'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_3',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
+  },
+  {
+    id: 'user-insurer',
+    phone: '+2348010000010',
+    fullName: 'Sahel Livestock Insurance',
+    roles: ['insurer'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_3',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
+  },
+  {
+    id: 'user-regulator',
+    phone: '+2348010000011',
+    fullName: 'State Ministry of Livestock',
+    roles: ['regulator'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_3',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
+  },
+  {
+    id: 'user-donor',
+    phone: '+2348010000012',
+    fullName: 'Rural Livelihoods Donor Programme',
+    roles: ['donor'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_3',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
   }
 ];
 
