@@ -36,4 +36,15 @@ COPY --from=build --chown=agric:agric /app/apps/api/dist ./apps/api/dist
 # Web: Next standalone output is self-contained (its own minimal node_modules).
 COPY --from=build --chown=agric:agric /app/apps/web/.next/standalone ./apps/web/.next/standalone
 COPY --from=build --chown=agric:agric /app/apps/web/.next/static ./apps/web/.next/standalone/apps/web/.next/static
-COPY --from=build --chown=agric:agric /app/apps/web/public ./apps/web/.next/standalone/a
+COPY --from=build --chown=agric:agric /app/apps/web/public ./apps/web/.next/standalone/apps/web/public
+USER agric
+EXPOSE 3000 3001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
+  CMD wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 \
+    && wget -qO- http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1
+# Preview runtime: the web server is the primary (PID 1, exec'd) process so the
+# container stays up even if the API exits. The API runs beside it in
+# development mode (in-memory seeds, stub providers) because the production
+# boot is deliberately fail-closed without real credentials/IdP config.
+# Production deployments use the images in infra/docker/.
+CMD ["sh", "-c", "NODE_ENV=development PORT=3001 node apps/api/dist/main.js & exec env PORT=3000 node apps/web/.next/standalone/apps/web/server.js"]

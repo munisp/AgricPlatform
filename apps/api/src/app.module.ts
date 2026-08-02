@@ -36,6 +36,8 @@ import { EmbedModule } from './modules/embed/embed.module.js';
 import { PartnerApiModule } from './modules/partner-api/partner-api.module.js';
 // Wave P6a (additive).
 import { IvrModule } from './modules/ivr/ivr.module.js';
+// Wave L1a (additive): ALTP livestock core.
+import { LivestockModule } from './modules/livestock/livestock.module.js';
 
 @Module({
   imports: [
@@ -79,7 +81,9 @@ import { IvrModule } from './modules/ivr/ivr.module.js';
     PartnerApiModule,
     EmbedModule,
     // Wave P6a IVR voice channel — appended to minimise merge conflicts.
-    IvrModule
+    IvrModule,
+    // Wave L1a ALTP livestock core — appended to minimise merge conflicts.
+    LivestockModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
