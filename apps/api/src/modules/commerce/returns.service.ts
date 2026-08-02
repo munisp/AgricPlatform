@@ -108,8 +108,36 @@ export class ReturnsService {
     return created;
   }
 
-  async listReturns(filter: { orderId?: string; buyerId?: string; status?: ReturnStatus }): Promise<ReturnRequest[]> {
-    return this.returns.find(filter);
+  /**
+   * Party-scoped listing (G2): admins see everything; anyone else is
+   * restricted to their own returns. Without an explicit buyerId a
+   * non-admin caller defaults to buyerId=self (mirrors listDrafts); an
+   * orderId filter additionally requires the caller to be a party to that
+   * order (buyer or seller).
+   */
+  async listReturns(
+    filter: { orderId?: string; buyerId?: string; status?: ReturnStatus },
+    actor: Pick<User, 'id' | 'roles'>
+  ): Promise<ReturnRequest[]> {
+    if (actor.roles.includes('admin')) {
+      return this.returns.find(filter);
+    }
+    const scoped = { ...filter };
+    if (scoped.buyerId && scoped.buyerId !== actor.id) {
+      throw new ForbiddenException('You may only list your own return requests');
+    }
+    if (scoped.orderId) {
+      const order = await this.orders.getById(scoped.orderId);
+      if (order.buyerId !== actor.id && order.sellerId !== actor.id) {
+        throw new ForbiddenException(
+          'You may only access returns for orders you are a party to'
+        );
+      }
+    }
+    if (!scoped.buyerId && !scoped.orderId) {
+      scoped.buyerId = actor.id;
+    }
+    return this.returns.find(scoped);
   }
 
   async getReturn(id: string): Promise<ReturnRequest> {

@@ -29,9 +29,10 @@ import {
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { MarketplaceService } from '../marketplace/marketplace.service.js';
 import { BuyerGroupsService, type CreateBuyerGroupInput, type UpdateBuyerGroupInput } from './buyer-groups.service.js';
 import { CheckoutService, type CheckoutInput } from './checkout.service.js';
 import { DraftOrdersService, type CreateDraftOrderInput } from './draft-orders.service.js';
@@ -380,7 +381,8 @@ export class CommerceController {
     private readonly returns: ReturnsService,
     private readonly drafts: DraftOrdersService,
     private readonly reviews: ProductReviewsService,
-    private readonly analytics: SellerAnalyticsService
+    private readonly analytics: SellerAnalyticsService,
+    private readonly marketplace: MarketplaceService
   ) {}
 
   /* ------------------------- 1. variants & SKUs ------------------------- */
@@ -540,8 +542,11 @@ export class CommerceController {
 
   @Get('orders/:id/promotions')
   @Authenticated()
-  @ApiOperation({ summary: 'Promotions applied to an order' })
-  async orderPromotions(@Param('id') id: string) {
+  @ApiOperation({ summary: 'Promotions applied to an order (order parties or admin)' })
+  async orderPromotions(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const user = requireActor(actor);
+    const order = await this.marketplace.getOrder(id);
+    assertPartyOrAdmin(user, [order.buyerId, order.sellerId]);
     return { data: await this.promotions.redemptionsForOrder(id) };
   }
 
@@ -581,10 +586,9 @@ export class CommerceController {
     @Query('status') status?: ReturnStatus
   ) {
     const user = requireActor(actor);
-    if (!user.roles.includes('admin') && buyerId && buyerId !== user.id) {
-      assertSelfOrAdmin(user, buyerId);
-    }
-    return { data: await this.returns.listReturns({ orderId, buyerId, status }) };
+    // Party scoping lives in the service (it owns the order lookup):
+    // non-admins default to buyerId=self and cross-party orderIds 403.
+    return { data: await this.returns.listReturns({ orderId, buyerId, status }, user) };
   }
 
   @Post('returns/:id/transition')
