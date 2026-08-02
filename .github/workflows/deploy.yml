@@ -102,7 +102,7 @@ jobs:
           echo "Manifests that would be applied: infra/k8s/overlays/staging"
       - name: Set up kubectl
         if: ${{ env.KUBECONFIG_B64 != '' }}
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
       - name: Configure cluster credentials
         if: ${{ env.KUBECONFIG_B64 != '' }}
         run: |
@@ -156,7 +156,7 @@ jobs:
           echo "Manifests that would be applied: infra/k8s/overlays/production"
       - name: Set up kubectl
         if: ${{ env.KUBECONFIG_B64 != '' }}
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v5
       - name: Configure cluster credentials
         if: ${{ env.KUBECONFIG_B64 != '' }}
         run: |
