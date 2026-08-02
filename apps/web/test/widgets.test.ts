@@ -18,7 +18,6 @@ function loadWidget(name: string, targetId: string) {
             data-target="#${targetId}"
             data-api="${API}"></script>`;
   const source = readFileSync(join(WIDGETS_DIR, `${name}.js`), 'utf8');
-  // eslint-disable-next-line no-eval
   (0, eval)(source);
 }
 
