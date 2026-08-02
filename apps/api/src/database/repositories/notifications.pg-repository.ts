@@ -58,8 +58,9 @@ export class PgNotificationRepository
     return this.withTransaction(async (client) => {
       await client.query(
         `INSERT INTO notifications.delivery_logs
-           (id, notification_id, provider, provider_ref, status, detail, attempted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           (id, notification_id, provider, provider_ref, status, detail, attempted_at,
+            attempt, next_retry_at, dead_lettered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           newId('delivery'),
           entry.notificationId,
@@ -67,7 +68,10 @@ export class PgNotificationRepository
           entry.result.providerRef,
           entry.result.delivered ? 'delivered' : 'failed',
           JSON.stringify(entry.result),
-          entry.at
+          entry.at,
+          entry.attempt ?? 1,
+          entry.nextRetryAt ?? null,
+          entry.deadLetteredAt ?? null
         ]
       );
       const result = await client.query(
@@ -121,8 +125,9 @@ export class PgDeliveryLogRepository implements DeliveryLogRepository {
   async append(entry: DeliveryLogEntry): Promise<DeliveryLogEntry> {
     await this.pool.query(
       `INSERT INTO notifications.delivery_logs
-         (id, notification_id, provider, provider_ref, status, detail, attempted_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (id, notification_id, provider, provider_ref, status, detail, attempted_at,
+          attempt, next_retry_at, dead_lettered_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         newId('delivery'),
         entry.notificationId,
@@ -130,7 +135,10 @@ export class PgDeliveryLogRepository implements DeliveryLogRepository {
         entry.result.providerRef,
         entry.result.delivered ? 'delivered' : 'failed',
         JSON.stringify(entry.result),
-        entry.at
+        entry.at,
+        entry.attempt ?? 1,
+        entry.nextRetryAt ?? null,
+        entry.deadLetteredAt ?? null
       ]
     );
     return entry;
@@ -144,14 +152,18 @@ export class PgDeliveryLogRepository implements DeliveryLogRepository {
       where = ' WHERE notification_id = $1';
     }
     const result = await this.pool.query(
-      `SELECT notification_id, detail, attempted_at FROM notifications.delivery_logs${where}
+      `SELECT notification_id, detail, attempted_at, attempt, next_retry_at, dead_lettered_at
+         FROM notifications.delivery_logs${where}
         ORDER BY attempted_at`,
       params
     );
     return result.rows.map((row) => ({
       notificationId: row.notification_id as string,
       result: row.detail as DeliveryLogEntry['result'],
-      at: ts(row.attempted_at)
+      at: ts(row.attempted_at),
+      attempt: row.attempt as number,
+      ...(row.next_retry_at ? { nextRetryAt: ts(row.next_retry_at) } : {}),
+      ...(row.dead_lettered_at ? { deadLetteredAt: ts(row.dead_lettered_at) } : {})
     }));
   }
 }
