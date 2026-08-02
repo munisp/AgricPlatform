@@ -289,7 +289,14 @@ function ConfirmMergeDialog({
 
   return (
     <div className="modal-overlay">
-      <div className="card modal-card" role="dialog" aria-modal="true" aria-labelledby="merge-summary-title">
+      <div
+        className="card modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="merge-summary-title"
+        tabIndex={-1}
+        ref={(node) => node?.focus()}
+      >
         <h3 id="merge-summary-title">Import merged</h3>
         <p className="small muted">
           Batch {result.batch.id} from {result.batch.donorSource} is confirmed.
@@ -311,7 +318,7 @@ function ConfirmMergeDialog({
           </li>
         </ul>
         <div className="cluster" style={{ justifyContent: 'flex-end' }}>
-          <button type="button" className="btn btn-primary" onClick={onClose} autoFocus>
+          <button type="button" className="btn btn-primary" onClick={onClose}>
             Done
           </button>
         </div>

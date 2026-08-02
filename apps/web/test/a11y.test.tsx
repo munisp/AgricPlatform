@@ -9,6 +9,7 @@ import { EmptyState, ProgressBar, StatusBadge } from '@/components/ui';
 import { OpportunityBrowser } from '@/components/opportunity-browser';
 import { OnboardingWizard } from '@/components/onboarding-wizard';
 import { SupplierDirectory } from '@/components/services-live';
+import { RecommendationsRail } from '@/components/recommendations-rail';
 
 expect.extend(toHaveNoViolations);
 
@@ -64,6 +65,20 @@ describe('axe smoke tests (headless, jsdom)', () => {
       }
       if (parsed.pathname.endsWith('/api/v1/service-suppliers')) {
         return jsonResponse({ data: [SUPPLIER], total: 1, page: 1, pageSize: 60 });
+      }
+      if (parsed.pathname.endsWith('/api/v1/recommendations')) {
+        return jsonResponse({
+          data: [
+            {
+              type: 'course',
+              id: 'axe-reco',
+              title: 'Axe Recommendation',
+              summary: 'A recommendation for axe testing.',
+              score: 5,
+              reasons: ['same_crop']
+            }
+          ]
+        });
       }
       return jsonResponse({ data: [] });
     });
@@ -160,6 +175,21 @@ describe('axe smoke tests (headless, jsdom)', () => {
       expect(container.textContent).toContain('Axe Test Tractor Hire');
     });
     expect(container.querySelector('fieldset legend')?.textContent).toBe('Filter suppliers');
+    expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
+  });
+
+  it('RecommendationsRail composite (Wave P6c surface) has no violations', async () => {
+    const { container } = render(
+      <AppProvider>
+        <I18nProvider>
+          <RecommendationsRail />
+        </I18nProvider>
+      </AppProvider>
+    );
+    await waitFor(() => {
+      expect(container.textContent).toContain('Axe Recommendation');
+    });
+    expect(container.textContent).toContain('Matches your crops');
     expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
   });
 });

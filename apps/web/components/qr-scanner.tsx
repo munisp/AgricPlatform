@@ -44,6 +44,8 @@ export function QrCameraScanner({
     let cancelled = false;
     let stream: MediaStream | null = null;
     let interval: ReturnType<typeof setInterval> | null = null;
+    // Captured once so the cleanup never reads a stale ref.
+    const videoEl = videoRef.current;
 
     const start = async () => {
       let jsQR: typeof import('jsqr').default;
@@ -71,7 +73,7 @@ export function QrCameraScanner({
         return;
       }
 
-      const video = videoRef.current;
+      const video = videoEl;
       if (cancelled || !video) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -114,8 +116,7 @@ export function QrCameraScanner({
       cancelled = true;
       if (interval) clearInterval(interval);
       if (stream) stream.getTracks().forEach((track) => track.stop());
-      const video = videoRef.current;
-      if (video) video.srcObject = null;
+      if (videoEl) videoEl.srcObject = null;
     };
   }, [onScan, onUnavailable]);
 

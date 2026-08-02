@@ -317,6 +317,9 @@ export function WebinarList() {
  */
 export function MyWebinarRegistrations() {
   const { hydrated } = useAppState();
+  // Fixed at mount — sessions crossing their start time mid-render flip on
+  // the next render pass, matching WebinarCard's convention.
+  const [now] = useState(() => Date.now());
   const registrationsQuery = useApiQuery(
     hydrated ? 'webinars:mine' : null,
     () => listMyWebinarRegistrations().then((res) => res.data),
@@ -351,7 +354,7 @@ export function MyWebinarRegistrations() {
             const startsAt = webinar ? new Date(webinar.startsAt) : null;
             const past =
               webinar !== undefined &&
-              (webinar.status === 'completed' || (startsAt !== null && startsAt.getTime() < Date.now()));
+              (webinar.status === 'completed' || (startsAt !== null && startsAt.getTime() < now));
             return (
               <li className="row-item" key={registration.id}>
                 <div className="row-main">
