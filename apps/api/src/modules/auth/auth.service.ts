@@ -126,6 +126,15 @@ export class AuthService {
     return { user: await this.users.getById(userId) };
   }
 
+  /**
+   * Issues a session for an identity already verified by another factor
+   * (wave P5b shared-device PIN swap). Same stub-token contract as OTP.
+   */
+  async issueSessionFor(userId: string): Promise<{ token: string; user: User }> {
+    const user = await this.users.getById(userId);
+    return { token: this.issueStubToken(user), user };
+  }
+
   private issueStubToken(user: User): string {
     // Not a real JWT. Keycloak-issued tokens replace this in production.
     return `stub-token.${Buffer.from(user.id).toString('base64url')}`;

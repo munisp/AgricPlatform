@@ -154,12 +154,15 @@ export function capResponse(body: string, max: number = USSD_MAX_RESPONSE_CHARS)
     .trimEnd();
 }
 
+/** Body cap so the prefixed response stays within the turnaround limit. */
+const BODY_CAP = USSD_MAX_RESPONSE_CHARS - 4;
+
 function con(state: UssdSessionState, body: string): UssdTurn {
-  return { state, response: `CON ${capResponse(body)}`, end: false };
+  return { state, response: `CON ${capResponse(body, BODY_CAP)}`, end: false };
 }
 
 function end(state: UssdSessionState, body: string): UssdTurn {
-  return { state, response: `END ${capResponse(body)}`, end: true };
+  return { state, response: `END ${capResponse(body, BODY_CAP)}`, end: true };
 }
 
 function numbered(items: readonly string[]): string {
@@ -351,7 +354,7 @@ function handleCourseConfirm(state: UssdSessionState, text: string, data: UssdMe
   if (text === '1') {
     return {
       state: initialUssdState(lang),
-      response: `END ${capResponse(`${t(lang, 'enrolment_done')} ${course.title}`)}`,
+      response: `END ${capResponse(`${t(lang, 'enrolment_done')} ${course.title}`, BODY_CAP)}`,
       end: true,
       effect: { type: 'enrol', courseId: course.id, courseTitle: course.title }
     };

@@ -28,6 +28,14 @@ Real HTTP drivers now sit behind the adapter port in `apps/api/src/modules/integ
 | Community — Discourse | `COMMUNITY_DRIVER` | Fail-closed API client (`latest.json`, topic read, post create; `DISCOURSE_API_USERNAME` default `system`) | `DISCOURSE_BASE_URL` + `DISCOURSE_API_KEY` | `drivers/bridge.clients.ts` |
 | CMS — Directus | `CMS_DRIVER` | Fail-closed items client (`/items/{collection}`) | `DIRECTUS_BASE_URL` + `DIRECTUS_TOKEN` | `drivers/bridge.clients.ts` |
 
+## Wave P5b lightweight-channel depth
+
+| Driver | Flag | Live behaviour | Credentials (env) | Code |
+| --- | --- | --- | --- | --- |
+| USSD — Africa's Talking | `USSD_DRIVER=live\|sandbox` | `POST /api/v1/ussd/callback` accepts the form-encoded session turns (sessionId, phoneNumber, `*`-separated text) and answers `CON `/`END ` plain text ≤182 chars; pure step-based menu engine (register / market prices / opportunities / course enrolment / language stub) with a 3-minute session TTL, an expiry sweeper and idempotent replay on (sessionId, cumulative text). Endpoint is fail-closed: 404 until the flag AND credentials are set; production refuses to boot with the flag set and credentials missing | `AT_API_KEY` + `AT_USERNAME` (optional `USSD_SWEEP_INTERVAL_MS`) | `modules/ussd/` (`menu-engine.ts`, `ussd.service.ts`, `ussd.controller.ts`), `infra/postgres/008_ussd_channels.sql` |
+| WhatsApp guided chat | `WHATSAPP_DRIVER` (wave P1) | Inbound 360dialog events drive multi-turn workflows (marketplace listing creation, crop-advisory requests, notification tap-to-confirm); workflow state lives in the shared KV store with a 24h TTL; consumes the wave P1 normalisation without driver changes | as per WhatsApp row above | `modules/notifications/whatsapp-workflows.ts`, `modules/notifications/inbound-conversations.service.ts` |
+| Shared-device PIN swap | n/a (platform feature) | `POST /api/v1/auth/pin-profiles` (auth-guarded, max 5 profiles/device), `GET /api/v1/auth/pin-profiles/:deviceToken`, `POST /api/v1/auth/pin-sessions/switch` (4-digit PIN, salted hash, 5 attempts → 15-minute lockout, short-lived session issue) | none beyond platform auth | `modules/auth/pin-session.service.ts`, `modules/auth/pin-sessions.controller.ts`, `infra/postgres/008_ussd_channels.sql` (`channels.pin_profiles`) |
+
 ## Phase 1 integrations
 
 | Integration | Phase | Purpose (PRD ref) | Adapter location | Local behavior | Production credentials | Verification method |

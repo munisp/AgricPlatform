@@ -66,7 +66,8 @@ describe('USSD menu engine', () => {
       ]
     };
     for (const turn of run(['', '1', '2', '3', '4', '0'], longData)) {
-      expect(turn.response.length).toBeLessThanOrEqual(USSD_MAX_RESPONSE_CHARS + 4); // +4 for "CON "
+      // The 182-char turnaround budget includes the CON/END prefix.
+      expect(turn.response.length).toBeLessThanOrEqual(USSD_MAX_RESPONSE_CHARS);
     }
   });
 
