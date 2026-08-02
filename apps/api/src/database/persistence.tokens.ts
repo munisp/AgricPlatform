@@ -113,6 +113,8 @@ export const LIVESTOCK_TRANSFER_GUARD = Symbol('LIVESTOCK_TRANSFER_GUARD');
 // External provider adapters (fail-closed stubs without configuration).
 export const LIVESTOCK_INSURANCE_PROVIDER = Symbol('LIVESTOCK_INSURANCE_PROVIDER');
 export const COLD_CHAIN_PROVIDER = Symbol('COLD_CHAIN_PROVIDER');
+// Wave P: commodity price signal provider (fail-closed 503 when unconfigured).
+export const COMMODITY_PRICE_PROVIDER = Symbol('COMMODITY_PRICE_PROVIDER');
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
@@ -140,3 +142,8 @@ export const RETURN_REQUEST_REPOSITORY = Symbol('RETURN_REQUEST_REPOSITORY');
 export const DRAFT_ORDER_REPOSITORY = Symbol('DRAFT_ORDER_REPOSITORY');
 export const PRODUCT_REVIEW_REPOSITORY = Symbol('PRODUCT_REVIEW_REPOSITORY');
 export const SELLER_RATING_REPOSITORY = Symbol('SELLER_RATING_REPOSITORY');
+
+// Wave P: platform foundation (sessions, feature flags, consumer dedup).
+export const AUTH_SESSION_REPOSITORY = Symbol('AUTH_SESSION_REPOSITORY');
+export const FEATURE_FLAG_REPOSITORY = Symbol('FEATURE_FLAG_REPOSITORY');
+export const PROCESSED_EVENT_REPOSITORY = Symbol('PROCESSED_EVENT_REPOSITORY');

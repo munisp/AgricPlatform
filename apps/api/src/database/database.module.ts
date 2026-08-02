@@ -381,6 +381,20 @@ import {
   createPgOfftakeContractRepository,
   createPgOfftakeTemplateRepository
 } from './repositories/livestock-trade.pg-repository.js';
+// Wave P: platform foundation persistence (additive).
+import {
+  AUTH_SESSION_REPOSITORY,
+  FEATURE_FLAG_REPOSITORY,
+  PROCESSED_EVENT_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAuthSessionRepository } from './repositories/auth-session.repository.js';
+import { createPgAuthSessionRepository } from './repositories/auth-session.pg-repository.js';
+import { createInMemoryFeatureFlagRepository } from './repositories/feature-flag.repository.js';
+import { createInMemoryProcessedEventRepository } from './repositories/processed-event.repository.js';
+import {
+  createPgFeatureFlagRepository,
+  createPgProcessedEventRepository
+} from './repositories/platform.pg-repository.js';
 // Wave M: marketplace commerce depth persistence (additive).
 import {
   BUYER_GROUP_MEMBERSHIP_REPOSITORY,
@@ -1034,6 +1048,25 @@ import {
         createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
       inject: [LIEN_REPOSITORY]
     },
+    // Wave P: platform foundation (appended).
+    {
+      provide: AUTH_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAuthSessionRepository(pool) : createInMemoryAuthSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FEATURE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFeatureFlagRepository(pool) : createInMemoryFeatureFlagRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROCESSED_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProcessedEventRepository(pool) : createInMemoryProcessedEventRepository(),
+      inject: [PG_POOL]
+    },
     // Wave M: marketplace commerce depth providers (additive).
     {
       provide: LISTING_VARIANT_REPOSITORY,
@@ -1216,7 +1249,10 @@ import {
     RETURN_REQUEST_REPOSITORY,
     DRAFT_ORDER_REPOSITORY,
     PRODUCT_REVIEW_REPOSITORY,
-    SELLER_RATING_REPOSITORY
+    SELLER_RATING_REPOSITORY,
+    AUTH_SESSION_REPOSITORY,
+    FEATURE_FLAG_REPOSITORY,
+    PROCESSED_EVENT_REPOSITORY
   ]
 })
 export class DatabaseModule {}

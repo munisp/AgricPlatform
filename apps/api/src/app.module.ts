@@ -42,6 +42,11 @@ import { LivestockModule } from './modules/livestock/livestock.module.js';
 import { LivestockHealthModule } from './modules/livestock-health/livestock-health.module.js';
 // Wave L1c (additive): ALTP trade/finance/compliance.
 import { LivestockTradeModule } from './modules/livestock-trade/livestock-trade.module.js';
+// Wave P (additive): DB-backed feature flags.
+import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module.js';
+// Wave P (additive): Redis-backed rate-limit store.
+import { RedisThrottlerStorage } from './common/rate-limit/redis-throttler.storage.js';
+import { REDIS_CLIENT } from './database/persistence.tokens.js';
 import { CommerceModule } from './modules/commerce/commerce.module.js';
 
 @Module({
@@ -49,10 +54,17 @@ import { CommerceModule } from './modules/commerce/commerce.module.js';
     // Logging first: every module/service log line flows through pino.
     LoggingModule,
     MetricsModule,
-    // In-memory rate limiting (docs/security-compliance.md §7 "SSRF / rate
-    // abuse"). TODO(prod): back the store with Redis so limits hold across
-    // replicas — tracked in docs/production-readiness.md.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
+    // Rate limiting (docs/security-compliance.md §7 "SSRF / rate abuse").
+    // Wave P: the store is pluggable — Redis when REDIS_URL is configured
+    // (limits hold across replicas; ioredis was already a dependency), the
+    // built-in in-memory store otherwise (single-instance only).
+    ThrottlerModule.forRootAsync({
+      inject: [{ token: REDIS_CLIENT, optional: true }],
+      useFactory: (redis: import('ioredis').Redis | null) => ({
+        throttlers: [{ ttl: 60_000, limit: 300 }],
+        ...(redis ? { storage: new RedisThrottlerStorage(redis) } : {})
+      })
+    }),
     DatabaseModule,
     RedisModule,
     CoreModule,
@@ -94,7 +106,9 @@ import { CommerceModule } from './modules/commerce/commerce.module.js';
     // Wave L1c ALTP trade/finance/compliance — appended to minimise merge conflicts.
     LivestockTradeModule,
     // Wave M marketplace commerce depth — appended to minimise merge conflicts.
-    CommerceModule
+    CommerceModule,
+    // Wave P platform foundation — appended to minimise merge conflicts.
+    FeatureFlagsModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
