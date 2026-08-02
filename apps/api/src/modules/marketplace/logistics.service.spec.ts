@@ -24,7 +24,7 @@ function makeService() {
 
 describe('LogisticsService', () => {
   it('schedules one shipment per order with carrier/tracking fields', async () => {
-    makeService();
+    const { service } = makeService();
     const shipment = await service.schedulePickup(
       'order-buyer-cassava',
       { carrier: 'GIG Logistics', trackingReference: 'GIG-123', scheduledPickupAt: '2026-08-01T09:00:00.000Z' },
@@ -38,7 +38,7 @@ describe('LogisticsService', () => {
   });
 
   it('restricts scheduling to the seller (or admin)', async () => {
-    makeService();
+    const { service } = makeService();
     await expect(service.schedulePickup('order-buyer-cassava', {}, buyer)).rejects.toThrowError(
       ForbiddenException
     );
@@ -61,7 +61,7 @@ describe('LogisticsService', () => {
   });
 
   it('rejects illegal transitions and enforces the entitled party', async () => {
-    makeService();
+    const { service } = makeService();
     const shipment = await service.schedulePickup('order-buyer-cassava', {}, seller);
     await expect(service.transition(shipment.id, 'delivered', admin)).rejects.toThrowError(
       /Invalid shipment transition/
@@ -81,7 +81,7 @@ describe('LogisticsService', () => {
   });
 
   it('supports the failed → reschedule path with a failure reason', async () => {
-    makeService();
+    const { service } = makeService();
     const shipment = await service.schedulePickup('order-buyer-cassava', {}, seller);
     await service.transition(shipment.id, 'in_transit', seller);
     const failed = await service.transition(shipment.id, 'failed', seller, 'truck breakdown');
