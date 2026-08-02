@@ -63,7 +63,7 @@ export function QueueList() {
               </div>
               {item.lastError ? <div className="small muted">{item.lastError}</div> : null}
             </div>
-            <AutoBadge value={item.status} />
+            <AutoBadge value={item.status} ariaLabel={`Sync status: ${item.status.replace(/_/g, ' ')}`} />
             {item.status === 'failed' && item.path ? (
               <button
                 type="button"

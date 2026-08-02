@@ -1,4 +1,5 @@
-import type { ReactNode, SelectHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import { cloneElement, isValidElement } from 'react';
+import type { ReactElement, ReactNode, SelectHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes } from 'react';
 
 export function Field({
   id,
@@ -11,12 +12,22 @@ export function Field({
   hint?: string;
   children: ReactNode;
 }) {
+  // Wire the hint to the control: the hint element has an id but nothing
+  // referenced it — inject aria-describedby onto a single element child
+  // unless the caller already set one explicitly.
+  const control =
+    hint && isValidElement(children)
+      ? cloneElement(children as ReactElement<{ 'aria-describedby'?: string }>, {
+          'aria-describedby':
+            (children.props as { 'aria-describedby'?: string })['aria-describedby'] ?? `${id}-hint`
+        })
+      : children;
   return (
     <div className="field">
       <label className="label" htmlFor={id}>
         {label}
       </label>
-      {children}
+      {control}
       {hint ? (
         <span className="hint" id={`${id}-hint`}>
           {hint}

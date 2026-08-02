@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocaleSwitcher } from '@/components/locale-switcher';
 
 export function Footer() {
   return (
@@ -13,6 +14,9 @@ export function Footer() {
             The unified digital operating system for Nigeria&apos;s young farmers — built with NYFN for
             farmers, students, buyers, suppliers, chapters and partners.
           </p>
+          <div style={{ marginTop: '1rem' }}>
+            <LocaleSwitcher id="locale-footer" />
+          </div>
         </div>
         <div>
           <div className="footer-title">Platform</div>

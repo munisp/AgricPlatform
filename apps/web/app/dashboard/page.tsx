@@ -3,6 +3,7 @@ import { RoleDashboard } from '@/components/dashboard-client';
 import { LiveMetrics, LiveNotifications } from '@/components/dashboard-live';
 import { QueueList } from '@/components/queue-list';
 import { NotificationPreferences } from '@/components/notification-preferences';
+import { T } from '@/lib/i18n';
 import { PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -14,27 +15,27 @@ export default function DashboardPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Dashboard"
-        title="Your farm operating system"
-        description="Switch roles in the header to preview how AgricPlatform adapts to each stakeholder."
+        kicker={<T k="dashboard.kicker" />}
+        title={<T k="dashboard.title" />}
+        description={<T k="dashboard.description" />}
       />
       <section className="section-tight">
         <RoleDashboard />
       </section>
 
-      <Section kicker="Indicators" title="Platform metrics">
+      <Section kicker={<T k="dashboard.metricsKicker" />} title={<T k="dashboard.metricsTitle" />}>
         <LiveMetrics />
       </Section>
 
-      <Section kicker="Offline first" title="Sync queue">
+      <Section kicker={<T k="dashboard.queueKicker" />} title={<T k="dashboard.queueTitle" />}>
         <QueueList />
       </Section>
 
-      <Section kicker="Activity" title="Recent notifications">
+      <Section kicker={<T k="dashboard.activityKicker" />} title={<T k="dashboard.activityTitle" />}>
         <LiveNotifications />
       </Section>
 
-      <Section kicker="Communication" title="Notification preferences" id="notifications">
+      <Section kicker={<T k="dashboard.prefsKicker" />} title={<T k="dashboard.prefsTitle" />} id="notifications">
         <NotificationPreferences />
       </Section>
     </div>

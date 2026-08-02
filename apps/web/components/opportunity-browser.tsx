@@ -17,6 +17,7 @@ import {
   listOpportunities
 } from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
+import { useT } from '@/lib/i18n';
 import { Field, Select, TextInput } from '@/components/forms';
 import { EmptyState, StatusBadge } from '@/components/ui';
 import { OfflineDataNotice, QueryState } from '@/components/api-state';
@@ -28,6 +29,7 @@ const FALLBACK_OPPORTUNITIES: Opportunity[] = seedOpportunities;
 const TYPES = ['grant', 'loan', 'programme', 'job', 'internship', 'competition', 'equipment', 'land'] as const;
 
 export function OpportunityBrowser() {
+  const { t } = useT();
   const { userId } = useAppState();
   const { hydrated } = useSession();
   const [query, setQuery] = useState('');
@@ -101,20 +103,21 @@ export function OpportunityBrowser() {
   return (
     <div className="stack-lg">
       {opportunitiesQuery.source === 'fallback' ? <OfflineDataNotice /> : null}
-      <div className="card">
+      <fieldset className="card filter-card">
+        <legend>{t('opportunities.filterLegend')}</legend>
         <div className="form-grid cols-2">
-          <Field id="opp-q" label="Search">
+          <Field id="opp-q" label={t('opportunities.searchLabel')}>
             <TextInput
               id="opp-q"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search grants, programmes, jobs…"
+              placeholder={t('opportunities.searchPlaceholder')}
               type="search"
             />
           </Field>
-          <Field id="opp-type" label="Type">
+          <Field id="opp-type" label={t('opportunities.typeLabel')}>
             <Select id="opp-type" value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="">All types</option>
+              <option value="">{t('opportunities.allTypes')}</option>
               {TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -122,9 +125,9 @@ export function OpportunityBrowser() {
               ))}
             </Select>
           </Field>
-          <Field id="opp-state" label="State">
+          <Field id="opp-state" label={t('opportunities.stateLabel')}>
             <Select id="opp-state" value={state} onChange={(e) => setState(e.target.value)}>
-              <option value="">All states</option>
+              <option value="">{t('opportunities.allStates')}</option>
               {NIGERIAN_STATES.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -132,9 +135,9 @@ export function OpportunityBrowser() {
               ))}
             </Select>
           </Field>
-          <Field id="opp-chain" label="Value chain">
+          <Field id="opp-chain" label={t('opportunities.chainLabel')}>
             <Select id="opp-chain" value={chain} onChange={(e) => setChain(e.target.value)}>
-              <option value="">All value chains</option>
+              <option value="">{t('opportunities.allChains')}</option>
               {VALUE_CHAINS.map((c) => (
                 <option key={c} value={c}>
                   {c}
@@ -144,14 +147,14 @@ export function OpportunityBrowser() {
           </Field>
         </div>
         <div className="cluster" style={{ marginTop: '0.9rem', justifyContent: 'space-between' }}>
-          <span className="small muted" role="status">
-            {results.length} opportunit{results.length === 1 ? 'y' : 'ies'} found
+          <span className="small muted" role="status" aria-live="polite">
+            {t('opportunities.resultsFound', { count: results.length })}
           </span>
           <button type="button" className="btn btn-ghost btn-small" onClick={clearFilters}>
-            Clear filters
+            {t('opportunities.clearFilters')}
           </button>
         </div>
-      </div>
+      </fieldset>
 
       <QueryState
         isLoading={opportunitiesQuery.isLoading}
@@ -160,8 +163,8 @@ export function OpportunityBrowser() {
         onRetry={opportunitiesQuery.refresh}
         empty={
           <EmptyState
-            title="No opportunities match these filters"
-            hint="Try widening the state or value chain filters."
+            title={t('opportunities.emptyTitle')}
+            hint={t('opportunities.emptyHint')}
           />
         }
       >
@@ -178,28 +181,33 @@ export function OpportunityBrowser() {
               <article className="card" key={opp.id}>
                 <div className="cluster" style={{ justifyContent: 'space-between' }}>
                   <StatusBadge tone="info">{opp.type}</StatusBadge>
-                  {matches ? <StatusBadge tone="success">matches your profile</StatusBadge> : null}
+                  {matches ? <StatusBadge tone="success">{t('opportunities.matchesProfile')}</StatusBadge> : null}
                 </div>
                 <h3 style={{ marginTop: '0.6rem' }}>{opp.title}</h3>
                 <p className="small muted">{opp.description}</p>
                 <p className="small">
-                  <strong>Eligibility:</strong> {opp.eligibility.join(' · ')}
+                  <strong>{t('opportunities.eligibility')}:</strong> {opp.eligibility.join(' · ')}
                 </p>
                 <p className="small muted">
-                  {opp.states.length > 6 ? 'Nationwide' : opp.states.join(', ')} ·{' '}
+                  {opp.states.length > 6 ? t('opportunities.nationwide') : opp.states.join(', ')} ·{' '}
                   {opp.valueChains.join(', ')}
                 </p>
                 <div className="cluster" style={{ justifyContent: 'space-between', marginTop: '0.5rem' }}>
                   <span className="small" style={{ fontWeight: 600 }}>
-                    Deadline: {new Date(opp.deadline).toLocaleDateString('en-NG', { dateStyle: 'medium' })}
+                    {t('opportunities.deadline')}: {new Date(opp.deadline).toLocaleDateString('en-NG', { dateStyle: 'medium' })}
                   </span>
                   <button
                     type="button"
                     className={`btn btn-small ${hasApplied ? 'btn-secondary' : 'btn-primary'}`}
                     disabled={hasApplied || applyMutation.status === 'pending'}
+                    aria-label={
+                      hasApplied
+                        ? t('opportunities.appliedAria', { title: opp.title })
+                        : t('opportunities.applyAria', { title: opp.title })
+                    }
                     onClick={() => void applyMutation.mutate({ opportunity: opp })}
                   >
-                    {hasApplied ? 'Applied' : applyMutation.status === 'pending' ? 'Applying…' : 'Apply'}
+                    {hasApplied ? t('opportunities.applied') : applyMutation.status === 'pending' ? t('opportunities.applying') : t('opportunities.apply')}
                   </button>
                 </div>
               </article>

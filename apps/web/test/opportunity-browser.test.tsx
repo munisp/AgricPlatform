@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { AppProvider } from '@/lib/app-state';
+import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
 import { OpportunityBrowser } from '@/components/opportunity-browser';
 
@@ -52,7 +53,9 @@ describe('OpportunityBrowser (wired smoke test)', () => {
   it('renders opportunities from the API and an apply action', async () => {
     render(
       <AppProvider>
-        <OpportunityBrowser />
+        <I18nProvider>
+          <OpportunityBrowser />
+        </I18nProvider>
       </AppProvider>
     );
 
@@ -60,8 +63,11 @@ describe('OpportunityBrowser (wired smoke test)', () => {
       expect(screen.getByText('Test Irrigation Grant')).toBeTruthy();
     });
 
-    expect(screen.getByRole('status').textContent).toContain('1 opportunity found');
-    expect(screen.getByRole('button', { name: 'Apply' })).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain('1 found');
+    // Per-card accessible name disambiguates the identical Apply buttons.
+    expect(
+      screen.getByRole('button', { name: 'Apply for Test Irrigation Grant' })
+    ).toBeTruthy();
 
     // The list endpoint was called through the typed client (GET, no key).
     const listCall = fetchMock.mock.calls.find((call) =>
@@ -79,7 +85,9 @@ describe('OpportunityBrowser (wired smoke test)', () => {
 
     render(
       <AppProvider>
-        <OpportunityBrowser />
+        <I18nProvider>
+          <OpportunityBrowser />
+        </I18nProvider>
       </AppProvider>
     );
 

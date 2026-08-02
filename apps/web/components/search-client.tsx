@@ -131,7 +131,6 @@ export function SearchClient() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Try “cassava”, “grant”, “Kano”, “poultry”…"
-          autoFocus
           aria-describedby="search-hint"
         />
         <span className="hint" id="search-hint">

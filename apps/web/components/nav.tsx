@@ -5,27 +5,30 @@ import { usePathname } from 'next/navigation';
 import { USER_ROLES } from '@agric-platform/shared';
 import type { UserRole } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
+import { useT } from '@/lib/i18n';
+import type { TranslationKey } from '@/lib/i18n';
 import { ROLE_LABELS } from '@/lib/content';
+import { LocaleSwitcher } from '@/components/locale-switcher';
 
-const TOP_LINKS = [
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/learning', label: 'Learning' },
-  { href: '/community', label: 'Community' },
-  { href: '/opportunities', label: 'Opportunities' },
-  { href: '/chapters', label: 'Chapters' },
-  { href: '/marketplace', label: 'Marketplace' },
-  { href: '/finance', label: 'Finance' },
-  { href: '/advisory', label: 'Advisory' },
-  { href: '/partner', label: 'Partner' },
-  { href: '/admin', label: 'Admin' }
+const TOP_LINKS: { href: string; labelKey: TranslationKey }[] = [
+  { href: '/dashboard', labelKey: 'nav.dashboard' },
+  { href: '/learning', labelKey: 'nav.learning' },
+  { href: '/community', labelKey: 'nav.community' },
+  { href: '/opportunities', labelKey: 'nav.opportunities' },
+  { href: '/chapters', labelKey: 'nav.chapters' },
+  { href: '/marketplace', labelKey: 'nav.marketplace' },
+  { href: '/finance', labelKey: 'nav.finance' },
+  { href: '/advisory', labelKey: 'nav.advisory' },
+  { href: '/partner', labelKey: 'nav.partner' },
+  { href: '/admin', labelKey: 'nav.admin' }
 ];
 
-const TAB_LINKS = [
-  { href: '/', label: 'Home' },
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/learning', label: 'Learn' },
-  { href: '/opportunities', label: 'Opportunities' },
-  { href: '/marketplace', label: 'Market' }
+const TAB_LINKS: { href: string; labelKey: TranslationKey }[] = [
+  { href: '/', labelKey: 'nav.tabHome' },
+  { href: '/dashboard', labelKey: 'nav.dashboard' },
+  { href: '/learning', labelKey: 'nav.tabLearn' },
+  { href: '/opportunities', labelKey: 'nav.opportunities' },
+  { href: '/marketplace', labelKey: 'nav.tabMarket' }
 ];
 
 function isActive(pathname: string, href: string): boolean {
@@ -36,29 +39,31 @@ function isActive(pathname: string, href: string): boolean {
 export function Nav() {
   const pathname = usePathname() ?? '/';
   const { role, setRole, hydrated } = useAppState();
+  const { t } = useT();
 
   return (
     <>
       <header className="site-header">
         <div className="container site-header-inner">
-          <Link href="/" className="brand" aria-label="AgricPlatform home">
+          <Link href="/" className="brand" aria-label={t('nav.home')}>
             <span className="leaf-mark" aria-hidden="true" />
             AgricPlatform
           </Link>
-          <nav className="nav-links" aria-label="Primary">
+          <nav className="nav-links" aria-label={t('nav.primaryNav')}>
             {TOP_LINKS.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
                 aria-current={isActive(pathname, link.href) ? 'page' : undefined}
               >
-                {link.label}
+                {t(link.labelKey)}
               </Link>
             ))}
           </nav>
           <div className="nav-actions">
-            <Link href="/search" className="btn btn-ghost btn-small" aria-label="Search the platform">
-              Search
+            <LocaleSwitcher id="locale-nav" />
+            <Link href="/search" className="btn btn-ghost btn-small" aria-label={t('nav.searchLabel')}>
+              {t('nav.search')}
             </Link>
             <span
               className="role-pill"
@@ -68,8 +73,8 @@ export function Nav() {
               <span className="small muted" aria-hidden="true">
                 dev
               </span>
-              <label className="small" style={{ position: 'absolute', left: '-9999px' }} htmlFor="role-select">
-                View as role (development preview)
+              <label className="small sr-only" htmlFor="role-select">
+                {t('nav.rolePreview')}
               </label>
               <select
                 id="role-select"
@@ -87,7 +92,7 @@ export function Nav() {
           </div>
         </div>
       </header>
-      <nav className="bottom-nav" aria-label="Mobile">
+      <nav className="bottom-nav" aria-label={t('nav.mobileNav')}>
         {TAB_LINKS.map((link) => (
           <Link
             key={link.href}
@@ -95,7 +100,7 @@ export function Nav() {
             aria-current={isActive(pathname, link.href) ? 'page' : undefined}
           >
             <span className="tab-icon" aria-hidden="true" />
-            {link.label}
+            {t(link.labelKey)}
           </Link>
         ))}
       </nav>

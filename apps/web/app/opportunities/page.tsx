@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { OpportunityBrowser } from '@/components/opportunity-browser';
+import { T } from '@/lib/i18n';
 import { PageHeader } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -11,9 +12,9 @@ export default function OpportunitiesPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Opportunity marketplace"
-        title="Funding, programmes and jobs"
-        description="Filter by type, state and value chain. Applications are queued offline and submitted with idempotency keys when you reconnect."
+        kicker={<T k="opportunities.kicker" />}
+        title={<T k="opportunities.title" />}
+        description={<T k="opportunities.description" />}
       />
       <section className="section-tight">
         <OpportunityBrowser />

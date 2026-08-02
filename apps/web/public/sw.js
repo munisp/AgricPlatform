@@ -2,10 +2,14 @@
    No build step: plain script served from /public/sw.js. */
 'use strict';
 
-var VERSION = 'agric-sw-v2';
+var VERSION = 'agric-sw-v3';
 var STATIC_CACHE = VERSION + '-static';
 var PAGE_CACHE = VERSION + '-pages';
 var API_CACHE = VERSION + '-api-public';
+
+/* Cap the page cache: low-storage Android devices must not fill up with
+   visited pages. Only the newest entries are kept (FIFO eviction). */
+var PAGE_CACHE_LIMIT = 50;
 
 var APP_SHELL = ['/', '/offline', '/manifest.webmanifest', '/icon.svg'];
 
@@ -34,17 +38,36 @@ function isPublicApiGet(url, request) {
   });
 }
 
+/* Trim a cache to its newest `limit` entries (keys() is insertion-ordered,
+   so keys[0] is the oldest). */
+function trimCache(cacheName, limit) {
+  return caches.open(cacheName).then(function (cache) {
+    return cache.keys().then(function (keys) {
+      if (keys.length <= limit) return undefined;
+      return cache.delete(keys[0]).then(function () {
+        return trimCache(cacheName, limit);
+      });
+    });
+  });
+}
+
 self.addEventListener('install', function (event) {
   event.waitUntil(
-    caches
-      .open(STATIC_CACHE)
-      .then(function (cache) {
-        return cache.addAll(APP_SHELL);
-      })
-      .then(function () {
-        return self.skipWaiting();
-      })
+    caches.open(STATIC_CACHE).then(function (cache) {
+      return cache.addAll(APP_SHELL);
+    })
+    /* No unconditional skipWaiting(): a new worker waits until the user
+       confirms the "Update available" banner, so farmers are never yanked
+       mid-form by a surprise reload. See sw-register.tsx. */
   );
+});
+
+/* Message-gated update flow: the page posts {type: 'SKIP_WAITING'} only
+   after the user taps "Refresh now". */
+self.addEventListener('message', function (event) {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', function (event) {
@@ -99,10 +122,19 @@ self.addEventListener('fetch', function (event) {
           return caches.match(request).then(function (cached) {
             return (
               cached ||
-              new Response(JSON.stringify({ data: [] }), {
-                status: 503,
-                headers: { 'Content-Type': 'application/json' }
-              })
+              /* Offline with no cached copy: a real Response (never
+                 undefined, which would reject respondWith). */
+              new Response(
+                JSON.stringify({
+                  statusCode: 504,
+                  error: 'Gateway Timeout',
+                  message: 'You are offline and no saved copy is available.'
+                }),
+                {
+                  status: 504,
+                  headers: { 'Content-Type': 'application/json' }
+                }
+              )
             );
           });
         })
@@ -121,9 +153,14 @@ self.addEventListener('fetch', function (event) {
         .then(function (response) {
           if (response && response.ok) {
             var copy = response.clone();
-            caches.open(PAGE_CACHE).then(function (cache) {
-              cache.put(request, copy);
-            });
+            caches
+              .open(PAGE_CACHE)
+              .then(function (cache) {
+                return cache.put(request, copy);
+              })
+              .then(function () {
+                return trimCache(PAGE_CACHE, PAGE_CACHE_LIMIT);
+              });
           }
           return response;
         })
@@ -153,7 +190,10 @@ self.addEventListener('fetch', function (event) {
           return response;
         })
         .catch(function () {
-          return cached;
+          /* A failed non-navigation fetch must resolve to a real Response;
+             resolving undefined rejects respondWith and surfaces as a
+             confusing network error. */
+          return Response.error();
         });
     })
   );

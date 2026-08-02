@@ -59,6 +59,12 @@ const nextConfig: NextConfig = {
         headers: [{ key: 'Cache-Control', value: 'public, max-age=3600' }]
       },
       {
+        // Non-hashed icon filenames (manifest icons) — cacheable for a day,
+        // never immutable.
+        source: '/icon-:size(\\d+).png',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=86400' }]
+      },
+      {
         source: '/:path*',
         headers: securityHeaders
       }

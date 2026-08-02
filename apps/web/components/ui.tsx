@@ -10,9 +10,9 @@ export function PageHeader({
   description,
   children
 }: {
-  kicker: string;
-  title: string;
-  description?: string;
+  kicker: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
   children?: ReactNode;
 }) {
   return (
@@ -33,13 +33,19 @@ export function Section({
   children
 }: {
   id?: string;
-  kicker?: string;
-  title: string;
-  description?: string;
+  kicker?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="section" id={id} aria-label={title}>
+    // aria-label only when the title is a plain string; translated titles
+    // (<T> nodes) rely on the h2 for heading navigation.
+    <section
+      className="section"
+      id={id}
+      aria-label={typeof title === 'string' ? title : undefined}
+    >
       <div className="section-head">
         {kicker ? <span className="kicker">{kicker}</span> : null}
         <h2>{title}</h2>
@@ -55,7 +61,7 @@ export function Card({
   children,
   className
 }: {
-  title?: string;
+  title?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
@@ -67,8 +73,21 @@ export function Card({
   );
 }
 
-export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
+export function StatusBadge({
+  tone,
+  children,
+  ariaLabel
+}: {
+  tone: Tone;
+  children: ReactNode;
+  /** Clarifying accessible name when the badge text alone is ambiguous. */
+  ariaLabel?: string;
+}) {
+  return (
+    <span className={`badge badge-${tone}`} aria-label={ariaLabel}>
+      {children}
+    </span>
+  );
 }
 
 const toneByKeyword: Record<string, Tone> = {
@@ -102,9 +121,13 @@ const toneByKeyword: Record<string, Tone> = {
   draft: 'neutral'
 };
 
-export function AutoBadge({ value }: { value: string }) {
+export function AutoBadge({ value, ariaLabel }: { value: string; ariaLabel?: string }) {
   const tone = toneByKeyword[value] ?? 'neutral';
-  return <StatusBadge tone={tone}>{value.replace(/_/g, ' ')}</StatusBadge>;
+  return (
+    <StatusBadge tone={tone} ariaLabel={ariaLabel}>
+      {value.replace(/_/g, ' ')}
+    </StatusBadge>
+  );
 }
 
 export function MetricCard({ metric }: { metric: PlatformMetric }) {
@@ -118,7 +141,9 @@ export function MetricCard({ metric }: { metric: PlatformMetric }) {
       <div className="metric-label">{metric.label}</div>
       {typeof metric.trend === 'number' ? (
         <div className={`metric-trend${trendUp ? '' : ' down'}`}>
-          {trendUp ? '▲' : '▼'} {Math.abs(metric.trend)}% this quarter
+          <span aria-hidden="true">{trendUp ? '▲' : '▼'}</span>
+          <span className="sr-only">{trendUp ? 'up' : 'down'}</span> {Math.abs(metric.trend)}% this
+          quarter
         </div>
       ) : null}
     </div>

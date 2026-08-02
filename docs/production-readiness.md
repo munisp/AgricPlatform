@@ -134,6 +134,17 @@ Engineering cannot close the following without third parties or operating enviro
 
 These map to blockers L1–L10 in `docs/security-compliance.md`.
 
+## 4a. Accessibility + i18n foundations (code-complete; external verification pending)
+
+The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`, workstream B) is code-complete in `apps/web`:
+
+- **Automated a11y checks (headless):** jsx-a11y gap rules enabled as eslint errors on top of the six rules `eslint-config-next` 16 bundles; jest-axe smoke tests cover form/ui primitives plus `OpportunityBrowser` and `OnboardingWizard` composites inside the real providers; `test/contrast.test.ts` parses `globals.css` and asserts WCAG AA luminance ratios (badge-info fixed 3.82:1 → 5.54:1, badge-critical 4.51:1 → 5.63:1, `--ink-mute` 4.53:1 → 5.08:1).
+- **Hardening:** 44px touch targets (`.btn-small`, `.chip`, `.nav-links a`), reusable `.sr-only`, skip-link target focus (`tabIndex={-1}`), `fieldset`/`legend` filter group, live result count, per-card apply labels, `aria-describedby` hint wiring, blanket `prefers-reduced-motion`, accessible metric trends and queue status badges.
+- **i18n foundations:** typed English dictionary (source of truth) with low-literacy rules documented; empty Hausa/Yoruba/Igbo `DeepPartial` scaffolds with per-key English fallback (no machine translation committed); `I18nProvider` persists locale to `agric.locale` and updates `<html lang>`; labelled locale switcher in nav and footer; strings extracted for nav, dashboard, opportunities, learning, marketplace and onboarding chrome. Everything else stays hardcoded pending translation review.
+- **PWA:** service worker v3 caps the page cache at 50 entries (FIFO), resolves offline failures with real Responses (504 JSON for `/api/*`, `Response.error()` for assets), and gates activation behind a user-confirmed "Update available" banner (`SKIP_WAITING` message + `controllerchange` reload). Manifest declares 192/512 PNG icons — **the binary assets are an external design task** (entries reference `public/icon-192.png`/`icon-512.png`, not yet committed).
+
+**External verification still required (cannot run in this environment):** TalkBack/NVDA screen-reader passes, real Lighthouse a11y + PWA runs, PWA installability on physical Android, keyboard walkthrough, service-worker update flow end-to-end, outdoor/sunglare contrast on real screens, and native-speaker review of future ha/yo/ig translations.
+
 ## 5. Known implementation gaps
 
 | Priority | Gap | Why it matters | Recommended owner |

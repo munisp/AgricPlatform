@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { ListingForm } from '@/components/listing-form';
 import { ListingBrowser, OrderList } from '@/components/marketplace-live';
+import { T } from '@/lib/i18n';
 import { Card, PageHeader, Section, Timeline } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -20,22 +21,22 @@ export default function MarketplacePage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Marketplace"
-        title="Buy and sell with confidence"
-        description="Verified listings, transparent order states and escrow-ready payments built for low connectivity."
+        kicker={<T k="marketplace.kicker" />}
+        title={<T k="marketplace.title" />}
+        description={<T k="marketplace.description" />}
       />
 
-      <Section kicker="Browse" title="Active listings">
+      <Section kicker={<T k="marketplace.browseKicker" />} title={<T k="marketplace.browseTitle" />}>
         <ListingBrowser />
       </Section>
 
-      <Section kicker="Sell" title="List produce, inputs or services">
+      <Section kicker={<T k="marketplace.sellKicker" />} title={<T k="marketplace.sellTitle" />}>
         <ListingForm />
       </Section>
 
-      <Section kicker="Orders" title="Order pipeline" description="Every status change is an order event; escrow states are explicit.">
+      <Section kicker={<T k="marketplace.ordersKicker" />} title={<T k="marketplace.ordersTitle" />} description={<T k="marketplace.ordersDescription" />}>
         <div className="grid grid-2">
-          <Card title="How an order flows">
+          <Card title={<T k="marketplace.orderFlowTitle" />}>
             <Timeline items={ORDER_FLOW} />
           </Card>
           <OrderList />

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { CertificateTable, CourseCatalogue, EnrolmentProgress } from '@/components/learning-live';
+import { T } from '@/lib/i18n';
 import { PageHeader, Section } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -11,20 +12,20 @@ export default function LearningPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Learning Academy"
-        title="Skills that pay on the farm"
-        description="Short, practical courses you can download and finish offline. Certificates carry verification codes partners can check."
+        kicker={<T k="learning.kicker" />}
+        title={<T k="learning.title" />}
+        description={<T k="learning.description" />}
       />
 
-      <Section kicker="My learning" title="Enrolment progress">
+      <Section kicker={<T k="learning.progressKicker" />} title={<T k="learning.progressTitle" />}>
         <EnrolmentProgress />
       </Section>
 
-      <Section kicker="Catalogue" title="Course catalogue" description="Mirrored from the Moodle bridge; offline-ready courses download to your device.">
+      <Section kicker={<T k="learning.catalogueKicker" />} title={<T k="learning.catalogueTitle" />} description={<T k="learning.catalogueDescription" />}>
         <CourseCatalogue />
       </Section>
 
-      <Section kicker="Credentials" title="Certificates" id="certificates">
+      <Section kicker={<T k="learning.certsKicker" />} title={<T k="learning.certsTitle" />} id="certificates">
         <CertificateTable />
       </Section>
     </div>

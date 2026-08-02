@@ -1,0 +1,164 @@
+/**
+ * English dictionary — typed source of truth for all translatable UI copy.
+ *
+ * LOW-LITERACY UX RULES (apply to every string, and to future translations):
+ * - Max ~8 words per UI string.
+ * - Verbs first on buttons ("Save listing", not "Listing save").
+ * - Digits, not words ("Step 2 of 5").
+ * - Sentence case, never ALL CAPS.
+ * - No idioms, no metaphors, no jokes — CEFR A2 reading level.
+ * - Never icon-only buttons; every action keeps a text label.
+ * - {placeholders} are interpolated at render time; keep them short.
+ *
+ * Migration path: these files drop into next-intl (or similar) unchanged
+ * when the app moves to routed locales.
+ */
+export const en = {
+  nav: {
+    skipToContent: 'Skip to content',
+    home: 'AgricPlatform home',
+    primaryNav: 'Primary',
+    mobileNav: 'Mobile',
+    dashboard: 'Dashboard',
+    learning: 'Learning',
+    community: 'Community',
+    opportunities: 'Opportunities',
+    chapters: 'Chapters',
+    marketplace: 'Marketplace',
+    finance: 'Finance',
+    advisory: 'Advisory',
+    partner: 'Partner',
+    admin: 'Admin',
+    tabHome: 'Home',
+    tabLearn: 'Learn',
+    tabMarket: 'Market',
+    search: 'Search',
+    searchLabel: 'Search the platform',
+    rolePreview: 'View as role (development preview)'
+  },
+  dashboard: {
+    kicker: 'Dashboard',
+    title: 'Your farm operating system',
+    description: 'Switch roles in the header to preview how AgricPlatform adapts to each stakeholder.',
+    metricsKicker: 'Indicators',
+    metricsTitle: 'Platform metrics',
+    queueKicker: 'Offline first',
+    queueTitle: 'Sync queue',
+    activityKicker: 'Activity',
+    activityTitle: 'Recent notifications',
+    prefsKicker: 'Communication',
+    prefsTitle: 'Notification preferences'
+  },
+  opportunities: {
+    kicker: 'Opportunity marketplace',
+    title: 'Funding, programmes and jobs',
+    description:
+      'Filter by type, state and value chain. Applications are queued offline and submitted with idempotency keys when you reconnect.',
+    filterLegend: 'Filter opportunities',
+    searchLabel: 'Search',
+    searchPlaceholder: 'Search grants, programmes, jobs…',
+    typeLabel: 'Type',
+    allTypes: 'All types',
+    stateLabel: 'State',
+    allStates: 'All states',
+    chainLabel: 'Value chain',
+    allChains: 'All value chains',
+    resultsFound: '{count} found',
+    clearFilters: 'Clear filters',
+    eligibility: 'Eligibility',
+    deadline: 'Deadline',
+    nationwide: 'Nationwide',
+    matchesProfile: 'matches your profile',
+    apply: 'Apply',
+    applied: 'Applied',
+    applying: 'Applying…',
+    applyAria: 'Apply for {title}',
+    appliedAria: 'Applied to {title}',
+    emptyTitle: 'No opportunities match these filters',
+    emptyHint: 'Try widening the state or value chain filters.'
+  },
+  learning: {
+    kicker: 'Learning Academy',
+    title: 'Skills that pay on the farm',
+    description:
+      'Short, practical courses you can download and finish offline. Certificates carry verification codes partners can check.',
+    progressKicker: 'My learning',
+    progressTitle: 'Enrolment progress',
+    catalogueKicker: 'Catalogue',
+    catalogueTitle: 'Course catalogue',
+    catalogueDescription:
+      'Mirrored from the Moodle bridge; offline-ready courses download to your device.',
+    certsKicker: 'Credentials',
+    certsTitle: 'Certificates'
+  },
+  marketplace: {
+    kicker: 'Marketplace',
+    title: 'Buy and sell with confidence',
+    description:
+      'Verified listings, transparent order states and escrow-ready payments built for low connectivity.',
+    browseKicker: 'Browse',
+    browseTitle: 'Active listings',
+    sellKicker: 'Sell',
+    sellTitle: 'List produce, inputs or services',
+    ordersKicker: 'Orders',
+    ordersTitle: 'Order pipeline',
+    ordersDescription: 'Every status change is an order event; escrow states are explicit.',
+    orderFlowTitle: 'How an order flows',
+    formTitle: 'Create a listing',
+    formIntro: 'Listings are saved offline first and published when the marketplace service is reachable.',
+    kindLabel: 'Listing kind',
+    cropLabel: 'Crop (optional)',
+    notCropSpecific: 'Not crop-specific',
+    titleLabel: 'Title',
+    titleHint: 'At least 6 characters.',
+    priceLabel: 'Total price (₦)',
+    quantityLabel: 'Quantity',
+    unitLabel: 'Unit',
+    stateLabel: 'State',
+    selectState: 'Select state…',
+    lgaLabel: 'LGA',
+    saveListing: 'Save listing',
+    saving: 'Saving…',
+    myListingsAria: 'My offline listings',
+    myListings: 'My listings on this device'
+  },
+  onboarding: {
+    kicker: 'Onboarding',
+    title: 'Create your NYFN account',
+    description:
+      'Five short steps. Your progress is saved on this device as you go — nothing is lost if your connection drops.',
+    stepsAria: 'Onboarding progress',
+    stepAccount: 'Account',
+    stepLocation: 'Location',
+    stepInterests: 'Interests',
+    stepFarm: 'Farm details',
+    stepReview: 'Review',
+    stepProgress: 'Step {step} of {total}',
+    back: 'Back',
+    continue: 'Continue',
+    finish: 'Finish and join',
+    joining: 'Joining…',
+    fullName: 'Full name',
+    phone: 'Phone number',
+    phoneHint: 'Used for OTP sign-in and SMS alerts.',
+    role: 'I am joining as',
+    language: 'Preferred language',
+    state: 'State',
+    selectState: 'Select state…',
+    lga: 'Local government area (LGA)',
+    interests: 'Farming interests',
+    interestsHint: 'Choose all that apply.',
+    chains: 'Value chains you work in',
+    chainsAria: 'Value chains',
+    farmSize: 'Farm size (hectares)',
+    experience: 'Years of experience',
+    bio: 'Short bio',
+    bioHint: 'At least 20 characters — it raises your profile score.'
+  },
+  common: {
+    loading: 'Loading…',
+    retry: 'Retry'
+  }
+};
+
+export type Dictionary = typeof en;
