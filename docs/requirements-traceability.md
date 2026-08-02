@@ -126,7 +126,19 @@ Waves P5a–P5e (merges through c4ebae2) closed every engineering-buildable PRD 
 | Appendix F channels | USSD fully implemented (Africa's Talking callback, menu state machine: registration, price check, opportunities, course confirmation; 182-char turns, session TTL, idempotent replay). WhatsApp structured multi-turn workflows implemented. Shared-device PIN session swap implemented. Live USSD/SMS carrier testing remains External dependency. |
 | Appendix G integrations | farmOS/LiteFarm, OFN, NCX/AFEX, ODK/KoboToolbox, input-finance, e-Extension adapters all implemented fail-closed with consent gating (migration 007). Partner API (client credentials, scoped reads/writes, HMAC webhooks, rate buckets) implemented (migration 010). Developer SDK (`@agric-platform/sdk`) + developer portal + 4 embedded widgets implemented. SDK npm/PyPI publish and partner adoption remain External dependency. |
 | Mobile app (Phase 2) | `apps/mobile` Expo/React Native shell with typed API client, offline queue, Login/Home/Courses/Marketplace/Profile screens, CI job. Store assets/submission remain External dependency. |
-| IVR (Phase 3) | NOT built — the only PRD feature area without code. Thin telephony-provider adapter candidate (Africa's Talking Voice); classified with USSD-live as provider-dependent. |
+| IVR (Phase 3) | **Built in Stage 10 (wave P6a)** — see §7a. Live carrier provisioning remains External dependency. |
+
+## 7a. Stage 10 closure addendum (2026-08-02, gap closure + architecture)
+
+Waves P6a–P6c (merges through bf79a21) closed every remaining engineering-doable gap. Merged-main validation: 993 tests (787 API + 158 web + 18 shared + 17 SDK + 13 mobile; 51 pg-gated skips), lint:sql 11 migrations, typecheck/lint/build/bundle (204.7KB < 250KB) green.
+
+| PRD item | Post-Stage-10 status |
+| --- | --- |
+| IVR (Phase 3, Appendix F) | **Implemented.** Africa's Talking Voice webhook (`POST /api/v1/ivr/callback`, form-encoded → `text/xml`), pure call-flow engine mirroring the USSD menu map (price check, advisory, registration status, course enrolment status, repeat/escalate, 3-strike END), terminal-turn idempotent replay, 10-min call TTL + sweeper, fail-closed production gating. Migration 011 (`channels.ivr_calls`). 50 tests. Live telephony provisioning, call-centre Dial number, and professional voice recordings remain External dependency. |
+| Residual hardening (P6b, 7 items) | Redis sliding-window partner rate bucket; partner farm-data pushes persisted (farm_records / pending-link ledger); real ssh2 SFTP transport (fail-closed, env-gated); USSD HTTP e2e; WhatsApp listing LGA capture; duplicate lint key removed; trending-query cold-start blend (`trending_query` reason). 28 tests. |
+| Frontend surfaces (P6c, 6 items) | Recommendations rail on `/dashboard`; `/admin/insights` (segmentation, funnels, retention heatmap, mart snapshots + CSV); `/admin/integrations` (links/revoke, sync, staged-import merge, channel status); camera QR check-in (getUserMedia + jsQR with paste fallback); `/knowledge` "My registrations"; axe a11y gate. 28 web tests. |
+
+**Result:** every PRD v3.3 feature area (M1–M18, Appendix E/F/G) now has implemented, test-evidenced code. Remaining open items are exclusively External dependency class (credentials, legal review, pen test, uptime evidence, translations, partner adoption, store submission, telephony provisioning).
 
 ## 8. Verification rules
 
