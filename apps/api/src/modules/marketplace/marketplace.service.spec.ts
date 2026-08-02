@@ -9,6 +9,7 @@ import { createInMemoryOutboxRepository } from '../../database/repositories/outb
 import { createInMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryInvoiceRepository } from '../../database/repositories/invoice.repository.js';
 import { createInMemoryReviewRepository } from '../../database/repositories/review.repository.js';
+import { createInMemorySellerRatingRepository } from '../../database/repositories/commerce-depth.repository.js';
 import { EscrowService } from './escrow.service.js';
 import { InvoiceService } from './invoice.service.js';
 import { MarketplaceService } from './marketplace.service.js';
@@ -207,5 +208,39 @@ describe('MarketplaceService commerce hooks', () => {
     expect((await escrow.transition((await escrow.escrowForOrder(order.id))!.id, 'refunded', admin)).status).toBe(
       'refunded'
     );
+  });
+});
+
+// Wave M: listing search responses expose the materialized seller rating.
+describe('MarketplaceService listing search seller ratings (Wave M)', () => {
+  it('enriches search results with the seller rating aggregate when wired', async () => {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const listings = createInMemoryListingRepository();
+    const ratings = createInMemorySellerRatingRepository();
+    await ratings.applyReview('user-adamu', 5);
+    await ratings.applyReview('user-adamu', 3);
+    const marketplace = new MarketplaceService(
+      events,
+      listings,
+      createInMemoryOrderRepository(listings),
+      createInMemoryReviewRepository(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ratings
+    );
+    const page = await marketplace.listListings({});
+    const cassava = page.data.find((listing) => listing.id === 'listing-cassava-kaduna');
+    expect(cassava?.sellerRating?.average).toBe(4);
+    const unrated = page.data.find((listing) => listing.id === 'listing-maize-kano');
+    expect(unrated?.sellerRating).toBeUndefined();
+  });
+
+  it('omits ratings gracefully when the ratings repository is not wired', async () => {
+    const { marketplace } = makeService();
+    const page = await marketplace.listListings({});
+    expect(page.data.length).toBeGreaterThan(0);
+    expect(page.data[0].sellerRating).toBeUndefined();
   });
 });

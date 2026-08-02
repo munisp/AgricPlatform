@@ -191,7 +191,9 @@ function router(url: string, init?: RequestInit) {
   return jsonResponse({ data: null });
 }
 
-const CROP_LISTING: MarketplaceListing = {
+// Fixture shape mirrors the livestock-trade API payload (a superset of the
+// shared MarketplaceListing contract).
+const CROP_LISTING = {
   id: 'listing-crop-1',
   sellerId: 'user-aisha',
   sellerName: 'Aisha Bello',
@@ -205,7 +207,7 @@ const CROP_LISTING: MarketplaceListing = {
   freshness: 'new',
   deliveryOption: 'pickup',
   createdAt: '2026-07-01T09:00:00.000Z'
-};
+} as unknown as MarketplaceListing;
 
 const LIVESTOCK_LISTING: MarketplaceListing = {
   ...CROP_LISTING,

@@ -381,6 +381,49 @@ import {
   createPgOfftakeContractRepository,
   createPgOfftakeTemplateRepository
 } from './repositories/livestock-trade.pg-repository.js';
+// Wave M: marketplace commerce depth persistence (additive).
+import {
+  BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+  BUYER_GROUP_REPOSITORY,
+  DRAFT_ORDER_REPOSITORY,
+  LISTING_VARIANT_REPOSITORY,
+  ORDER_EXTENSION_REPOSITORY,
+  PRICE_LIST_ENTRY_REPOSITORY,
+  PRICE_LIST_REPOSITORY,
+  PRODUCT_REVIEW_REPOSITORY,
+  PROMOTION_REDEMPTION_REPOSITORY,
+  PROMOTION_REPOSITORY,
+  RETURN_REQUEST_REPOSITORY,
+  SELLER_RATING_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBuyerGroupMembershipRepository,
+  createInMemoryBuyerGroupRepository,
+  createInMemoryDraftOrderRepository,
+  createInMemoryListingVariantRepository,
+  createInMemoryOrderExtensionRepository,
+  createInMemoryPriceListEntryRepository,
+  createInMemoryPriceListRepository,
+  createInMemoryProductReviewRepository,
+  createInMemoryPromotionRedemptionRepository,
+  createInMemoryPromotionRepository,
+  createInMemoryReturnRequestRepository,
+  createInMemorySellerRatingRepository
+} from './repositories/commerce-depth.repository.js';
+import {
+  createPgBuyerGroupMembershipRepository,
+  createPgBuyerGroupRepository,
+  createPgDraftOrderRepository,
+  createPgListingVariantRepository,
+  createPgOrderExtensionRepository,
+  createPgPriceListEntryRepository,
+  createPgPriceListRepository,
+  createPgProductReviewRepository,
+  createPgPromotionRedemptionRepository,
+  createPgPromotionRepository,
+  createPgReturnRequestRepository,
+  createPgSellerRatingRepository
+} from './repositories/commerce-depth.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -990,6 +1033,79 @@ import {
       useFactory: (liens: unknown) =>
         createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
       inject: [LIEN_REPOSITORY]
+    },
+    // Wave M: marketplace commerce depth providers (additive).
+    {
+      provide: LISTING_VARIANT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgListingVariantRepository(pool) : createInMemoryListingVariantRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BUYER_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBuyerGroupRepository(pool) : createInMemoryBuyerGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBuyerGroupMembershipRepository(pool) : createInMemoryBuyerGroupMembershipRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRICE_LIST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceListRepository(pool) : createInMemoryPriceListRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRICE_LIST_ENTRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceListEntryRepository(pool) : createInMemoryPriceListEntryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROMOTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPromotionRepository(pool) : createInMemoryPromotionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROMOTION_REDEMPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPromotionRedemptionRepository(pool) : createInMemoryPromotionRedemptionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ORDER_EXTENSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOrderExtensionRepository(pool) : createInMemoryOrderExtensionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RETURN_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgReturnRequestRepository(pool) : createInMemoryReturnRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DRAFT_ORDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDraftOrderRepository(pool) : createInMemoryDraftOrderRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRODUCT_REVIEW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProductReviewRepository(pool) : createInMemoryProductReviewRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SELLER_RATING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSellerRatingRepository(pool) : createInMemorySellerRatingRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1088,7 +1204,19 @@ import {
     DISBURSEMENT_REPOSITORY,
     AGGREGATION_POINT_REPOSITORY,
     COLD_CHAIN_LOG_REPOSITORY,
-    LIVESTOCK_TRANSFER_GUARD
+    LIVESTOCK_TRANSFER_GUARD,
+    LISTING_VARIANT_REPOSITORY,
+    BUYER_GROUP_REPOSITORY,
+    BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+    PRICE_LIST_REPOSITORY,
+    PRICE_LIST_ENTRY_REPOSITORY,
+    PROMOTION_REPOSITORY,
+    PROMOTION_REDEMPTION_REPOSITORY,
+    ORDER_EXTENSION_REPOSITORY,
+    RETURN_REQUEST_REPOSITORY,
+    DRAFT_ORDER_REPOSITORY,
+    PRODUCT_REVIEW_REPOSITORY,
+    SELLER_RATING_REPOSITORY
   ]
 })
 export class DatabaseModule {}
