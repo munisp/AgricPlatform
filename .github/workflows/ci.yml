@@ -204,7 +204,7 @@ jobs:
       # Blocking vulnerability gate on the built images. Unfixed findings are
       # ignored (no patch available); fixed HIGH/CRITICAL findings fail CI.
       - name: Trivy scan — API image
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: agric-api:${{ github.sha }}
           severity: CRITICAL,HIGH
@@ -212,7 +212,7 @@ jobs:
           exit-code: "1"
           format: table
       - name: Trivy scan — web image
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: agric-web:${{ github.sha }}
           severity: CRITICAL,HIGH
