@@ -60,6 +60,7 @@ import type {
   TopicFlag
 } from '../seed-data.js';
 import type { DeliveryLogEntry } from '../repositories/delivery-log.repository.js';
+import type { RecommendationFeedbackEvent } from '../repositories/recommendation-feedback.repository.js';
 import type { DeliveryResult } from '../../modules/integrations/adapters.js';
 import type { RowMapper } from './pg-repository.base.js';
 import { num, ts } from './pg-repository.base.js';
@@ -1704,5 +1705,27 @@ export const installmentMapper: RowMapper<RepaymentInstallment> = {
       total_kobo: 'totalKobo',
       status: 'status',
       paid_at: 'paidAt'
+    })
+};
+
+// Wave P5c: recommendation feedback events (search.recommendation_feedback).
+export const recommendationFeedbackMapper: RowMapper<RecommendationFeedbackEvent> = {
+  columns: ['id', 'user_id', 'item_type', 'item_id', 'action', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    userId: row.user_id as string,
+    itemType: row.item_type as 'course' | 'opportunity' | 'listing' | 'knowledge',
+    itemId: row.item_id as string,
+    action: row.action as 'clicked' | 'dismissed',
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      user_id: 'userId',
+      item_type: 'itemType',
+      item_id: 'itemId',
+      action: 'action',
+      created_at: 'createdAt'
     })
 };

@@ -68,7 +68,9 @@ import {
   FARM_RECORD_REPOSITORY,
   IMPORT_BATCH_REPOSITORY,
   IMPORT_RECORD_REPOSITORY,
-  INBOUND_EVENT_REPOSITORY
+  INBOUND_EVENT_REPOSITORY,
+  RECOMMENDATION_FEEDBACK_REPOSITORY,
+  ANALYTICS_MART_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -202,7 +204,13 @@ import {
   createPgRubricCriterionRepository
 } from './repositories/programmes.pg-repository.js';
 import { createInMemorySearchQueryRepository } from './repositories/search-query.repository.js';
-import { createPgSearchQueryRepository } from './repositories/search.pg-repository.js';
+import {
+  createPgRecommendationFeedbackRepository,
+  createPgSearchQueryRepository
+} from './repositories/search.pg-repository.js';
+import { createInMemoryRecommendationFeedbackRepository } from './repositories/recommendation-feedback.repository.js';
+import { createInMemoryAnalyticsMartRepository } from './repositories/analytics-mart.repository.js';
+import { createPgAnalyticsMartRepository } from './repositories/analytics-mart.pg-repository.js';
 import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
 import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
 import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
@@ -693,6 +701,22 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgPinProfileRepository(pool) : createInMemoryPinProfileRepository(),
       inject: [PG_POOL]
+    },
+    // Wave P5c: recommendation feedback events.
+    {
+      provide: RECOMMENDATION_FEEDBACK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgRecommendationFeedbackRepository(pool)
+          : createInMemoryRecommendationFeedbackRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5c: lakehouse-ready analytics data marts.
+    {
+      provide: ANALYTICS_MART_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -764,7 +788,9 @@ import {
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
     USSD_SESSION_REPOSITORY,
-    PIN_PROFILE_REPOSITORY
+    PIN_PROFILE_REPOSITORY,
+    RECOMMENDATION_FEEDBACK_REPOSITORY,
+    ANALYTICS_MART_REPOSITORY
   ]
 })
 export class DatabaseModule {}
