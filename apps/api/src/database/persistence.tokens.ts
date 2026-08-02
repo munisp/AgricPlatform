@@ -60,6 +60,9 @@ export const PODCAST_EPISODE_REPOSITORY = Symbol('PODCAST_EPISODE_REPOSITORY');
 export const WEBINAR_REPOSITORY = Symbol('WEBINAR_REPOSITORY');
 export const WEBINAR_REGISTRATION_REPOSITORY = Symbol('WEBINAR_REGISTRATION_REPOSITORY');
 export const SEARCH_QUERY_REPOSITORY = Symbol('SEARCH_QUERY_REPOSITORY');
+// Wave P5c: recommendation feedback + analytics data marts.
+export const RECOMMENDATION_FEEDBACK_REPOSITORY = Symbol('RECOMMENDATION_FEEDBACK_REPOSITORY');
+export const ANALYTICS_MART_REPOSITORY = Symbol('ANALYTICS_MART_REPOSITORY');
 
 // Wave P2a: marketplace depth (escrow/invoicing/logistics) + finance/credit.
 export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');

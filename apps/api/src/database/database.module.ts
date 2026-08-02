@@ -63,7 +63,8 @@ import {
   REPAYMENT_SCHEDULE_REPOSITORY,
   SHIPMENT_REPOSITORY,
   WEBINAR_REGISTRATION_REPOSITORY,
-  WEBINAR_REPOSITORY
+  WEBINAR_REPOSITORY,
+  RECOMMENDATION_FEEDBACK_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -197,7 +198,11 @@ import {
   createPgRubricCriterionRepository
 } from './repositories/programmes.pg-repository.js';
 import { createInMemorySearchQueryRepository } from './repositories/search-query.repository.js';
-import { createPgSearchQueryRepository } from './repositories/search.pg-repository.js';
+import {
+  createPgRecommendationFeedbackRepository,
+  createPgSearchQueryRepository
+} from './repositories/search.pg-repository.js';
+import { createInMemoryRecommendationFeedbackRepository } from './repositories/recommendation-feedback.repository.js';
 import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
 import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
 import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
@@ -620,6 +625,15 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
       inject: [PG_POOL]
+    },
+    // Wave P5c: recommendation feedback events.
+    {
+      provide: RECOMMENDATION_FEEDBACK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgRecommendationFeedbackRepository(pool)
+          : createInMemoryRecommendationFeedbackRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -684,7 +698,8 @@ import {
     LENDER_REPOSITORY,
     LOAN_APPLICATION_REPOSITORY,
     REPAYMENT_SCHEDULE_REPOSITORY,
-    SHIPMENT_REPOSITORY
+    SHIPMENT_REPOSITORY,
+    RECOMMENDATION_FEEDBACK_REPOSITORY
   ]
 })
 export class DatabaseModule {}
