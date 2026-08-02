@@ -178,10 +178,10 @@ describe('FlutterwavePaymentDriver', () => {
 describe('webhook signature helpers', () => {
   it('verifies Paystack HMAC-SHA512 signatures over the raw body', () => {
     const body = Buffer.from(JSON.stringify({ event: 'charge.success' }));
-    const signature = createHmac('sha512', 'sk_live').update(body).digest('hex');
-    expect(verifyPaystackSignature(body, 'sk_live', signature)).toBe(true);
-    expect(verifyPaystackSignature(body, 'sk_live', 'deadbeef'.repeat(8))).toBe(false);
-    expect(verifyPaystackSignature(body, 'sk_live', undefined)).toBe(false);
+    const signature = createHmac('sha512', 'sk_example_fake').update(body).digest('hex');
+    expect(verifyPaystackSignature(body, 'sk_example_fake', signature)).toBe(true);
+    expect(verifyPaystackSignature(body, 'sk_example_fake', 'deadbeef'.repeat(8))).toBe(false);
+    expect(verifyPaystackSignature(body, 'sk_example_fake', undefined)).toBe(false);
   });
 
   it('verifies the Flutterwave verif-hash header with constant-time compare', () => {
