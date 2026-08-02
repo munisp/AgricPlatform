@@ -1,16 +1,21 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { ApiListResponse, Chapter, ChapterEvent } from '@agric-platform/shared';
-import { seedChapters } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
-import { paginate } from '../../common/pagination.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
+import { newId } from '../../common/async-repository.js';
 import {
-  seedAnnouncements,
-  seedChapterEvents,
-  seedEventRsvps,
-  type ChapterAnnouncement,
-  type EventRsvp
-} from '../../database/seed-data.js';
+  ANNOUNCEMENT_REPOSITORY,
+  CHAPTER_EVENT_REPOSITORY,
+  CHAPTER_REPOSITORY,
+  EVENT_RSVP_REPOSITORY
+} from '../../database/persistence.tokens.js';
+import type { AnnouncementRepository } from '../../database/repositories/announcement.repository.js';
+import type { ChapterEventRepository } from '../../database/repositories/chapter-event.repository.js';
+import type {
+  ChapterCriteria,
+  ChapterRepository
+} from '../../database/repositories/chapter.repository.js';
+import type { EventRsvpRepository } from '../../database/repositories/event-rsvp.repository.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
+import type { ChapterAnnouncement, EventRsvp } from '../../database/seed-data.js';
 
 export interface CreateChapterInput {
   name: string;
@@ -36,39 +41,36 @@ export interface CreateAnnouncementInput {
 
 @Injectable()
 export class ChaptersService {
-  private readonly chapters = new InMemoryRepository<Chapter>(seedChapters);
-  private readonly eventsRepo = new InMemoryRepository<ChapterEvent>(seedChapterEvents);
-  private readonly rsvps = new InMemoryRepository<EventRsvp>(seedEventRsvps);
-  private readonly announcements = new InMemoryRepository<ChapterAnnouncement>(seedAnnouncements);
+  constructor(
+    private readonly domainEvents: DomainEventsService,
+    @Inject(CHAPTER_REPOSITORY) private readonly chapters: ChapterRepository,
+    @Inject(CHAPTER_EVENT_REPOSITORY) private readonly eventsRepo: ChapterEventRepository,
+    @Inject(EVENT_RSVP_REPOSITORY) private readonly rsvps: EventRsvpRepository,
+    @Inject(ANNOUNCEMENT_REPOSITORY) private readonly announcements: AnnouncementRepository
+  ) {}
 
-  constructor(private readonly domainEvents: DomainEventsService) {}
-
-  list(filter: {
-    level?: Chapter['level'];
-    state?: string;
-    parentId?: string;
-    page?: number;
-    pageSize?: number;
-  }): ApiListResponse<Chapter> {
-    let items = this.chapters.all();
-    if (filter.level) items = items.filter((c) => c.level === filter.level);
-    if (filter.state) items = items.filter((c) => c.state === filter.state);
-    if (filter.parentId) items = items.filter((c) => c.parentId === filter.parentId);
-    return paginate(items, filter.page, filter.pageSize);
+  async list(
+    filter: ChapterCriteria & { page?: number; pageSize?: number }
+  ): Promise<ApiListResponse<Chapter>> {
+    return this.chapters.searchPage(
+      { level: filter.level, state: filter.state, parentId: filter.parentId },
+      filter.page,
+      filter.pageSize
+    );
   }
 
-  all(): Chapter[] {
+  async all(): Promise<Chapter[]> {
     return this.chapters.all();
   }
 
-  getWithChildren(id: string): { chapter: Chapter; children: Chapter[] } {
+  async getWithChildren(id: string): Promise<{ chapter: Chapter; children: Chapter[] }> {
     return {
-      chapter: this.chapters.getById(id),
-      children: this.chapters.find((c) => c.parentId === id)
+      chapter: await this.chapters.getById(id),
+      children: await this.chapters.find({ parentId: id })
     };
   }
 
-  create(input: CreateChapterInput): Chapter {
+  async create(input: CreateChapterInput): Promise<Chapter> {
     const chapter: Chapter = {
       id: newId('chapter'),
       name: input.name,
@@ -80,18 +82,18 @@ export class ChaptersService {
       memberCount: 0,
       active: true
     };
-    const created = this.chapters.create(chapter);
-    this.domainEvents.publish('chapter.chapter.created', { chapterId: created.id }, input.leadUserId);
+    const created = await this.chapters.create(chapter);
+    await this.domainEvents.publish('chapter.chapter.created', { chapterId: created.id }, input.leadUserId);
     return created;
   }
 
-  listEvents(chapterId: string): ChapterEvent[] {
-    this.chapters.getById(chapterId);
-    return this.eventsRepo.find((e) => e.chapterId === chapterId);
+  async listEvents(chapterId: string): Promise<ChapterEvent[]> {
+    await this.chapters.getById(chapterId);
+    return this.eventsRepo.find({ chapterId });
   }
 
-  createEvent(chapterId: string, input: CreateEventInput, actorId: string): ChapterEvent {
-    this.chapters.getById(chapterId);
+  async createEvent(chapterId: string, input: CreateEventInput, actorId: string): Promise<ChapterEvent> {
+    await this.chapters.getById(chapterId);
     const event: ChapterEvent = {
       id: newId('event'),
       chapterId,
@@ -102,19 +104,18 @@ export class ChaptersService {
       rsvpCount: 0,
       attendanceCount: 0
     };
-    const created = this.eventsRepo.create(event);
-    this.domainEvents.publish('chapter.event.created', { eventId: created.id, chapterId }, actorId);
+    const created = await this.eventsRepo.create(event);
+    await this.domainEvents.publish('chapter.event.created', { eventId: created.id, chapterId }, actorId);
     return created;
   }
 
-  getEvent(id: string): ChapterEvent {
+  async getEvent(id: string): Promise<ChapterEvent> {
     return this.eventsRepo.getById(id);
   }
 
-  rsvp(eventId: string, userId: string): EventRsvp {
-    const event = this.eventsRepo.getById(eventId);
-    const existing = this.rsvps.findOne((r) => r.eventId === eventId && r.userId === userId);
-    if (existing) {
+  async rsvp(eventId: string, userId: string): Promise<EventRsvp> {
+    await this.eventsRepo.getById(eventId);
+    if (await this.rsvps.findByEventAndUser(eventId, userId)) {
       throw new ConflictException('User has already RSVPed to this event');
     }
     const rsvp: EventRsvp = {
@@ -124,32 +125,26 @@ export class ChaptersService {
       status: 'rsvp',
       createdAt: new Date().toISOString()
     };
-    const created = this.rsvps.create(rsvp);
-    this.eventsRepo.update(eventId, { rsvpCount: event.rsvpCount + 1 });
-    this.domainEvents.publish('chapter.event.rsvp_recorded', { eventId }, userId);
+    const created = await this.rsvps.recordRsvp(rsvp);
+    await this.domainEvents.publish('chapter.event.rsvp_recorded', { eventId }, userId);
     return created;
   }
 
-  recordAttendance(eventId: string, userId: string): EventRsvp {
-    const event = this.eventsRepo.getById(eventId);
-    const existing = this.rsvps.findOne((r) => r.eventId === eventId && r.userId === userId);
+  async recordAttendance(eventId: string, userId: string): Promise<EventRsvp> {
+    await this.eventsRepo.getById(eventId);
+    const existing = await this.rsvps.findByEventAndUser(eventId, userId);
     if (existing?.status === 'attended') {
       throw new ConflictException('Attendance already recorded for this user');
     }
-    let record: EventRsvp;
-    if (existing) {
-      record = this.rsvps.update(existing.id, { status: 'attended' });
-    } else {
-      record = this.rsvps.create({
-        id: newId('rsvp'),
-        eventId,
-        userId,
-        status: 'attended',
-        createdAt: new Date().toISOString()
-      });
-    }
-    this.eventsRepo.update(eventId, { attendanceCount: event.attendanceCount + 1 });
-    this.domainEvents.publish(
+    const record = await this.rsvps.recordAttendance({
+      id: existing?.id ?? newId('rsvp'),
+      eventId,
+      userId,
+      status: 'attended',
+      createdAt: existing?.createdAt ?? new Date().toISOString()
+    });
+    const event = await this.eventsRepo.getById(eventId);
+    await this.domainEvents.publish(
       'chapter.event.attendance_recorded',
       { eventId, chapterId: event.chapterId },
       userId
@@ -157,13 +152,16 @@ export class ChaptersService {
     return record;
   }
 
-  listAnnouncements(chapterId: string): ChapterAnnouncement[] {
-    this.chapters.getById(chapterId);
-    return this.announcements.find((a) => a.chapterId === chapterId);
+  async listAnnouncements(chapterId: string): Promise<ChapterAnnouncement[]> {
+    await this.chapters.getById(chapterId);
+    return this.announcements.find({ chapterId });
   }
 
-  createAnnouncement(chapterId: string, input: CreateAnnouncementInput): ChapterAnnouncement {
-    this.chapters.getById(chapterId);
+  async createAnnouncement(
+    chapterId: string,
+    input: CreateAnnouncementInput
+  ): Promise<ChapterAnnouncement> {
+    await this.chapters.getById(chapterId);
     const announcement: ChapterAnnouncement = {
       id: newId('ann'),
       chapterId,
@@ -172,8 +170,8 @@ export class ChaptersService {
       authorId: input.authorId,
       publishedAt: new Date().toISOString()
     };
-    const created = this.announcements.create(announcement);
-    this.domainEvents.publish(
+    const created = await this.announcements.create(announcement);
+    await this.domainEvents.publish(
       'chapter.announcement.published',
       { announcementId: created.id, chapterId },
       input.authorId

@@ -1,13 +1,21 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import type { NotificationChannel, NotificationMessage, NotificationPreference } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
+import { newId } from '../../common/async-repository.js';
 import {
-  seedNotificationMessages,
-  seedNotificationPreferences
-} from '../../database/seed-data.js';
+  DELIVERY_LOG_REPOSITORY,
+  NOTIFICATION_PREFERENCE_REPOSITORY,
+  NOTIFICATION_REPOSITORY
+} from '../../database/persistence.tokens.js';
+import type {
+  DeliveryLogEntry,
+  DeliveryLogRepository
+} from '../../database/repositories/delivery-log.repository.js';
+import type { NotificationPreferenceRepository } from '../../database/repositories/notification-preference.repository.js';
+import type { NotificationRepository } from '../../database/repositories/notification.repository.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
 import { IntegrationsService } from '../integrations/integrations.service.js';
-import type { DeliveryResult } from '../integrations/adapters.js';
+
+export type { DeliveryLogEntry };
 
 export interface SendNotificationInput {
   userId: string;
@@ -16,40 +24,31 @@ export interface SendNotificationInput {
   body: string;
 }
 
-export interface DeliveryLogEntry {
-  notificationId: string;
-  result: DeliveryResult;
-  at: string;
-}
-
 @Injectable()
 export class NotificationsService {
-  private readonly messages = new InMemoryRepository<NotificationMessage>(seedNotificationMessages);
-  private readonly preferences: InMemoryRepository<NotificationPreference & { id: string }>;
-  private readonly deliveryLog: DeliveryLogEntry[] = [];
-
   constructor(
     private readonly events: DomainEventsService,
-    private readonly integrations: IntegrationsService
-  ) {
-    this.preferences = new InMemoryRepository(
-      seedNotificationPreferences.map((p) => ({ ...p, id: `${p.userId}:${p.channel}` }))
-    );
+    private readonly integrations: IntegrationsService,
+    @Inject(NOTIFICATION_REPOSITORY) private readonly messages: NotificationRepository,
+    @Inject(NOTIFICATION_PREFERENCE_REPOSITORY)
+    private readonly preferences: NotificationPreferenceRepository,
+    @Inject(DELIVERY_LOG_REPOSITORY) private readonly deliveryLog: DeliveryLogRepository
+  ) {}
+
+  async list(filter: {
+    userId?: string;
+    status?: NotificationMessage['status'];
+  }): Promise<NotificationMessage[]> {
+    return this.messages.find({ userId: filter.userId, status: filter.status });
   }
 
-  list(filter: { userId?: string; status?: NotificationMessage['status'] }): NotificationMessage[] {
-    return this.messages.find(
-      (m) => (!filter.userId || m.userId === filter.userId) && (!filter.status || m.status === filter.status)
-    );
-  }
-
-  unreadCount(userId: string): number {
-    return this.messages.count((m) => m.userId === userId && m.status !== 'read');
+  async unreadCount(userId: string): Promise<number> {
+    return this.messages.countUnread(userId);
   }
 
   /** Orchestrated send: honours preferences, routes via provider adapters. */
-  send(input: SendNotificationInput): NotificationMessage {
-    const preference = this.preferences.findById(`${input.userId}:${input.channel}`);
+  async send(input: SendNotificationInput): Promise<NotificationMessage> {
+    const preference = await this.preferences.find(input.userId, input.channel);
     if (preference && !preference.enabled) {
       throw new BadRequestException(
         `Channel '${input.channel}' is disabled in this user's notification preferences`
@@ -64,44 +63,47 @@ export class NotificationsService {
       status: 'queued',
       createdAt: new Date().toISOString()
     };
-    this.messages.create(message);
-    this.events.publish(
+    await this.messages.create(message);
+    await this.events.publish(
       'notification.delivery.requested',
       { notificationId: message.id, channel: input.channel },
       input.userId
     );
 
     const result = this.integrations.deliver(input.channel);
-    this.deliveryLog.push({ notificationId: message.id, result, at: new Date().toISOString() });
-    return this.messages.update(message.id, { status: result.delivered ? 'sent' : 'failed' });
+    // Delivery log + status flip commit as one unit.
+    return this.messages.recordDelivery(
+      message.id,
+      result.delivered ? 'sent' : 'failed',
+      {
+        notificationId: message.id,
+        result,
+        at: new Date().toISOString()
+      }
+    );
   }
 
   /** Single message (used for ownership checks before state changes). */
-  getMessage(id: string): NotificationMessage {
+  async getMessage(id: string): Promise<NotificationMessage> {
     return this.messages.getById(id);
   }
 
-  markRead(id: string): NotificationMessage {
+  async markRead(id: string): Promise<NotificationMessage> {
     return this.messages.update(id, { status: 'read' });
   }
 
-  preferencesFor(userId: string): NotificationPreference[] {
-    return this.preferences
-      .find((p) => p.userId === userId)
-      .map(({ id: _id, ...preference }) => preference);
+  async preferencesFor(userId: string): Promise<NotificationPreference[]> {
+    return this.preferences.listForUser(userId);
   }
 
-  setPreferences(userId: string, prefs: NotificationPreference[]): NotificationPreference[] {
+  async setPreferences(
+    userId: string,
+    prefs: NotificationPreference[]
+  ): Promise<NotificationPreference[]> {
     for (const pref of prefs) {
-      const id = `${pref.userId}:${pref.channel}`;
-      const stored = { ...pref, userId, id };
-      if (this.preferences.findById(id)) {
-        this.preferences.update(id, stored);
-      } else {
-        this.preferences.create(stored);
-      }
+      await this.preferences.upsert({ ...pref, userId });
     }
-    this.events.publish(
+    await this.events.publish(
       'notification.preferences.updated',
       { userId, channels: prefs.map((p) => `${p.channel}:${p.enabled}`) },
       userId
@@ -109,7 +111,7 @@ export class NotificationsService {
     return this.preferencesFor(userId);
   }
 
-  deliveries(): DeliveryLogEntry[] {
-    return [...this.deliveryLog];
+  async deliveries(): Promise<DeliveryLogEntry[]> {
+    return this.deliveryLog.list();
   }
 }

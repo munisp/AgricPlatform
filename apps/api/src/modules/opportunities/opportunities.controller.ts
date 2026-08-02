@@ -108,53 +108,53 @@ export class OpportunitiesController {
 
   @Post('opportunities')
   @ApiOperation({ summary: 'Publish a new opportunity (partner or admin posting)' })
-  create(@Body() dto: CreateOpportunityDto) {
-    return { data: this.opportunities.create(dto) };
+  async create(@Body() dto: CreateOpportunityDto) {
+    return { data: await this.opportunities.create(dto) };
   }
 
   @Get('opportunities/recommended/:userId')
   @ApiOperation({ summary: 'Opportunities matching a user profile (state + value chains)' })
-  recommended(@Param('userId') userId: string) {
-    return { data: this.opportunities.recommendedFor(userId) };
+  async recommended(@Param('userId') userId: string) {
+    return { data: await this.opportunities.recommendedFor(userId) };
   }
 
   @Get('opportunities/:id')
   @ApiOperation({ summary: 'Opportunity detail' })
-  get(@Param('id') id: string) {
-    return { data: this.opportunities.get(id) };
+  async get(@Param('id') id: string) {
+    return { data: await this.opportunities.get(id) };
   }
 
   @Post('opportunities/:id/apply')
   @ApiOperation({ summary: 'Submit an application to an opportunity' })
-  apply(@Param('id') id: string, @Body() dto: ApplyDto) {
-    return { data: this.opportunities.apply(id, dto.userId, dto.notes) };
+  async apply(@Param('id') id: string, @Body() dto: ApplyDto) {
+    return { data: await this.opportunities.apply(id, dto.userId, dto.notes) };
   }
 
   @Get('applications')
   @ApiOperation({ summary: 'List applications by user, opportunity or status' })
-  listApplications(
+  async listApplications(
     @Query('userId') userId?: string,
     @Query('opportunityId') opportunityId?: string,
     @Query('status') status?: ApplicationStatus
   ) {
-    return { data: this.opportunities.listApplications({ userId, opportunityId, status }) };
+    return { data: await this.opportunities.listApplications({ userId, opportunityId, status }) };
   }
 
   @Get('applications/:id')
   @ApiOperation({ summary: 'Application detail' })
-  getApplication(@Param('id') id: string) {
-    return { data: this.opportunities.getApplication(id) };
+  async getApplication(@Param('id') id: string) {
+    return { data: await this.opportunities.getApplication(id) };
   }
 
   @Patch('applications/:id/status')
   @ApiOperation({ summary: 'Transition an application status (review workflow)' })
-  setApplicationStatus(
+  async setApplicationStatus(
     @Param('id') id: string,
     @Body() dto: ApplicationStatusDto,
     @ActorId() actorId: string
   ) {
-    const application = this.opportunities.setApplicationStatus(id, dto.status, actorId);
-    this.audit.record({
+    const application = await this.opportunities.setApplicationStatus(id, dto.status, actorId);
+    await this.audit.record({
       actorId,
       action: 'application.status_changed',
       entityType: 'application',

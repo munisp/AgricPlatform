@@ -1,26 +1,37 @@
 -- AgricPlatform Phase 1 database bootstrap.
 -- Runs once via docker-entrypoint-initdb.d on first postgres container start.
 -- One schema per bounded domain (no cross-domain foreign keys; cross-domain
--- references are plain UUID columns resolved through the API layer).
+-- references are plain text columns resolved through the API layer).
+--
+-- Persistence wave alignment (docs/roadmap/persistence-wave-plan.md §4):
+-- API-owned tables use app-generated text PKs (e.g. 'user-adamu') matching the
+-- seed/API id contract, and every table maps 1:1 to a TypeScript domain
+-- contract consumed by the pg repositories.
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid() for non-API tables
 
 -- ---------------------------------------------------------------------------
 -- identity: users, roles, sessions
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS identity;
 
+-- Drift item 1: text PK, kyc_tier, is_verified, last_active_at.
 CREATE TABLE identity.users (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              text PRIMARY KEY,
     external_subject text UNIQUE,              -- Keycloak sub claim
     phone           text UNIQUE,
     email           text UNIQUE,
     full_name       text NOT NULL,
-    preferred_language text NOT NULL DEFAULT 'en',
+    preferred_language text NOT NULL DEFAULT 'en'
+                    CHECK (preferred_language IN ('en','ha','yo','ig')),
+    kyc_tier        text NOT NULL DEFAULT 'tier_0'
+                    CHECK (kyc_tier IN ('tier_0','tier_1','tier_2','tier_3')),
+    is_verified     boolean NOT NULL DEFAULT false,
     status          text NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active','suspended','deactivated','pending_deletion')),
+    last_active_at  timestamptz,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
@@ -30,16 +41,16 @@ CREATE TABLE identity.roles (
 );
 
 CREATE TABLE identity.user_roles (
-    user_id         uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    user_id         text NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
     role_code       text NOT NULL REFERENCES identity.roles(code),
     assigned_at     timestamptz NOT NULL DEFAULT now(),
-    assigned_by     uuid,
+    assigned_by     text,
     PRIMARY KEY (user_id, role_code)
 );
 
 CREATE TABLE identity.auth_sessions (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    user_id         text NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
     refresh_token_hash text NOT NULL,
     ip_address      inet,
     user_agent      text,
@@ -57,25 +68,29 @@ INSERT INTO identity.roles (code) VALUES
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS profiles;
 
+-- Drift item 2: text PK, value_chains, bio, badges, primary_crops renamed to
+-- farming_interests, latitude/longitude.
 CREATE TABLE profiles.member_profiles (
-    user_id         uuid PRIMARY KEY,          -- identity.users.id
+    user_id         text PRIMARY KEY,          -- identity.users.id
     state           text,
     lga             text,
     ward            text,
+    latitude        numeric(9,6),
+    longitude       numeric(9,6),
     farm_size_hectares numeric(10,2),
-    primary_crops   text[],
+    farming_interests text[] NOT NULL DEFAULT '{}',
+    value_chains    text[] NOT NULL DEFAULT '{}',
+    bio             text,
     years_experience smallint,
-    education_level text,
     completion_score smallint NOT NULL DEFAULT 0 CHECK (completion_score BETWEEN 0 AND 100),
-    verification_status text NOT NULL DEFAULT 'unverified'
-                    CHECK (verification_status IN ('unverified','pending','verified','rejected')),
+    badges          text[] NOT NULL DEFAULT '{}',
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE profiles.profile_completion_events (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
+    user_id         text NOT NULL,
     section         text NOT NULL,
     score_before    smallint NOT NULL,
     score_after     smallint NOT NULL,
@@ -88,8 +103,8 @@ CREATE TABLE profiles.profile_completion_events (
 CREATE SCHEMA IF NOT EXISTS privacy;
 
 CREATE TABLE privacy.consent_records (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
     purpose         text NOT NULL,             -- e.g. marketing_sms, data_sharing_partner
     source          text NOT NULL,             -- web, ussd, agent, import
     granted         boolean NOT NULL,
@@ -99,14 +114,16 @@ CREATE TABLE privacy.consent_records (
 );
 CREATE INDEX consent_user_purpose_idx ON privacy.consent_records (user_id, purpose, granted_at DESC);
 
+-- Drift item 3: status vocabulary aligned to the DeletionRequest contract;
+-- fulfilled_at renamed to completed_at.
 CREATE TABLE privacy.data_requests (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
     request_type    text NOT NULL CHECK (request_type IN ('export','deletion','rectification')),
-    status          text NOT NULL DEFAULT 'received'
-                    CHECK (status IN ('received','in_progress','fulfilled','rejected')),
+    status          text NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','completed')),
     requested_at    timestamptz NOT NULL DEFAULT now(),
-    fulfilled_at    timestamptz,
+    completed_at    timestamptz,
     notes           text
 );
 
@@ -125,21 +142,31 @@ CREATE TABLE privacy.processing_register (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS learning;
 
+-- Drift item 4: category, level, duration_minutes, enrolment_count,
+-- offline_available; slug nullable; text PK.
 CREATE TABLE learning.courses (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    slug            text UNIQUE NOT NULL,
+    id              text PRIMARY KEY,
+    slug            text UNIQUE,
     title           text NOT NULL,
+    category        text NOT NULL DEFAULT 'general',
+    level           text NOT NULL DEFAULT 'beginner'
+                    CHECK (level IN ('beginner','intermediate','advanced')),
+    duration_minutes integer NOT NULL DEFAULT 0,
+    language        text NOT NULL DEFAULT 'en'
+                    CHECK (language IN ('en','ha','yo','ig')),
+    enrolment_count integer NOT NULL DEFAULT 0,
+    offline_available boolean NOT NULL DEFAULT false,
     description     text,
-    language        text NOT NULL DEFAULT 'en',
     moodle_course_id bigint,                   -- external reference only
     published       boolean NOT NULL DEFAULT false,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
+-- Drift item 5: text PKs; status superset (incl. 'dropped') is safe.
 CREATE TABLE learning.enrolments (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
-    course_id       uuid NOT NULL REFERENCES learning.courses(id),
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
+    course_id       text NOT NULL REFERENCES learning.courses(id),
     status          text NOT NULL DEFAULT 'enrolled'
                     CHECK (status IN ('enrolled','in_progress','completed','dropped')),
     progress_percent smallint NOT NULL DEFAULT 0 CHECK (progress_percent BETWEEN 0 AND 100),
@@ -148,12 +175,22 @@ CREATE TABLE learning.enrolments (
     UNIQUE (user_id, course_id)
 );
 
+-- Drift item 6: user_id/course_id/verification_url; enrolment_id dropped.
 CREATE TABLE learning.certificates (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    enrolment_id    uuid NOT NULL REFERENCES learning.enrolments(id),
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
+    course_id       text NOT NULL REFERENCES learning.courses(id),
     verification_code text UNIQUE NOT NULL,
+    verification_url text,
     issued_at       timestamptz NOT NULL DEFAULT now(),
     revoked_at      timestamptz
+);
+
+-- Certificate code sequence (NYFN-CERT-YYYY-####) allocated with
+-- UPDATE … RETURNING so concurrent issuances cannot collide.
+CREATE TABLE learning.certificate_counters (
+    year            integer PRIMARY KEY,
+    next            integer NOT NULL DEFAULT 1
 );
 
 -- ---------------------------------------------------------------------------
@@ -161,19 +198,55 @@ CREATE TABLE learning.certificates (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS community;
 
+-- Drift item 7: forum topics backing the community service.
+CREATE TABLE community.forum_topics (
+    id          text PRIMARY KEY,
+    title       text NOT NULL,
+    category    text NOT NULL,
+    author_id   text NOT NULL,
+    state       text,
+    crop        text,
+    reply_count integer NOT NULL DEFAULT 0,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX forum_topics_filter_idx ON community.forum_topics (category, state, crop);
+
+-- Drift item 8: mentor requests (mentorship_pairs kept for future pairing).
+CREATE TABLE community.mentor_requests (
+    id          text PRIMARY KEY,
+    user_id     text NOT NULL,
+    crop        text,
+    state       text,
+    challenge   text NOT NULL,
+    status      text NOT NULL DEFAULT 'requested'
+                CHECK (status IN ('requested','matched','closed')),
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Drift item 9: topic flags for the moderation review queue.
+CREATE TABLE community.topic_flags (
+    id          text PRIMARY KEY,
+    topic_id    text NOT NULL REFERENCES community.forum_topics(id) ON DELETE CASCADE,
+    reporter_id text NOT NULL,
+    reason      text NOT NULL,
+    status      text NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open','resolved')),
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE community.groups (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     slug            text UNIQUE NOT NULL,
     name            text NOT NULL,
     description     text,
     discourse_category_id bigint,              -- external reference only
-    created_by      uuid,
+    created_by      text,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE community.group_members (
     group_id        uuid NOT NULL REFERENCES community.groups(id) ON DELETE CASCADE,
-    user_id         uuid NOT NULL,
+    user_id         text NOT NULL,
     role            text NOT NULL DEFAULT 'member' CHECK (role IN ('member','moderator','mentor')),
     joined_at       timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (group_id, user_id)
@@ -181,8 +254,8 @@ CREATE TABLE community.group_members (
 
 CREATE TABLE community.mentorship_pairs (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    mentor_id       uuid NOT NULL,
-    mentee_id       uuid NOT NULL,
+    mentor_id       text NOT NULL,
+    mentee_id       text NOT NULL,
     status          text NOT NULL DEFAULT 'proposed'
                     CHECK (status IN ('proposed','active','completed','cancelled')),
     started_at      timestamptz,
@@ -192,7 +265,7 @@ CREATE TABLE community.mentorship_pairs (
 
 CREATE TABLE community.moderation_reports (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    reporter_id     uuid NOT NULL,
+    reporter_id     text NOT NULL,
     target_type     text NOT NULL,             -- post|topic|user|group
     target_ref      text NOT NULL,
     reason          text NOT NULL,
@@ -207,36 +280,43 @@ CREATE TABLE community.moderation_reports (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS opportunities;
 
+-- Drift item 10: TS type vocabulary, value_chains, eligibility text[],
+-- partner_id text, is_active, timestamptz deadline, text PK.
 CREATE TABLE opportunities.opportunities (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    partner_ref     uuid,                      -- partner organisation reference
-    type            text NOT NULL,             -- grant|loan|training|job|market_linkage
+    id              text PRIMARY KEY,
+    partner_id      text,                      -- partner organisation reference
+    type            text NOT NULL
+                    CHECK (type IN ('grant','loan','programme','job','internship','competition','equipment','land')),
     title           text NOT NULL,
-    description     text,
-    eligibility     jsonb NOT NULL DEFAULT '{}'::jsonb,
-    location_states text[],
-    deadline        date,
-    status          text NOT NULL DEFAULT 'draft'
-                    CHECK (status IN ('draft','open','closed','archived')),
+    description     text NOT NULL DEFAULT '',
+    states          text[] NOT NULL DEFAULT '{}',
+    value_chains    text[] NOT NULL DEFAULT '{}',
+    eligibility     text[] NOT NULL DEFAULT '{}',
+    deadline        timestamptz,
+    is_active       boolean NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX opportunities_partner_idx ON opportunities.opportunities (partner_id);
 
+-- Drift item 11: TS status vocabulary, notes, partial unique index backing
+-- the one-active-application rule.
 CREATE TABLE opportunities.applications (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    opportunity_id  uuid NOT NULL REFERENCES opportunities.opportunities(id),
-    user_id         uuid NOT NULL,
+    id              text PRIMARY KEY,
+    opportunity_id  text NOT NULL REFERENCES opportunities.opportunities(id),
+    user_id         text NOT NULL,
     idempotency_key text UNIQUE,
-    payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    notes           text,
     status          text NOT NULL DEFAULT 'submitted'
-                    CHECK (status IN ('submitted','under_review','shortlisted','accepted','rejected','withdrawn')),
-    submitted_at    timestamptz NOT NULL DEFAULT now(),
-    decided_at      timestamptz
+                    CHECK (status IN ('submitted','under_review','successful','unsuccessful','withdrawn')),
+    submitted_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX applications_user_idx ON opportunities.applications (user_id, submitted_at DESC);
+CREATE UNIQUE INDEX applications_active_unique
+    ON opportunities.applications (opportunity_id, user_id) WHERE status <> 'withdrawn';
 
 CREATE TABLE opportunities.programme_cohorts (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    opportunity_id  uuid NOT NULL REFERENCES opportunities.opportunities(id),
+    opportunity_id  text NOT NULL REFERENCES opportunities.opportunities(id),
     name            text NOT NULL,
     starts_on       date,
     ends_on         date
@@ -247,67 +327,87 @@ CREATE TABLE opportunities.programme_cohorts (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS chapters;
 
+-- Drift item 12: lead_user_id, member_count, active; text PK.
 CREATE TABLE chapters.chapters (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    parent_id       uuid REFERENCES chapters.chapters(id),
+    id              text PRIMARY KEY,
+    parent_id       text REFERENCES chapters.chapters(id),
     level           text NOT NULL CHECK (level IN ('national','state','lga','ward')),
     name            text NOT NULL,
-    state           text,
+    state           text NOT NULL DEFAULT '',
     lga             text,
     ward            text,
+    lead_user_id    text,
+    member_count    integer NOT NULL DEFAULT 0,
+    active          boolean NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now(),
     UNIQUE (level, name)
 );
 
 CREATE TABLE chapters.chapter_members (
-    chapter_id      uuid NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
-    user_id         uuid NOT NULL,
+    chapter_id      text NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
+    user_id         text NOT NULL,
     role            text NOT NULL DEFAULT 'member' CHECK (role IN ('member','lead','secretary')),
     joined_at       timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (chapter_id, user_id)
 );
 
+-- Drift item 13: event type, venue renamed to location, rsvp/attendance
+-- counters maintained atomically by the repository.
 CREATE TABLE chapters.events (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    chapter_id      uuid NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
+    id              text PRIMARY KEY,
+    chapter_id      text NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
     title           text NOT NULL,
-    description     text,
+    type            text NOT NULL DEFAULT 'meeting'
+                    CHECK (type IN ('meeting','training','field_visit','programme')),
     starts_at       timestamptz NOT NULL,
+    location        text NOT NULL DEFAULT '',
+    rsvp_count      integer NOT NULL DEFAULT 0,
+    attendance_count integer NOT NULL DEFAULT 0,
+    description     text,
     ends_at         timestamptz,
-    venue           text,
-    created_by      uuid,
+    created_by      text,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE chapters.event_rsvps (
-    event_id        uuid NOT NULL REFERENCES chapters.events(id) ON DELETE CASCADE,
-    user_id         uuid NOT NULL,
-    response        text NOT NULL CHECK (response IN ('yes','no','maybe')),
-    responded_at    timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (event_id, user_id)
+-- Drift item 14: single participation row per (event, user) replacing the
+-- separate event_rsvps/event_attendance tables.
+CREATE TABLE chapters.event_participation (
+    id          text PRIMARY KEY,
+    event_id    text NOT NULL REFERENCES chapters.events(id) ON DELETE CASCADE,
+    user_id     text NOT NULL,
+    status      text NOT NULL CHECK (status IN ('rsvp','attended')),
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (event_id, user_id)
 );
 
-CREATE TABLE chapters.event_attendance (
-    event_id        uuid NOT NULL REFERENCES chapters.events(id) ON DELETE CASCADE,
-    user_id         uuid NOT NULL,
-    checked_in_at   timestamptz NOT NULL DEFAULT now(),
-    recorded_by     uuid,
-    PRIMARY KEY (event_id, user_id)
-);
-
+-- Drift item 15: text PK; mapper handles authorId ↔ published_by.
 CREATE TABLE chapters.announcements (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    chapter_id      uuid NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
+    id              text PRIMARY KEY,
+    chapter_id      text NOT NULL REFERENCES chapters.chapters(id) ON DELETE CASCADE,
     title           text NOT NULL,
     body            text NOT NULL,
-    published_by    uuid,
+    published_by    text,
     published_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- ---------------------------------------------------------------------------
--- advisory: crop calendar, pest alerts, weather/price snapshots
+-- advisory: unified items + ingest snapshot tables
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS advisory;
+
+-- Drift item 16: unified advisory items backing the API; the specialized
+-- snapshot tables below stay for ingest pipelines.
+CREATE TABLE advisory.items (
+    id          text PRIMARY KEY,
+    kind        text NOT NULL CHECK (kind IN ('crop_calendar','pest_alert','weather','price','guide')),
+    title       text NOT NULL,
+    summary     text NOT NULL,
+    state       text,
+    crop        text,
+    severity    text CHECK (severity IN ('info','warning','critical')),
+    published_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX advisory_items_filter_idx ON advisory.items (kind, state, crop);
 
 CREATE TABLE advisory.crop_calendar_entries (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -362,28 +462,34 @@ BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS marketplace;
 
+-- Drift item 17: 6-value kind vocabulary, type→kind, commodity→crop,
+-- ward/latitude/longitude location columns, is_active, harvest_date, text PK.
 CREATE TABLE marketplace.listings (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    seller_id       uuid NOT NULL,
-    type            text NOT NULL CHECK (type IN ('produce','service','input')),
+    id              text PRIMARY KEY,
+    seller_id       text NOT NULL,
+    kind            text NOT NULL
+                    CHECK (kind IN ('produce','input','service','equipment','storage','transport')),
     title           text NOT NULL,
     description     text,
-    commodity       text,
+    crop            text,
     quantity        numeric(14,2),
     unit            text,
     price_ngn       numeric(14,2),
     location_state  text,
     location_lga    text,
-    status          text NOT NULL DEFAULT 'draft'
-                    CHECK (status IN ('draft','active','paused','sold_out','removed')),
+    location_ward   text,
+    location_latitude numeric(9,6),
+    location_longitude numeric(9,6),
+    harvest_date    date,
+    is_active       boolean NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX listings_search_idx ON marketplace.listings (commodity, location_state) WHERE status = 'active';
+CREATE INDEX listings_search_idx ON marketplace.listings (crop, location_state) WHERE is_active;
 
 CREATE TABLE marketplace.buyer_requests (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    buyer_id        uuid NOT NULL,
+    buyer_id        text NOT NULL,
     commodity       text NOT NULL,
     quantity        numeric(14,2),
     unit            text,
@@ -393,36 +499,44 @@ CREATE TABLE marketplace.buyer_requests (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
+-- Drift item 18: 9-value TS status vocabulary, seller_id, escrow_required,
+-- total_naira, created_at, idempotency_key, text PK.
 CREATE TABLE marketplace.orders (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    listing_id      uuid NOT NULL REFERENCES marketplace.listings(id),
-    buyer_id        uuid NOT NULL,
+    id              text PRIMARY KEY,
+    listing_id      text NOT NULL REFERENCES marketplace.listings(id),
+    buyer_id        text NOT NULL,
+    seller_id       text NOT NULL,
     idempotency_key text UNIQUE,
     quantity        numeric(14,2) NOT NULL,
-    total_ngn       numeric(14,2) NOT NULL,
-    status          text NOT NULL DEFAULT 'placed'
-                    CHECK (status IN ('placed','paid','in_escrow','fulfilled','disputed','cancelled','refunded')),
-    placed_at       timestamptz NOT NULL DEFAULT now(),
+    total_naira     numeric(14,2) NOT NULL,
+    status          text NOT NULL DEFAULT 'requested' CHECK (status IN
+                    ('requested','negotiating','confirmed','deposit_paid','in_fulfilment',
+                     'delivered','completed','disputed','cancelled')),
+    escrow_required boolean NOT NULL DEFAULT false,
+    created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX orders_buyer_idx ON marketplace.orders (buyer_id, created_at DESC);
+CREATE INDEX orders_seller_idx ON marketplace.orders (seller_id, created_at DESC);
 
 CREATE TABLE marketplace.order_events (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id        uuid NOT NULL REFERENCES marketplace.orders(id) ON DELETE CASCADE,
+    order_id        text NOT NULL REFERENCES marketplace.orders(id) ON DELETE CASCADE,
     event_type      text NOT NULL,
-    actor_id        uuid,
+    actor_id        text,
     payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
     occurred_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- Drift item 19: reviewer_id renamed to author_id; text PK.
 CREATE TABLE marketplace.reviews (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id        uuid NOT NULL REFERENCES marketplace.orders(id),
-    reviewer_id     uuid NOT NULL,
+    id              text PRIMARY KEY,
+    order_id        text NOT NULL REFERENCES marketplace.orders(id),
+    author_id       text NOT NULL,
     rating          smallint NOT NULL CHECK (rating BETWEEN 1 AND 5),
     comment         text,
     created_at      timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (order_id, reviewer_id)
+    UNIQUE (order_id, author_id)
 );
 
 -- ---------------------------------------------------------------------------
@@ -430,20 +544,31 @@ CREATE TABLE marketplace.reviews (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS finance;
 
+-- Drift item 20: credit readiness signal columns; kyc_tier is deprecated
+-- here (canonical value lives on identity.users).
 CREATE TABLE finance.credit_profiles (
-    user_id         uuid PRIMARY KEY,
-    kyc_tier        smallint NOT NULL DEFAULT 0 CHECK (kyc_tier BETWEEN 0 AND 3),
-    readiness_score smallint CHECK (readiness_score BETWEEN 0 AND 100),
+    user_id         text PRIMARY KEY,
+    score           smallint CHECK (score BETWEEN 0 AND 100),
+    training_signals smallint NOT NULL DEFAULT 0,
+    transaction_signals smallint NOT NULL DEFAULT 0,
+    production_signals smallint NOT NULL DEFAULT 0,
+    document_count  smallint NOT NULL DEFAULT 0,
+    improvement_actions text[] NOT NULL DEFAULT '{}',
+    kyc_tier        smallint NOT NULL DEFAULT 0 CHECK (kyc_tier BETWEEN 0 AND 3),  -- deprecated
     bvn_verified    boolean NOT NULL DEFAULT false,
     nin_verified    boolean NOT NULL DEFAULT false,
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
+-- Drift item 21: doc_type renamed to kind with the 6-value TS vocabulary;
+-- storage_ref nullable; file_name required.
 CREATE TABLE finance.documents (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
-    doc_type        text NOT NULL,             -- id_card|cac|farm_photo|bank_statement...
-    storage_ref     text NOT NULL,             -- object-store key, never inline PII blobs
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
+    kind            text NOT NULL
+                    CHECK (kind IN ('national_id','land_title','farm_photo','certificate','business_plan','utility_bill')),
+    file_name       text NOT NULL,
+    storage_ref     text,                      -- object-store key, never inline PII blobs
     status          text NOT NULL DEFAULT 'uploaded'
                     CHECK (status IN ('uploaded','verified','rejected','expired')),
     uploaded_at     timestamptz NOT NULL DEFAULT now(),
@@ -452,7 +577,7 @@ CREATE TABLE finance.documents (
 
 CREATE TABLE finance.kyc_records (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
+    user_id         text NOT NULL,
     tier            smallint NOT NULL,
     provider        text NOT NULL,             -- paystack|dojah|manual|stub
     provider_ref    text,
@@ -463,7 +588,7 @@ CREATE TABLE finance.kyc_records (
 
 CREATE TABLE finance.lender_matches (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
+    user_id         text NOT NULL,
     lender_ref      text NOT NULL,
     match_score     smallint,
     status          text NOT NULL DEFAULT 'suggested'
@@ -476,7 +601,7 @@ CREATE TABLE finance.lender_matches (
 CREATE TABLE finance.ledger_accounts (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code            text UNIQUE NOT NULL,      -- e.g. escrow:order:<uuid>, platform:fees
-    owner_id        uuid,                      -- nullable for platform accounts
+    owner_id        text,                      -- nullable for platform accounts
     account_type    text NOT NULL
                     CHECK (account_type IN ('asset','liability','equity','revenue','expense')),
     currency        char(3) NOT NULL DEFAULT 'NGN',
@@ -487,7 +612,7 @@ CREATE TABLE finance.ledger_transfers (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     idempotency_key text UNIQUE NOT NULL,
     reference_type  text,                      -- marketplace_order|payout|fee...
-    reference_id    uuid,
+    reference_id    text,
     description     text,
     posted_at       timestamptz NOT NULL DEFAULT now()
 );
@@ -527,33 +652,36 @@ CREATE TABLE notifications.notification_templates (
     body            text NOT NULL
 );
 
+-- Drift item 22: topic dropped; composite PK (user_id, channel).
 CREATE TABLE notifications.user_preferences (
-    user_id         uuid NOT NULL,
+    user_id         text NOT NULL,
     channel         text NOT NULL CHECK (channel IN ('in_app','sms','whatsapp','email','push')),
-    topic           text NOT NULL,             -- e.g. learning, marketplace, advisory
     enabled         boolean NOT NULL DEFAULT true,
     updated_at      timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, channel, topic)
+    PRIMARY KEY (user_id, channel)
 );
 
+-- Drift item 23: TS status vocabulary incl. 'read'; title/body; created_at.
 CREATE TABLE notifications.notifications (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL,
-    template_code   text,
-    channel         text NOT NULL,
+    id              text PRIMARY KEY,
+    user_id         text NOT NULL,
+    channel         text NOT NULL CHECK (channel IN ('in_app','sms','whatsapp','email','push')),
+    title           text NOT NULL,
+    body            text NOT NULL,
     idempotency_key text UNIQUE,
-    payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
     status          text NOT NULL DEFAULT 'queued'
-                    CHECK (status IN ('queued','sent','delivered','failed','suppressed')),
-    queued_at       timestamptz NOT NULL DEFAULT now(),
+                    CHECK (status IN ('queued','sent','delivered','failed','read','suppressed')),
+    created_at      timestamptz NOT NULL DEFAULT now(),
     sent_at         timestamptz,
     read_at         timestamptz
 );
-CREATE INDEX notifications_user_idx ON notifications.notifications (user_id, queued_at DESC);
+CREATE INDEX notifications_user_idx ON notifications.notifications (user_id, created_at DESC);
 
+-- Drift item 24: text PK/FK; the mapper stores the DeliveryResult JSON in
+-- the detail column.
 CREATE TABLE notifications.delivery_logs (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    notification_id uuid NOT NULL REFERENCES notifications.notifications(id) ON DELETE CASCADE,
+    id              text PRIMARY KEY,
+    notification_id text NOT NULL REFERENCES notifications.notifications(id) ON DELETE CASCADE,
     provider        text NOT NULL,             -- termii|twilio|mailgun|onesignal|stub
     provider_ref    text,
     status          text NOT NULL,
@@ -570,19 +698,20 @@ BEGIN;
 
 CREATE SCHEMA IF NOT EXISTS admin;
 
+-- Drift item 25: entity_type/entity_id targets, metadata, created_at.
 CREATE TABLE admin.audit_events (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    actor_id        uuid,
+    id              text PRIMARY KEY,
+    actor_id        text,
     actor_role      text,
     action          text NOT NULL,             -- e.g. user.suspend, listing.remove
-    target_type     text,
-    target_id       text,
+    entity_type     text,
+    entity_id       text,
     ip_address      inet,
-    detail          jsonb NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at     timestamptz NOT NULL DEFAULT now()
+    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX audit_events_time_idx ON admin.audit_events (occurred_at DESC);
-CREATE INDEX audit_events_actor_idx ON admin.audit_events (actor_id, occurred_at DESC);
+CREATE INDEX audit_events_time_idx ON admin.audit_events (created_at DESC);
+CREATE INDEX audit_events_actor_idx ON admin.audit_events (actor_id, created_at DESC);
 
 CREATE TABLE admin.review_queue_items (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -592,7 +721,7 @@ CREATE TABLE admin.review_queue_items (
     priority        smallint NOT NULL DEFAULT 2,
     status          text NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending','claimed','resolved','escalated')),
-    claimed_by      uuid,
+    claimed_by      text,
     created_at      timestamptz NOT NULL DEFAULT now(),
     resolved_at     timestamptz
 );
@@ -613,7 +742,7 @@ CREATE SCHEMA IF NOT EXISTS analytics;
 
 CREATE TABLE analytics.events (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid,
+    user_id         text,
     session_id      text,
     event_name      text NOT NULL,             -- e.g. page_view, search_performed
     properties      jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -623,7 +752,7 @@ CREATE INDEX analytics_events_name_time_idx ON analytics.events (event_name, occ
 
 CREATE TABLE analytics.export_jobs (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    requested_by    uuid,
+    requested_by    text,
     dataset         text NOT NULL,
     status          text NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued','running','completed','failed')),
@@ -671,11 +800,14 @@ CREATE TABLE integrations.webhook_deliveries (
 -- ---------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS events;
 
+-- Drift item 26: event_type renamed to name, aggregate_id text NULL,
+-- actor_id added, text PK.
 CREATE TABLE events.outbox (
-    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type      text NOT NULL,             -- {domain}.{entity}.{verb}
-    aggregate_type  text NOT NULL,
-    aggregate_id    uuid NOT NULL,
+    id              text PRIMARY KEY,
+    name            text NOT NULL,             -- {domain}.{entity}.{verb}
+    aggregate_type  text,
+    aggregate_id    text,
+    actor_id        text,
     payload         jsonb NOT NULL,
     occurred_at     timestamptz NOT NULL DEFAULT now(),
     published_at    timestamptz,               -- NULL until relayed to consumers
@@ -685,7 +817,7 @@ CREATE INDEX outbox_unpublished_idx ON events.outbox (occurred_at) WHERE publish
 
 CREATE TABLE events.processed_events (         -- consumer-side idempotency
     consumer        text NOT NULL,
-    event_id        uuid NOT NULL,
+    event_id        text NOT NULL,
     processed_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (consumer, event_id)
 );
@@ -693,7 +825,7 @@ CREATE TABLE events.processed_events (         -- consumer-side idempotency
 COMMIT;
 
 -- ---------------------------------------------------------------------------
--- Seed reference data
+-- Seed reference data (demo rows are owned by apps/api seed.ts)
 -- ---------------------------------------------------------------------------
 BEGIN;
 
@@ -711,7 +843,5 @@ INSERT INTO integrations.providers (code, display_name, driver, status) VALUES
     ('openmeteo',   'Open-Meteo Weather',  'stub', 'enabled'),
     ('fewsnet',     'FEWS NET Prices',     'stub', 'enabled'),
     ('farmos',      'farmOS',              'stub', 'disabled');
-
-INSERT INTO chapters.chapters (level, name) VALUES ('national', 'NYFN National');
 
 COMMIT;

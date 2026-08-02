@@ -74,51 +74,54 @@ export class LearningController {
 
   @Post('courses')
   @ApiOperation({ summary: 'Create a course (content team)' })
-  createCourse(@Body() dto: CreateCourseDto) {
-    return { data: this.learning.createCourse(dto) };
+  async createCourse(@Body() dto: CreateCourseDto) {
+    return { data: await this.learning.createCourse(dto) };
   }
 
   @Get('courses/:id')
   @ApiOperation({ summary: 'Course detail' })
-  getCourse(@Param('id') id: string) {
-    return { data: this.learning.getCourse(id) };
+  async getCourse(@Param('id') id: string) {
+    return { data: await this.learning.getCourse(id) };
   }
 
   @Post('courses/:id/enrol')
   @ApiOperation({ summary: 'Enrol a user in a course' })
-  enrol(@Param('id') id: string, @Body() dto: EnrolDto) {
-    return { data: this.learning.enrol(id, dto.userId) };
+  async enrol(@Param('id') id: string, @Body() dto: EnrolDto) {
+    return { data: await this.learning.enrol(id, dto.userId) };
   }
 
   @Get('enrolments/:id')
   @ApiOperation({ summary: 'Enrolment detail' })
-  getEnrolment(@Param('id') id: string) {
-    return { data: this.learning.getEnrolment(id) };
+  async getEnrolment(@Param('id') id: string) {
+    return { data: await this.learning.getEnrolment(id) };
   }
 
   @Patch('enrolments/:id/progress')
   @ApiOperation({ summary: 'Update enrolment progress; issues a certificate at 100%' })
-  updateProgress(@Param('id') id: string, @Body() dto: ProgressDto) {
-    return { data: this.learning.updateProgress(id, dto.progressPercent) };
+  async updateProgress(@Param('id') id: string, @Body() dto: ProgressDto) {
+    return { data: await this.learning.updateProgress(id, dto.progressPercent) };
   }
 
   @Get('users/:userId/enrolments')
   @ApiOperation({ summary: 'Enrolments for a user' })
-  enrolmentsForUser(@Param('userId') userId: string) {
-    return { data: this.learning.enrolmentsForUser(userId) };
+  async enrolmentsForUser(@Param('userId') userId: string) {
+    return { data: await this.learning.enrolmentsForUser(userId) };
   }
 
   @Get('users/:userId/certificates')
   @ApiOperation({ summary: 'Certificates earned by a user' })
-  certificatesForUser(@Param('userId') userId: string) {
-    return { data: this.learning.certificatesForUser(userId) };
+  async certificatesForUser(@Param('userId') userId: string) {
+    return { data: await this.learning.certificatesForUser(userId) };
   }
 
   @Get('certificates/verify/:code')
   @ApiOperation({ summary: 'Verify a certificate by its public verification code' })
-  verifyCertificate(@Param('code') code: string) {
+  async verifyCertificate(@Param('code') code: string) {
     return {
-      data: this.learning.verifyCertificate(code, (userId) => this.users.findById(userId)?.fullName)
+      data: await this.learning.verifyCertificate(
+        code,
+        async (userId) => (await this.users.findById(userId))?.fullName
+      )
     };
   }
 }

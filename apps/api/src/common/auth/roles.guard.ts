@@ -70,7 +70,7 @@ export class RolesGuard implements CanActivate {
     if (devHeaderAuthAllowed()) {
       const devHeader = request.headers['x-user-id'];
       const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
-      const user = userId ? this.users.findById(userId) : undefined;
+      const user = userId ? await this.users.findById(userId) : undefined;
       if (user) {
         return user;
       }
@@ -91,8 +91,8 @@ export class RolesGuard implements CanActivate {
    * otherwise synthesises a least-privilege identity from the verified
    * claims so RBAC still applies (accounts may live only in Keycloak).
    */
-  private userFromToken(identity: OidcIdentity): User {
-    const existing = this.users.findById(identity.subject);
+  private async userFromToken(identity: OidcIdentity): Promise<User> {
+    const existing = await this.users.findById(identity.subject);
     if (existing) {
       return existing;
     }

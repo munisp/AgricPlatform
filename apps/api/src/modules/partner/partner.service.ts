@@ -28,13 +28,16 @@ export class PartnerService {
     private readonly events: DomainEventsService
   ) {}
 
-  programmes(partnerId: string): Opportunity[] {
+  async programmes(partnerId: string): Promise<Opportunity[]> {
     return this.opportunities.opportunitiesForPartner(partnerId);
   }
 
-  createProgramme(partnerId: string, input: Omit<CreateOpportunityInput, 'partnerId'>): Opportunity {
-    const created = this.opportunities.create({ ...input, partnerId });
-    this.audit.record({
+  async createProgramme(
+    partnerId: string,
+    input: Omit<CreateOpportunityInput, 'partnerId'>
+  ): Promise<Opportunity> {
+    const created = await this.opportunities.create({ ...input, partnerId });
+    await this.audit.record({
       actorId: partnerId,
       action: 'partner.programme.created',
       entityType: 'opportunity',
@@ -45,21 +48,22 @@ export class PartnerService {
   }
 
   /** Users who applied to any of the partner's programmes. */
-  participants(partnerId: string): User[] {
-    const applications = this.opportunities.applicationsForPartner(partnerId);
+  async participants(partnerId: string): Promise<User[]> {
+    // TODO(phase-2): collapse the per-user lookups into a single JOIN (N+1).
+    const applications = await this.opportunities.applicationsForPartner(partnerId);
     const seen = new Set<string>();
     const participants: User[] = [];
     for (const application of applications) {
       if (seen.has(application.userId)) continue;
       seen.add(application.userId);
-      const user = this.users.findById(application.userId);
+      const user = await this.users.findById(application.userId);
       if (user) participants.push(user);
     }
     return participants;
   }
 
-  impactReport(partnerId: string): PartnerImpactReport {
-    const applications = this.opportunities.applicationsForPartner(partnerId);
+  async impactReport(partnerId: string): Promise<PartnerImpactReport> {
+    const applications = await this.opportunities.applicationsForPartner(partnerId);
     const byStatus: Record<ApplicationStatus, number> = {
       submitted: 0,
       under_review: 0,
@@ -70,28 +74,27 @@ export class PartnerService {
     for (const application of applications) {
       byStatus[application.status] += 1;
     }
-    const participants = this.participants(partnerId);
-    const completedTrainings = participants.reduce(
-      (acc, user) =>
-        acc +
-        this.learning.enrolmentsForUser(user.id).filter((e) => e.status === 'completed').length,
-      0
-    );
+    const participants = await this.participants(partnerId);
+    let completedTrainings = 0;
+    for (const user of participants) {
+      const enrolments = await this.learning.enrolmentsForUser(user.id);
+      completedTrainings += enrolments.filter((e) => e.status === 'completed').length;
+    }
     const report: PartnerImpactReport = {
       partnerId,
       generatedAt: new Date().toISOString(),
-      programmes: this.programmes(partnerId).length,
+      programmes: (await this.programmes(partnerId)).length,
       applications: byStatus,
       participants: participants.length,
       completedTrainings
     };
-    this.audit.record({
+    await this.audit.record({
       actorId: partnerId,
       action: 'partner.report.generated',
       entityType: 'partner',
       entityId: partnerId
     });
-    this.events.publish('partner.report.generated', { partnerId }, partnerId);
+    await this.events.publish('partner.report.generated', { partnerId }, partnerId);
     return report;
   }
 }

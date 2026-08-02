@@ -55,25 +55,25 @@ export class PartnerController {
 
   @Get('programmes')
   @ApiOperation({ summary: 'Programmes/opportunities scoped to a partner' })
-  programmes(@Param('partnerId') partnerId: string) {
-    return { data: this.partner.programmes(partnerId) };
+  async programmes(@Param('partnerId') partnerId: string) {
+    return { data: await this.partner.programmes(partnerId) };
   }
 
   @Post('programmes')
   @ApiOperation({ summary: 'Publish a partner programme (audited)' })
-  createProgramme(@Param('partnerId') partnerId: string, @Body() dto: CreateProgrammeDto) {
-    return { data: this.partner.createProgramme(partnerId, dto) };
+  async createProgramme(@Param('partnerId') partnerId: string, @Body() dto: CreateProgrammeDto) {
+    return { data: await this.partner.createProgramme(partnerId, dto) };
   }
 
   @Get('participants')
   @ApiOperation({ summary: 'Participants across the partner\'s programmes' })
-  participants(@Param('partnerId') partnerId: string) {
-    return { data: this.partner.participants(partnerId) };
+  async participants(@Param('partnerId') partnerId: string) {
+    return { data: await this.partner.participants(partnerId) };
   }
 
   @Get('reports/impact')
   @ApiOperation({ summary: 'Partner impact report (applications, participants, training)' })
-  impactReport(@Param('partnerId') partnerId: string) {
-    return { data: this.partner.impactReport(partnerId) };
+  async impactReport(@Param('partnerId') partnerId: string) {
+    return { data: await this.partner.impactReport(partnerId) };
   }
 }

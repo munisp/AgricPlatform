@@ -38,15 +38,15 @@ export class SearchController {
 
   @Get()
   @ApiOperation({ summary: 'Cross-domain search across courses, opportunities, listings, advisory, chapters, topics' })
-  search(@Query() query: SearchQuery) {
+  async search(@Query() query: SearchQuery) {
     return {
-      data: this.searchService.search(query.q, query.types, query.state, query.limit)
+      data: await this.searchService.search(query.q, query.types, query.state, query.limit)
     };
   }
 
   @Get('suggest')
   @ApiOperation({ summary: 'Title suggestions for a partial query' })
-  suggest(@Query('q') q: string) {
-    return { data: this.searchService.suggest(q ?? '') };
+  async suggest(@Query('q') q: string) {
+    return { data: await this.searchService.suggest(q ?? '') };
   }
 }

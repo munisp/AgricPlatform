@@ -1,8 +1,17 @@
 # PostgreSQL Persistence Wave — Implementation Plan
 
-> Status: approved plan, ready for coder handoff. Produced by read-only exploration of
-> main after the security merge. Source of truth for the persistence wave; tick items
-> as they land.
+> Status: **LANDED (code-complete)** on branch `production-persistence` (2026-02-19).
+> Wave A (async port, in-memory rewrite, config, stores, services/controllers/core
+> async, gate green), Wave B (001_init.sql drift rewrite, migrate/lint:sql, pg base +
+> mappers + 27 pg repositories, contract suites, SQL snapshots, seed.ts), and Wave C
+> (transactions, certificate counter, Redis wiring, .env.example, readiness docs) are
+> implemented. `npm run validate` green: 134 tests passed, 51 pg/Redis-gated tests
+> skipped without DATABASE_URL/REDIS_URL. **External blocker:** running the gated
+> pg/Redis suites against real containers (docker unavailable in the build
+> environment) plus staging soak.
+>
+> Original handoff note: approved plan, ready for coder handoff. Produced by read-only
+> exploration of main after the security merge.
 
 ## 0. Verified context
 

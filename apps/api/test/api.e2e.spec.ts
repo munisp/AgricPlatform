@@ -44,6 +44,8 @@ describe('AgricPlatform API (e2e)', () => {
     const ready = await (await fetch(`${base}/health/ready`)).json();
     expect(ready.integrations.length).toBeGreaterThanOrEqual(8);
     expect(ready.integrations.every((i: { driver: string }) => i.driver === 'stub')).toBe(true);
+    // In-memory persistence mode reports both stores as disabled (plan §8).
+    expect(ready.persistence).toEqual({ database: 'disabled', redis: 'disabled' });
   });
 
   it('lists seeded courses with pagination envelope', async () => {

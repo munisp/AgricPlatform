@@ -20,6 +20,21 @@ export class ListQueryDto {
   pageSize?: number = DEFAULT_PAGE_SIZE;
 }
 
+/**
+ * Builds the pagination envelope from a pre-sliced page and a total count.
+ * Used by the pg repositories where LIMIT/OFFSET and COUNT happen in SQL.
+ */
+export function pageSlice<T>(
+  total: number,
+  data: T[],
+  page = 1,
+  pageSize = DEFAULT_PAGE_SIZE
+): ApiListResponse<T> {
+  const safePage = Math.max(1, page);
+  const safeSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSize));
+  return { data, total, page: safePage, pageSize: safeSize };
+}
+
 export function paginate<T>(items: T[], page = 1, pageSize = DEFAULT_PAGE_SIZE): ApiListResponse<T> {
   const safePage = Math.max(1, page);
   const safeSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSize));

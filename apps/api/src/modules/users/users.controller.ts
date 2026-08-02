@@ -47,15 +47,15 @@ export class UsersController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a user by id' })
-  get(@Param('id') id: string) {
-    return { data: this.users.getById(id) };
+  async get(@Param('id') id: string) {
+    return { data: await this.users.getById(id) };
   }
 
   @Patch(':id')
   @ApiOperation({ summary: 'Update own user record' })
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto, @ActorId() actorId: string) {
-    const user = this.users.update(id, dto);
-    this.audit.record({ actorId, action: 'user.updated', entityType: 'user', entityId: id });
+  async update(@Param('id') id: string, @Body() dto: UpdateUserDto, @ActorId() actorId: string) {
+    const user = await this.users.update(id, dto);
+    await this.audit.record({ actorId, action: 'user.updated', entityType: 'user', entityId: id });
     return { data: user };
   }
 }

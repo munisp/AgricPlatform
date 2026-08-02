@@ -9,7 +9,7 @@ export class DashboardController {
 
   @Get(':userId')
   @ApiOperation({ summary: 'Role-aware dashboard for a user' })
-  get(@Param('userId') userId: string) {
-    return { data: this.dashboard.dashboardFor(userId) };
+  async get(@Param('userId') userId: string) {
+    return { data: await this.dashboard.dashboardFor(userId) };
   }
 }

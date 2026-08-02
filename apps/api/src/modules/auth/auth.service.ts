@@ -1,18 +1,12 @@
 import { createHash, randomInt } from 'node:crypto';
-import { HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
-import { newId } from '../../common/in-memory.repository.js';
+import { newId } from '../../common/async-repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { OTP_STORE } from '../../database/persistence.tokens.js';
+import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
 import { UsersService, type CreateUserInput } from '../users/users.service.js';
-
-interface OtpChallenge {
-  id: string;
-  phone: string;
-  codeHash: string;
-  expiresAt: number;
-  attempts: number;
-}
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 /** Per-challenge verification attempts before the challenge is locked out. */
@@ -34,36 +28,35 @@ export interface OtpRequestResult {
  * is only returned outside production; challenges expire, track failed
  * attempts, and lock out after OTP_MAX_ATTEMPTS wrong codes; requesting a
  * new code invalidates outstanding challenges for the same phone number.
+ *
+ * Challenges live in the injected OTP store (Redis in production, in-memory
+ * otherwise); successful verification consumes the challenge atomically
+ * (single-use across replicas).
  */
 @Injectable()
 export class AuthService {
-  private readonly challenges = new Map<string, OtpChallenge>();
-
   constructor(
     private readonly users: UsersService,
-    private readonly events: DomainEventsService
+    private readonly events: DomainEventsService,
+    @Inject(OTP_STORE) private readonly otp: OtpChallengeStore
   ) {}
 
-  requestOtp(phone: string): OtpRequestResult {
+  async requestOtp(phone: string): Promise<OtpRequestResult> {
     // Invalidate outstanding challenges for this phone so only the newest
     // code is usable (limits parallel guessing windows).
-    for (const [id, challenge] of this.challenges) {
-      if (challenge.phone === phone) {
-        this.challenges.delete(id);
-      }
-    }
+    await this.otp.invalidateForPhone(phone);
     // Stub driver: the code is returned for local development only. The
     // production Termii SMS adapter delivers it out-of-band instead.
     const code = randomInt(100000, 999999).toString();
-    const challenge: OtpChallenge = {
+    const challenge = {
       id: newId('otp'),
       phone,
       codeHash: this.hash(code),
       expiresAt: Date.now() + OTP_TTL_MS,
       attempts: 0
     };
-    this.challenges.set(challenge.id, challenge);
-    this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
+    await this.otp.save(challenge, OTP_TTL_MS);
+    await this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
     const result: OtpRequestResult = {
       requestId: challenge.id,
       expiresInSeconds: OTP_TTL_MS / 1000
@@ -74,14 +67,14 @@ export class AuthService {
     return result;
   }
 
-  verifyOtp(requestId: string, code: string): { token: string; user: User } {
-    const challenge = this.challenges.get(requestId);
+  async verifyOtp(requestId: string, code: string): Promise<{ token: string; user: User }> {
+    const challenge = await this.otp.get(requestId);
     if (!challenge || challenge.expiresAt < Date.now()) {
-      this.challenges.delete(requestId);
+      await this.otp.delete(requestId);
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
-      this.challenges.delete(requestId);
+      await this.otp.delete(requestId);
       throw new HttpException(
         'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
         HttpStatus.TOO_MANY_REQUESTS
@@ -90,30 +83,36 @@ export class AuthService {
     if (challenge.codeHash !== this.hash(code)) {
       challenge.attempts += 1;
       if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
-        this.challenges.delete(requestId);
+        await this.otp.delete(requestId);
         throw new HttpException(
           'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
           HttpStatus.TOO_MANY_REQUESTS
         );
       }
+      await this.otp.save(challenge, challenge.expiresAt - Date.now());
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
-    this.challenges.delete(requestId);
-    const user = this.users.findByPhone(challenge.phone);
+    // Atomic single-use consumption: concurrent verifications of the same
+    // code cannot both succeed.
+    const consumed = await this.otp.consume(requestId);
+    if (!consumed) {
+      throw new UnauthorizedException('Invalid or expired OTP code');
+    }
+    const user = await this.users.findByPhone(consumed.phone);
     if (!user) {
       throw new UnauthorizedException('No account for this phone number. Register first.');
     }
     return { token: this.issueStubToken(user), user };
   }
 
-  register(input: CreateUserInput): { token: string; user: User } {
-    const user = this.users.create(input);
-    this.events.publish('identity.user.registered', { userId: user.id, roles: user.roles }, user.id);
+  async register(input: CreateUserInput): Promise<{ token: string; user: User }> {
+    const user = await this.users.create(input);
+    await this.events.publish('identity.user.registered', { userId: user.id, roles: user.roles }, user.id);
     return { token: this.issueStubToken(user), user };
   }
 
-  session(userId: string): { user: User } {
-    return { user: this.users.getById(userId) };
+  async session(userId: string): Promise<{ user: User }> {
+    return { user: await this.users.getById(userId) };
   }
 
   private issueStubToken(user: User): string {

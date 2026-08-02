@@ -178,61 +178,61 @@ export class MarketplaceController {
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Create a produce/input/service listing' })
-  createListing(@Body() dto: CreateListingDto, @CurrentUser() actor: User | null) {
+  async createListing(@Body() dto: CreateListingDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.sellerId);
-    return { data: this.marketplace.createListing(dto) };
+    return { data: await this.marketplace.createListing(dto) };
   }
 
   @Get('listings/:id')
   @ApiOperation({ summary: 'Listing detail' })
-  getListing(@Param('id') id: string) {
-    return { data: this.marketplace.getListing(id) };
+  async getListing(@Param('id') id: string) {
+    return { data: await this.marketplace.getListing(id) };
   }
 
   @Patch('listings/:id')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Update a listing (price, quantity, active state)' })
-  updateListing(
+  async updateListing(
     @Param('id') id: string,
     @Body() dto: UpdateListingDto,
     @CurrentUser() actor: User | null
   ) {
-    const listing = this.marketplace.getListing(id);
+    const listing = await this.marketplace.getListing(id);
     const owner = assertSelfOrAdmin(actor, listing.sellerId);
-    return { data: this.marketplace.updateListing(id, dto, owner.id) };
+    return { data: await this.marketplace.updateListing(id, dto, owner.id) };
   }
 
   @Post('listings/:id/orders')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Place an order against a listing (escrow-ready above threshold)' })
-  placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto, @CurrentUser() actor: User | null) {
+  async placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.buyerId);
-    return { data: this.marketplace.placeOrder(id, dto.buyerId, dto.quantity) };
+    return { data: await this.marketplace.placeOrder(id, dto.buyerId, dto.quantity) };
   }
 
   @Get('orders')
   @ApiOperation({ summary: 'List orders by buyer, seller or status' })
-  listOrders(
+  async listOrders(
     @Query('buyerId') buyerId?: string,
     @Query('sellerId') sellerId?: string,
     @Query('status') status?: OrderStatus
   ) {
-    return { data: this.marketplace.listOrders({ buyerId, sellerId, status }) };
+    return { data: await this.marketplace.listOrders({ buyerId, sellerId, status }) };
   }
 
   @Get('orders/:id')
   @ApiOperation({ summary: 'Order detail' })
-  getOrder(@Param('id') id: string) {
-    return { data: this.marketplace.getOrder(id) };
+  async getOrder(@Param('id') id: string) {
+    return { data: await this.marketplace.getOrder(id) };
   }
 
   @Patch('orders/:id/status')
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Transition an order status (state machine enforced, actor-scoped)' })
-  setOrderStatus(
+  async setOrderStatus(
     @Param('id') id: string,
     @Body() dto: OrderStatusDto,
     @CurrentUser() actor: User | null
@@ -240,8 +240,8 @@ export class MarketplaceController {
     if (!actor) {
       throw new UnauthorizedException('Authentication required for order transitions');
     }
-    const order = this.marketplace.setOrderStatus(id, dto.status, actor);
-    this.audit.record({
+    const order = await this.marketplace.setOrderStatus(id, dto.status, actor);
+    await this.audit.record({
       actorId: actor.id,
       action: 'order.status_changed',
       entityType: 'order',
@@ -255,14 +255,14 @@ export class MarketplaceController {
   @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Review a delivered/completed order' })
-  reviewOrder(@Param('id') id: string, @Body() dto: ReviewDto, @CurrentUser() actor: User | null) {
+  async reviewOrder(@Param('id') id: string, @Body() dto: ReviewDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.authorId);
-    return { data: this.marketplace.reviewOrder(id, dto.authorId, dto.rating, dto.comment) };
+    return { data: await this.marketplace.reviewOrder(id, dto.authorId, dto.rating, dto.comment) };
   }
 
   @Get('orders/:id/reviews')
   @ApiOperation({ summary: 'Reviews for an order' })
-  reviews(@Param('id') id: string) {
-    return { data: this.marketplace.reviewsForOrder(id) };
+  async reviews(@Param('id') id: string) {
+    return { data: await this.marketplace.reviewsForOrder(id) };
   }
 }

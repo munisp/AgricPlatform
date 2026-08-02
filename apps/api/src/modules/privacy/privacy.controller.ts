@@ -36,58 +36,58 @@ export class PrivacyController {
   @Post('consents')
   @Authenticated()
   @ApiOperation({ summary: 'Record a consent decision (NDPR)' })
-  grantConsent(@Body() dto: ConsentDto, @CurrentUser() actor: User | null) {
+  async grantConsent(@Body() dto: ConsentDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.userId);
-    return { data: this.privacy.grantConsent(dto) };
+    return { data: await this.privacy.grantConsent(dto) };
   }
 
   @Delete('consents/:id')
   @Authenticated()
   @ApiOperation({ summary: 'Revoke a consent record (audited)' })
-  revokeConsent(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const consent = this.privacy.getConsent(id);
+  async revokeConsent(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const consent = await this.privacy.getConsent(id);
     const owner = assertSelfOrAdmin(actor, consent.userId);
-    return { data: this.privacy.revokeConsent(id, owner.id) };
+    return { data: await this.privacy.revokeConsent(id, owner.id) };
   }
 
   @Get('consents/:userId')
   @Authenticated()
   @ApiOperation({ summary: 'Consent records for a user' })
-  consents(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+  async consents(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, userId);
-    return { data: this.privacy.consentsFor(userId) };
+    return { data: await this.privacy.consentsFor(userId) };
   }
 
   @Get('export/:userId')
   @Authenticated()
   @ApiOperation({ summary: 'Full data-subject export (NDPR right of access)' })
-  export(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+  async export(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
     const owner = assertSelfOrAdmin(actor, userId);
-    return { data: this.privacy.exportUser(userId, owner.id) };
+    return { data: await this.privacy.exportUser(userId, owner.id) };
   }
 
   @Post('delete/:userId')
   @Authenticated()
   @ApiOperation({ summary: 'Request account deletion (NDPR right to erasure)' })
-  requestDeletion(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+  async requestDeletion(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
     const owner = assertSelfOrAdmin(actor, userId);
-    return { data: this.privacy.requestDeletion(userId, owner.id) };
+    return { data: await this.privacy.requestDeletion(userId, owner.id) };
   }
 
   @Post('delete/requests/:id/confirm')
   @Authenticated()
   @ApiOperation({ summary: 'Confirm a deletion request; anonymises the user record' })
-  confirmDeletion(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const request = this.privacy.deletionRequest(id);
+  async confirmDeletion(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const request = await this.privacy.deletionRequest(id);
     const owner = assertSelfOrAdmin(actor, request.userId);
-    return { data: this.privacy.confirmDeletion(id, owner.id) };
+    return { data: await this.privacy.confirmDeletion(id, owner.id) };
   }
 
   @Get('delete/requests/:id')
   @Authenticated()
   @ApiOperation({ summary: 'Deletion request status' })
-  deletionRequest(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const request = this.privacy.deletionRequest(id);
+  async deletionRequest(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const request = await this.privacy.deletionRequest(id);
     assertSelfOrAdmin(actor, request.userId);
     return { data: request };
   }
@@ -95,7 +95,7 @@ export class PrivacyController {
   @Get('register')
   @Roles('admin')
   @ApiOperation({ summary: 'NDPR/NDPA processing register (admin only)' })
-  register() {
-    return { data: this.privacy.processingRegister() };
+  async register() {
+    return { data: await this.privacy.processingRegister() };
   }
 }

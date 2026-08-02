@@ -1,13 +1,19 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { ApiListResponse, ForumTopic, MentorRequest } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
-import { paginate } from '../../common/pagination.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
+import { newId } from '../../common/async-repository.js';
 import {
-  seedForumTopics,
-  seedMentorRequests,
-  type TopicFlag
-} from '../../database/seed-data.js';
+  FORUM_TOPIC_REPOSITORY,
+  MENTOR_REQUEST_REPOSITORY,
+  TOPIC_FLAG_REPOSITORY
+} from '../../database/persistence.tokens.js';
+import type {
+  ForumTopicCriteria,
+  ForumTopicRepository
+} from '../../database/repositories/forum-topic.repository.js';
+import type { MentorRequestRepository } from '../../database/repositories/mentor-request.repository.js';
+import type { TopicFlagRepository } from '../../database/repositories/topic-flag.repository.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
+import type { TopicFlag } from '../../database/seed-data.js';
 
 export interface CreateTopicInput {
   title: string;
@@ -26,40 +32,32 @@ export interface CreateMentorRequestInput {
 
 @Injectable()
 export class CommunityService {
-  private readonly topics = new InMemoryRepository<ForumTopic>(seedForumTopics);
-  private readonly mentorRequests = new InMemoryRepository<MentorRequest>(seedMentorRequests);
-  private readonly flags = new InMemoryRepository<TopicFlag>([]);
+  constructor(
+    private readonly events: DomainEventsService,
+    @Inject(FORUM_TOPIC_REPOSITORY) private readonly topics: ForumTopicRepository,
+    @Inject(MENTOR_REQUEST_REPOSITORY) private readonly mentorRequests: MentorRequestRepository,
+    @Inject(TOPIC_FLAG_REPOSITORY) private readonly flags: TopicFlagRepository
+  ) {}
 
-  constructor(private readonly events: DomainEventsService) {}
-
-  listTopics(filter: {
-    category?: string;
-    state?: string;
-    crop?: string;
-    q?: string;
-    page?: number;
-    pageSize?: number;
-  }): ApiListResponse<ForumTopic> {
-    let items = this.topics.all();
-    if (filter.category) items = items.filter((t) => t.category === filter.category);
-    if (filter.state) items = items.filter((t) => t.state === filter.state);
-    if (filter.crop) items = items.filter((t) => t.crop === filter.crop);
-    if (filter.q) {
-      const q = filter.q.toLowerCase();
-      items = items.filter((t) => t.title.toLowerCase().includes(q));
-    }
-    return paginate(items, filter.page, filter.pageSize);
+  async listTopics(
+    filter: ForumTopicCriteria & { page?: number; pageSize?: number }
+  ): Promise<ApiListResponse<ForumTopic>> {
+    return this.topics.searchPage(
+      { category: filter.category, state: filter.state, crop: filter.crop, q: filter.q },
+      filter.page,
+      filter.pageSize
+    );
   }
 
-  allTopics(): ForumTopic[] {
+  async allTopics(): Promise<ForumTopic[]> {
     return this.topics.all();
   }
 
-  getTopic(id: string): ForumTopic {
+  async getTopic(id: string): Promise<ForumTopic> {
     return this.topics.getById(id);
   }
 
-  createTopic(input: CreateTopicInput): ForumTopic {
+  async createTopic(input: CreateTopicInput): Promise<ForumTopic> {
     const topic: ForumTopic = {
       id: newId('topic'),
       title: input.title,
@@ -70,20 +68,19 @@ export class CommunityService {
       replyCount: 0,
       createdAt: new Date().toISOString()
     };
-    const created = this.topics.create(topic);
-    this.events.publish('community.topic.created', { topicId: created.id }, input.authorId);
+    const created = await this.topics.create(topic);
+    await this.events.publish('community.topic.created', { topicId: created.id }, input.authorId);
     return created;
   }
 
-  reply(topicId: string, authorId: string): ForumTopic {
-    const topic = this.topics.getById(topicId);
-    const updated = this.topics.update(topicId, { replyCount: topic.replyCount + 1 });
-    this.events.publish('community.topic.replied', { topicId }, authorId);
+  async reply(topicId: string, authorId: string): Promise<ForumTopic> {
+    const updated = await this.topics.incrementReplyCount(topicId);
+    await this.events.publish('community.topic.replied', { topicId }, authorId);
     return updated;
   }
 
-  flag(topicId: string, reporterId: string, reason: string): TopicFlag {
-    this.topics.getById(topicId);
+  async flag(topicId: string, reporterId: string, reason: string): Promise<TopicFlag> {
+    await this.topics.getById(topicId);
     const flag: TopicFlag = {
       id: newId('flag'),
       topicId,
@@ -92,16 +89,16 @@ export class CommunityService {
       status: 'open',
       createdAt: new Date().toISOString()
     };
-    const created = this.flags.create(flag);
-    this.events.publish('community.topic.flagged', { topicId, flagId: created.id }, reporterId);
+    const created = await this.flags.create(flag);
+    await this.events.publish('community.topic.flagged', { topicId, flagId: created.id }, reporterId);
     return created;
   }
 
-  openFlags(): TopicFlag[] {
-    return this.flags.find((f) => f.status === 'open');
+  async openFlags(): Promise<TopicFlag[]> {
+    return this.flags.find({ status: 'open' });
   }
 
-  createMentorRequest(input: CreateMentorRequestInput): MentorRequest {
+  async createMentorRequest(input: CreateMentorRequestInput): Promise<MentorRequest> {
     const request: MentorRequest = {
       id: newId('mentor'),
       userId: input.userId,
@@ -111,24 +108,28 @@ export class CommunityService {
       status: 'requested',
       createdAt: new Date().toISOString()
     };
-    const created = this.mentorRequests.create(request);
-    this.events.publish('community.mentorship.requested', { requestId: created.id }, input.userId);
+    const created = await this.mentorRequests.create(request);
+    await this.events.publish('community.mentorship.requested', { requestId: created.id }, input.userId);
     return created;
   }
 
-  listMentorRequests(filter: { userId?: string; status?: MentorRequest['status'] }): MentorRequest[] {
-    return this.mentorRequests.find(
-      (r) => (!filter.userId || r.userId === filter.userId) && (!filter.status || r.status === filter.status)
-    );
+  async listMentorRequests(filter: {
+    userId?: string;
+    status?: MentorRequest['status'];
+  }): Promise<MentorRequest[]> {
+    return this.mentorRequests.find({ userId: filter.userId, status: filter.status });
   }
 
-  updateMentorRequestStatus(id: string, status: MentorRequest['status']): MentorRequest {
-    const request = this.mentorRequests.findById(id);
+  async updateMentorRequestStatus(
+    id: string,
+    status: MentorRequest['status']
+  ): Promise<MentorRequest> {
+    const request = await this.mentorRequests.findById(id);
     if (!request) {
       throw new NotFoundException(`Mentor request '${id}' not found`);
     }
-    const updated = this.mentorRequests.update(id, { status });
-    this.events.publish('community.mentorship.updated', { requestId: id, status }, request.userId);
+    const updated = await this.mentorRequests.update(id, { status });
+    await this.events.publish('community.mentorship.updated', { requestId: id, status }, request.userId);
     return updated;
   }
 }

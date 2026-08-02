@@ -1,15 +1,22 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type {
   ApiListResponse,
   ApplicationStatus,
   Opportunity,
   OpportunityApplication
 } from '@agric-platform/shared';
-import { opportunityMatchesProfile, seedOpportunities } from '@agric-platform/shared';
-import { InMemoryRepository, newId } from '../../common/in-memory.repository.js';
+import { newId } from '../../common/async-repository.js';
 import { paginate } from '../../common/pagination.js';
+import {
+  APPLICATION_REPOSITORY,
+  OPPORTUNITY_REPOSITORY
+} from '../../database/persistence.tokens.js';
+import type { ApplicationRepository } from '../../database/repositories/application.repository.js';
+import type {
+  OpportunityCriteria,
+  OpportunityRepository
+} from '../../database/repositories/opportunity.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { seedApplications } from '../../database/seed-data.js';
 import { ProfilesService } from '../profiles/profiles.service.js';
 
 export interface CreateOpportunityInput {
@@ -25,41 +32,34 @@ export interface CreateOpportunityInput {
 
 @Injectable()
 export class OpportunitiesService {
-  private readonly opportunities = new InMemoryRepository<Opportunity>(seedOpportunities);
-  private readonly applications = new InMemoryRepository<OpportunityApplication>(seedApplications);
-
   constructor(
     private readonly events: DomainEventsService,
-    private readonly profiles: ProfilesService
+    private readonly profiles: ProfilesService,
+    @Inject(OPPORTUNITY_REPOSITORY) private readonly opportunities: OpportunityRepository,
+    @Inject(APPLICATION_REPOSITORY) private readonly applications: ApplicationRepository
   ) {}
 
-  list(filter: {
-    state?: string;
-    valueChain?: string;
-    type?: Opportunity['type'];
-    active?: boolean;
-    page?: number;
-    pageSize?: number;
-  }): ApiListResponse<Opportunity> {
-    let items = this.opportunities.all();
-    if (filter.active !== undefined) items = items.filter((o) => o.isActive === filter.active);
-    if (filter.type) items = items.filter((o) => o.type === filter.type);
-    if (filter.state) items = items.filter((o) => o.states.includes(filter.state as string));
-    if (filter.valueChain) {
-      items = items.filter((o) => o.valueChains.includes(filter.valueChain as string));
-    }
+  async list(
+    filter: OpportunityCriteria & { page?: number; pageSize?: number }
+  ): Promise<ApiListResponse<Opportunity>> {
+    const items = await this.opportunities.find({
+      state: filter.state,
+      valueChain: filter.valueChain,
+      type: filter.type,
+      active: filter.active
+    });
     return paginate(items, filter.page, filter.pageSize);
   }
 
-  all(): Opportunity[] {
+  async all(): Promise<Opportunity[]> {
     return this.opportunities.all();
   }
 
-  get(id: string): Opportunity {
+  async get(id: string): Promise<Opportunity> {
     return this.opportunities.getById(id);
   }
 
-  create(input: CreateOpportunityInput): Opportunity {
+  async create(input: CreateOpportunityInput): Promise<Opportunity> {
     const opportunity: Opportunity = {
       id: newId('opp'),
       title: input.title,
@@ -72,34 +72,29 @@ export class OpportunitiesService {
       partnerId: input.partnerId,
       isActive: true
     };
-    const created = this.opportunities.create(opportunity);
-    this.events.publish('opportunity.posting.created', { opportunityId: created.id }, input.partnerId);
+    const created = await this.opportunities.create(opportunity);
+    await this.events.publish('opportunity.posting.created', { opportunityId: created.id }, input.partnerId);
     return created;
   }
 
-  recommendedFor(userId: string): Opportunity[] {
-    const profile = this.profiles.get(userId);
-    return this.opportunities.find(
-      (o) =>
-        o.isActive &&
-        opportunityMatchesProfile({
-          opportunityStates: o.states,
-          opportunityValueChains: o.valueChains,
-          profileState: profile.location?.state,
-          profileValueChains: profile.valueChains
-        })
+  async recommendedFor(userId: string): Promise<Opportunity[]> {
+    const profile = await this.profiles.get(userId);
+    return this.opportunities.findRecommendedForProfile(
+      profile.location?.state,
+      profile.valueChains
     );
   }
 
-  apply(opportunityId: string, userId: string, notes?: string): OpportunityApplication {
-    const opportunity = this.opportunities.getById(opportunityId);
+  async apply(
+    opportunityId: string,
+    userId: string,
+    notes?: string
+  ): Promise<OpportunityApplication> {
+    const opportunity = await this.opportunities.getById(opportunityId);
     if (!opportunity.isActive) {
       throw new ConflictException('Opportunity is not accepting applications');
     }
-    const existing = this.applications.findOne(
-      (a) => a.opportunityId === opportunityId && a.userId === userId && a.status !== 'withdrawn'
-    );
-    if (existing) {
+    if (await this.applications.findActive(opportunityId, userId)) {
       throw new ConflictException('User has already applied to this opportunity');
     }
     const application: OpportunityApplication = {
@@ -110,8 +105,8 @@ export class OpportunitiesService {
       submittedAt: new Date().toISOString(),
       notes
     };
-    const created = this.applications.create(application);
-    this.events.publish(
+    const created = await this.applications.create(application);
+    await this.events.publish(
       'opportunity.application.submitted',
       { applicationId: created.id, opportunityId },
       userId
@@ -119,26 +114,29 @@ export class OpportunitiesService {
     return created;
   }
 
-  listApplications(filter: {
+  async listApplications(filter: {
     userId?: string;
     opportunityId?: string;
     status?: ApplicationStatus;
-  }): OpportunityApplication[] {
-    return this.applications.find(
-      (a) =>
-        (!filter.userId || a.userId === filter.userId) &&
-        (!filter.opportunityId || a.opportunityId === filter.opportunityId) &&
-        (!filter.status || a.status === filter.status)
-    );
+  }): Promise<OpportunityApplication[]> {
+    return this.applications.find({
+      userId: filter.userId,
+      opportunityId: filter.opportunityId,
+      status: filter.status
+    });
   }
 
-  getApplication(id: string): OpportunityApplication {
+  async getApplication(id: string): Promise<OpportunityApplication> {
     return this.applications.getById(id);
   }
 
-  setApplicationStatus(id: string, status: ApplicationStatus, actorId: string): OpportunityApplication {
-    const updated = this.applications.update(id, { status });
-    this.events.publish(
+  async setApplicationStatus(
+    id: string,
+    status: ApplicationStatus,
+    actorId: string
+  ): Promise<OpportunityApplication> {
+    const updated = await this.applications.update(id, { status });
+    await this.events.publish(
       'opportunity.application.status_changed',
       { applicationId: id, status },
       actorId
@@ -146,14 +144,11 @@ export class OpportunitiesService {
     return updated;
   }
 
-  applicationsForPartner(partnerId: string): OpportunityApplication[] {
-    const partnerOpportunityIds = new Set(
-      this.opportunities.find((o) => o.partnerId === partnerId).map((o) => o.id)
-    );
-    return this.applications.find((a) => partnerOpportunityIds.has(a.opportunityId));
+  async applicationsForPartner(partnerId: string): Promise<OpportunityApplication[]> {
+    return this.applications.findForPartner(partnerId);
   }
 
-  opportunitiesForPartner(partnerId: string): Opportunity[] {
-    return this.opportunities.find((o) => o.partnerId === partnerId);
+  async opportunitiesForPartner(partnerId: string): Promise<Opportunity[]> {
+    return this.opportunities.findByPartner(partnerId);
   }
 }

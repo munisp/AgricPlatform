@@ -1,13 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   calculateProfileCompletion,
   profileBadge,
   type LocationRef,
   type Profile
 } from '@agric-platform/shared';
-import { InMemoryRepository } from '../../common/in-memory.repository.js';
+import { PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
+import type { ProfileRepository } from '../../database/repositories/profile.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { seedProfiles } from '../../database/seed-data.js';
 import { UsersService } from '../users/users.service.js';
 
 export interface UpsertProfileInput {
@@ -28,25 +28,19 @@ export interface CompletionReport {
 
 @Injectable()
 export class ProfilesService {
-  private readonly repo: InMemoryRepository<Profile & { id: string }>;
-
   constructor(
     private readonly users: UsersService,
-    private readonly events: DomainEventsService
-  ) {
-    this.repo = new InMemoryRepository(
-      seedProfiles.map((profile) => ({ ...profile, id: profile.userId }))
-    );
+    private readonly events: DomainEventsService,
+    @Inject(PROFILE_REPOSITORY) private readonly repo: ProfileRepository
+  ) {}
+
+  async get(userId: string): Promise<Profile> {
+    return this.repo.getByUserId(userId);
   }
 
-  get(userId: string): Profile {
-    const stored = this.repo.getById(userId);
-    return this.toProfile(stored);
-  }
-
-  upsert(userId: string, input: UpsertProfileInput): Profile {
-    this.users.getById(userId); // ensure the user exists
-    const existing = this.repo.findById(userId);
+  async upsert(userId: string, input: UpsertProfileInput): Promise<Profile> {
+    await this.users.getById(userId); // ensure the user exists
+    const existing = await this.repo.findByUserId(userId);
     const previousScore = existing?.completionScore ?? 0;
     const merged: Profile = {
       userId,
@@ -61,14 +55,9 @@ export class ProfilesService {
     };
     merged.completionScore = calculateProfileCompletion(merged);
     merged.badges = [profileBadge(merged.completionScore)];
-    const stored = { ...merged, id: userId };
-    if (existing) {
-      this.repo.update(userId, stored);
-    } else {
-      this.repo.create(stored);
-    }
+    await this.repo.upsert(merged);
     if (merged.completionScore !== previousScore) {
-      this.events.publish(
+      await this.events.publish(
         'profile.completion.updated',
         { userId, score: merged.completionScore, previousScore },
         userId
@@ -77,8 +66,8 @@ export class ProfilesService {
     return merged;
   }
 
-  completion(userId: string): CompletionReport {
-    const profile = this.get(userId);
+  async completion(userId: string): Promise<CompletionReport> {
+    const profile = await this.get(userId);
     const missing: string[] = [];
     if (!profile.location?.state) missing.push('location.state');
     if (!profile.location?.lga) missing.push('location.lga');
@@ -95,12 +84,11 @@ export class ProfilesService {
     };
   }
 
-  all(): Profile[] {
-    return this.repo.all().map((stored) => this.toProfile(stored));
+  async all(): Promise<Profile[]> {
+    return this.repo.all();
   }
 
-  private toProfile(stored: Profile & { id: string }): Profile {
-    const { id: _id, ...profile } = stored;
-    return profile;
+  async countByState(): Promise<Map<string, number>> {
+    return this.repo.countByState();
   }
 }

@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { CoreModule } from './core/core.module.js';
+import { DatabaseModule } from './database/database.module.js';
 import { HealthController } from './health/health.controller.js';
 import { AdminModule } from './modules/admin/admin.module.js';
 import { AdvisoryModule } from './modules/advisory/advisory.module.js';
@@ -21,6 +23,7 @@ import { PrivacyModule } from './modules/privacy/privacy.module.js';
 import { ProfilesModule } from './modules/profiles/profiles.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 import { UsersModule } from './modules/users/users.module.js';
+import { RedisModule } from './redis/redis.module.js';
 
 @Module({
   imports: [
@@ -28,6 +31,8 @@ import { UsersModule } from './modules/users/users.module.js';
     // abuse"). TODO(prod): back the store with Redis so limits hold across
     // replicas — tracked in docs/production-readiness.md.
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
+    DatabaseModule,
+    RedisModule,
     CoreModule,
     UsersModule,
     AuthModule,
@@ -49,6 +54,9 @@ import { UsersModule } from './modules/users/users.module.js';
     IntegrationsModule
   ],
   controllers: [HealthController],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }]
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor }
+  ]
 })
 export class AppModule {}

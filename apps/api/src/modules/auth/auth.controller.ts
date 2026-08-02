@@ -52,22 +52,22 @@ export class AuthController {
   // Stricter limits on credential endpoints (docs/security-compliance.md §7).
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: 'Request a phone OTP challenge (stub driver returns devCode outside production)' })
-  requestOtp(@Body() dto: RequestOtpDto) {
-    return { data: this.auth.requestOtp(dto.phone) };
+  async requestOtp(@Body() dto: RequestOtpDto) {
+    return { data: await this.auth.requestOtp(dto.phone) };
   }
 
   @Post('otp/verify')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Verify an OTP challenge and receive a session token' })
-  verifyOtp(@Body() dto: VerifyOtpDto) {
-    return { data: this.auth.verifyOtp(dto.requestId, dto.code) };
+  async verifyOtp(@Body() dto: VerifyOtpDto) {
+    return { data: await this.auth.verifyOtp(dto.requestId, dto.code) };
   }
 
   @Post('register')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Register a new member account' })
-  register(@Body() dto: RegisterDto) {
-    return { data: this.auth.register(dto) };
+  async register(@Body() dto: RegisterDto) {
+    return { data: await this.auth.register(dto) };
   }
 
   @Get('session')
@@ -84,7 +84,7 @@ export class AuthController {
     if (bearer) {
       try {
         const identity = await this.oidc.verify(bearer);
-        return { data: this.auth.session(identity.subject) };
+        return { data: await this.auth.session(identity.subject) };
       } catch (error) {
         throw new UnauthorizedException(
           `Invalid bearer token: ${error instanceof Error ? error.message : 'verification failed'}`
@@ -97,6 +97,6 @@ export class AuthController {
     if (!userId) {
       throw new UnauthorizedException('x-user-id header required (OIDC bearer token in production)');
     }
-    return { data: this.auth.session(userId) };
+    return { data: await this.auth.session(userId) };
   }
 }

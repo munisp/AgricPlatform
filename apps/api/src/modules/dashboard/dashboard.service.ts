@@ -34,13 +34,20 @@ export class DashboardService {
     private readonly notifications: NotificationsService
   ) {}
 
-  dashboardFor(userId: string): DashboardView {
-    const user = this.users.getById(userId);
-    const profile = this.profiles.get(userId);
-    const enrolments = this.learning.enrolmentsForUser(userId);
-    const applications = this.opportunities.listApplications({ userId });
-    const purchases = this.marketplace.listOrders({ buyerId: userId });
-    const sales = this.marketplace.listOrders({ sellerId: userId });
+  async dashboardFor(userId: string): Promise<DashboardView> {
+    const user = await this.users.getById(userId);
+    const [profile, enrolments, applications, purchases, sales, unread, recommended] =
+      await Promise.all([
+        this.profiles.get(userId),
+        this.learning.enrolmentsForUser(userId),
+        this.opportunities.listApplications({ userId }),
+        this.marketplace.listOrders({ buyerId: userId }),
+        this.marketplace.listOrders({ sellerId: userId }),
+        this.notifications.unreadCount(userId),
+        user.roles.includes('farmer') || user.roles.includes('student')
+          ? this.opportunities.recommendedFor(userId)
+          : Promise.resolve([])
+      ]);
 
     const widgets: DashboardWidget[] = [
       {
@@ -53,7 +60,7 @@ export class DashboardService {
         key: 'unread_notifications',
         title: 'Unread notifications',
         kind: 'metric',
-        data: { count: this.notifications.unreadCount(userId) }
+        data: { count: unread }
       }
     ];
 
@@ -73,7 +80,7 @@ export class DashboardService {
           key: 'recommended_opportunities',
           title: 'Recommended opportunities',
           kind: 'list',
-          data: this.opportunities.recommendedFor(userId).slice(0, 5)
+          data: recommended.slice(0, 5)
         },
         {
           key: 'my_applications',

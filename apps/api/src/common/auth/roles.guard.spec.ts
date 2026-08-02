@@ -5,6 +5,7 @@ import { Reflector } from '@nestjs/core';
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet } from 'jose';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { UserRole } from '@agric-platform/shared';
+import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { UsersService } from '../../modules/users/users.service.js';
 import { OidcService } from './oidc.service.js';
 import { RolesGuard } from './roles.guard.js';
@@ -25,7 +26,7 @@ function makeGuard(required: UserRole[] | undefined): {
   const request: { headers: Record<string, string>; user?: unknown } = { headers: {} };
   const guard = new RolesGuard(
     reflector,
-    new UsersService(),
+    new UsersService(createInMemoryUserRepository()),
     OidcService.forConfig({
       issuer: ISSUER,
       jwksUri: 'unused-in-tests',

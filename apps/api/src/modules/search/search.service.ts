@@ -24,9 +24,9 @@ export interface SearchResult {
 }
 
 /**
- * Cross-domain discovery. Phase 1 searches in-memory repositories (stub
- * search driver); production swaps in the Meilisearch adapter while keeping
- * this result contract.
+ * Cross-domain discovery. Phase 1 fans out across the domain repositories
+ * (full-table scans acceptable at this scale); production swaps in the
+ * Meilisearch adapter while keeping this result contract.
  */
 @Injectable()
 export class SearchService {
@@ -39,7 +39,12 @@ export class SearchService {
     private readonly community: CommunityService
   ) {}
 
-  search(query: string, types?: SearchResultType[], state?: string, limit = 20): SearchResult[] {
+  async search(
+    query: string,
+    types?: SearchResultType[],
+    state?: string,
+    limit = 20
+  ): Promise<SearchResult[]> {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     const wanted = types?.length ? new Set(types) : null;
@@ -52,71 +57,69 @@ export class SearchService {
       return haystack.includes(q) ? 1 : 0;
     };
 
-    if (!wanted || wanted.has('course')) {
-      for (const course of this.learning.allCourses()) {
-        const s = score(`${course.title} ${course.category}`);
-        if (s > 0) {
-          results.push({ type: 'course', id: course.id, title: course.title, summary: course.category, score: s });
-        }
+    const [courses, opportunities, listings, advisoryItems, chapterList, topics] =
+      await Promise.all([
+        !wanted || wanted.has('course') ? this.learning.allCourses() : Promise.resolve([]),
+        !wanted || wanted.has('opportunity') ? this.opportunities.all() : Promise.resolve([]),
+        !wanted || wanted.has('listing') ? this.marketplace.allListings() : Promise.resolve([]),
+        !wanted || wanted.has('advisory') ? this.advisory.all() : Promise.resolve([]),
+        !wanted || wanted.has('chapter') ? this.chapters.all() : Promise.resolve([]),
+        !wanted || wanted.has('topic') ? this.community.allTopics() : Promise.resolve([])
+      ]);
+
+    for (const course of courses) {
+      const s = score(`${course.title} ${course.category}`);
+      if (s > 0) {
+        results.push({ type: 'course', id: course.id, title: course.title, summary: course.category, score: s });
       }
     }
-    if (!wanted || wanted.has('opportunity')) {
-      for (const opp of this.opportunities.all()) {
-        if (state && !opp.states.includes(state)) continue;
-        const s = score(`${opp.title} ${opp.description}`);
-        if (s > 0) {
-          results.push({ type: 'opportunity', id: opp.id, title: opp.title, summary: opp.description, score: s });
-        }
+    for (const opp of opportunities) {
+      if (state && !opp.states.includes(state)) continue;
+      const s = score(`${opp.title} ${opp.description}`);
+      if (s > 0) {
+        results.push({ type: 'opportunity', id: opp.id, title: opp.title, summary: opp.description, score: s });
       }
     }
-    if (!wanted || wanted.has('listing')) {
-      for (const listing of this.marketplace.allListings()) {
-        if (state && listing.location.state !== state) continue;
-        const s = score(`${listing.title} ${listing.crop ?? ''}`);
-        if (s > 0) {
-          results.push({
-            type: 'listing',
-            id: listing.id,
-            title: listing.title,
-            summary: `${listing.quantity} ${listing.unit} — ${listing.location.state}`,
-            score: s,
-            state: listing.location.state
-          });
-        }
+    for (const listing of listings) {
+      if (state && listing.location.state !== state) continue;
+      const s = score(`${listing.title} ${listing.crop ?? ''}`);
+      if (s > 0) {
+        results.push({
+          type: 'listing',
+          id: listing.id,
+          title: listing.title,
+          summary: `${listing.quantity} ${listing.unit} — ${listing.location.state}`,
+          score: s,
+          state: listing.location.state
+        });
       }
     }
-    if (!wanted || wanted.has('advisory')) {
-      for (const item of this.advisory.all()) {
-        if (state && item.state && item.state !== state) continue;
-        const s = score(`${item.title} ${item.summary}`);
-        if (s > 0) {
-          results.push({ type: 'advisory', id: item.id, title: item.title, summary: item.summary, score: s, state: item.state });
-        }
+    for (const item of advisoryItems) {
+      if (state && item.state && item.state !== state) continue;
+      const s = score(`${item.title} ${item.summary}`);
+      if (s > 0) {
+        results.push({ type: 'advisory', id: item.id, title: item.title, summary: item.summary, score: s, state: item.state });
       }
     }
-    if (!wanted || wanted.has('chapter')) {
-      for (const chapter of this.chapters.all()) {
-        if (state && chapter.state !== state) continue;
-        const s = score(chapter.name);
-        if (s > 0) {
-          results.push({ type: 'chapter', id: chapter.id, title: chapter.name, summary: `${chapter.level} chapter`, score: s, state: chapter.state });
-        }
+    for (const chapter of chapterList) {
+      if (state && chapter.state !== state) continue;
+      const s = score(chapter.name);
+      if (s > 0) {
+        results.push({ type: 'chapter', id: chapter.id, title: chapter.name, summary: `${chapter.level} chapter`, score: s, state: chapter.state });
       }
     }
-    if (!wanted || wanted.has('topic')) {
-      for (const topic of this.community.allTopics()) {
-        if (state && topic.state && topic.state !== state) continue;
-        const s = score(topic.title);
-        if (s > 0) {
-          results.push({ type: 'topic', id: topic.id, title: topic.title, summary: topic.category, score: s, state: topic.state });
-        }
+    for (const topic of topics) {
+      if (state && topic.state && topic.state !== state) continue;
+      const s = score(topic.title);
+      if (s > 0) {
+        results.push({ type: 'topic', id: topic.id, title: topic.title, summary: topic.category, score: s, state: topic.state });
       }
     }
 
     return results.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title)).slice(0, limit);
   }
 
-  suggest(query: string, limit = 5): string[] {
-    return this.search(query, undefined, undefined, limit).map((r) => r.title);
+  async suggest(query: string, limit = 5): Promise<string[]> {
+    return (await this.search(query, undefined, undefined, limit)).map((r) => r.title);
   }
 }
