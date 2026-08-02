@@ -34,6 +34,8 @@ import { RedisModule } from './redis/redis.module.js';
 // Wave P5d (additive).
 import { EmbedModule } from './modules/embed/embed.module.js';
 import { PartnerApiModule } from './modules/partner-api/partner-api.module.js';
+// Wave P6a (additive).
+import { IvrModule } from './modules/ivr/ivr.module.js';
 
 @Module({
   imports: [
@@ -75,7 +77,9 @@ import { PartnerApiModule } from './modules/partner-api/partner-api.module.js';
     UssdModule,
     // Wave P5d modules — appended to minimise merge conflicts.
     PartnerApiModule,
-    EmbedModule
+    EmbedModule,
+    // Wave P6a IVR voice channel — appended to minimise merge conflicts.
+    IvrModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
