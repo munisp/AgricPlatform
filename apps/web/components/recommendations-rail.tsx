@@ -43,13 +43,16 @@ const TYPE_LABELS: Record<RecommendedItem['type'], string> = {
   knowledge: 'Resource'
 };
 
-type FeedbackState = 'idle' | 'saving' | 'saved' | 'failed';
+type FeedbackState = 'idle' | 'saving' | 'saved';
 
 function RecommendationCard({
   item,
+  failed,
   onFeedback
 }: {
   item: RecommendedItem;
+  /** Set by the rail when the last feedback post for this item failed. */
+  failed: boolean;
   onFeedback: (
     item: RecommendedItem,
     action: RecommendationFeedbackAction
@@ -62,7 +65,8 @@ function RecommendationCard({
     setState('saving');
     setLastAction(action);
     const ok = await onFeedback(item, action);
-    setState(ok ? 'saved' : 'failed');
+    // On failure the rail flags the item; the card stays interactive for a retry.
+    setState(ok ? 'saved' : 'idle');
   };
 
   return (
@@ -85,7 +89,7 @@ function RecommendationCard({
         </ul>
       ) : null}
       <div className="cluster" style={{ justifyContent: 'flex-end' }}>
-        {state === 'failed' ? (
+        {failed ? (
           <span className="small" role="alert" style={{ color: 'var(--red-600)' }}>
             Feedback not saved — try again.
           </span>
@@ -119,11 +123,18 @@ export function RecommendationsRail() {
   );
   // Optimistically dismissed ids; a failed dismiss un-hides the card.
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  // Ids whose last feedback post failed — flagged on the restored card.
+  const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
 
   const handleFeedback = async (
     item: RecommendedItem,
     action: RecommendationFeedbackAction
   ): Promise<boolean> => {
+    setFailedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
     if (action === 'dismissed') {
       setDismissed((prev) => new Set(prev).add(item.id));
     }
@@ -138,6 +149,7 @@ export function RecommendationsRail() {
           return next;
         });
       }
+      setFailedIds((prev) => new Set(prev).add(item.id));
       return false;
     }
   };
@@ -154,7 +166,11 @@ export function RecommendationsRail() {
       <div className="reco-rail" role="list" aria-label="Recommended items">
         {items.map((item) => (
           <div role="listitem" key={`${item.type}-${item.id}`}>
-            <RecommendationCard item={item} onFeedback={handleFeedback} />
+            <RecommendationCard
+              item={item}
+              failed={failedIds.has(item.id)}
+              onFeedback={handleFeedback}
+            />
           </div>
         ))}
       </div>

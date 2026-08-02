@@ -36,7 +36,10 @@ const FUNNEL_STEP_LABELS: Record<string, string> = {
   registered: 'Registered',
   profile_complete: 'Profile complete',
   first_course: 'First course',
-  first_application: 'First application'
+  first_application: 'First application',
+  events: 'Events',
+  rsvps: 'RSVPs',
+  attendance: 'Attendance'
 };
 
 function formatPercent(fraction: number | null): string {
