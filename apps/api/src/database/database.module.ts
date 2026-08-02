@@ -53,6 +53,15 @@ import {
   TOPIC_FLAG_REPOSITORY,
   USER_REPOSITORY,
   COMMODITY_PRICE_REPOSITORY,
+  CREDIT_SCORE_REPOSITORY,
+  ESCROW_REPOSITORY,
+  INVOICE_REPOSITORY,
+  LEDGER_ACCOUNT_REPOSITORY,
+  LEDGER_ENTRY_REPOSITORY,
+  LENDER_REPOSITORY,
+  LOAN_APPLICATION_REPOSITORY,
+  REPAYMENT_SCHEDULE_REPOSITORY,
+  SHIPMENT_REPOSITORY,
   WEBINAR_REGISTRATION_REPOSITORY,
   WEBINAR_REPOSITORY
 } from './persistence.tokens.js';
@@ -203,6 +212,35 @@ import {
   createInMemoryWebinarRegistrationRepository,
   createInMemoryWebinarRepository
 } from './repositories/webinar.repository.js';
+// Commerce & finance wave (P2a) repositories.
+import { createInMemoryEscrowRepository } from './repositories/escrow.repository.js';
+import { createInMemoryInvoiceRepository } from './repositories/invoice.repository.js';
+import { createInMemoryShipmentRepository } from './repositories/shipment.repository.js';
+import {
+  createPgEscrowRepository,
+  createPgInvoiceRepository,
+  createPgShipmentRepository
+} from './repositories/commerce.pg-repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from './repositories/ledger.repository.js';
+import {
+  createPgCreditScoreRepository,
+  createPgLedgerAccountRepository,
+  createPgLedgerEntryRepository
+} from './repositories/ledger.pg-repository.js';
+import { createInMemoryCreditScoreRepository } from './repositories/credit-score.repository.js';
+import { createInMemoryLenderRepository } from './repositories/lender.repository.js';
+import {
+  createInMemoryLoanApplicationRepository,
+  createInMemoryRepaymentScheduleRepository
+} from './repositories/loan.repository.js';
+import {
+  createPgLenderRepository,
+  createPgLoanApplicationRepository,
+  createPgRepaymentScheduleRepository
+} from './repositories/credit.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -531,6 +569,57 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgSearchQueryRepository(pool) : createInMemorySearchQueryRepository(),
       inject: [PG_POOL]
+    },
+    // Commerce & finance wave (P2a) providers.
+    {
+      provide: ESCROW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INVOICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgInvoiceRepository(pool) : createInMemoryInvoiceRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgShipmentRepository(pool) : createInMemoryShipmentRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerAccountRepository(pool) : createInMemoryLedgerAccountRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ENTRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerEntryRepository(pool) : createInMemoryLedgerEntryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditScoreRepository(pool) : createInMemoryCreditScoreRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LENDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLenderRepository(pool) : createInMemoryLenderRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOAN_APPLICATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLoanApplicationRepository(pool) : createInMemoryLoanApplicationRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REPAYMENT_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -586,7 +675,16 @@ import {
     PODCAST_EPISODE_REPOSITORY,
     WEBINAR_REPOSITORY,
     WEBINAR_REGISTRATION_REPOSITORY,
-    SEARCH_QUERY_REPOSITORY
+    SEARCH_QUERY_REPOSITORY,
+    CREDIT_SCORE_REPOSITORY,
+    ESCROW_REPOSITORY,
+    INVOICE_REPOSITORY,
+    LEDGER_ACCOUNT_REPOSITORY,
+    LEDGER_ENTRY_REPOSITORY,
+    LENDER_REPOSITORY,
+    LOAN_APPLICATION_REPOSITORY,
+    REPAYMENT_SCHEDULE_REPOSITORY,
+    SHIPMENT_REPOSITORY
   ]
 })
 export class DatabaseModule {}

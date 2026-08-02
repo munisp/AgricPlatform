@@ -23,6 +23,8 @@ import type { OrderCriteria, OrderRepository } from '../../database/repositories
 import type { ReviewRepository } from '../../database/repositories/review.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { OrderReview } from '../../database/seed-data.js';
+import { EscrowService } from './escrow.service.js';
+import { InvoiceService } from './invoice.service.js';
 
 /** Orders at or above this value stay escrow-ready for settlement. */
 const ESCROW_THRESHOLD_NAIRA = 100_000;
@@ -97,6 +99,10 @@ export class MarketplaceService {
     @Inject(LISTING_REPOSITORY) private readonly listings: ListingRepository,
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
     @Inject(REVIEW_REPOSITORY) private readonly reviews: ReviewRepository,
+    // Wave P2a commerce hooks (optional so bare service constructions in
+    // tests keep working; always wired in the Nest module).
+    @Optional() private readonly escrow?: EscrowService,
+    @Optional() private readonly invoices?: InvoiceService,
     @Optional() private readonly metrics?: MetricsService,
     @Optional() private readonly audit?: AuditService
   ) {}
@@ -249,6 +255,22 @@ export class MarketplaceService {
       { orderId: id, from: order.status, to: status },
       actor.id
     );
+    // Wave P2a commerce hooks (all idempotent no-ops when nothing applies):
+    // confirm → issue invoice; deposit → hold escrow; cancel → refund escrow
+    // + cancel invoice; complete → release escrow + mark invoice paid.
+    if (status === 'confirmed') {
+      await this.invoices?.issueForOrder(id, actor.id);
+    } else if (status === 'deposit_paid' && updated.escrowRequired) {
+      await this.escrow?.holdForOrder(id, actor.id);
+    } else if (status === 'disputed') {
+      await this.escrow?.disputeForOrder(id, actor.id);
+    } else if (status === 'cancelled') {
+      await this.escrow?.refundForOrder(id, actor.id);
+      await this.invoices?.cancelForOrder(id, actor.id);
+    } else if (status === 'completed') {
+      await this.escrow?.releaseForOrder(id, actor.id);
+      await this.invoices?.markPaidForOrder(id, actor.id);
+    }
     return updated;
   }
 
