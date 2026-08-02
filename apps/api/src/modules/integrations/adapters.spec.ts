@@ -78,4 +78,15 @@ describe('Integration adapter driver resolution', () => {
       assertProductionDriverConfig({ NODE_ENV: 'test', SMS_DRIVER: 'production' })
     ).not.toThrow();
   });
+
+  it('treats Open-Meteo weather as keyless: live driver allowed without credentials, stub stays default', () => {
+    expect(resolveDriver(definition('weather'), {})).toEqual({ driver: 'stub', configured: false });
+    expect(resolveDriver(definition('weather'), { WEATHER_DRIVER: 'production' })).toEqual({
+      driver: 'production',
+      configured: true
+    });
+    expect(() =>
+      assertProductionDriverConfig({ NODE_ENV: 'production', WEATHER_DRIVER: 'production' })
+    ).not.toThrow();
+  });
 });

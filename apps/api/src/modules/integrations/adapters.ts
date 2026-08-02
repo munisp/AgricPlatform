@@ -49,6 +49,12 @@ interface AdapterDefinition {
   driverEnv: string;
   /** Additional credential variables that count as configured. */
   credentialEnvs?: string[];
+  /**
+   * True when the production driver is a keyless/open API (Open-Meteo
+   * weather): the non-stub driver needs no credentials, so the production
+   * boot assertion treats it as configured.
+   */
+  credentialsOptional?: boolean;
   productionDriver: string;
   stubNotes: string;
 }
@@ -137,7 +143,9 @@ export const ADAPTER_DEFINITIONS: AdapterDefinition[] = [
     capability: 'weather_feed',
     envPrefix: 'WEATHER',
     driverEnv: 'WEATHER_DRIVER',
-    productionDriver: 'NiMet / Open-Meteo / FEWS NET feeds',
+    // Open-Meteo is the real default feed and needs no credentials.
+    credentialsOptional: true,
+    productionDriver: 'Open-Meteo (keyless) / NiMet (MoU-gated) feeds',
     stubNotes: 'Weather snapshots are deterministic local fixtures.'
   },
   {
@@ -166,7 +174,10 @@ export function resolveDriver(
   const explicit = env[definition.driverEnv] ?? env[`${definition.envPrefix}_DRIVER`];
   const hasKey = credentialEnvNames(definition).some((name) => Boolean(env[name]));
   if (explicit === 'production' || explicit === 'sandbox' || explicit === 'stub') {
-    return { driver: explicit, configured: hasKey };
+    // Keyless production drivers (Open-Meteo weather) count as configured
+    // only when the operator explicitly opts into the live driver — the
+    // stub default must stay credential-driven.
+    return { driver: explicit, configured: hasKey || definition.credentialsOptional === true };
   }
   return hasKey ? { driver: 'sandbox', configured: true } : { driver: 'stub', configured: false };
 }
