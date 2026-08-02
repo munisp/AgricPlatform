@@ -6,6 +6,7 @@
   "scripts": {
     "prebuild": "npm run build -w @agric-platform/shared",
     "dev": "next dev",
+    "icons:generate": "node scripts/generate-icons.mjs",
     "build": "next build",
     "postbuild": "node -e \"const fs=require('fs');for(const [s,d] of [['.next/static','.next/standalone/apps/web/.next/static'],['public','.next/standalone/apps/web/public']]){fs.rmSync(d,{recursive:true,force:true});fs.cpSync(s,d,{recursive:true});}\"",
     "start": "node .next/standalone/apps/web/server.js",

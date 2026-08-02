@@ -2,7 +2,7 @@
    No build step: plain script served from /public/sw.js. */
 'use strict';
 
-var VERSION = 'agric-sw-v3';
+var VERSION = 'agric-sw-v4';
 var STATIC_CACHE = VERSION + '-static';
 var PAGE_CACHE = VERSION + '-pages';
 var API_CACHE = VERSION + '-api-public';
@@ -13,7 +13,23 @@ var OFFLINE_CACHE = VERSION + '-offline-pack';
    visited pages. Only the newest entries are kept (FIFO eviction). */
 var PAGE_CACHE_LIMIT = 50;
 
-var APP_SHELL = ['/', '/offline', '/manifest.webmanifest', '/icon.svg'];
+/* Core offline pack: the app shell page, offline fallback, manifest, the
+   install icons (so installability works offline) and the primary public
+   routes a farmer needs with no connectivity. None of these routes
+   redirect, so cache.addAll cannot reject the install. */
+var APP_SHELL = [
+  '/',
+  '/offline',
+  '/manifest.webmanifest',
+  '/icon.svg',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/apple-touch-icon.png',
+  '/marketplace',
+  '/learning',
+  '/opportunities',
+  '/dashboard'
+];
 
 /*
  * Runtime caching of PUBLIC reference data GET endpoints only
