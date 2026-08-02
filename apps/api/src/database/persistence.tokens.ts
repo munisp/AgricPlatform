@@ -101,3 +101,9 @@ export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
 export const IDEMPOTENCY_STORE = Symbol('IDEMPOTENCY_STORE');
 export const OTP_STORE = Symbol('OTP_STORE');
+// Wave L1b: ALTP animal health, movement traceability, recall, surveillance.
+export const HEALTH_RECORD_REPOSITORY = Symbol('HEALTH_RECORD_REPOSITORY');
+export const MOVEMENT_REPOSITORY = Symbol('MOVEMENT_REPOSITORY');
+export const MOVEMENT_PERMIT_REPOSITORY = Symbol('MOVEMENT_PERMIT_REPOSITORY');
+export const RECALL_REPOSITORY = Symbol('RECALL_REPOSITORY');
+export const DISEASE_FLAG_REPOSITORY = Symbol('DISEASE_FLAG_REPOSITORY');

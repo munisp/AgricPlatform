@@ -57,6 +57,13 @@ import type {
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { AuditEvent } from '@agric-platform/shared';
 import type {
+  AnimalHealthRecord,
+  AnimalMovement,
+  DiseaseFlag,
+  LivestockRecall,
+  MovementPermit
+} from '@agric-platform/shared';
+import type {
   ChapterAnnouncement,
   DeletionRequest,
   EventRsvp,
@@ -1886,6 +1893,255 @@ export const pastoralistProfileMapper: RowMapper<PastoralistProfile> = {
       grazing_zone_id: 'grazingZoneId',
       migration_pattern: 'migrationPattern',
       primary_species: 'primarySpecies',
+      updated_at: 'updatedAt'
+    })
+};
+
+// ---------------------------------------------------------------------------
+// Wave L1b: ALTP animal-health ledger, movement traceability, recall and
+// disease surveillance (appended — infra/postgres/013).
+
+export const healthRecordMapper: RowMapper<AnimalHealthRecord> = {
+  columns: [
+    'id',
+    'animal_id',
+    'record_type',
+    'product',
+    'batch_number',
+    'dose',
+    'administered_at',
+    'withdrawal_until',
+    'vet_user_id',
+    'notes',
+    'signature',
+    'signed_at',
+    'reversal_of_id',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    animalId: row.animal_id as string,
+    recordType: row.record_type as AnimalHealthRecord['recordType'],
+    product: row.product as string,
+    batchNumber: row.batch_number as string,
+    dose: row.dose as string,
+    administeredAt: ts(row.administered_at),
+    withdrawalUntil: row.withdrawal_until ? ts(row.withdrawal_until) : undefined,
+    vetUserId: row.vet_user_id as string,
+    notes: (row.notes as string) ?? undefined,
+    signature: row.signature as string,
+    signedAt: ts(row.signed_at),
+    reversalOfId: (row.reversal_of_id as string) ?? undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      animal_id: 'animalId',
+      record_type: 'recordType',
+      product: 'product',
+      batch_number: 'batchNumber',
+      dose: 'dose',
+      administered_at: 'administeredAt',
+      withdrawal_until: 'withdrawalUntil',
+      vet_user_id: 'vetUserId',
+      notes: 'notes',
+      signature: 'signature',
+      signed_at: 'signedAt',
+      reversal_of_id: 'reversalOfId',
+      created_at: 'createdAt'
+    })
+};
+
+export const movementMapper: RowMapper<AnimalMovement> = {
+  columns: [
+    'id',
+    'animal_id',
+    'lot_id',
+    'from_state',
+    'from_lga',
+    'to_state',
+    'to_lga',
+    'departed_at',
+    'arrived_at',
+    'transport_mode',
+    'purpose',
+    'permit_id',
+    'recorded_by',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    animalId: (row.animal_id as string) ?? undefined,
+    lotId: (row.lot_id as string) ?? undefined,
+    fromState: row.from_state as string,
+    fromLga: (row.from_lga as string) ?? undefined,
+    toState: row.to_state as string,
+    toLga: (row.to_lga as string) ?? undefined,
+    departedAt: ts(row.departed_at),
+    arrivedAt: row.arrived_at ? ts(row.arrived_at) : undefined,
+    transportMode: row.transport_mode as AnimalMovement['transportMode'],
+    purpose: row.purpose as AnimalMovement['purpose'],
+    permitId: (row.permit_id as string) ?? undefined,
+    recordedBy: row.recorded_by as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      animal_id: 'animalId',
+      lot_id: 'lotId',
+      from_state: 'fromState',
+      from_lga: 'fromLga',
+      to_state: 'toState',
+      to_lga: 'toLga',
+      departed_at: 'departedAt',
+      arrived_at: 'arrivedAt',
+      transport_mode: 'transportMode',
+      purpose: 'purpose',
+      permit_id: 'permitId',
+      recorded_by: 'recordedBy',
+      created_at: 'createdAt'
+    })
+};
+
+export const movementPermitMapper: RowMapper<MovementPermit> = {
+  columns: [
+    'id',
+    'permit_number',
+    'from_state',
+    'to_state',
+    'valid_from',
+    'valid_until',
+    'status',
+    'issued_by',
+    'revoked_reason',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    permitNumber: row.permit_number as string,
+    fromState: row.from_state as string,
+    toState: row.to_state as string,
+    validFrom: ts(row.valid_from),
+    validUntil: ts(row.valid_until),
+    status: row.status as MovementPermit['status'],
+    issuedBy: row.issued_by as string,
+    revokedReason: (row.revoked_reason as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      permit_number: 'permitNumber',
+      from_state: 'fromState',
+      to_state: 'toState',
+      valid_from: 'validFrom',
+      valid_until: 'validUntil',
+      status: 'status',
+      issued_by: 'issuedBy',
+      revoked_reason: 'revokedReason',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const recallMapper: RowMapper<LivestockRecall> = {
+  columns: [
+    'id',
+    'scope',
+    'animal_id',
+    'lot_id',
+    'owner_user_id',
+    'state',
+    'from_date',
+    'to_date',
+    'batch_number',
+    'reason',
+    'status',
+    'initiated_by',
+    'created_at',
+    'notified_at',
+    'resolved_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    scope: row.scope as LivestockRecall['scope'],
+    animalId: (row.animal_id as string) ?? undefined,
+    lotId: (row.lot_id as string) ?? undefined,
+    ownerUserId: (row.owner_user_id as string) ?? undefined,
+    state: (row.state as string) ?? undefined,
+    fromDate: row.from_date ? ts(row.from_date) : undefined,
+    toDate: row.to_date ? ts(row.to_date) : undefined,
+    batchNumber: (row.batch_number as string) ?? undefined,
+    reason: row.reason as string,
+    status: row.status as LivestockRecall['status'],
+    initiatedBy: row.initiated_by as string,
+    createdAt: ts(row.created_at),
+    notifiedAt: row.notified_at ? ts(row.notified_at) : undefined,
+    resolvedAt: row.resolved_at ? ts(row.resolved_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      scope: 'scope',
+      animal_id: 'animalId',
+      lot_id: 'lotId',
+      owner_user_id: 'ownerUserId',
+      state: 'state',
+      from_date: 'fromDate',
+      to_date: 'toDate',
+      batch_number: 'batchNumber',
+      reason: 'reason',
+      status: 'status',
+      initiated_by: 'initiatedBy',
+      created_at: 'createdAt',
+      notified_at: 'notifiedAt',
+      resolved_at: 'resolvedAt'
+    })
+};
+
+export const diseaseFlagMapper: RowMapper<DiseaseFlag> = {
+  columns: [
+    'id',
+    'disease',
+    'state',
+    'lga',
+    'suspected_species',
+    'reporter_user_id',
+    'status',
+    'confirmed_by',
+    'retracted_reason',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    disease: row.disease as string,
+    state: row.state as string,
+    lga: (row.lga as string) ?? undefined,
+    suspectedSpecies: (row.suspected_species as DiseaseFlag['suspectedSpecies']) ?? undefined,
+    reporterUserId: row.reporter_user_id as string,
+    status: row.status as DiseaseFlag['status'],
+    confirmedBy: (row.confirmed_by as string) ?? undefined,
+    retractedReason: (row.retracted_reason as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      disease: 'disease',
+      state: 'state',
+      lga: 'lga',
+      suspected_species: 'suspectedSpecies',
+      reporter_user_id: 'reporterUserId',
+      status: 'status',
+      confirmed_by: 'confirmedBy',
+      retracted_reason: 'retractedReason',
+      created_at: 'createdAt',
       updated_at: 'updatedAt'
     })
 };

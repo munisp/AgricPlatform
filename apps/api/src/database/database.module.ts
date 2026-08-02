@@ -317,6 +317,28 @@ import {
   createPgOwnershipTransferRepository,
   createPgPastoralistProfileRepository
 } from './repositories/livestock.pg-repository.js';
+// Wave L1b: ALTP livestock health/traceability persistence (additive).
+import {
+  DISEASE_FLAG_REPOSITORY,
+  HEALTH_RECORD_REPOSITORY,
+  MOVEMENT_PERMIT_REPOSITORY,
+  MOVEMENT_REPOSITORY,
+  RECALL_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryDiseaseFlagRepository,
+  createInMemoryHealthRecordRepository,
+  createInMemoryMovementPermitRepository,
+  createInMemoryMovementRepository,
+  createInMemoryRecallRepository
+} from './repositories/livestock-health.repository.js';
+import {
+  createPgDiseaseFlagRepository,
+  createPgHealthRecordRepository,
+  createPgMovementPermitRepository,
+  createPgMovementRepository,
+  createPgRecallRepository
+} from './repositories/livestock-health.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -812,6 +834,37 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgPastoralistProfileRepository(pool) : createInMemoryPastoralistProfileRepository(),
       inject: [PG_POOL]
+    },
+    // Wave L1b: ALTP livestock health/traceability (appended).
+    {
+      provide: HEALTH_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgHealthRecordRepository(pool) : createInMemoryHealthRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MOVEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMovementRepository(pool) : createInMemoryMovementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MOVEMENT_PERMIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMovementPermitRepository(pool) : createInMemoryMovementPermitRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RECALL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRecallRepository(pool) : createInMemoryRecallRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DISEASE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDiseaseFlagRepository(pool) : createInMemoryDiseaseFlagRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -893,7 +946,12 @@ import {
     ANIMAL_REPOSITORY,
     LOT_REPOSITORY,
     OWNERSHIP_TRANSFER_REPOSITORY,
-    PASTORALIST_PROFILE_REPOSITORY
+    PASTORALIST_PROFILE_REPOSITORY,
+    HEALTH_RECORD_REPOSITORY,
+    MOVEMENT_REPOSITORY,
+    MOVEMENT_PERMIT_REPOSITORY,
+    RECALL_REPOSITORY,
+    DISEASE_FLAG_REPOSITORY
   ]
 })
 export class DatabaseModule {}
