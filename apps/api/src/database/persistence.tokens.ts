@@ -207,3 +207,11 @@ export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY
 // migration 033) — listings with H3 service areas + the booking workflow.
 export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');
 export const EQUIPMENT_BOOKING_REPOSITORY = Symbol('EQUIPMENT_BOOKING_REPOSITORY');
+
+// Wave-INSURANCE: parametric insurance rail (insurance schema, migration 031).
+// Distinct from the livestock-trade INSURANCE_POLICY_REPOSITORY (animal
+// mortality cover); these are the plot-level parametric products/policies.
+export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITORY');
+export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
+export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
+export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');

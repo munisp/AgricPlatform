@@ -13,3 +13,5 @@ export * from './geo.js';
 export * from './credit.js';
 // Wave MECHANIZATION (additive): equipment hire marketplace.
 export * from './mechanization.js';
+// Wave-INSURANCE (additive): parametric insurance rail.
+export * from './insurance.js';

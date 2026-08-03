@@ -555,7 +555,11 @@ import {
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
   GEO_CREDIT_SHADOW_REPOSITORY,
   EQUIPMENT_LISTING_REPOSITORY,
-  EQUIPMENT_BOOKING_REPOSITORY
+  EQUIPMENT_BOOKING_REPOSITORY,
+  PARAMETRIC_PRODUCT_REPOSITORY,
+  PARAMETRIC_POLICY_REPOSITORY,
+  PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+  PARAMETRIC_PAYOUT_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -600,6 +604,19 @@ import {
 } from './repositories/traceability.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// Wave-INSURANCE (additive): parametric insurance rail repositories.
+import {
+  createInMemoryParametricProductRepository,
+  createInMemoryParametricPolicyRepository,
+  createInMemoryParametricTriggerEventRepository,
+  createInMemoryParametricPayoutRepository
+} from './repositories/insurance.repository.js';
+import {
+  createPgParametricProductRepository,
+  createPgParametricPolicyRepository,
+  createPgParametricTriggerEventRepository,
+  createPgParametricPayoutRepository
+} from './repositories/insurance.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1526,6 +1543,33 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgEquipmentBookingRepository(pool) : createInMemoryEquipmentBookingRepository(),
       inject: [PG_POOL]
+    },
+    // Wave-INSURANCE (additive): parametric insurance rail.
+    {
+      provide: PARAMETRIC_PRODUCT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricProductRepository(pool) : createInMemoryParametricProductRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPolicyRepository(pool) : createInMemoryParametricPolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgParametricTriggerEventRepository(pool)
+          : createInMemoryParametricTriggerEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_PAYOUT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1673,7 +1717,11 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
     AGENT_CASE_REPOSITORY,
     GEO_CREDIT_SHADOW_REPOSITORY,
     EQUIPMENT_LISTING_REPOSITORY,
-    EQUIPMENT_BOOKING_REPOSITORY
+    EQUIPMENT_BOOKING_REPOSITORY,
+    PARAMETRIC_PRODUCT_REPOSITORY,
+    PARAMETRIC_POLICY_REPOSITORY,
+    PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+    PARAMETRIC_PAYOUT_REPOSITORY
   ]
 })
 export class DatabaseModule {}

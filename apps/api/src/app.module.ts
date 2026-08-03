@@ -66,6 +66,8 @@ import { CreditModule } from './modules/credit/credit.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
+// Wave-INSURANCE (additive): parametric insurance rail.
+import { InsuranceModule } from './modules/insurance/insurance.module.js';
 
 @Module({
   imports: [
@@ -148,7 +150,9 @@ import { MechanizationModule } from './modules/mechanization/mechanization.modul
     // Wave VOICE voice agronomist (IVR/USSD RAG advisory + agent escalation) — appended to minimise merge conflicts.
     VoiceModule,
     // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
-    MechanizationModule
+    MechanizationModule,
+    // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
+    InsuranceModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
