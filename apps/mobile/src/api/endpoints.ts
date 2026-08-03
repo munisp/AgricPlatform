@@ -48,7 +48,7 @@ export function verifyOtp(
   return client.apiFetch('/auth/otp/verify', { method: 'POST', body: { requestId, code } });
 }
 
-export function fetchSession(client: ApiClient): Promise<{ data: { user: User }> } {
+export function fetchSession(client: ApiClient): Promise<{ data: { user: User } }> {
   return client.apiFetch('/auth/session');
 }
 

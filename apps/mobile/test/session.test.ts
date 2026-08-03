@@ -59,14 +59,21 @@ describe('token store session halves', () => {
 
 describe('api client refresh-token flow', () => {
   it('rotates the refresh token on 401 and retries once with the same idempotency key', async () => {
+    let orderAttempts = 0;
     const { client, tokenStore, calls } = makeClient((call) => {
       if (call.url.endsWith('/auth/refresh')) {
         return jsonResponse({ data: { user: { id: 'u1' }, refreshToken: 'refresh-2' } });
       }
-      const auth = (call.init?.headers as Record<string, string>).Authorization;
-      return auth === 'Bearer access-1' && call.url.endsWith('/orders')
-        ? jsonResponse({ message: 'token expired' }, 401)
-        : jsonResponse({ data: [] });
+      // First attempt rejects with 401; the post-rotation retry succeeds
+      // (the stub access token remains valid — rotation only rotates the
+      // refresh token unless the API also mints a new access token).
+      if (call.url.endsWith('/orders')) {
+        orderAttempts += 1;
+        return orderAttempts === 1
+          ? jsonResponse({ message: 'token expired' }, 401)
+          : jsonResponse({ data: [] });
+      }
+      return jsonResponse({ data: [] });
     });
     await tokenStore.setSession({ token: 'access-1', refreshToken: 'refresh-1' });
 

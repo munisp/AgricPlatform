@@ -253,6 +253,7 @@ describe('LivestockScreen', () => {
 
     await interact(() => pressByLabel(renderer.root, 'Register animal'));
     await interact(() => pressByLabel(renderer.root, 'goat'));
+    await interact(() => pressByLabel(renderer.root, 'Sahel'));
     await interact(() => pressByLabel(renderer.root, 'Submit registration'));
 
     const post = api.calls.find(
