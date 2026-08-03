@@ -94,11 +94,18 @@ describe('OperationalMetricsService', () => {
       notification('n2', 'queued'),
       notification('n3', 'sent')
     ]);
+    const failed = {
+      delivered: false,
+      provider: 'termii',
+      driver: 'stub' as const,
+      providerRef: 'ref-1',
+      note: 'simulated failure'
+    };
     const deliveryLog = new InMemoryDeliveryLogRepository();
-    await deliveryLog.append({ notificationId: 'n1', result: 'failed', at: '2025-01-01T00:00:00.000Z' });
+    await deliveryLog.append({ notificationId: 'n1', result: failed, at: '2025-01-01T00:00:00.000Z' });
     await deliveryLog.append({
       notificationId: 'n3',
-      result: 'failed',
+      result: failed,
       at: '2025-01-01T00:05:00.000Z',
       deadLetteredAt: '2025-01-01T00:05:00.000Z'
     });
