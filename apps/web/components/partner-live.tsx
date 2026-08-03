@@ -3,9 +3,32 @@
 import { useAppState } from '@/lib/app-state';
 import { useApiQuery } from '@/lib/api/hooks';
 import { partnerImpact, partnerProgrammes } from '@/lib/api/endpoints';
+import { ApiError } from '@/lib/api/errors';
 import { partnerProgrammes as fixtureProgrammes } from '@/lib/content';
 import { AutoBadge, Card, ProgressBar } from '@/components/ui';
 import { OfflineDataNotice, QueryState } from '@/components/api-state';
+
+/**
+ * 401/403 means the caller simply has no partner scope — that is an honest
+ * "access required" state, NOT a connectivity problem, so fixture stats must
+ * not stand in for it (G20).
+ */
+function isAuthorizationError(error: unknown): boolean {
+  return (
+    error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403)
+  );
+}
+
+/** Honest empty state for callers without partner scope (no fixture data). */
+function PartnerAccessRequired() {
+  return (
+    <div className="notice notice-info" role="status">
+      <strong>Partner access required.</strong> Programme impact and participant stats are
+      only visible to enrolled partner organisations. Contact your programme officer to
+      enrol.
+    </div>
+  );
+}
 
 export function PartnerProgrammes() {
   const { userId, hydrated } = useAppState();
@@ -16,8 +39,11 @@ export function PartnerProgrammes() {
   );
 
   if (query.error) {
-    // 403 for non-partners, offline, or empty partner scope: fall back to the
-    // static programme blurbs (clearly marked) so the hub layout stays useful.
+    if (isAuthorizationError(query.error)) {
+      return <PartnerAccessRequired />;
+    }
+    // Genuine network/server failure: fall back to the static programme
+    // blurbs (clearly marked) so the hub layout stays useful.
     return (
       <>
         <OfflineDataNotice>
@@ -79,9 +105,12 @@ export function PartnerImpactCard() {
   );
 
   if (query.error) {
+    if (isAuthorizationError(query.error)) {
+      return <PartnerAccessRequired />;
+    }
     return (
       <OfflineDataNotice>
-        Impact report unavailable — the API is unreachable or your role lacks partner scope.
+        Impact report unavailable — the API is unreachable or temporarily down.
       </OfflineDataNotice>
     );
   }

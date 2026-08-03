@@ -236,6 +236,11 @@ export interface RecallRepository extends AsyncRepository<LivestockRecall, Recal
   addAnimal(entry: RecallAnimal): Promise<void>;
   /** Recall animals in insertion order. */
   listAnimals(recallId: string): Promise<RecallAnimal[]>;
+  /**
+   * Recalls affecting an owner's animals (recall_animals join). Powers the
+   * owner-scoped GET /livestock-health/recalls/mine (G18).
+   */
+  recallsForOwner(ownerUserId: string): Promise<LivestockRecall[]>;
 }
 
 export function recallMatcher(criteria: RecallCriteria): (recall: LivestockRecall) => boolean {
@@ -270,6 +275,13 @@ export class InMemoryRecallRepository
 
   async listAnimals(recallId: string): Promise<RecallAnimal[]> {
     return (this.members.get(recallId) ?? []).map((member) => ({ ...member }));
+  }
+
+  async recallsForOwner(ownerUserId: string): Promise<LivestockRecall[]> {
+    const affected = (await this.all()).filter((recall) =>
+      (this.members.get(recall.id) ?? []).some((entry) => entry.ownerUserId === ownerUserId)
+    );
+    return affected.map((recall) => ({ ...recall }));
   }
 }
 

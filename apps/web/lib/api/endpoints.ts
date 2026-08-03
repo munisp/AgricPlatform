@@ -337,6 +337,21 @@ export function recordAttendance(
   });
 }
 
+/** Roster row for the attendance recorder (GET /events/:id/roster). */
+export interface EventRosterEntry {
+  userId: string;
+  fullName: string;
+  status: 'rsvp' | 'attended';
+}
+
+/**
+ * Real attendance roster (chapter leads/admins): members who RSVPed to the
+ * event. Replaces the demo-roster fixture in the attendance recorder.
+ */
+export function listEventRoster(eventId: string): Promise<{ data: EventRosterEntry[] }> {
+  return apiFetch(`/events/${encodeURIComponent(eventId)}/roster`);
+}
+
 /* ------------------------------ community ------------------------------ */
 
 export function listTopics(params: {
@@ -1674,6 +1689,25 @@ export function listMyCertifiedListings(): Promise<{ data: CertifiedListing[] }>
 /** Active listings are discoverable; other states are owner/admin only. */
 export function fetchCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {
   return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}`);
+}
+
+/** Buyer-safe public provenance summary (G18) — no PII, no auth required. */
+export interface CertifiedProvenanceSummary {
+  listingId: string;
+  certificationStatus: CertifiedListing['status'];
+  subjectType: CertifiedListing['subjectType'];
+  species: string;
+  breed?: string;
+  quantity?: number;
+  ownershipDepth: number;
+  state?: string;
+}
+
+/** Public provenance summary for a certified listing (buyer-safe). */
+export function fetchCertifiedProvenance(
+  id: string
+): Promise<{ data: CertifiedProvenanceSummary }> {
+  return apiFetch(`/livestock-trade/certified-listings/${encodeURIComponent(id)}/provenance`);
 }
 
 export function activateCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {

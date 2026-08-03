@@ -2,16 +2,19 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { CertifiedListing, MarketplaceListing } from '@agric-platform/shared';
-import { fetchCertifiedListing } from '@/lib/api/endpoints';
+import type { MarketplaceListing } from '@agric-platform/shared';
+import {
+  fetchCertifiedListing,
+  fetchCertifiedProvenance,
+  type CertifiedProvenanceSummary
+} from '@/lib/api/endpoints';
 import { StatusBadge } from '@/components/ui';
 
 /**
- * Livestock-crop heuristic: a marketplace listing only attempts a certified-
- * listing lookup when its crop names a livestock product (crop listings never
- * hit the API). The marketplace ↔ certified-listing link is the listing ID —
- * where no certified listing exists (all crop listings, uncertified animals)
- * the lookup 404s and the badge stays absent.
+ * Livestock-crop heuristic (LEGACY fallback): marketplace listings created
+ * before migration 019a have no direct certified-listing link, so they only
+ * attempt a certified-listing lookup when the crop names a livestock
+ * product. New listings carry `certifiedListingId` and never need this.
  */
 const LIVESTOCK_CROP_TERMS = [
   'cattle',
@@ -33,19 +36,55 @@ function isLivestockListing(listing: MarketplaceListing): boolean {
   return LIVESTOCK_CROP_TERMS.some((term) => haystack.includes(term));
 }
 
+interface BadgeData {
+  id: string;
+  species: string;
+  breed?: string;
+  ownershipDepth: number;
+}
+
 /**
- * Provenance badge for livestock-certified marketplace listings. Renders
- * nothing for crop listings or uncertified animals (graceful absence).
+ * Provenance badge for livestock-certified marketplace listings. Prefers the
+ * direct `certifiedListingId` link (migration 019a, public provenance API —
+ * no auth needed); falls back to the legacy crop-term heuristic for older
+ * listings. Renders nothing when no certification exists (graceful absence).
  */
 export function LivestockProvenanceBadge({ listing }: { listing: MarketplaceListing }) {
-  const [certified, setCertified] = useState<CertifiedListing | null>(null);
+  const [badge, setBadge] = useState<BadgeData | null>(null);
 
   useEffect(() => {
-    if (!isLivestockListing(listing)) return;
     let cancelled = false;
+    if (listing.certifiedListingId) {
+      // Direct link: the public provenance summary is the source of truth.
+      fetchCertifiedProvenance(listing.certifiedListingId)
+        .then((res) => {
+          if (cancelled) return;
+          const summary: CertifiedProvenanceSummary = res.data;
+          setBadge({
+            id: summary.listingId,
+            species: summary.species,
+            breed: summary.breed,
+            ownershipDepth: summary.ownershipDepth
+          });
+        })
+        .catch(() => {
+          // 404 (draft/withdrawn/unknown) or offline — badge stays absent.
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (!isLivestockListing(listing)) return;
+    // Legacy fallback: pre-019a listings matched certified listing by id.
     fetchCertifiedListing(listing.id)
       .then((res) => {
-        if (!cancelled) setCertified(res.data);
+        if (cancelled) return;
+        setBadge({
+          id: res.data.id,
+          species: res.data.species,
+          breed: res.data.breed,
+          ownershipDepth: res.data.provenance.ownershipDepth
+        });
       })
       .catch(() => {
         // 404 (not livestock-certified) or offline — the badge simply stays absent.
@@ -55,19 +94,19 @@ export function LivestockProvenanceBadge({ listing }: { listing: MarketplaceList
     };
   }, [listing]);
 
-  if (!certified) return null;
+  if (!badge) return null;
 
   return (
     <p style={{ margin: '0.5rem 0 0' }}>
       <Link
-        href={`/livestock/trade#certified-${certified.id}`}
-        aria-label={`Livestock provenance: ${certified.species}${
-          certified.breed ? `, ${certified.breed}` : ''
-        }, ${certified.provenance.ownershipDepth} recorded transfers — view certified listing`}
+        href={`/livestock/trade#certified-${badge.id}`}
+        aria-label={`Livestock provenance: ${badge.species}${
+          badge.breed ? `, ${badge.breed}` : ''
+        }, ${badge.ownershipDepth} recorded transfers — view certified listing`}
       >
         <StatusBadge tone="success">
-          ALTP certified · {certified.provenance.ownershipDepth} transfer
-          {certified.provenance.ownershipDepth === 1 ? '' : 's'} · view provenance
+          ALTP certified · {badge.ownershipDepth} transfer
+          {badge.ownershipDepth === 1 ? '' : 's'} · view provenance
         </StatusBadge>
       </Link>
     </p>

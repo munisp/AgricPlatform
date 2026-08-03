@@ -12,6 +12,7 @@ import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import {
   LISTING_REPOSITORY,
+  ORDER_EXTENSION_REPOSITORY,
   ORDER_REPOSITORY,
   REVIEW_REPOSITORY,
   SELLER_RATING_REPOSITORY
@@ -22,8 +23,11 @@ import type {
 } from '../../database/repositories/listing.repository.js';
 import type { OrderCriteria, OrderRepository } from '../../database/repositories/order.repository.js';
 import type { ReviewRepository } from '../../database/repositories/review.repository.js';
-import type { SellerRatingRepository } from '../../database/repositories/commerce-depth.repository.js';
-import type { SellerRating } from '@agric-platform/shared';
+import type {
+  OrderExtensionRepository,
+  SellerRatingRepository
+} from '../../database/repositories/commerce-depth.repository.js';
+import type { SalesChannel, SellerRating } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { OrderReview } from '../../database/seed-data.js';
 import { EscrowService } from './escrow.service.js';
@@ -86,6 +90,8 @@ export interface CreateListingInput {
   priceNaira: number;
   location: LocationRef;
   harvestDate?: string;
+  /** Optional link to the certified livestock listing (G18; migration 019a). */
+  certifiedListingId?: string;
 }
 
 export interface UpdateListingInput {
@@ -110,7 +116,10 @@ export class MarketplaceService {
     @Optional() private readonly audit?: AuditService,
     // Wave M: materialized seller ratings enrich listing search responses
     // (optional so bare service constructions in tests keep working).
-    @Optional() @Inject(SELLER_RATING_REPOSITORY) private readonly sellerRatings?: SellerRatingRepository
+    @Optional() @Inject(SELLER_RATING_REPOSITORY) private readonly sellerRatings?: SellerRatingRepository,
+    // Wave M order_extensions side table powers the /orders?channel= filter
+    // (G19; optional so bare service constructions in tests keep working).
+    @Optional() @Inject(ORDER_EXTENSION_REPOSITORY) private readonly extensions?: OrderExtensionRepository
   ) {}
 
   async listListings(
@@ -164,6 +173,7 @@ export class MarketplaceService {
       priceNaira: input.priceNaira,
       location: input.location,
       harvestDate: input.harvestDate,
+      certifiedListingId: input.certifiedListingId,
       isActive: true
     };
     const created = await this.listings.create(listing);
@@ -214,12 +224,24 @@ export class MarketplaceService {
     return created;
   }
 
-  async listOrders(filter: OrderCriteria): Promise<Order[]> {
-    return this.orders.find({
+  async listOrders(filter: OrderCriteria & { channel?: SalesChannel }): Promise<Order[]> {
+    const orders = await this.orders.find({
       buyerId: filter.buyerId,
       sellerId: filter.sellerId,
       status: filter.status
     });
+    if (!filter.channel) {
+      return orders;
+    }
+    // G19: channel lives on the Wave M order_extensions side table, so the
+    // filter intersects the party-scoped orders with extension rows.
+    if (!this.extensions) {
+      return [];
+    }
+    const channelOrderIds = new Set(
+      (await this.extensions.find({ channel: filter.channel })).map((row) => row.orderId)
+    );
+    return orders.filter((order) => channelOrderIds.has(order.id));
   }
 
   async getOrder(id: string): Promise<Order> {

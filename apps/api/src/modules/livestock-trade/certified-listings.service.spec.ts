@@ -188,4 +188,49 @@ describe('CertifiedListingsService', () => {
     const visible = await service.getById(other, listing.id);
     expect(visible.status).toBe('active');
   });
+
+  describe('public provenance summary (G18)', () => {
+    it('returns a buyer-safe summary for an active listing (no PII)', async () => {
+      const listing = await service.create(owner, { subjectType: 'animal', subjectId: animal.id });
+      await service.activate(owner, listing.id);
+      const summary = await service.provenanceSummary(listing.id);
+      expect(summary).toEqual({
+        listingId: listing.id,
+        certificationStatus: 'active',
+        subjectType: 'animal',
+        species: 'cattle',
+        breed: 'White Fulani',
+        quantity: undefined,
+        ownershipDepth: 0,
+        state: 'Kaduna'
+      });
+      // Buyer-safe: no seller identity or subject id leaks.
+      expect(JSON.stringify(summary)).not.toContain(owner.id);
+      expect(JSON.stringify(summary)).not.toContain(animal.id);
+    });
+
+    it('404s for draft and withdrawn listings but keeps revoked visible', async () => {
+      const draft = await service.create(owner, { subjectType: 'animal', subjectId: animal.id });
+      await expect(service.provenanceSummary(draft.id)).rejects.toThrow('not found');
+      const second = await service.create(owner, { subjectType: 'lot', subjectId: lot.id });
+      await service.activate(owner, second.id);
+      await service.withdraw(owner, second.id);
+      await expect(service.provenanceSummary(second.id)).rejects.toThrow('not found');
+      // Revoked stays visible — buyers must discover pulled certifications.
+      const third = await service.create(owner, { subjectType: 'lot', subjectId: lot.id });
+      await service.activate(owner, third.id);
+      await service.revoke(admin, third.id, 'provenance fraud');
+      const summary = await service.provenanceSummary(third.id);
+      expect(summary.certificationStatus).toBe('revoked');
+    });
+
+    it('omits state when the subject has left the registry', async () => {
+      const listing = await service.create(owner, { subjectType: 'animal', subjectId: animal.id });
+      await service.activate(owner, listing.id);
+      await animals.remove(animal.id);
+      const summary = await service.provenanceSummary(listing.id);
+      expect(summary.state).toBeUndefined();
+      expect(summary.species).toBe('cattle');
+    });
+  });
 });

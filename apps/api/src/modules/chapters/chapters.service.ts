@@ -17,7 +17,8 @@ import {
   ANNOUNCEMENT_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
   CHAPTER_REPOSITORY,
-  EVENT_RSVP_REPOSITORY
+  EVENT_RSVP_REPOSITORY,
+  USER_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type { AnnouncementRepository } from '../../database/repositories/announcement.repository.js';
 import type { ChapterEventRepository } from '../../database/repositories/chapter-event.repository.js';
@@ -27,6 +28,7 @@ import type {
 } from '../../database/repositories/chapter.repository.js';
 import type { EventRsvpRepository } from '../../database/repositories/event-rsvp.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import type { UserRepository } from '../../database/repositories/user.repository.js';
 import type { ChapterAnnouncement, EventRsvp } from '../../database/seed-data.js';
 
 export interface CreateChapterInput {
@@ -51,6 +53,13 @@ export interface CreateAnnouncementInput {
   authorId: string;
 }
 
+/** Buyer-safe roster row for the attendance recorder: RSVP list + member name. */
+export interface EventRosterEntry {
+  userId: string;
+  fullName: string;
+  status: EventRsvp['status'];
+}
+
 @Injectable()
 export class ChaptersService {
   /**
@@ -65,7 +74,10 @@ export class ChaptersService {
     @Inject(CHAPTER_REPOSITORY) private readonly chapters: ChapterRepository,
     @Inject(CHAPTER_EVENT_REPOSITORY) private readonly eventsRepo: ChapterEventRepository,
     @Inject(EVENT_RSVP_REPOSITORY) private readonly rsvps: EventRsvpRepository,
-    @Inject(ANNOUNCEMENT_REPOSITORY) private readonly announcements: AnnouncementRepository
+    @Inject(ANNOUNCEMENT_REPOSITORY) private readonly announcements: AnnouncementRepository,
+    // Optional so existing unit specs constructing the service directly stay
+    // green; roster rows fall back to the userId when the repo is absent.
+    @Inject(USER_REPOSITORY) private readonly users?: UserRepository
   ) {
     this.attendanceSecret = resolveAttendanceSecret();
   }
@@ -132,6 +144,29 @@ export class ChaptersService {
 
   async getEvent(id: string): Promise<ChapterEvent> {
     return this.eventsRepo.getById(id);
+  }
+
+  /**
+   * Real roster for the attendance recorder (G7): members who RSVPed to the
+   * event, joined with their display name. Replaces the demo-roster fixture
+   * the web client previously rendered unconditionally.
+   */
+  async eventRoster(eventId: string): Promise<EventRosterEntry[]> {
+    await this.eventsRepo.getById(eventId);
+    const rsvps = await this.rsvps.find({ eventId });
+    const entries: EventRosterEntry[] = [];
+    for (const rsvp of rsvps) {
+      let fullName = rsvp.userId;
+      if (this.users) {
+        try {
+          fullName = (await this.users.getById(rsvp.userId)).fullName;
+        } catch {
+          // RSVP references a user outside the directory — keep the id.
+        }
+      }
+      entries.push({ userId: rsvp.userId, fullName, status: rsvp.status });
+    }
+    return entries;
   }
 
   async rsvp(eventId: string, userId: string): Promise<EventRsvp> {

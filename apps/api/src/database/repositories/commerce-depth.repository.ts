@@ -4,6 +4,7 @@ import type {
   BuyerGroupMembership,
   DraftOrder,
   ListingVariant,
+  Order,
   OrderExtension,
   PriceList,
   PriceListEntry,
@@ -42,6 +43,18 @@ export interface ListingVariantRepository
   decrementStock(id: string, quantity: number): Promise<ListingVariant>;
   /** Atomic stock increment (order cancellation / RMA restock). */
   restock(id: string, quantity: number): Promise<ListingVariant>;
+}
+
+/**
+ * Atomic variant checkout capability (G8). The pg implementation performs
+ * the conditional stock decrement + order insert + order-extension insert in
+ * ONE database transaction (all-or-nothing — no compensation window). The
+ * in-memory implementation does not need it: its decrementStock is a
+ * synchronous check-and-set, so the decrement→insert sequence cannot
+ * interleave. Services detect this capability structurally.
+ */
+export interface AtomicVariantCheckoutRepository {
+  placeVariantOrder(order: Order, extension: OrderExtension): Promise<Order>;
 }
 
 export function listingVariantMatcher(

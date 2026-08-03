@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { KEY_VALUE_STORE, WEBHOOK_DEDUPE_STORE } from '../../database/persistence.tokens.js';
@@ -303,19 +303,28 @@ export class IntegrationsService {
   }
 
   /**
-   * Weather readiness snapshot for the advisory path (wave P1). The stub
-   * driver returns the deterministic fixture; a non-stub WEATHER_DRIVER
-   * resolves to the Open-Meteo live feed (no credentials required) with a
-   * 15-minute cache on the shared KeyValueStore.
+   * Weather readiness snapshot for the advisory path (wave P1). A non-stub
+   * WEATHER_DRIVER resolves to the Open-Meteo live feed (no credentials
+   * required) with a 15-minute cache on the shared KeyValueStore. The stub
+   * fixture is NON-PRODUCTION ONLY and clearly labelled as a fixture —
+   * production fails CLOSED with 503 instead of serving fabricated weather
+   * (mirrors the commodity-price provider pattern).
    */
   async weatherSnapshot(state: string): Promise<WeatherSnapshot> {
     const adapter = this.get('weather');
-    if (adapter.driver === 'stub') {
-      return stubWeatherSnapshot(state, `${adapter.provider} ${adapter.driver} driver`);
-    }
-    const provider = this.weatherProvider();
+    const provider = adapter.driver === 'stub' ? undefined : this.weatherProvider();
     if (!provider) {
-      return stubWeatherSnapshot(state, `${adapter.provider} ${adapter.driver} driver`);
+      if (isProduction()) {
+        throw new ServiceUnavailableException(
+          'Weather feed is not configured. Set WEATHER_DRIVER=sandbox|production to enable the ' +
+            'live Open-Meteo feed (see docs/integration-matrix.md). Refusing to serve the ' +
+            'deterministic fixture in production.'
+        );
+      }
+      return stubWeatherSnapshot(
+        state,
+        `FIXTURE ${adapter.provider} ${adapter.driver} driver (non-production only, not live data)`
+      );
     }
     return provider.snapshot(state);
   }
