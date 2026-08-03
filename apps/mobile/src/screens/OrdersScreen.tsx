@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
 import { useApiClient } from '../api/context';
 import {
   confirmDraftOrder,
@@ -8,6 +8,7 @@ import {
   listMyOrders
 } from '../api/endpoints';
 import type { DraftOrder, Order } from '../api/types';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
 
 interface OrdersData {
@@ -44,9 +45,8 @@ export function OrdersScreen({
     }
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   async function confirm(draft: DraftOrder) {
     setConfirming(draft.id);
@@ -63,7 +63,10 @@ export function OrdersScreen({
 
   if (error && !data) {
     return (
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <ErrorNotice message={error} onRetry={() => void load()} />
       </ScrollView>
     );
@@ -75,7 +78,10 @@ export function OrdersScreen({
   const openDrafts = data.drafts.filter((draft) => draft.status === 'open');
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+    >
       {error ? <ErrorNotice message={error} /> : null}
 
       {openDrafts.length > 0 ? (

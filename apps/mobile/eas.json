@@ -16,13 +16,30 @@
       "channel": "preview",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "API_BASE_URL": "https://REPLACE-WITH-STAGING-API-HOST.example.com/api/v1"
       }
     },
     "production": {
-      "channel": "production"
+      "channel": "production",
+      "env": {
+        "API_BASE_URL": "https://REPLACE-WITH-PRODUCTION-API-HOST.example.com/api/v1"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./secrets/play-service-account.json",
+        "track": "internal",
+        "releaseStatus": "draft"
+      },
+      "ios": {
+        "appleId": "REPLACE-WITH-APPLE-ID@example.com",
+        "ascAppId": "0000000000",
+        "appleTeamId": "XXXXXXXXXX"
+      }
+    }
   }
 }

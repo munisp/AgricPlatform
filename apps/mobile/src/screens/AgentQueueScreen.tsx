@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
 import { useApiClient } from '../api/context';
 import { listMyAgentAssignments, reportAgentAssignmentProgress } from '../api/endpoints';
 import type { AgentAssignment } from '../api/types';
 import type { OfflineQueue } from '../offline/queue';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
 
 /**
@@ -33,9 +34,8 @@ export function AgentQueueScreen({ queue }: { queue?: OfflineQueue }) {
     }
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   async function reportProgress(assignment: AgentAssignment) {
     setBusyId(assignment.id);
@@ -75,7 +75,10 @@ export function AgentQueueScreen({ queue }: { queue?: OfflineQueue }) {
 
   if (error && !assignments) {
     return (
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <ErrorNotice message={error} onRetry={() => void load()} />
       </ScrollView>
     );
@@ -85,7 +88,10 @@ export function AgentQueueScreen({ queue }: { queue?: OfflineQueue }) {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+    >
       {error ? <ErrorNotice message={error} /> : null}
       {notice ? <Muted>{notice}</Muted> : null}
 

@@ -12,10 +12,10 @@ import { createApiSyncTransport } from './transport';
  * WITHOUT a provider — they get an ad-hoc in-memory store bound to the
  * ambient ApiClient, which keeps older tests and previews working.
  *
- * Persistence: the provider defaults to the in-memory KeyValueStorage used
- * by the offline queue (src/offline/queue.ts). AsyncStorage is not yet a
- * dependency of this app; when it lands, pass it as `storage` — the
- * getItem/setItem/removeItem signatures already match.
+ * Persistence: App.tsx passes the AsyncStorage adapter as `storage`, so
+ * cursors/outbox/conflict-log survive restarts (audit P0-4). The in-memory
+ * KeyValueStorage remains the default for tests and previews rendered
+ * without the full app shell.
  */
 
 const SyncContext = createContext<SyncStore | null>(null);

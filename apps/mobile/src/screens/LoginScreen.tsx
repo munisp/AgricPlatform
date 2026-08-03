@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput
+} from 'react-native';
 import { useApiClient } from '../api/context';
 import { requestOtp, verifyOtp } from '../api/endpoints';
 import type { TokenStore } from '../api/token-store';
@@ -58,7 +65,11 @@ export function LoginScreen({
   }
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>Welcome to NYFN</Text>
       <Text style={ui.muted}>Sign in with your phone number. We send a one-time code by SMS.</Text>
 
@@ -102,12 +113,14 @@ export function LoginScreen({
       )}
 
       {error ? <ErrorNotice message={error} /> : null}
-    </View>
+    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 24, backgroundColor: '#f7f7f5' },
+  flex: { flex: 1 },
+  container: { flexGrow: 1, padding: 24, backgroundColor: '#f7f7f5' },
   title: { fontSize: 24, fontWeight: '800', marginBottom: 8, color: '#1b5e20' },
   label: { marginTop: 16, marginBottom: 4, fontWeight: '600' },
   input: {

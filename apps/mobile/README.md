@@ -18,10 +18,19 @@ primitives as plain host elements so screen smoke tests run in plain Node.
 
 ## Adapters (offline-first)
 
-- **TokenStore** (`src/api/token-store.ts`): bearer-token persistence. The
-  interface matches `expo-secure-store` (get/set/delete); the in-memory
-  implementation is the documented fallback for tests and CI. Swap in a
-  SecureStore-backed adapter when native builds start.
+- **TokenStore** (`src/api/token-store.ts`): session persistence backed by
+  `expo-secure-store` (Keychain/Keystore) in the app shell — tokens survive
+  restarts and the adapter fails closed (TokenStorageError) if the secure
+  store is unavailable; it never falls back to plaintext storage. The
+  in-memory implementation remains the documented fallback for tests/CI.
+- **LocationService** (`src/location/location-service.ts`): expo-location
+  adapter for plot GPS capture — requests foreground permission, returns
+  accuracy metadata, and raises a typed permission-denied error the UI
+  turns into Settings guidance. PlotCaptureScreen still fails closed when
+  no provider is injected.
+- **Connectivity sync** (`src/sync/connectivity.ts`): flushes the shared
+  offline queue and pulls sync entities on reconnect and app foreground;
+  on metered connections it flushes writes but skips background pulls.
 - **Offline queue** (`src/offline/queue.ts`): replayable mutation queue
   mirroring the web PWA queue concept. Any AsyncStorage-compatible
   `KeyValueStorage` works — production passes
