@@ -19,6 +19,7 @@ import { createExpoLocationService } from './src/location/location-service';
 import { createOfflineQueue } from './src/offline/queue';
 import { SyncProvider } from './src/sync/context';
 import { useConnectivitySync } from './src/sync/connectivity';
+import { SYNC_ENTITIES } from './src/sync/entities';
 import type { User } from './src/api/types';
 import { AgentQueueScreen } from './src/screens/AgentQueueScreen';
 import { CourseDetailScreen } from './src/screens/CourseDetailScreen';
@@ -48,8 +49,9 @@ import { Muted, PrimaryButton } from './src/screens/ui';
  *   shows a clear error instead of degrading to plaintext storage.
  * - The record-level sync store and the shared legacy offline queue both
  *   persist to AsyncStorage, so cursors, the outbox and queued field work
- *   survive restarts. The SAME queue instance is shared by PlotCapture and
- *   the agent queue and is flushed on reconnect/foreground (P1-12).
+ *   survive restarts. Plot captures flow through the sync outbox
+ *   (W-SYNCWRITE); the legacy queue remains for the agent queue and is
+ *   flushed on reconnect/foreground (P1-12).
  */
 
 export type RootStackParamList = {
@@ -72,14 +74,13 @@ export type RootStackParamList = {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // Module-scope durable singletons: one secure token store (never a
-// plaintext fallback), one AsyncStorage-backed offline queue shared by
-// PlotCapture + AgentQueue + the connectivity flush, one GPS adapter.
+// plaintext fallback), one AsyncStorage-backed legacy offline queue shared
+// by AgentQueue + the connectivity flush, one GPS adapter.
 const tokenStore: TokenStore = createSecureStoreTokenStore(SecureStore);
 const offlineQueue = createOfflineQueue(AsyncStorage);
 const locationService = createExpoLocationService();
 
-/** Entities pulled by the connectivity/foreground sync (v1 proof entities). */
-const SYNC_ENTITIES = ['notification'] as const;
+/** Entities pulled by the connectivity/foreground sync (see sync/entities). */
 
 /** Flushes the shared offline queue + pulls sync entities on reconnect/foreground. */
 function ConnectivityWiring() {
@@ -232,9 +233,10 @@ export default function App() {
               </Stack.Screen>
               <Stack.Screen name="PlotCapture" options={{ title: 'Capture plot' }}>
                 {({ navigation }) => (
+                  // Plot writes go through the shared record-level sync
+                  // outbox (W-SYNCWRITE) — the SyncProvider store below.
                   <PlotCaptureScreen
                     locationService={locationService}
-                    queue={offlineQueue}
                     onSaved={() => navigation.goBack()}
                   />
                 )}

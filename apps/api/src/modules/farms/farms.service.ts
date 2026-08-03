@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Optional,
   UnauthorizedException
 } from '@nestjs/common';
 import type {
@@ -15,13 +16,14 @@ import type {
   SoilType,
   User
 } from '@agric-platform/shared';
-import { isValidBoundaryGeojson, NIGERIAN_STATES } from '@agric-platform/shared';
+import { isValidBoundaryGeojson, NIGERIAN_STATES, SOIL_TYPES } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CROP_PLANTING_REPOSITORY,
+  ENTITY_VERSION_REPOSITORY,
   FARM_EXPENSE_REPOSITORY,
   FARM_PLOT_REPOSITORY,
   HARVEST_RECORD_REPOSITORY
@@ -32,6 +34,12 @@ import type {
   FarmPlotRepository,
   HarvestRecordRepository
 } from '../../database/repositories/farms.repository.js';
+import type { EntityVersionRepository } from '../../database/repositories/sync.repository.js';
+import type { SyncVersioningService } from '../sync/sync-versioning.service.js';
+import type { SyncPushItem } from '../sync/sync.types.js';
+
+/** Sync protocol entity key for farm plots (docs/sync-protocol.md §2). */
+export const SYNC_ENTITY_FARM_PLOT = 'farm_plot';
 
 export interface CreatePlotInput {
   name: string;
@@ -97,6 +105,52 @@ function requireActor(actor: User | null): User {
   return actor;
 }
 
+/**
+ * Strictly parses a sync upsert payload into plot fields (fail-closed: the
+ * wire payload is untyped JSON, so every field is type-checked before it
+ * touches the repository). Mirrors the REST CreatePlotDto validation; the
+ * semantic checks live in assertValidPlot.
+ */
+export function parseSyncedPlotPayload(payload: Record<string, unknown> | undefined): CreatePlotInput {
+  if (!payload || typeof payload !== 'object') {
+    throw new BadRequestException('farm_plot upsert requires a payload');
+  }
+  const { name, state, lga, centroidLat, centroidLong, boundaryGeojson, sizeHectares, soilType, clientId } =
+    payload;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new BadRequestException('name must be a non-empty string');
+  }
+  if (typeof state !== 'string' || state.trim().length === 0) {
+    throw new BadRequestException('state must be a non-empty string');
+  }
+  if (typeof lga !== 'string' || lga.trim().length === 0) {
+    throw new BadRequestException('lga must be a non-empty string');
+  }
+  if (typeof centroidLat !== 'number' || typeof centroidLong !== 'number') {
+    throw new BadRequestException('centroidLat/centroidLong must be numbers');
+  }
+  if (typeof sizeHectares !== 'number') {
+    throw new BadRequestException('sizeHectares must be a number');
+  }
+  if (soilType !== undefined && !SOIL_TYPES.includes(soilType as SoilType)) {
+    throw new BadRequestException(`Unknown soil type '${String(soilType)}'`);
+  }
+  if (clientId !== undefined && typeof clientId !== 'string') {
+    throw new BadRequestException('clientId must be a string when present');
+  }
+  return {
+    name,
+    state,
+    lga,
+    centroidLat,
+    centroidLong,
+    boundaryGeojson,
+    sizeHectares,
+    soilType: soilType as SoilType | undefined,
+    clientId: clientId as string | undefined
+  };
+}
+
 @Injectable()
 export class FarmsService {
   constructor(
@@ -105,7 +159,14 @@ export class FarmsService {
     @Inject(FARM_PLOT_REPOSITORY) private readonly plots: FarmPlotRepository,
     @Inject(CROP_PLANTING_REPOSITORY) private readonly plantings: CropPlantingRepository,
     @Inject(HARVEST_RECORD_REPOSITORY) private readonly harvests: HarvestRecordRepository,
-    @Inject(FARM_EXPENSE_REPOSITORY) private readonly expenses: FarmExpenseRepository
+    @Inject(FARM_EXPENSE_REPOSITORY) private readonly expenses: FarmExpenseRepository,
+    // W-SYNCWRITE: optional sync wiring — the version-bump hook makes REST
+    // writes sync-visible; the version ledger CAS backs the sync push apply
+    // path. Both are optional so existing unit constructions keep working.
+    @Optional() private readonly syncVersioning?: SyncVersioningService,
+    @Optional()
+    @Inject(ENTITY_VERSION_REPOSITORY)
+    private readonly entityVersions?: EntityVersionRepository
   ) {}
 
   private assertValidPlot(input: CreatePlotInput | UpdatePlotInput): void {
@@ -170,6 +231,12 @@ export class FarmsService {
       { plotId: created.id, ownerUserId: owner.id, state: created.state },
       owner.id
     );
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: created.id,
+      ownerId: owner.id,
+      actorId: owner.id
+    });
     return created;
   }
 
@@ -215,12 +282,17 @@ export class FarmsService {
       { plotId: id, ownerUserId: plot.ownerUserId, version: updated.version },
       actor!.id
     );
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: id,
+      ownerId: plot.ownerUserId,
+      actorId: actor!.id
+    });
     return updated;
   }
 
-  /** Owner-or-admin delete; child plantings/harvests/expenses go with it. */
-  async removePlot(actor: User | null, id: string): Promise<{ removed: boolean }> {
-    const plot = await this.assertPlotAccess(actor, id);
+  /** Removes a plot with its child plantings/harvests/expenses. */
+  private async deletePlotCascade(id: string): Promise<boolean> {
     const plotPlantings = await this.plantings.find({ plotId: id });
     for (const planting of plotPlantings) {
       const plantingHarvests = await this.harvests.find({ plantingId: planting.id });
@@ -233,7 +305,13 @@ export class FarmsService {
     for (const expense of plotExpenses) {
       await this.expenses.remove(expense.id);
     }
-    const removed = await this.plots.remove(id);
+    return this.plots.remove(id);
+  }
+
+  /** Owner-or-admin delete; child plantings/harvests/expenses go with it. */
+  async removePlot(actor: User | null, id: string): Promise<{ removed: boolean }> {
+    const plot = await this.assertPlotAccess(actor, id);
+    const removed = await this.deletePlotCascade(id);
     await this.audit.record({
       actorId: actor!.id,
       action: 'farms.plot_removed',
@@ -246,7 +324,109 @@ export class FarmsService {
       { plotId: id, ownerUserId: plot.ownerUserId },
       actor!.id
     );
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: id,
+      ownerId: plot.ownerUserId,
+      actorId: actor!.id,
+      deleted: true
+    });
     return { removed };
+  }
+
+  /* ------------------------ sync push apply (W-SYNCWRITE) ------------------------ */
+
+  /**
+   * Applies one validated sync push item for `farm_plot`
+   * (docs/sync-protocol.md §4). The sync engine has already authenticated
+   * the caller, enforced owner scoping and pre-checked the baseVersion CAS;
+   * this method performs the entity write and advances sync.entity_versions
+   * atomically via bumpExpected. Upserts are full replacements (create with
+   * the client-stable entityId when the record does not exist yet); deletes
+   * cascade like REST deletes and leave a tombstone version row. Any thrown
+   * error surfaces as a per-item `error` result — never a silent write.
+   */
+  async applySyncedPlot(actor: User, item: SyncPushItem): Promise<number> {
+    if (!this.entityVersions) {
+      throw new Error('Sync version persistence is not configured for farm plots');
+    }
+    const existing = await this.plots.findById(item.entityId);
+    if (existing) {
+      // Defence in depth on top of the sync engine's scope check.
+      assertSelfOrAdmin(actor, existing.ownerUserId);
+    }
+
+    if (item.op === 'delete') {
+      if (existing) {
+        await this.deletePlotCascade(existing.id);
+      }
+      const version = await this.entityVersions.bumpExpected({
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId: item.entityId,
+        // The original owner keeps the tombstone in their sync scope even
+        // when an admin performed the delete.
+        ownerId: existing?.ownerUserId ?? actor.id,
+        updatedBy: actor.id,
+        deleted: true,
+        expectedVersion: item.baseVersion
+      });
+      if (version === null) {
+        throw new Error('version race');
+      }
+      return version;
+    }
+
+    const input = parseSyncedPlotPayload(item.payload);
+    this.assertValidPlot(input);
+    const now = new Date().toISOString();
+    let ownerId: string;
+    if (existing) {
+      ownerId = existing.ownerUserId;
+      await this.plots.update(existing.id, {
+        name: input.name,
+        state: input.state,
+        lga: input.lga,
+        centroidLat: input.centroidLat,
+        centroidLong: input.centroidLong,
+        boundaryGeojson: input.boundaryGeojson,
+        sizeHectares: input.sizeHectares,
+        soilType: input.soilType,
+        updatedAt: now,
+        version: existing.version + 1
+      });
+    } else {
+      // Create with the client-stable entity id — the sync ledger and the
+      // source row share one identity, so pulls map 1:1 onto pushed records.
+      ownerId = actor.id;
+      await this.plots.create({
+        id: item.entityId,
+        ownerUserId: actor.id,
+        name: input.name,
+        state: input.state,
+        lga: input.lga,
+        centroidLat: input.centroidLat,
+        centroidLong: input.centroidLong,
+        boundaryGeojson: input.boundaryGeojson,
+        sizeHectares: input.sizeHectares,
+        soilType: input.soilType,
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+        clientId: input.clientId ?? item.clientMutationId
+      });
+    }
+    const version = await this.entityVersions.bumpExpected({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: item.entityId,
+      ownerId,
+      updatedBy: actor.id,
+      deleted: false,
+      expectedVersion: item.baseVersion
+    });
+    if (version === null) {
+      throw new Error('version race');
+    }
+    return version;
   }
 
   /* ----------------------------- plantings ----------------------------- */

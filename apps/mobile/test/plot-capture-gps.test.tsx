@@ -1,8 +1,9 @@
 /**
- * Plot capture GPS UX + idempotency tests (audit P0-2/P2-15/P2-17):
- * permission-denied guidance, poor-accuracy warnings, and an idempotency
- * key that covers every editable field so legitimate edits are not deduped
- * away.
+ * Plot capture GPS UX + mutation-key tests (audit P0-2/P2-15/P2-17):
+ * permission-denied guidance, poor-accuracy warnings, and a clientMutationId
+ * that covers every editable field so legitimate edits are not deduped
+ * away. Plot writes route through the record-level sync outbox
+ * (W-SYNCWRITE) — the keys below are the outbox entries' clientMutationIds.
  */
 import { act, type ReactNode } from 'react';
 import { create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -11,11 +12,13 @@ import { createApiClient } from '../src/api/client';
 import { ApiProvider } from '../src/api/context';
 import { createInMemoryTokenStore } from '../src/api/token-store';
 import { LocationPermissionDeniedError } from '../src/location/location-service';
-import { createInMemoryStorage, createOfflineQueue } from '../src/offline/queue';
+import { createInMemoryStorage } from '../src/offline/queue';
 import {
   PlotCaptureScreen,
   type LocationService
 } from '../src/screens/PlotCaptureScreen';
+import { createSyncStore } from '../src/sync/store';
+import { createApiSyncTransport } from '../src/sync/transport';
 
 /* ------------------------------ helpers --------------------------------- */
 
@@ -153,37 +156,46 @@ describe('PlotCaptureScreen GPS UX (P0-2/P2-15)', () => {
   });
 });
 
-describe('PlotCaptureScreen idempotency key (P2-17)', () => {
+describe('PlotCaptureScreen clientMutationId (P2-17)', () => {
+  /** Offline sync store: pushes fail, outbox entries stay queued. */
+  function offlineStore() {
+    return createSyncStore({
+      storage: createInMemoryStorage(),
+      transport: createApiSyncTransport(offlineClient())
+    });
+  }
+
   it('does NOT dedupe a legitimate edit (same plot, corrected LGA)', async () => {
-    const queue = createOfflineQueue(createInMemoryStorage());
+    const store = offlineStore();
     const renderer = await renderCapture(
-      <PlotCaptureScreen state="Kano" locationService={goodGps} queue={queue} />
+      <PlotCaptureScreen state="Kano" locationService={goodGps} store={store} />
     );
 
-    // First capture (offline → stays queued).
+    // First capture (offline → stays in the outbox).
     await interact(() => setInputAt(renderer.root, 0, 'Zaria North Plot'));
     await interact(() => setInputAt(renderer.root, 1, 'Zaria'));
     await interact(() => setInputAt(renderer.root, 2, '2.5'));
     await interact(() => pressByLabel(renderer.root, 'Capture centre point'));
     await interact(() => pressByLabel(renderer.root, 'Save plot'));
-    expect(await queue.pending()).toHaveLength(1);
+    expect(store.getOutbox()).toHaveLength(1);
 
     // Correct the LGA and save again — a DIFFERENT logical mutation that
-    // must survive as its own queue entry.
+    // must survive as its own outbox entry.
     await interact(() => setInputAt(renderer.root, 1, 'Sabon Gari'));
     await interact(() => pressByLabel(renderer.root, 'Save plot'));
 
-    const pending = await queue.pending();
-    expect(pending).toHaveLength(2);
-    expect(pending[0].idempotencyKey).toContain('Zaria');
-    expect(pending[1].idempotencyKey).toContain('Sabon Gari');
-    expect(pending[0].idempotencyKey).not.toBe(pending[1].idempotencyKey);
+    const outbox = store.getOutbox();
+    expect(outbox).toHaveLength(2);
+    expect(outbox[0].clientMutationId).toContain('Zaria');
+    expect(outbox[1].clientMutationId).toContain('Sabon Gari');
+    expect(outbox[0].clientMutationId).not.toBe(outbox[1].clientMutationId);
+    expect(outbox[0].entityId).not.toBe(outbox[1].entityId);
   });
 
-  it('still dedupes an exact double-submit (same fields → same key)', async () => {
-    const queue = createOfflineQueue(createInMemoryStorage());
+  it('still dedupes an exact double-submit (same fields → same mutation)', async () => {
+    const store = offlineStore();
     const renderer = await renderCapture(
-      <PlotCaptureScreen state="Kano" locationService={goodGps} queue={queue} />
+      <PlotCaptureScreen state="Kano" locationService={goodGps} store={store} />
     );
 
     await interact(() => setInputAt(renderer.root, 0, 'Zaria North Plot'));
@@ -193,6 +205,6 @@ describe('PlotCaptureScreen idempotency key (P2-17)', () => {
     await interact(() => pressByLabel(renderer.root, 'Save plot'));
     await interact(() => pressByLabel(renderer.root, 'Save plot'));
 
-    expect(await queue.pending()).toHaveLength(1);
+    expect(store.getOutbox()).toHaveLength(1);
   });
 });
