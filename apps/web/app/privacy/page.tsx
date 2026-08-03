@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { ComplianceCenter } from '@/components/compliance-center';
 import { PrivacyCenter } from '@/components/privacy-center';
 import { PageHeader, Section, Timeline } from '@/components/ui';
 
@@ -26,6 +27,16 @@ export default function PrivacyPage() {
       <section className="section-tight" style={{ maxWidth: 860 }}>
         <PrivacyCenter />
       </section>
+
+      <Section
+        kicker="NDPA 2023 self-service"
+        title="Consent preferences and data-subject requests"
+        description="Versioned consent, data export (s.37) and erasure requests (s.38) — recorded against your account and processed under the compliance workflow."
+      >
+        <div style={{ maxWidth: 860 }}>
+          <ComplianceCenter />
+        </div>
+      </Section>
 
       <Section kicker="Your rights" title="How NDPR/NDPA applies here">
         <Timeline items={RIGHTS} />

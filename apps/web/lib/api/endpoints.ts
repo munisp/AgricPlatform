@@ -2426,3 +2426,80 @@ export function fetchAnalyticsSummary(): Promise<{ data: AnalyticsSummary }> {
 export function runProjection(): Promise<{ data: ProjectionRun }> {
   return apiFetch('/analytics/project', { method: 'POST' });
 }
+
+/* --------------------- compliance (Wave COMP, NDPA 2023) --------------------- */
+
+/** Versioned consent record (compliance schema; distinct from legacy privacy consents). */
+export interface ComplianceConsentRecord {
+  id: string;
+  userId: string;
+  purpose: string;
+  policyVersion: string;
+  grantedAt: string;
+  revokedAt?: string;
+  source: string;
+}
+
+export type DataSubjectRequestType = 'export' | 'erasure';
+export type DataSubjectRequestStatus = 'pending' | 'processing' | 'completed' | 'rejected';
+
+export interface DataSubjectRequest {
+  id: string;
+  userId: string;
+  type: DataSubjectRequestType;
+  status: DataSubjectRequestStatus;
+  requestedAt: string;
+  completedAt?: string;
+  resultRef?: string;
+  note?: string;
+}
+
+/** NDPA s.37 export bundle; `omissions` lists categories the bundle does NOT cover. */
+export interface DataSubjectExport {
+  generatedAt: string;
+  subject: unknown;
+  profile: unknown;
+  orders: { asBuyer: unknown[]; asSeller: unknown[] };
+  listings: unknown[];
+  livestock: unknown[];
+  consents: { compliance: ComplianceConsentRecord[]; privacy: ConsentRecord[] };
+  notifications: unknown[];
+  omissions: Array<{ category: string; reason: string }>;
+  coverageNotes: string[];
+}
+
+export function recordComplianceConsent(input: {
+  purpose: string;
+  policyVersion: string;
+  source?: string;
+}): Promise<{ data: ComplianceConsentRecord }> {
+  return apiFetch('/compliance/consents', { method: 'POST', body: input });
+}
+
+export function revokeComplianceConsent(
+  purpose: string
+): Promise<{ data: ComplianceConsentRecord }> {
+  return apiFetch(`/compliance/consents/${encodeURIComponent(purpose)}`, { method: 'DELETE' });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listMyComplianceConsents(): Promise<{ data: ComplianceConsentRecord[] }> {
+  return apiFetch('/compliance/consents/mine');
+}
+
+/** Creates AND completes the export request synchronously; the bundle is in `export`. */
+export function requestDataExport(): Promise<{
+  data: { request: DataSubjectRequest; export: DataSubjectExport };
+}> {
+  return apiFetch('/compliance/dsr/export', { method: 'POST' });
+}
+
+/** Creates a PENDING erasure request — an admin must approve it before anonymisation runs. */
+export function requestDataErasure(): Promise<{ data: DataSubjectRequest }> {
+  return apiFetch('/compliance/dsr/erasure', { method: 'POST' });
+}
+
+/** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
+export function listMyDataSubjectRequests(): Promise<{ data: DataSubjectRequest[] }> {
+  return apiFetch('/compliance/dsr/mine');
+}
