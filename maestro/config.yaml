@@ -1,0 +1,23 @@
+# Maestro workspace config for the AgricPlatform mobile app (apps/mobile).
+#
+# REQUIRES: a booted Android emulator or iOS simulator with a dev build of
+# the app installed (EAS development profile), plus the API reachable from
+# the device (default dev base URL http://localhost:3001/api/v1 — on the
+# Android emulator use `adb reverse tcp:3001 tcp:3001`).
+#
+# Run everything:   maestro test maestro/
+# One flow:         maestro test maestro/flows/auth-login.yaml
+# Env overrides:    maestro test -e PHONE=+2348012345678 -e OTP_CODE=123456 maestro/flows/auth-login.yaml
+#
+# These flows were authored as E2E scaffolding; they are NOT executed in CI
+# (no emulator/device farm is wired up). See docs/mobile/e2e.md.
+
+appId: com.agricplatform.app
+---
+# Shared defaults; individual flows may override with -e KEY=value.
+env:
+  PHONE: "+2348012345678"
+  # Outside production the API returns the OTP as `devCode` in the
+  # /auth/otp/request response. Capture it (curl or API logs) and pass it in:
+  #   maestro test -e OTP_CODE=<devCode> ...
+  OTP_CODE: "000000"

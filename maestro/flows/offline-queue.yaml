@@ -1,0 +1,42 @@
+# offline-queue.yaml — offline behaviour of the app shell.
+#
+# Airplane-mode pattern (Android emulator): Maestro cannot toggle radios
+# itself, so the flow shells out via `runScript` to adb. These MUST be run
+# against a booted emulator (`adb devices` shows exactly one device):
+#   adb shell settings put global airplane_mode_on 1
+#   adb shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true
+# (…and the inverse to restore). iOS simulators have no airplane API — use
+# Network Link Conditioner on a physical device, or toggle the Mac's network;
+# that path is manual and documented in docs/mobile/e2e.md.
+#
+# HONEST SCOPE: the persistent offline mutation queue (src/offline/queue.ts,
+# dedup + 401 auth-park) is unit-tested but is NOT yet wired into the screens
+# — today a mutation made while offline surfaces an inline error with Retry.
+# This flow therefore asserts the offline error/retry UX and recovery; the
+# queue replay assertions below are commented out until the screens enqueue
+# through the offline queue.
+appId: com.agricplatform.app
+---
+- runFlow: auth-login.yaml
+
+# --- Go offline (Android emulator only) ---
+- runScript: ../scripts/airplane-mode.sh on
+- tapOn: "My livestock"
+# The list cannot load offline: inline error + Retry is shown.
+- assertVisible:
+    text: "Retry"
+    timeout: 15000
+
+# FUTURE (once screens enqueue through src/offline/queue.ts):
+# - tapOn: "Register animal"
+# - tapOn: "Submit registration"
+# - assertVisible: "Queued"            # outbox chip, not an error
+# - runScript: ../scripts/airplane-mode.sh off
+# - assertVisible: "tag E2E-0002"      # replayed exactly once (idempotency key)
+
+# --- Recover ---
+- runScript: ../scripts/airplane-mode.sh off
+- tapOn: "Retry"
+- assertVisible:
+    text: "My animals"
+    timeout: 15000

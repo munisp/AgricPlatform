@@ -1,0 +1,30 @@
+# auth-login.yaml — dev login via phone OTP.
+#
+# The dev API (non-production) returns the OTP as `devCode` in the
+# POST /auth/otp/request response, so capture it first and pass it in:
+#   OTP=$(curl -s -X POST http://localhost:3001/api/v1/auth/otp/request \
+#     -H 'Content-Type: application/json' \
+#     -d '{"phone":"+2348012345678"}' | jq -r .data.devCode)
+#   maestro test -e OTP_CODE=$OTP maestro/flows/auth-login.yaml
+appId: com.agricplatform.app
+env:
+  PHONE: "+2348012345678"
+  OTP_CODE: "000000"
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Welcome to NYFN"
+- tapOn:
+    id: "Phone number" # accessibilityLabel on the TextInput
+    # Maestro matches accessibility labels; fall back to text below if the
+    # label is not exposed on this platform.
+    optional: true
+- inputText: ${PHONE}
+- tapOn: "Send code"
+- assertVisible: "One-time code"
+- tapOn: "One-time code"
+- inputText: ${OTP_CODE}
+- tapOn: "Verify and sign in"
+# Successful login lands on the Home dashboard.
+- assertVisible: "Training progress"
+- assertVisible: "Farm summary"
