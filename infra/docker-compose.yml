@@ -42,7 +42,7 @@ services:
     networks: [agric]
 
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
+    image: quay.io/keycloak/keycloak:26.7
     container_name: agric-keycloak
     command:
       - start-dev
