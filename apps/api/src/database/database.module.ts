@@ -304,6 +304,22 @@ import {
 import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
 import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
+// Wave VOICE: voice agronomist persistence (additive).
+import {
+  AGENT_CASE_REPOSITORY,
+  VOICE_SESSION_REPOSITORY,
+  VOICE_TURN_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentCaseRepository,
+  createInMemoryVoiceSessionRepository,
+  createInMemoryVoiceTurnRepository
+} from './repositories/voice.repository.js';
+import {
+  createPgAgentCaseRepository,
+  createPgVoiceSessionRepository,
+  createPgVoiceTurnRepository
+} from './repositories/voice.pg-repository.js';
 // Wave L1a: ALTP livestock core persistence (additive).
 import {
   ANIMAL_REPOSITORY,
@@ -528,7 +544,8 @@ import {
   CREDIT_PRODUCT_REPOSITORY,
   CREDIT_REPAYMENT_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
-  CREDIT_SAVINGS_TRANSACTION_REPOSITORY
+  CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+  GEO_CREDIT_SHADOW_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -571,6 +588,8 @@ import {
   createPgLotPlotLinkRepository,
   createPgTraceabilityShipmentRepository
 } from './repositories/traceability.pg-repository.js';
+import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
+import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1458,6 +1477,32 @@ import {
           ? createPgTraceabilityShipmentRepository(pool)
           : createInMemoryTraceabilityShipmentRepository(),
       inject: [PG_POOL]
+    },
+    // Wave VOICE: voice agronomist repositories (appended).
+    {
+      provide: VOICE_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceSessionRepository(pool) : createInMemoryVoiceSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOICE_TURN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceTurnRepository(pool) : createInMemoryVoiceTurnRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
+    {
+      provide: GEO_CREDIT_SHADOW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1599,7 +1644,11 @@ import {
     COMMODITY_LOT_REPOSITORY,
     CUSTODY_EVENT_REPOSITORY,
     LOT_PLOT_LINK_REPOSITORY,
-    TRACEABILITY_SHIPMENT_REPOSITORY
+    TRACEABILITY_SHIPMENT_REPOSITORY,
+    VOICE_SESSION_REPOSITORY,
+    VOICE_TURN_REPOSITORY,
+    AGENT_CASE_REPOSITORY,
+    GEO_CREDIT_SHADOW_REPOSITORY
   ]
 })
 export class DatabaseModule {}

@@ -16,7 +16,10 @@ export const USER_ROLES = [
   'donor',
   // Wave AGENTS: field enumerator — captures farmer data on behalf of
   // farmers (agent assignments queue, migration 023).
-  'enumerator'
+  'enumerator',
+  // Wave VOICE: agronomist — works the voice-agronomist escalation queue
+  // (agent cases, agent-assist console, migration 027).
+  'agronomist'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];

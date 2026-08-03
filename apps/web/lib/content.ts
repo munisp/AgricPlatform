@@ -69,7 +69,8 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   insurer: 'Insurer',
   regulator: 'Regulator',
   donor: 'Donor',
-  enumerator: 'Enumerator'
+  enumerator: 'Enumerator',
+  agronomist: 'Agronomist'
 };
 
 export const ROLE_SUMMARIES: Record<UserRole, string> = {
@@ -85,7 +86,8 @@ export const ROLE_SUMMARIES: Record<UserRole, string> = {
   insurer: 'Bind livestock insurance policies and settle claims.',
   regulator: 'Export compliance reports and oversee disease surveillance, recalls and movement control.',
   donor: 'Schedule and track milestone-based programme disbursements.',
-  enumerator: 'Capture farmer data in the field and work through your assignment queue.'
+  enumerator: 'Capture farmer data in the field and work through your assignment queue.',
+  agronomist: 'Work the voice-agronomist escalation queue: grounded AI answers stay automated, hard cases reach you.'
 };
 
 export interface ModuleDef {

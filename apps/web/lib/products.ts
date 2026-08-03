@@ -215,5 +215,8 @@ export const QUICK_ACTIONS: Record<UserRole, QuickAction[]> = {
   enumerator: [
     { href: '/agents/my-queue', labelKey: 'dashboard.quick.fieldQueue' },
     { href: '/agents', labelKey: 'nav.agents' }
-  ]
+  ],
+  // wave-voice: role exists for the agent-assist console; hub links stay
+  // unwired here (orchestrator wires them).
+  agronomist: []
 };

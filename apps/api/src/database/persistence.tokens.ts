@@ -174,6 +174,12 @@ export const AGENT_ACTIVITY_LOG_REPOSITORY = Symbol('AGENT_ACTIVITY_LOG_REPOSITO
 export const H3_INDEX_REPOSITORY = Symbol('H3_INDEX_REPOSITORY');
 export const GEO_BOUNDARY_REPOSITORY = Symbol('GEO_BOUNDARY_REPOSITORY');
 
+// Wave VOICE: voice agronomist — IVR/USSD RAG advisory sessions, transcript
+// turns and the agent-escalation queue (voice schema, migration 027).
+export const VOICE_SESSION_REPOSITORY = Symbol('VOICE_SESSION_REPOSITORY');
+export const VOICE_TURN_REPOSITORY = Symbol('VOICE_TURN_REPOSITORY');
+export const AGENT_CASE_REPOSITORY = Symbol('AGENT_CASE_REPOSITORY');
+
 // Wave CREDIT: microfinance suite (loan products/applications, repayments,
 // collateral, guarantors, VSLA groups, savings) — schema `credit`.
 export const CREDIT_PRODUCT_REPOSITORY = Symbol('CREDIT_PRODUCT_REPOSITORY');
@@ -193,3 +199,6 @@ export const COMMODITY_LOT_REPOSITORY = Symbol('COMMODITY_LOT_REPOSITORY');
 export const CUSTODY_EVENT_REPOSITORY = Symbol('CUSTODY_EVENT_REPOSITORY');
 export const LOT_PLOT_LINK_REPOSITORY = Symbol('LOT_PLOT_LINK_REPOSITORY');
 export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_REPOSITORY');
+// Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
+// 028). Shadow mode only — the live decision path never injects this token.
+export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');

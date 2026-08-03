@@ -1,0 +1,49 @@
+# event-gw docker-compose SERVICE FRAGMENT — merge into infra/docker-compose.yml
+# (orchestrator owns the merge; this file is intentionally not a full compose
+# file). Mirrors the flood-ml fragment conventions: OPTIONAL, profile-gated,
+# disabled-by-default sidecar. The platform boots without it.
+#
+# Merge under `services:` and add `event-gw-spool:` under `volumes:`, then:
+#   docker compose -f infra/docker-compose.yml --profile event-gw up -d event-gw
+#
+# DEFAULTS ARE STUB MODE (signature verification DISABLED, loud startup
+# warning). For anything real, set EVENTGW_MODE=live and one
+# EVENTGW_SECRET_<NAME> per provider — see services/event-gw/README.md.
+
+  # ---- OPTIONAL webhook/event ingestion edge (profile: event-gw) ----
+  # Go stdlib-only edge: verifies external provider webhooks (fail-closed)
+  # and fans them out to the API internal event ingress with retries,
+  # circuit breaker and a disk dead-letter spool.
+  event-gw:
+    profiles: ["event-gw"]
+    build:
+      context: ../services/event-gw
+    container_name: agric-event-gw
+    environment:
+      # stub (default, dev only) or live (verifies HMAC per provider).
+      EVENTGW_MODE: ${EVENTGW_MODE:-stub}
+      # Comma-separated provider list; per-provider secrets/headers follow.
+      EVENTGW_PROVIDERS: ${EVENTGW_PROVIDERS:-weather,payments,imagery}
+      # REQUIRED per provider in live mode, else that route answers 503:
+      EVENTGW_SECRET_WEATHER: ${EVENTGW_SECRET_WEATHER:-}
+      EVENTGW_SECRET_PAYMENTS: ${EVENTGW_SECRET_PAYMENTS:-}
+      EVENTGW_SECRET_IMAGERY: ${EVENTGW_SECRET_IMAGERY:-}
+      # API internal event ingress + shared internal token.
+      EVENTGW_API_INGRESS_URL: ${EVENTGW_API_INGRESS_URL:-http://api:3001/api/v1/internal/events}
+      EVENTGW_INTERNAL_TOKEN: ${EVENTGW_INTERNAL_TOKEN:-}
+      EVENTGW_SPOOL_PATH: /var/spool/event-gw/deadletter.jsonl
+    ports:
+      - "8090:8090"
+    volumes:
+      - event-gw-spool:/var/spool/event-gw
+    healthcheck:
+      # distroless has no shell/wget; the binary self-probes /healthz.
+      test: ["CMD", "/event-gw", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks: [agric]
+
+# Merge into the top-level `volumes:` map:
+#   event-gw-spool:

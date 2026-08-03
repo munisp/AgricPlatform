@@ -1,0 +1,9 @@
+# GHSA-4w2j-m93h-cj5j — quinn-proto 0.11.14 (HIGH) inside @temporalio/core-bridge's bundled Cargo.lock.
+# VEX-style justification (2026-08-03):
+#  - Source: third-party build manifest shipped inside node_modules/@temporalio/core-bridge, not a direct dependency.
+#  - Not exploitable in our runtime path: the Temporal integration is OFF by default (WORKFLOW_ORCHESTRATOR=stub),
+#    and when enabled the worker acts as a gRPC (HTTP/2/TCP) CLIENT to a self-hosted Temporal server.
+#    The quinn QUIC (UDP) code path is neither listened on nor dialed by this platform.
+#  - No fixed upstream release exists as of this writing (@temporalio/core-bridge 1.21.1, latest, still pins 0.11.14).
+#  - Revisit on every @temporalio/* upgrade; remove this ignore once upstream ships quinn-proto >= 0.11.15.
+GHSA-4w2j-m93h-cj5j

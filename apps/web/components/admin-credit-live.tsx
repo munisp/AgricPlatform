@@ -17,6 +17,7 @@ import {
 import { useT } from '@/lib/i18n';
 import { QueryState } from '@/components/api-state';
 import { Card, EmptyState, StatusBadge, formatKobo } from '@/components/ui';
+import { GeoShadowPanel, GeoShadowRecomputeButton } from '@/components/geo-shadow-panel';
 
 const REVIEW_STATUSES = new Set(['submitted', 'scoring', 'approved', 'disbursed', 'repaying']);
 
@@ -180,6 +181,8 @@ export function CreditReviewQueueSection() {
       data={query.data}
       onRetry={query.refresh}
     >
+      {/* wave-geocredit: shadow-mode batch recompute (admin); never affects decisions */}
+      <GeoShadowRecomputeButton onDone={query.refresh} />
       {query.data && query.data.length === 0 ? <EmptyState title={t('credit.queueEmpty')} /> : null}
       {query.data && query.data.length > 0 ? (
         <div className="stack">
@@ -215,6 +218,8 @@ export function CreditReviewQueueSection() {
                   </li>
                 </ul>
               ) : null}
+              {/* wave-geocredit: geo verification shadow panel — read-only, not used in decisions */}
+              <GeoShadowPanel applicationId={loan.id} />
               <ReviewActions loan={loan} onDone={query.refresh} />
             </Card>
           ))}

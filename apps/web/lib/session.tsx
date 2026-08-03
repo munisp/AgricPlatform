@@ -53,7 +53,8 @@ export const DEV_PREVIEW_USERS: Record<UserRole, { userId: string; displayName: 
   insurer: { userId: 'user-insurer', displayName: 'Sahel Livestock Insurance' },
   regulator: { userId: 'user-regulator', displayName: 'State Vet Regulator' },
   donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' },
-  enumerator: { userId: 'user-enumerator', displayName: 'Field Enumerator' }
+  enumerator: { userId: 'user-enumerator', displayName: 'Field Enumerator' },
+  agronomist: { userId: 'user-agronomist', displayName: 'Extension Agronomist' }
 };
 
 const SESSION_KEY = 'agric.session';

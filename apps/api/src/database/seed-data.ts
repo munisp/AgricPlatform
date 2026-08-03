@@ -216,6 +216,19 @@ export const seedUsers: User[] = [
     isVerified: true,
     createdAt: '2025-10-01T09:00:00.000Z',
     lastActiveAt: NOW
+  },
+  // Wave VOICE persona (appended): agronomist who works the voice-agronomist
+  // escalation queue (agent cases, agent-assist console).
+  {
+    id: 'user-agronomist',
+    phone: '+2348010000014',
+    fullName: 'Extension Agronomist',
+    roles: ['agronomist'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_2',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
   }
 ];
 
