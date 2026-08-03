@@ -56,6 +56,8 @@ import { SyncModule } from './modules/sync/sync.module.js';
 import { FarmsModule } from './modules/farms/farms.module.js';
 // Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
 import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
+// Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
+import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 
 @Module({
   imports: [
@@ -124,7 +126,9 @@ import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js
     // Wave FARMS farms & crop-production — appended to minimise merge conflicts.
     FarmsModule,
     // Wave AGENTS field-agent (enumerator) capability — appended to minimise merge conflicts.
-    FieldAgentsModule
+    FieldAgentsModule,
+    // Wave ML geo-intel flood-risk — appended to minimise merge conflicts.
+    GeoIntelModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
