@@ -1,0 +1,43 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "analyzer": {
+        "agric_text": {
+          "type": "standard",
+          "stopwords": "_english_"
+        }
+      }
+    }
+  },
+  "mappings": {
+    "_meta": {
+      "description": "AgricPlatform cross-domain discovery index (wave FABRIC). Documents mirror the SearchIndexDocument contract in apps/api/src/modules/integrations/drivers/search.drivers.ts. LOCAL DEV mapping — analyzer/shard choices are not production-tuned. Create with: PUT {OPENSEARCH_NODE}/agric-platform with this body.",
+      "wave": "fabric"
+    },
+    "properties": {
+      "type": {
+        "type": "keyword"
+      },
+      "title": {
+        "type": "text",
+        "analyzer": "agric_text",
+        "fields": {
+          "keyword": { "type": "keyword", "ignore_above": 256 }
+        }
+      },
+      "summary": {
+        "type": "text",
+        "analyzer": "agric_text"
+      },
+      "state": {
+        "type": "keyword"
+      },
+      "indexed_at": {
+        "type": "date",
+        "format": "strict_date_time"
+      }
+    }
+  }
+}

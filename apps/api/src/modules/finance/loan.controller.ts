@@ -1,18 +1,26 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
+  Inject,
+  Optional,
   Param,
   ParseIntPipe,
   Patch,
   Post,
   Query,
+  ServiceUnavailableException,
   UnauthorizedException,
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsInt, IsISO8601, IsOptional, IsString, Min } from 'class-validator';
 import { LOAN_STATUSES, type LoanStatus, type User } from '@agric-platform/shared';
+import {
+  AUTHORIZATION_CHECK,
+  type AuthorizationCheck
+} from '../../common/auth/authorization-check.driver.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -79,7 +87,8 @@ function requireActor(actor: User | null): User {
 export class LoanController {
   constructor(
     private readonly loans: LoanService,
-    private readonly audit: AuditService
+    private readonly audit: AuditService,
+    @Optional() @Inject(AUTHORIZATION_CHECK) private readonly authz?: AuthorizationCheck
   ) {}
 
   @Post()
@@ -114,7 +123,30 @@ export class LoanController {
   @ApiOperation({ summary: 'Loan application detail (applicant or admin)' })
   async get(@Param('id') id: string, @CurrentUser() actor: User | null) {
     const loan = await this.loans.getLoan(id);
-    assertSelfOrAdmin(actor, loan.applicantId);
+    // Wave FABRIC: with AUTHORIZATION_DRIVER=permify the credit-loan read
+    // check goes through the AuthorizationCheck port (fail closed: provider
+    // errors answer 503, denials 403). The default stub driver keeps the
+    // existing assertSelfOrAdmin behaviour byte-for-byte.
+    if (this.authz && this.authz.name !== 'stub') {
+      const user = requireActor(actor);
+      let allowed = false;
+      try {
+        allowed = await this.authz.can(
+          { userId: user.id, roles: user.roles },
+          'read',
+          { type: 'credit_loan', id: loan.id, ownerId: loan.applicantId }
+        );
+      } catch {
+        throw new ServiceUnavailableException(
+          'Authorization provider unreachable — failing closed (deny)'
+        );
+      }
+      if (!allowed) {
+        throw new ForbiddenException('You may only access your own records');
+      }
+    } else {
+      assertSelfOrAdmin(actor, loan.applicantId);
+    }
     return { data: loan };
   }
 

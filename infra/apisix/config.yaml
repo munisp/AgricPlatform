@@ -1,0 +1,11 @@
+# APISIX standalone data-plane config (wave FABRIC, LOCAL DEV ONLY).
+# Runs APISIX in declarative mode: routes come from the mounted apisix.yaml
+# (config_provider: yaml), NOT from etcd. The etcd service in the profile is
+# provisioned for teams that want the traditional admin-API mode instead.
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+apisix:
+  node_listen: 9080
+  enable_admin: false
