@@ -113,6 +113,31 @@ jobs:
       - name: Lint
         run: npm run lint --workspaces --if-present
 
+  ops-lint:
+    name: Ops tooling lint (scripts + observability configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      # js-yaml (used by the observability validator) comes from the lockfile install.
+      - run: npm ci
+      - name: Syntax-check all ops scripts
+        run: |
+          set -e
+          for f in scripts/*.mjs; do
+            node --check "$f"
+          done
+          echo "node --check passed for all scripts/*.mjs"
+      - name: Validate observability configs (alerts.yml, prometheus.yml, grafana dashboard)
+        run: node scripts/validate-observability.mjs
+
   security:
     name: Secret scan and dependency audit
     runs-on: ubuntu-latest
@@ -345,7 +370,7 @@ jobs:
     name: CI gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test, mobile, db-contract]
+    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test, mobile, db-contract, ops-lint]
     steps:
       - name: All required checks passed
         run: echo "CI gate satisfied for ${{ github.sha }}"
