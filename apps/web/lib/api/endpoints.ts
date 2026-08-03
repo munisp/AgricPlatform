@@ -2368,3 +2368,61 @@ export function fetchSellerRating(userId: string): Promise<{ data: SellerRating 
 export function fetchSellerAnalytics(sellerId: string): Promise<{ data: SellerAnalytics }> {
   return apiFetch(`/analytics/sellers/${encodeURIComponent(sellerId)}`);
 }
+
+/* ------------------ Wave B: analytics star marts (admin) ----------------- */
+
+/** analytics.mart_daily_metrics row (Africa/Lagos calendar day). */
+export interface DailyMetric {
+  metricDate: string;
+  ordersGmvKobo: number;
+  ordersCount: number;
+  activeFarmers: number;
+  escrowHeldKobo: number;
+  livestockRegistered: number;
+}
+
+/** Headline star-mart aggregates (GET /analytics/metrics/summary). */
+export interface AnalyticsSummary {
+  gmvKobo: number;
+  ordersCount: number;
+  escrowHeldKobo: number;
+  livestockRegistered: number;
+  members: number;
+  listings: number;
+  /** Projector heartbeat; null until the first projection run. */
+  lastProjectionAt: string | null;
+  generatedAt: string;
+}
+
+/** Result of one outbox→mart projection pass (POST /analytics/project). */
+export interface ProjectionRun {
+  scanned: number;
+  applied: number;
+  skipped: number;
+  recomputedDates: string[];
+  ranAt: string;
+}
+
+/** Fact tables offered as lakehouse-handoff CSV exports. */
+export const STAR_FACTS = ['fact_orders', 'fact_payments'] as const;
+export type StarFact = (typeof STAR_FACTS)[number];
+
+/** Admin or regulator. Inclusive YYYY-MM-DD range. */
+export function fetchDailyMetrics(
+  params: { from?: string; to?: string } = {}
+): Promise<{ data: DailyMetric[] }> {
+  return apiFetch('/analytics/metrics/daily', { query: { ...params } });
+}
+
+/** Admin or regulator. */
+export function fetchAnalyticsSummary(): Promise<{ data: AnalyticsSummary }> {
+  return apiFetch('/analytics/metrics/summary');
+}
+
+/**
+ * Admin only. Runs one projection pass; designed to be invoked by an
+ * external scheduler — no in-process timer exists on the API.
+ */
+export function runProjection(): Promise<{ data: ProjectionRun }> {
+  return apiFetch('/analytics/project', { method: 'POST' });
+}

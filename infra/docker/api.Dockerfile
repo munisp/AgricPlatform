@@ -14,7 +14,7 @@
 # the authoring environment and no digest has been verified yet.
 
 # ---- deps: install workspace dependencies with a reproducible lockfile ----
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
@@ -23,7 +23,7 @@ COPY packages/shared/package.json packages/shared/package.json
 RUN npm install -g npm@11 && npm ci --workspace=apps/api --include-workspace-root
 
 # ---- build: compile shared contracts, then the NestJS production bundle ----
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.base.json ./
@@ -34,7 +34,7 @@ RUN npm run build --workspace=packages/shared --if-present \
     && npm prune --omit=dev
 
 # ---- runtime: production deps only, non-root ----
-FROM node:20-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3001

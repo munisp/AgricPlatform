@@ -27,9 +27,13 @@ jobs:
     timeout-minutes: 20
     # Blocking on release branches; advisory everywhere else.
     continue-on-error: ${{ !startsWith(github.ref, 'refs/heads/release/') }}
+    # Advisory by design: without a deployed preview origin there is nothing to
+    # audit, so skip cleanly (a failed advisory check blocks PR merges under
+    # branch protection). Release branches always run and must pass.
+    if: ${{ vars.PREVIEW_URL != '' || startsWith(github.ref, 'refs/heads/release/') }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
       - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)

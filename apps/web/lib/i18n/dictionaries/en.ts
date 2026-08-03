@@ -269,6 +269,44 @@ export const en = {
     valid: 'Chain is intact. {checked} events checked.',
     broken: 'Chain broken at event {id}.',
     invalidRange: 'Check failed. Event id not found.'
+  },
+  adminAnalytics: {
+    title: 'Analytics marts',
+    kicker: 'Admin console',
+    description:
+      'Star-schema marts in PostgreSQL, projected from the domain event outbox. This is the real analytical store today — no Spark, Iceberg or Trino is deployed.',
+    summaryTitle: 'Headline metrics',
+    gmv: 'GMV',
+    orders: 'Orders',
+    escrowExposure: 'Escrow exposure',
+    livestock: 'Livestock registered',
+    members: 'Members',
+    listings: 'Listings',
+    lastProjection: 'Last projection: {time}',
+    neverProjected: 'No projection run yet.',
+    dailyTitle: 'Daily metrics',
+    date: 'Date',
+    gmvKobo: 'GMV (kobo)',
+    ordersCount: 'Orders',
+    activeFarmers: 'Active farmers',
+    escrowHeld: 'Escrow held (kobo)',
+    livestockRegistered: 'Livestock',
+    fromLabel: 'From',
+    toLabel: 'To',
+    apply: 'Apply',
+    empty: 'No mart rows in this range — run a projection first.',
+    projectTitle: 'Projection',
+    projectDescription:
+      'Applies unprocessed outbox events to the marts (idempotent, replay-safe). An external scheduler should call this — the API runs no timer.',
+    runProjection: 'Run projection now',
+    running: 'Projecting…',
+    projectResult: 'Scanned {scanned} · applied {applied} · skipped {skipped} · dates {dates}',
+    exportTitle: 'Lakehouse handoff',
+    exportDescription:
+      'CSV exports mirror the mart columns 1:1 — the ingestion contract for a future lakehouse (object storage + Iceberg + Trino).',
+    exportFactOrders: 'Download fact_orders.csv',
+    exportFactPayments: 'Download fact_payments.csv',
+    offlineNotice: 'Live analytics unavailable — showing reference metrics.'
   }
 };
 

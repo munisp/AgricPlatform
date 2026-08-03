@@ -12,7 +12,7 @@
 # PR, gated by the CI container build + Trivy scan.
 
 # ---- deps: install workspace dependencies with a reproducible lockfile ----
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
@@ -24,7 +24,7 @@ COPY packages/shared/package.json packages/shared/package.json
 RUN npm install -g npm@11 && npm ci --workspace=apps/web --include-workspace-root
 
 # ---- build: compile shared contracts, then the Next.js production build ----
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.base.json ./
@@ -43,7 +43,7 @@ RUN npm run build --workspace=packages/shared --if-present \
     && npm run build --workspace=apps/web
 
 # ---- runtime: minimal standalone server, non-root ----
-FROM node:20-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \

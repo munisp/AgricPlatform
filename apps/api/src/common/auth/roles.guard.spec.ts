@@ -18,15 +18,27 @@ let jwks: JSONWebKeySet;
 
 function makeGuard(required: UserRole[] | undefined): {
   activate: () => Promise<boolean>;
-  request: { headers: Record<string, string>; user?: unknown };
+  request: {
+    headers: Record<string, string>;
+    query?: Record<string, string>;
+    path?: string;
+    user?: unknown;
+  };
+  users: UsersService;
 } {
   const reflector = new Reflector();
   // Avoid decorator plumbing: stub the metadata lookup per scenario.
   reflector.getAllAndOverride = () => required;
-  const request: { headers: Record<string, string>; user?: unknown } = { headers: {} };
+  const request: {
+    headers: Record<string, string>;
+    query?: Record<string, string>;
+    path?: string;
+    user?: unknown;
+  } = { headers: {} };
+  const users = new UsersService(createInMemoryUserRepository());
   const guard = new RolesGuard(
     reflector,
-    new UsersService(createInMemoryUserRepository()),
+    users,
     OidcService.forConfig({
       issuer: ISSUER,
       jwksUri: 'unused-in-tests',
@@ -39,13 +51,13 @@ function makeGuard(required: UserRole[] | undefined): {
     getClass: () => undefined,
     switchToHttp: () => ({ getRequest: () => request })
   } as unknown as ExecutionContext;
-  return { activate: () => guard.canActivate(context), request };
+  return { activate: () => guard.canActivate(context), request, users };
 }
 
-async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean } = {}) {
+async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean; subject?: string } = {}) {
   let jwt = new SignJWT(claims)
     .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-    .setSubject('user-admin')
+    .setSubject(options.subject ?? 'user-admin')
     .setIssuer(options.issuer ?? ISSUER)
     .setAudience(options.audience ?? AUDIENCE)
     .setIssuedAt();
@@ -87,6 +99,20 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
       resource_access: { [AUDIENCE]: { roles: ['admin'] } }
     })}`;
     await expect(activate()).resolves.toBe(true);
+  });
+
+  it('ignores client roles granted to OTHER clients when an audience is configured', async () => {
+    // Attack: a user with an admin role on some other realm client presents
+    // that token here. With an audience configured, roles are read only from
+    // resource_access[audience] — never aggregated across clients.
+    // Subject unknown to the user repository so the identity is synthesised
+    // purely from token roles (a repo lookup would mask the extraction bug).
+    const { activate, request } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign(
+      { resource_access: { 'other-client': { roles: ['admin'] } } },
+      { subject: 'user-keycloak-only' }
+    )}`;
+    await expect(activate()).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('rejects tokens with the wrong issuer, audience or expiry', async () => {
@@ -143,5 +169,63 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
 
     const anon = makeGuard(['admin']);
     await expect(anon.activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a suspended user presenting a still-valid bearer token', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('rejects a suspended user presenting the development header', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['x-user-id'] = 'user-admin';
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('restores access when the suspension is lifted', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await users.setStatus('user-admin', 'suspended');
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+    await users.setStatus('user-admin', 'active');
+    await expect(activate()).resolves.toBe(true);
+  });
+
+  it('accepts ?access_token= ONLY on the notification SSE route (EventSource cannot set headers)', async () => {
+    const token = await sign({ realm_access: { roles: ['admin'] } });
+
+    // The SSE stream route (with the global /api/v1 prefix): allowed.
+    const sse = makeGuard(['admin']);
+    sse.request.path = '/api/v1/notifications/stream';
+    sse.request.query = { access_token: token };
+    await expect(sse.activate()).resolves.toBe(true);
+
+    // The same query token anywhere else is ignored -> 401.
+    for (const path of ['/api/v1/orders', '/api/v1/notifications', '']) {
+      const other = makeGuard(['admin']);
+      other.request.path = path;
+      other.request.query = { access_token: token };
+      await expect(other.activate()).rejects.toBeInstanceOf(UnauthorizedException);
+    }
+  });
+
+  it('accepts query x-user-id only on the SSE route in development', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+
+    const sse = makeGuard(['admin']);
+    sse.request.path = '/api/v1/notifications/stream';
+    sse.request.query = { 'x-user-id': 'user-admin' };
+    await expect(sse.activate()).resolves.toBe(true);
+
+    const other = makeGuard(['admin']);
+    other.request.path = '/api/v1/admin/users';
+    other.request.query = { 'x-user-id': 'user-admin' };
+    await expect(other.activate()).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

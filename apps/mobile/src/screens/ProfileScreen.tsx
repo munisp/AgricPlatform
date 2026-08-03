@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
 import { useApiClient } from '../api/context';
-import { fetchSession } from '../api/endpoints';
+import { fetchSession, logoutSession } from '../api/endpoints';
 import type { TokenStore } from '../api/token-store';
 import type { User } from '../api/types';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
@@ -39,6 +39,16 @@ export function ProfileScreen({
   }, [load]);
 
   async function signOut() {
+    // Revoke the refresh-token session server-side (best-effort: sign-out
+    // must still complete offline), then drop local credentials.
+    const refreshToken = await tokenStore.getRefreshToken();
+    if (refreshToken) {
+      try {
+        await logoutSession(client, refreshToken);
+      } catch {
+        // Offline or already revoked — /auth/logout is idempotent.
+      }
+    }
     await tokenStore.clear();
     onSignedOut();
   }

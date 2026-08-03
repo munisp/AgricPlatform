@@ -25,8 +25,12 @@ export interface UpdateBuyerGroupInput {
 /** Roles that may manage buyer groups and their membership. */
 export const BUYER_GROUP_MANAGER_ROLES = ['admin', 'chapter_lead', 'partner'] as const;
 
+export function isBuyerGroupManager(actor: Pick<User, 'id' | 'roles'>): boolean {
+  return BUYER_GROUP_MANAGER_ROLES.some((role) => actor.roles.includes(role));
+}
+
 export function assertBuyerGroupManager(actor: Pick<User, 'id' | 'roles'>): void {
-  if (!BUYER_GROUP_MANAGER_ROLES.some((role) => actor.roles.includes(role))) {
+  if (!isBuyerGroupManager(actor)) {
     throw new ForbiddenException('Only an administrator or agent may manage buyer groups');
   }
 }
@@ -45,8 +49,18 @@ export class BuyerGroupsService {
     @Inject(BUYER_GROUP_MEMBERSHIP_REPOSITORY) private readonly memberships: BuyerGroupMembershipRepository
   ) {}
 
-  async listGroups(): Promise<BuyerGroup[]> {
-    return this.groups.all();
+  /**
+   * Membership-scoped listing (G12): managers (admin/chapter_lead/partner)
+   * see every group; regular users see only the groups they belong to —
+   * group rosters drive pricing, so they are not public directory data.
+   */
+  async listGroups(actor: Pick<User, 'id' | 'roles'>): Promise<BuyerGroup[]> {
+    if (isBuyerGroupManager(actor)) {
+      return this.groups.all();
+    }
+    const memberships = await this.memberships.find({ userId: actor.id });
+    const mine = new Set(memberships.map((membership) => membership.groupId));
+    return (await this.groups.all()).filter((group) => mine.has(group.id));
   }
 
   async getGroup(id: string): Promise<BuyerGroup> {
@@ -92,8 +106,21 @@ export class BuyerGroupsService {
     return updated;
   }
 
-  async listMembers(groupId: string): Promise<BuyerGroupMembership[]> {
+  /**
+   * Managers see any group's roster; regular users only the rosters of
+   * groups they themselves belong to (G12).
+   */
+  async listMembers(
+    groupId: string,
+    actor: Pick<User, 'id' | 'roles'>
+  ): Promise<BuyerGroupMembership[]> {
     await this.groups.getById(groupId);
+    if (!isBuyerGroupManager(actor)) {
+      const own = await this.memberships.find({ groupId, userId: actor.id });
+      if (own.length === 0) {
+        throw new ForbiddenException('You may only view members of groups you belong to');
+      }
+    }
     return this.memberships.find({ groupId });
   }
 

@@ -12,11 +12,16 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { ListingDetailScreen } from './src/screens/ListingDetailScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { MarketplaceScreen } from './src/screens/MarketplaceScreen';
+import { LivestockScreen } from './src/screens/LivestockScreen';
+import { NotificationsScreen } from './src/screens/NotificationsScreen';
+import { OrderDetailScreen } from './src/screens/OrderDetailScreen';
+import { OrdersScreen } from './src/screens/OrdersScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 
 /**
  * NYFN mobile shell. React Navigation native-stack: Login → Home (dashboard)
- * → Courses / Course detail / Marketplace / Listing detail / Profile.
+ * → Courses / Course detail / Marketplace / Listing detail / Orders /
+ * Order detail / Notifications / Livestock / Profile.
  *
  * NOTE (offline-first): the ApiClient uses the in-memory TokenStore fallback
  * until the expo-secure-store adapter lands; queued mutations live in
@@ -30,6 +35,10 @@ export type RootStackParamList = {
   CourseDetail: { courseId: string };
   Marketplace: undefined;
   ListingDetail: { listingId: string };
+  Orders: undefined;
+  OrderDetail: { orderId: string };
+  Notifications: undefined;
+  Livestock: undefined;
   Profile: undefined;
 };
 
@@ -56,6 +65,9 @@ export default function App() {
                 onOpenCourses={() => navigation.navigate('Courses')}
                 onOpenMarketplace={() => navigation.navigate('Marketplace')}
                 onOpenProfile={() => navigation.navigate('Profile')}
+                onOpenOrders={() => navigation.navigate('Orders')}
+                onOpenNotifications={() => navigation.navigate('Notifications')}
+                onOpenLivestock={() => navigation.navigate('Livestock')}
               />
             )}
           </Stack.Screen>
@@ -76,6 +88,20 @@ export default function App() {
           </Stack.Screen>
           <Stack.Screen name="ListingDetail" options={{ title: 'Listing' }}>
             {({ route }) => <ListingDetailScreen listingId={route.params.listingId} />}
+          </Stack.Screen>
+          <Stack.Screen name="Orders" options={{ title: 'My orders' }}>
+            {({ navigation }) => (
+              <OrdersScreen onOpenOrder={(orderId) => navigation.navigate('OrderDetail', { orderId })} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="OrderDetail" options={{ title: 'Order' }}>
+            {({ route }) => <OrderDetailScreen orderId={route.params.orderId} />}
+          </Stack.Screen>
+          <Stack.Screen name="Notifications" options={{ title: 'Notifications' }}>
+            {() => <NotificationsScreen />}
+          </Stack.Screen>
+          <Stack.Screen name="Livestock" options={{ title: 'My livestock' }}>
+            {() => <LivestockScreen />}
           </Stack.Screen>
           <Stack.Screen name="Profile" options={{ title: 'Profile' }}>
             {() => <ProfileScreen tokenStore={tokenStore} onSignedOut={() => setUser(null)} />}

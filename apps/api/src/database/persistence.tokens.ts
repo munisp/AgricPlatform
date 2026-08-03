@@ -147,3 +147,6 @@ export const SELLER_RATING_REPOSITORY = Symbol('SELLER_RATING_REPOSITORY');
 export const AUTH_SESSION_REPOSITORY = Symbol('AUTH_SESSION_REPOSITORY');
 export const FEATURE_FLAG_REPOSITORY = Symbol('FEATURE_FLAG_REPOSITORY');
 export const PROCESSED_EVENT_REPOSITORY = Symbol('PROCESSED_EVENT_REPOSITORY');
+
+// Wave B: analytics star-schema marts (analytics schema, migration 019).
+export const ANALYTICS_STAR_REPOSITORY = Symbol('ANALYTICS_STAR_REPOSITORY');

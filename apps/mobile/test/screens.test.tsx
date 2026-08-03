@@ -176,7 +176,14 @@ describe('HomeScreen', () => {
     });
     const renderer = await renderWithApi(
       api,
-      <HomeScreen onOpenCourses={() => {}} onOpenMarketplace={() => {}} onOpenProfile={() => {}} />
+      <HomeScreen
+        onOpenCourses={() => {}}
+        onOpenMarketplace={() => {}}
+        onOpenProfile={() => {}}
+        onOpenOrders={() => {}}
+        onOpenNotifications={() => {}}
+        onOpenLivestock={() => {}}
+      />
     );
     const text = screenText(renderer.root);
 

@@ -148,3 +148,62 @@ describe('ReturnsService state machine', () => {
     expect(events[0].payload).toMatchObject({ from: 'requested', to: 'approved' });
   });
 });
+
+describe('ReturnsService.listReturns party scoping (G2)', () => {
+  async function stackWithReturn() {
+    const stack = makeStack();
+    await fulfill(stack);
+    const request = await stack.service.requestReturn(
+      'order-buyer-cassava',
+      'user-buyer',
+      'Bags torn',
+      false,
+      buyer
+    );
+    return { stack, request };
+  }
+
+  it('non-admin without filters sees only their own returns', async () => {
+    const { stack, request } = await stackWithReturn();
+    // The buyer sees their return; an unrelated user sees nothing.
+    expect(await stack.service.listReturns({}, buyer)).toHaveLength(1);
+    expect((await stack.service.listReturns({}, buyer))[0].id).toBe(request.id);
+    expect(await stack.service.listReturns({}, outsider)).toHaveLength(0);
+  });
+
+  it('non-admin defaults to buyerId=self when only a status filter is given', async () => {
+    const { stack } = await stackWithReturn();
+    expect(await stack.service.listReturns({ status: 'requested' }, outsider)).toHaveLength(0);
+    expect(await stack.service.listReturns({ status: 'requested' }, buyer)).toHaveLength(1);
+  });
+
+  it('rejects a non-admin filtering by another users buyerId', async () => {
+    const { stack } = await stackWithReturn();
+    await expect(
+      stack.service.listReturns({ buyerId: 'user-buyer' }, outsider)
+    ).rejects.toThrowError(ForbiddenException);
+  });
+
+  it('rejects an orderId filter for an order the caller is not a party to', async () => {
+    const { stack } = await stackWithReturn();
+    await expect(
+      stack.service.listReturns({ orderId: 'order-buyer-cassava' }, outsider)
+    ).rejects.toThrowError(ForbiddenException);
+  });
+
+  it('lets order parties (buyer AND seller) list by orderId', async () => {
+    const { stack, request } = await stackWithReturn();
+    const asBuyer = await stack.service.listReturns({ orderId: 'order-buyer-cassava' }, buyer);
+    const asSeller = await stack.service.listReturns({ orderId: 'order-buyer-cassava' }, seller);
+    expect(asBuyer.map((r) => r.id)).toContain(request.id);
+    expect(asSeller.map((r) => r.id)).toContain(request.id);
+  });
+
+  it('admin sees all returns without scoping', async () => {
+    const { stack, request } = await stackWithReturn();
+    const all = await stack.service.listReturns({}, admin);
+    expect(all.map((r) => r.id)).toContain(request.id);
+    // Admin may also filter by any buyerId.
+    expect(await stack.service.listReturns({ buyerId: 'user-buyer' }, admin)).toHaveLength(1);
+  });
+});

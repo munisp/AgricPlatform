@@ -71,7 +71,8 @@ import {
   INBOUND_EVENT_REPOSITORY,
   RECOMMENDATION_FEEDBACK_REPOSITORY,
   ANALYTICS_MART_REPOSITORY,
-  WEBHOOK_DEDUPE_STORE
+  WEBHOOK_DEDUPE_STORE,
+  ANALYTICS_STAR_REPOSITORY
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
@@ -212,6 +213,8 @@ import {
 import { createInMemoryRecommendationFeedbackRepository } from './repositories/recommendation-feedback.repository.js';
 import { createInMemoryAnalyticsMartRepository } from './repositories/analytics-mart.repository.js';
 import { createPgAnalyticsMartRepository } from './repositories/analytics-mart.pg-repository.js';
+import { createInMemoryAnalyticsStarRepository } from './repositories/analytics-star.repository.js';
+import { createPgAnalyticsStarRepository } from './repositories/analytics-star.pg-repository.js';
 import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
 import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
 import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
@@ -892,6 +895,13 @@ import {
         pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
       inject: [PG_POOL]
     },
+    // Wave B: analytics star-schema marts (analytics schema, migration 019).
+    {
+      provide: ANALYTICS_STAR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsStarRepository(pool) : createInMemoryAnalyticsStarRepository(),
+      inject: [PG_POOL]
+    },
     // Wave P5d: partner API repositories (appended; see partner-api module).
     {
       provide: PARTNER_CLIENT_REPOSITORY,
@@ -1252,7 +1262,8 @@ import {
     SELLER_RATING_REPOSITORY,
     AUTH_SESSION_REPOSITORY,
     FEATURE_FLAG_REPOSITORY,
-    PROCESSED_EVENT_REPOSITORY
+    PROCESSED_EVENT_REPOSITORY,
+    ANALYTICS_STAR_REPOSITORY
   ]
 })
 export class DatabaseModule {}

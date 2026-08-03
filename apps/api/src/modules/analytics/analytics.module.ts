@@ -6,10 +6,13 @@ import { ProfilesModule } from '../profiles/profiles.module.js';
 import { AnalyticsController } from './analytics.controller.js';
 import { AnalyticsDepthService } from './analytics-depth.service.js';
 import { AnalyticsService } from './analytics.service.js';
+import { AnalyticsProjectorService } from './projector.service.js';
+import { AnalyticsStarService } from './star-marts.service.js';
 
 @Module({
   imports: [ProfilesModule, LearningModule, OpportunitiesModule, MarketplaceModule],
   controllers: [AnalyticsController],
-  providers: [AnalyticsService, AnalyticsDepthService]
+  providers: [AnalyticsService, AnalyticsDepthService, AnalyticsProjectorService, AnalyticsStarService],
+  exports: [AnalyticsProjectorService, AnalyticsStarService]
 })
 export class AnalyticsModule {}

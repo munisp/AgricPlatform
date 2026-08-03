@@ -30,7 +30,7 @@ describe('BuyerGroupsService', () => {
     const byAgent = await service.createGroup({ name: 'Processors' }, agent);
     expect(byAdmin.isActive).toBe(true);
     expect(byAgent.id).toMatch(/^bgroup-/);
-    expect(await service.listGroups()).toHaveLength(2);
+    expect(await service.listGroups(admin)).toHaveLength(2);
   });
 
   it('rejects group management by ordinary buyers', async () => {
@@ -61,9 +61,9 @@ describe('BuyerGroupsService', () => {
     const group = await service.createGroup({ name: 'Cooperatives' }, admin);
     await service.addMember(group.id, 'user-buyer', admin);
     await expect(service.addMember(group.id, 'user-buyer', admin)).rejects.toThrowError(ConflictException);
-    expect(await service.listMembers(group.id)).toHaveLength(1);
+    expect(await service.listMembers(group.id, admin)).toHaveLength(1);
     await service.removeMember(group.id, 'user-buyer', agent);
-    expect(await service.listMembers(group.id)).toHaveLength(0);
+    expect(await service.listMembers(group.id, admin)).toHaveLength(0);
     await expect(service.removeMember(group.id, 'user-buyer', admin)).rejects.toThrowError(NotFoundException);
   });
 
@@ -81,7 +81,7 @@ describe('BuyerGroupsService', () => {
   it('404s membership ops on unknown groups', async () => {
     const { service } = makeService();
     await expect(service.addMember('bgroup-missing', 'user-buyer', admin)).rejects.toThrowError(NotFoundException);
-    await expect(service.listMembers('bgroup-missing')).rejects.toThrowError(NotFoundException);
+    await expect(service.listMembers('bgroup-missing', admin)).rejects.toThrowError(NotFoundException);
   });
 
   it('publishes membership events', async () => {
@@ -95,5 +95,44 @@ describe('BuyerGroupsService', () => {
       'marketplace.buyer_group.member_added',
       'marketplace.buyer_group.member_removed'
     ]);
+  });
+});
+
+describe('BuyerGroupsService read scoping (G12)', () => {
+  it('managers see all groups; regular users see only groups they belong to', async () => {
+    const { service } = makeService();
+    const mine = await service.createGroup({ name: 'Cooperatives' }, admin);
+    const other = await service.createGroup({ name: 'Processors' }, admin);
+    await service.addMember(mine.id, 'user-buyer', admin);
+
+    // Managers (admin / chapter_lead / partner): full directory.
+    expect(await service.listGroups(admin)).toHaveLength(2);
+    expect(await service.listGroups(agent)).toHaveLength(2);
+
+    // Regular user: only their own groups; a non-member sees nothing.
+    const buyerGroups = await service.listGroups(buyer);
+    expect(buyerGroups.map((g) => g.id)).toEqual([mine.id]);
+    expect(await service.listGroups({ id: 'user-hassan', roles: ['buyer'] })).toHaveLength(0);
+    void other;
+  });
+
+  it('members may read their own group roster; outsiders and other members get 403', async () => {
+    const { service } = makeService();
+    const group = await service.createGroup({ name: 'Cooperatives' }, admin);
+    const other = await service.createGroup({ name: 'Processors' }, admin);
+    await service.addMember(group.id, 'user-buyer', admin);
+    await service.addMember(other.id, 'user-hassan', admin);
+
+    // Member reads their own roster; manager reads any roster.
+    expect(await service.listMembers(group.id, buyer)).toHaveLength(1);
+    expect(await service.listMembers(group.id, agent)).toHaveLength(1);
+
+    // A user belonging to a DIFFERENT group is still an outsider here.
+    await expect(
+      service.listMembers(group.id, { id: 'user-hassan', roles: ['buyer'] })
+    ).rejects.toThrowError(ForbiddenException);
+    await expect(
+      service.listMembers(other.id, buyer)
+    ).rejects.toThrowError(ForbiddenException);
   });
 });

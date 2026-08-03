@@ -119,3 +119,19 @@ export async function downloadMartExport(
     fileName
   );
 }
+
+/**
+ * Downloads `GET /analytics/export/:fact.csv?from&to` (Wave B lakehouse
+ * handoff — star fact table CSV mirroring migration 019 columns 1:1).
+ * Admin or regulator; audit-logged on the API.
+ */
+export async function downloadFactExport(
+  fact: string,
+  range: { from?: string; to?: string } = {}
+): Promise<string> {
+  return downloadAttachment(
+    `/analytics/export/${encodeURIComponent(fact)}.csv`,
+    { from: range.from, to: range.to },
+    `${fact}.csv`
+  );
+}
