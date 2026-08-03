@@ -3,7 +3,9 @@ import type {
   Animal,
   ApiListResponse,
   Course,
+  CreateFarmPlotInput,
   DraftOrder,
+  FarmPlot,
   HealthRecall,
   MarketplaceListing,
   MyPathwayEnrolmentSummary,
@@ -193,4 +195,27 @@ export function listOpportunities(
 
 export function fetchWeather(client: ApiClient, state: string): Promise<{ data: WeatherSnapshot }> {
   return client.apiFetch(`/advisory/weather/${encodeURIComponent(state)}`);
+}
+
+/* -------------------------------- farms --------------------------------- */
+
+/**
+ * Own farm plots (GET /farms/plots — owner-scoped server-side, so the
+ * caller only ever receives their own). Plain `{ data: FarmPlot[] }`.
+ */
+export function listMyFarmPlots(client: ApiClient): Promise<{ data: FarmPlot[] }> {
+  return client.apiFetch('/farms/plots');
+}
+
+/**
+ * Direct plot creation. The capture screen normally writes through the
+ * offline queue (src/offline/queue.ts) instead — this wrapper is for the
+ * queue's flush sender and online-first callers.
+ */
+export function createFarmPlot(
+  client: ApiClient,
+  input: CreateFarmPlotInput,
+  idempotencyKey?: string
+): Promise<{ data: FarmPlot }> {
+  return client.apiFetch('/farms/plots', { method: 'POST', body: input, idempotencyKey });
 }

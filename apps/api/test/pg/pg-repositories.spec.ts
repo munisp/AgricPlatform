@@ -25,6 +25,12 @@ import {
   createPgDataSubjectRequestRepository,
   createPgRetentionPolicyRepository
 } from '../../src/database/repositories/compliance.pg-repository.js';
+import {
+  createPgCropPlantingRepository,
+  createPgFarmExpenseRepository,
+  createPgFarmPlotRepository,
+  createPgHarvestRecordRepository
+} from '../../src/database/repositories/farms.pg-repository.js';
 import { contractCases } from '../contract/cases.js';
 import { runRepositoryContract } from '../contract/repository.contract.js';
 
@@ -42,6 +48,11 @@ const pool = process.env.DATABASE_URL
   : null;
 
 const CONTRACT_TABLES = [
+  // Wave FARMS: children before parents (FK order), then the plots table.
+  'farms.harvest_records',
+  'farms.crop_plantings',
+  'farms.farm_expenses',
+  'farms.farm_plots',
   'opportunities.applications',
   'opportunities.opportunities',
   'marketplace.reviews',
@@ -89,6 +100,22 @@ describePg('pg repository contracts', () => {
        VALUES ('contract-parent-listing', 'contract-parent-seller', 'produce', 'Contract parent', 100, 'tonnes', 1000)
        ON CONFLICT (id) DO NOTHING`
     );
+    // Wave FARMS FK parents: owner user → plot → plantings.
+    await pool!.query(
+      `INSERT INTO identity.users (id, full_name) VALUES ('contract-parent-farmer', 'Contract parent')
+       ON CONFLICT (id) DO NOTHING`
+    );
+    await pool!.query(
+      `INSERT INTO farms.farm_plots (id, owner_user_id, name, state, lga, centroid_lat, centroid_long, size_hectares)
+       VALUES ('contract-parent-plot', 'contract-parent-farmer', 'Contract parent', 'Kaduna', 'Zaria', 11.08, 7.72, 2.5)
+       ON CONFLICT (id) DO NOTHING`
+    );
+    await pool!.query(
+      `INSERT INTO farms.crop_plantings (id, plot_id, crop, season, planted_at)
+       VALUES ('contract-parent-planting', 'contract-parent-plot', 'Maize', '2025-wet', '2025-05-15T00:00:00Z'),
+              ('contract-parent-planting-2', 'contract-parent-plot', 'Cassava', '2025-wet', '2025-05-16T00:00:00Z')
+       ON CONFLICT (id) DO NOTHING`
+    );
   });
 
   afterEach(async () => {
@@ -118,6 +145,14 @@ describePg('pg repository contracts', () => {
         return createPgOrderRepository(pool);
       case 'consent':
         return createPgConsentRepository(pool);
+      case 'farmPlot':
+        return createPgFarmPlotRepository(pool);
+      case 'cropPlanting':
+        return createPgCropPlantingRepository(pool);
+      case 'harvestRecord':
+        return createPgHarvestRecordRepository(pool);
+      case 'farmExpense':
+        return createPgFarmExpenseRepository(pool);
       default:
         throw new Error(`unknown contract repo ${name}`);
     }

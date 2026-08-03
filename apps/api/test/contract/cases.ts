@@ -3,8 +3,12 @@ import type {
   Certificate,
   ConsentRecord,
   Course,
+  CropPlanting,
   Enrolment,
+  FarmExpense,
+  FarmPlot,
   ForumTopic,
+  HarvestRecord,
   MarketplaceListing,
   Opportunity,
   Order,
@@ -16,6 +20,12 @@ import type { CertificateCriteria } from '../../src/database/repositories/certif
 import type { ConsentCriteria } from '../../src/database/repositories/consent.repository.js';
 import type { CourseCriteria } from '../../src/database/repositories/course.repository.js';
 import type { EnrolmentCriteria } from '../../src/database/repositories/enrolment.repository.js';
+import type {
+  CropPlantingCriteria,
+  FarmExpenseCriteria,
+  FarmPlotCriteria,
+  HarvestRecordCriteria
+} from '../../src/database/repositories/farms.repository.js';
 import type { ForumTopicCriteria } from '../../src/database/repositories/forum-topic.repository.js';
 import type { ListingCriteria } from '../../src/database/repositories/listing.repository.js';
 import type { OpportunityCriteria } from '../../src/database/repositories/opportunity.repository.js';
@@ -289,6 +299,123 @@ export function contractCases(
       matchCriteria: { userId: 'contract-user-1' } satisfies ConsentCriteria,
       patch: { granted: false, revokedAt: new Date().toISOString() },
       assertPatched: (updated: ConsentRecord) => expect(updated.granted).toBe(false)
+    },
+    // Wave FARMS: farms & crop-production (farms schema, migration 022).
+    // FK parents ('contract-parent-farmer' / '-plot' / '-planting[-2]') are
+    // inserted by the pg suite's beforeAll; in-memory needs no parents.
+    {
+      name: 'farmPlot',
+      make: () => bind('farmPlot') as any,
+      primary: (): FarmPlot => ({
+        id: 'contract-plot-1',
+        ownerUserId: 'contract-parent-farmer',
+        name: 'Contract Plot One',
+        state: 'Kaduna',
+        lga: 'Zaria',
+        centroidLat: 11.08,
+        centroidLong: 7.72,
+        sizeHectares: 2.5,
+        createdAt: '2025-05-01T08:00:00.000Z',
+        updatedAt: '2025-05-01T08:00:00.000Z',
+        version: 1
+      }),
+      secondary: (): FarmPlot => ({
+        id: 'contract-plot-2',
+        ownerUserId: 'contract-parent-farmer',
+        name: 'Contract Plot Two',
+        state: 'Kano',
+        lga: 'Kano Municipal',
+        centroidLat: 12.0,
+        centroidLong: 8.52,
+        sizeHectares: 1.25,
+        createdAt: '2025-05-02T08:00:00.000Z',
+        updatedAt: '2025-05-02T08:00:00.000Z',
+        version: 1
+      }),
+      matchCriteria: { state: 'Kaduna' } satisfies FarmPlotCriteria,
+      patch: { name: 'Renamed Plot', version: 2 },
+      assertPatched: (updated: FarmPlot) => {
+        expect(updated.name).toBe('Renamed Plot');
+        expect(updated.version).toBe(2);
+      }
+    },
+    {
+      name: 'cropPlanting',
+      make: () => bind('cropPlanting') as any,
+      primary: (): CropPlanting => ({
+        id: 'contract-planting-1',
+        plotId: 'contract-parent-plot',
+        crop: 'Maize',
+        season: '2025-wet',
+        plantedAt: '2025-05-15T00:00:00.000Z',
+        status: 'growing',
+        createdAt: '2025-05-15T08:00:00.000Z',
+        updatedAt: '2025-05-15T08:00:00.000Z',
+        version: 1
+      }),
+      secondary: (): CropPlanting => ({
+        id: 'contract-planting-2',
+        plotId: 'contract-parent-plot',
+        crop: 'Cassava',
+        season: '2025-wet',
+        plantedAt: '2025-05-16T00:00:00.000Z',
+        status: 'growing',
+        createdAt: '2025-05-16T08:00:00.000Z',
+        updatedAt: '2025-05-16T08:00:00.000Z',
+        version: 1
+      }),
+      matchCriteria: { crop: 'Maize' } satisfies CropPlantingCriteria,
+      patch: { status: 'failed' },
+      assertPatched: (updated: CropPlanting) => expect(updated.status).toBe('failed')
+    },
+    {
+      name: 'harvestRecord',
+      make: () => bind('harvestRecord') as any,
+      primary: (): HarvestRecord => ({
+        id: 'contract-harvest-1',
+        plantingId: 'contract-parent-planting',
+        harvestedAt: '2025-09-20T00:00:00.000Z',
+        quantity: 40,
+        unit: 'bags',
+        createdAt: '2025-09-20T10:00:00.000Z'
+      }),
+      secondary: (): HarvestRecord => ({
+        id: 'contract-harvest-2',
+        plantingId: 'contract-parent-planting-2',
+        harvestedAt: '2025-09-21T00:00:00.000Z',
+        quantity: 1200,
+        unit: 'kg',
+        createdAt: '2025-09-21T10:00:00.000Z'
+      }),
+      matchCriteria: { plantingId: 'contract-parent-planting' } satisfies HarvestRecordCriteria,
+      patch: { quantity: 42, qualityGrade: 'A' },
+      assertPatched: (updated: HarvestRecord) => {
+        expect(updated.quantity).toBe(42);
+        expect(updated.qualityGrade).toBe('A');
+      }
+    },
+    {
+      name: 'farmExpense',
+      make: () => bind('farmExpense') as any,
+      primary: (): FarmExpense => ({
+        id: 'contract-expense-1',
+        plotId: 'contract-parent-plot',
+        category: 'seeds',
+        amountKobo: 150000,
+        incurredAt: '2025-05-10T00:00:00.000Z',
+        createdAt: '2025-05-10T09:00:00.000Z'
+      }),
+      secondary: (): FarmExpense => ({
+        id: 'contract-expense-2',
+        plotId: 'contract-parent-plot',
+        category: 'labour',
+        amountKobo: 320000,
+        incurredAt: '2025-06-01T00:00:00.000Z',
+        createdAt: '2025-06-01T09:00:00.000Z'
+      }),
+      matchCriteria: { category: 'seeds' } satisfies FarmExpenseCriteria,
+      patch: { amountKobo: 175000 },
+      assertPatched: (updated: FarmExpense) => expect(updated.amountKobo).toBe(175000)
     }
   ];
   return cases as Array<RepositoryContractCase<never, never>>;

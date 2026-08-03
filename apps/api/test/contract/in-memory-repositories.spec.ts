@@ -3,6 +3,12 @@ import { InMemoryCertificateRepository } from '../../src/database/repositories/c
 import { InMemoryConsentRepository } from '../../src/database/repositories/consent.repository.js';
 import { InMemoryCourseRepository } from '../../src/database/repositories/course.repository.js';
 import { InMemoryEnrolmentRepository } from '../../src/database/repositories/enrolment.repository.js';
+import {
+  InMemoryCropPlantingRepository,
+  InMemoryFarmExpenseRepository,
+  InMemoryFarmPlotRepository,
+  InMemoryHarvestRecordRepository
+} from '../../src/database/repositories/farms.repository.js';
 import { InMemoryForumTopicRepository } from '../../src/database/repositories/forum-topic.repository.js';
 import { InMemoryListingRepository } from '../../src/database/repositories/listing.repository.js';
 import { InMemoryOpportunityRepository } from '../../src/database/repositories/opportunity.repository.js';
@@ -40,6 +46,14 @@ describe('in-memory repository contracts', () => {
         return new InMemoryOrderRepository();
       case 'consent':
         return new InMemoryConsentRepository();
+      case 'farmPlot':
+        return new InMemoryFarmPlotRepository();
+      case 'cropPlanting':
+        return new InMemoryCropPlantingRepository();
+      case 'harvestRecord':
+        return new InMemoryHarvestRecordRepository();
+      case 'farmExpense':
+        return new InMemoryFarmExpenseRepository();
       default:
         throw new Error(`unknown contract repo ${name}`);
     }

@@ -39,7 +39,8 @@ export function HomeScreen({
   onOpenProfile,
   onOpenOrders,
   onOpenNotifications,
-  onOpenLivestock
+  onOpenLivestock,
+  onOpenFarms
 }: {
   state?: string;
   onOpenCourses: () => void;
@@ -48,6 +49,8 @@ export function HomeScreen({
   onOpenOrders: () => void;
   onOpenNotifications: () => void;
   onOpenLivestock: () => void;
+  /** Farms wave: plot list/capture entry (optional until all callers wire it). */
+  onOpenFarms?: () => void;
 }) {
   const client = useApiClient();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -181,6 +184,7 @@ export function HomeScreen({
         <PrimaryButton label="My orders" onPress={onOpenOrders} />
         <PrimaryButton label="Notifications" onPress={onOpenNotifications} />
         <PrimaryButton label="My livestock" onPress={onOpenLivestock} />
+        {onOpenFarms ? <PrimaryButton label="My plots" onPress={onOpenFarms} /> : null}
         <PrimaryButton label="View profile" onPress={onOpenProfile} />
       </Card>
     </ScrollView>
