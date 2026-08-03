@@ -3539,3 +3539,139 @@ export function fetchShipmentDds(shipmentId: string): Promise<{ data: EudrDds }>
 export function verifyShipmentDds(shipmentId: string): Promise<{ data: ShipmentVerification }> {
   return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/verify`);
 }
+
+/* -------- mechanization marketplace (wave-mechanization) -------- */
+
+import type {
+  EquipmentBooking,
+  EquipmentListing,
+  EquipmentType,
+  MechBookingStatus,
+  OperatorVerificationStatus,
+  OwnerUtilizationStats
+} from '@agric-platform/shared';
+
+export function listEquipmentListings(params: {
+  type?: EquipmentType;
+  h3Cell?: string;
+  lat?: number;
+  long?: number;
+  availableFrom?: string;
+  availableTo?: string;
+} = {}): Promise<{ data: EquipmentListing[] }> {
+  return apiFetch('/mechanization/listings', { query: { ...params } });
+}
+
+export function fetchEquipmentListing(id: string): Promise<{ data: EquipmentListing }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}`);
+}
+
+export function createEquipmentListing(input: {
+  ownerType: EquipmentListing['ownerType'];
+  type: EquipmentType;
+  title: string;
+  description?: string;
+  specs?: Record<string, unknown>;
+  baseLat: number;
+  baseLong: number;
+  serviceAreaResolution: number;
+  serviceAreaRing: number;
+  rates: EquipmentListing['rates'];
+  availability: { start: string; end: string }[];
+  operatorLicenseRef?: string;
+}): Promise<{ data: EquipmentListing }> {
+  return apiFetch('/mechanization/listings', { method: 'POST', body: input });
+}
+
+export function listMyEquipmentListings(): Promise<{ data: EquipmentListing[] }> {
+  return apiFetch('/mechanization/listings/mine');
+}
+
+export function setEquipmentListingStatus(
+  id: string,
+  status: EquipmentListing['status']
+): Promise<{ data: EquipmentListing }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}/status`, {
+    method: 'POST',
+    body: { status }
+  });
+}
+
+export function requestEquipmentBooking(
+  listingId: string,
+  input: {
+    plotId?: string;
+    plotLat: number;
+    plotLong: number;
+    areaHa: number;
+    estimatedHours?: number;
+    windowStart: string;
+    windowEnd: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(listingId)}/bookings`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Own bookings (farmer), newest first. Plain `{ data: T[] }` envelope. */
+export function listMyEquipmentBookings(): Promise<{ data: EquipmentBooking[] }> {
+  return apiFetch('/mechanization/bookings/mine');
+}
+
+/** Owner booking queue. Plain `{ data: T[] }` envelope. */
+export function listOwnerEquipmentBookings(params: {
+  status?: MechBookingStatus;
+} = {}): Promise<{ data: EquipmentBooking[] }> {
+  return apiFetch('/mechanization/bookings/queue', { query: { ...params } });
+}
+
+export function fetchEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}`);
+}
+
+export function quoteEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/quote`, { method: 'POST' });
+}
+
+export function confirmEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
+}
+
+export function startEquipmentService(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/start`, { method: 'POST' });
+}
+
+export function completeEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/complete`, { method: 'POST' });
+}
+
+export function cancelEquipmentBooking(
+  id: string,
+  reason?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+export function rateEquipmentBooking(
+  id: string,
+  rating: number,
+  comment?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/rate`, {
+    method: 'POST',
+    body: { rating, comment }
+  });
+}
+
+export function fetchOwnerUtilization(): Promise<{ data: OwnerUtilizationStats }> {
+  return apiFetch('/mechanization/owner/stats');
+}
+
+export type { EquipmentBooking, EquipmentListing, MechBookingStatus, OperatorVerificationStatus };
