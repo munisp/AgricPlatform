@@ -64,6 +64,8 @@ import { VoiceModule } from './modules/voice/voice.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
+// Wave AGENTBANK (additive): agent banking.
+import { AgentBankingModule } from './modules/agent-banking/agent-banking.module.js';
 
 @Module({
   imports: [
@@ -142,7 +144,9 @@ import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js
     // Wave FABRIC workflow registrations (loan disbursement port proof) — appended to minimise merge conflicts.
     WorkflowsModule,
     // Wave VOICE voice agronomist (IVR/USSD RAG advisory + agent escalation) — appended to minimise merge conflicts.
-    VoiceModule
+    VoiceModule,
+    // Wave AGENTBANK agent banking (float, cash-in/out, signed vouchers) — appended to minimise merge conflicts.
+    AgentBankingModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

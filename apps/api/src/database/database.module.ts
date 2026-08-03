@@ -571,6 +571,25 @@ import {
 } from './repositories/credit-suite.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// Wave AGENTBANK: agent banking persistence (additive).
+import {
+  AGENT_BANKING_AGENT_REPOSITORY,
+  AGENT_FLOAT_TOPUP_REPOSITORY,
+  AGENT_TRANSACTION_REPOSITORY,
+  AGENT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentBankingAgentRepository,
+  createInMemoryAgentFloatTopUpRepository,
+  createInMemoryAgentTransactionRepository,
+  createInMemoryAgentVoucherRepository
+} from './repositories/agent-banking.repository.js';
+import {
+  createPgAgentBankingAgentRepository,
+  createPgAgentFloatTopUpRepository,
+  createPgAgentTransactionRepository,
+  createPgAgentVoucherRepository
+} from './repositories/agent-banking.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1457,6 +1476,31 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
       inject: [PG_POOL]
+    },
+    // Wave AGENTBANK (additive): agent banking (float, top-ups, vouchers, tx log).
+    {
+      provide: AGENT_BANKING_AGENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentBankingAgentRepository(pool) : createInMemoryAgentBankingAgentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_FLOAT_TOPUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentFloatTopUpRepository(pool) : createInMemoryAgentFloatTopUpRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_VOUCHER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentVoucherRepository(pool) : createInMemoryAgentVoucherRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_TRANSACTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1598,7 +1642,11 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
     VOICE_SESSION_REPOSITORY,
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
-    GEO_CREDIT_SHADOW_REPOSITORY
+    GEO_CREDIT_SHADOW_REPOSITORY,
+    AGENT_BANKING_AGENT_REPOSITORY,
+    AGENT_FLOAT_TOPUP_REPOSITORY,
+    AGENT_VOUCHER_REPOSITORY,
+    AGENT_TRANSACTION_REPOSITORY
   ]
 })
 export class DatabaseModule {}
