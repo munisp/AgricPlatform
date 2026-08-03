@@ -4,6 +4,7 @@ import { IntegrationsModule } from '../integrations/integrations.module.js';
 import { LearningModule } from '../learning/learning.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
 import { ProfilesModule } from '../profiles/profiles.module.js';
+import { SyncModule } from '../sync/sync.module.js';
 import { DeliveryRetryService } from './delivery-retry.service.js';
 import { InboundConversationsService } from './inbound-conversations.service.js';
 import { NotificationsStreamController } from './notifications-stream.controller.js';
@@ -17,7 +18,10 @@ import { NotificationsService } from './notifications.service.js';
     LearningModule,
     MarketplaceModule,
     // Wave P6b: listing location state comes from the member profile.
-    ProfilesModule
+    ProfilesModule,
+    // Wave SYNCSRV: SyncModule provides the (optional) version-bump hook
+    // for message writes. SyncModule imports no feature modules, no cycle.
+    SyncModule
   ],
   controllers: [NotificationsController, NotificationsStreamController],
   providers: [NotificationsService, InboundConversationsService, DeliveryRetryService],

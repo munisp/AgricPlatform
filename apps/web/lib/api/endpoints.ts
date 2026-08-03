@@ -2569,3 +2569,68 @@ export function requestDataErasure(): Promise<{ data: DataSubjectRequest }> {
 export function listMyDataSubjectRequests(): Promise<{ data: DataSubjectRequest[] }> {
   return apiFetch('/compliance/dsr/mine');
 }
+
+/* --------------------- sync protocol v1 (Wave SYNCSRV) -------------------- */
+/* Contract: docs/sync-protocol.md. All operations are scoped to the caller. */
+
+export type SyncPushOp = 'upsert' | 'delete';
+
+export interface SyncPushItem {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  baseVersion: number;
+  op: SyncPushOp;
+  payload?: Record<string, unknown>;
+}
+
+export interface SyncPushItemResult {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  status: 'applied' | 'conflict' | 'error';
+  newVersion?: number;
+  serverVersion?: number;
+  serverPayload?: unknown;
+  error?: string;
+}
+
+export interface SyncPullItem {
+  entityId: string;
+  version: number;
+  deleted: boolean;
+  payload: unknown;
+}
+
+export interface SyncPullPage {
+  entity: string;
+  items: SyncPullItem[];
+  /** Monotonic per (user, entity); pass back as `since` on the next pull. */
+  cursor: number;
+  hasMore: boolean;
+}
+
+export interface SyncStatusEntry {
+  entity: string;
+  serverMaxVersion: number;
+  cursor: number;
+}
+
+/** Push a batch of offline mutations (1–200 items; outcomes are per item). */
+export function syncPush(items: SyncPushItem[]): Promise<{ data: { results: SyncPushItemResult[] } }> {
+  return apiFetch('/sync/push', { method: 'POST', body: { items } });
+}
+
+/** Pull caller-scoped changes since a cursor (version-ordered, tombstoned). */
+export function syncPull(params: {
+  entity: string;
+  since?: number;
+  limit?: number;
+}): Promise<{ data: SyncPullPage }> {
+  return apiFetch('/sync/pull', { query: { ...params } });
+}
+
+/** Per-entity server max version + recorded cursor for the caller. */
+export function syncStatus(): Promise<{ data: SyncStatusEntry[] }> {
+  return apiFetch('/sync/status');
+}

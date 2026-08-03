@@ -30,6 +30,10 @@ import type {
 import type { SalesChannel, SellerRating } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { OrderReview } from '../../database/seed-data.js';
+import {
+  SYNC_ENTITY_MARKETPLACE_LISTING
+} from '../sync/sync-proof-entities.js';
+import type { SyncVersioningService } from '../sync/sync-versioning.service.js';
 import { EscrowService } from './escrow.service.js';
 import { InvoiceService } from './invoice.service.js';
 
@@ -119,7 +123,10 @@ export class MarketplaceService {
     @Optional() @Inject(SELLER_RATING_REPOSITORY) private readonly sellerRatings?: SellerRatingRepository,
     // Wave M order_extensions side table powers the /orders?channel= filter
     // (G19; optional so bare service constructions in tests keep working).
-    @Optional() @Inject(ORDER_EXTENSION_REPOSITORY) private readonly extensions?: OrderExtensionRepository
+    @Optional() @Inject(ORDER_EXTENSION_REPOSITORY) private readonly extensions?: OrderExtensionRepository,
+    // Wave SYNCSRV: sync version bumps on listing writes (optional so bare
+    // service constructions in tests keep working; additive + non-fatal).
+    @Optional() private readonly syncVersioning?: SyncVersioningService
   ) {}
 
   async listListings(
@@ -178,6 +185,12 @@ export class MarketplaceService {
     };
     const created = await this.listings.create(listing);
     await this.events.publish('marketplace.listing.created', { listingId: created.id }, input.sellerId);
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_MARKETPLACE_LISTING,
+      entityId: created.id,
+      ownerId: created.sellerId,
+      actorId: input.sellerId
+    });
     return created;
   }
 
@@ -188,6 +201,12 @@ export class MarketplaceService {
   ): Promise<MarketplaceListing> {
     const updated = await this.listings.update(id, patch);
     await this.events.publish('marketplace.listing.updated', { listingId: id }, actorId);
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_MARKETPLACE_LISTING,
+      entityId: id,
+      ownerId: updated.sellerId,
+      actorId
+    });
     return updated;
   }
 

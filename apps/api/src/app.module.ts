@@ -50,6 +50,8 @@ import { REDIS_CLIENT } from './database/persistence.tokens.js';
 import { CommerceModule } from './modules/commerce/commerce.module.js';
 // Wave COMP (additive): NDPA 2023 compliance tooling.
 import { ComplianceModule } from './modules/compliance/compliance.module.js';
+// Wave SYNCSRV (additive): record-level offline sync protocol v1.
+import { SyncModule } from './modules/sync/sync.module.js';
 
 @Module({
   imports: [
@@ -112,7 +114,9 @@ import { ComplianceModule } from './modules/compliance/compliance.module.js';
     // Wave P platform foundation — appended to minimise merge conflicts.
     FeatureFlagsModule,
     // Wave COMP NDPA 2023 compliance tooling — appended to minimise merge conflicts.
-    ComplianceModule
+    ComplianceModule,
+    // Wave SYNCSRV record-level offline sync protocol v1 — appended to minimise merge conflicts.
+    SyncModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
