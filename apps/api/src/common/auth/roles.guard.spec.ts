@@ -228,4 +228,34 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     other.request.query = { 'x-user-id': 'user-admin' };
     await expect(other.activate()).rejects.toBeInstanceOf(UnauthorizedException);
   });
+
+  it('accepts the enumerator role from a bearer token for enumerator routes', async () => {
+    const { activate, request } = makeGuard(['enumerator']);
+    // Subject unknown to the user repository so the identity is synthesised
+    // from the verified token claims.
+    request.headers['authorization'] = `Bearer ${await sign(
+      { realm_access: { roles: ['enumerator'] } },
+      { subject: 'user-keycloak-enumerator' }
+    )}`;
+    await expect(activate()).resolves.toBe(true);
+  });
+
+  it('enumerator bearer token does not satisfy admin/chapter_lead routes', async () => {
+    for (const required of [['admin'] as UserRole[], ['admin', 'chapter_lead'] as UserRole[]]) {
+      const { activate, request } = makeGuard(required);
+      request.headers['authorization'] = `Bearer ${await sign(
+        { realm_access: { roles: ['enumerator'] } },
+        { subject: 'user-enumerator' }
+      )}`;
+      await expect(activate()).rejects.toBeInstanceOf(ForbiddenException);
+    }
+  });
+
+  it('honours the seeded enumerator via the development header', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const { activate, request } = makeGuard(['enumerator']);
+    request.headers['x-user-id'] = 'user-enumerator';
+    await expect(activate()).resolves.toBe(true);
+  });
 });
