@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useAppState } from '@/lib/app-state';
 import { AutoBadge } from '@/components/ui';
+import { SyncBadge } from '@/components/sync-badge';
 
 const PENDING_STATUSES = new Set(['queued', 'failed']);
 
@@ -89,6 +90,9 @@ export function QueueList() {
           Clear local queue
         </button>
       </div>
+      {/* Record-level sync status (notifications/listings cache) — separate
+          from the request queue above. */}
+      <SyncBadge />
     </div>
   );
 }

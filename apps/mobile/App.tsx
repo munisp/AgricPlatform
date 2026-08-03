@@ -5,6 +5,7 @@ import { createApiClient } from './src/api/client';
 import { ApiProvider } from './src/api/context';
 import { createInMemoryTokenStore, type TokenStore } from './src/api/token-store';
 import { API_BASE_URL } from './src/config';
+import { SyncProvider } from './src/sync/context';
 import type { User } from './src/api/types';
 import { AgentQueueScreen } from './src/screens/AgentQueueScreen';
 import { CourseDetailScreen } from './src/screens/CourseDetailScreen';
@@ -60,7 +61,10 @@ export default function App() {
 
   return (
     <ApiProvider client={client}>
-      <NavigationContainer>
+      {/* One shared record-level sync store (in-memory persistence until the
+          AsyncStorage adapter lands — see src/sync/context.tsx). */}
+      <SyncProvider>
+        <NavigationContainer>
         <Stack.Navigator initialRouteName={user ? 'Home' : 'Login'}>
           <Stack.Screen name="Login" options={{ title: 'Sign in' }}>
             {() => <LoginScreen tokenStore={tokenStore} onLoggedIn={setUser} />}
@@ -125,7 +129,8 @@ export default function App() {
             {() => <ProfileScreen tokenStore={tokenStore} onSignedOut={() => setUser(null)} />}
           </Stack.Screen>
         </Stack.Navigator>
-      </NavigationContainer>
+        </NavigationContainer>
+      </SyncProvider>
     </ApiProvider>
   );
 }
