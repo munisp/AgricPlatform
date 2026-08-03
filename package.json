@@ -17,6 +17,10 @@
     "validate": "npm run typecheck && npm run lint && npm run lint:sql && npm run test && npm run build",
     "lint:sql": "node scripts/lint-migrations.mjs",
     "sweep:outbox": "node scripts/sweep-outbox.mjs",
+    "backup:db": "node scripts/backup-db.mjs",
+    "verify:restore": "node scripts/verify-restore.mjs",
+    "verify:providers": "node scripts/verify-providers.mjs",
+    "verify:deployment": "node scripts/verify-deployment.mjs",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "audit:media": "node scripts/audit-media.mjs"
   },
