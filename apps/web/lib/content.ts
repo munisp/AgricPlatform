@@ -22,6 +22,11 @@ import type {
   DiseaseMapEntry,
   DonorDisbursement,
   ExportDocument,
+  CropPlanting,
+  FarmExpense,
+  FarmPlot,
+  FarmSummary,
+  HarvestRecord,
   ForumTopic,
   InsuranceClaim,
   InsurancePolicy,
@@ -1153,3 +1158,122 @@ export const demoReturnRequests: ReturnRequest[] = [
     updatedAt: '2026-08-01T11:00:00.000Z'
   }
 ];
+
+/* ========================================================================
+ * Farms & crop-production (farms wave) — offline fallbacks only; live data
+ * comes from GET /api/v1/farms/*.
+ * ====================================================================== */
+
+export const demoFarmPlots: FarmPlot[] = [
+  {
+    id: 'plot-demo-zaria-north',
+    ownerUserId: 'user-adamu',
+    name: 'Zaria North Plot',
+    state: 'Kaduna',
+    lga: 'Zaria',
+    centroidLat: 11.0855,
+    centroidLong: 7.7199,
+    boundaryGeojson: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [7.7199, 11.0855],
+          [7.7219, 11.0855],
+          [7.7219, 11.0875],
+          [7.7199, 11.0875],
+          [7.7199, 11.0855]
+        ]
+      ]
+    },
+    sizeHectares: 2.5,
+    soilType: 'loamy',
+    createdAt: '2026-04-12T08:00:00.000Z',
+    updatedAt: '2026-07-18T09:30:00.000Z',
+    version: 3,
+    clientId: 'mobile-capture-042'
+  },
+  {
+    id: 'plot-demo-samaru',
+    ownerUserId: 'user-adamu',
+    name: 'Samaru Cassava Field',
+    state: 'Kaduna',
+    lga: 'Sabon Gari',
+    centroidLat: 11.1701,
+    centroidLong: 7.6275,
+    sizeHectares: 1.75,
+    soilType: 'sandy',
+    createdAt: '2026-05-03T07:30:00.000Z',
+    updatedAt: '2026-05-03T07:30:00.000Z',
+    version: 1
+  }
+];
+
+export const demoCropPlantings: CropPlanting[] = [
+  {
+    id: 'planting-demo-maize',
+    plotId: 'plot-demo-zaria-north',
+    crop: 'Maize',
+    variety: 'Oba Super 2',
+    season: '2026-wet',
+    plantedAt: '2026-05-15T00:00:00.000Z',
+    expectedHarvestAt: '2026-09-15T00:00:00.000Z',
+    status: 'growing',
+    createdAt: '2026-05-15T08:00:00.000Z',
+    updatedAt: '2026-05-15T08:00:00.000Z',
+    version: 1
+  },
+  {
+    id: 'planting-demo-cassava',
+    plotId: 'plot-demo-samaru',
+    crop: 'Cassava',
+    variety: 'TME 419',
+    season: '2026-wet',
+    plantedAt: '2026-04-20T00:00:00.000Z',
+    expectedHarvestAt: '2027-04-20T00:00:00.000Z',
+    status: 'growing',
+    createdAt: '2026-04-20T08:00:00.000Z',
+    updatedAt: '2026-04-20T08:00:00.000Z',
+    version: 1
+  }
+];
+
+export const demoHarvestRecords: HarvestRecord[] = [
+  {
+    id: 'harvest-demo-1',
+    plantingId: 'planting-demo-maize',
+    harvestedAt: '2025-09-22T00:00:00.000Z',
+    quantity: 42,
+    unit: 'bags',
+    qualityGrade: 'A',
+    createdAt: '2025-09-22T10:00:00.000Z'
+  }
+];
+
+export const demoFarmExpenses: FarmExpense[] = [
+  {
+    id: 'expense-demo-1',
+    plotId: 'plot-demo-zaria-north',
+    category: 'fertilizer',
+    amountKobo: 750_000,
+    incurredAt: '2026-06-01T00:00:00.000Z',
+    note: 'NPK 20-10-10, 5 bags',
+    createdAt: '2026-06-01T09:00:00.000Z'
+  },
+  {
+    id: 'expense-demo-2',
+    plotId: 'plot-demo-zaria-north',
+    category: 'labour',
+    amountKobo: 320_000,
+    incurredAt: '2026-06-10T00:00:00.000Z',
+    createdAt: '2026-06-10T15:00:00.000Z'
+  }
+];
+
+export const demoFarmSummary: FarmSummary = {
+  ownerUserId: 'user-adamu',
+  plotCount: 2,
+  totalHectares: 4.25,
+  activePlantings: 2,
+  harvestByCrop: [{ crop: 'Maize', totalQuantity: 42, harvestCount: 1 }],
+  totalExpensesKobo: 1_070_000
+};

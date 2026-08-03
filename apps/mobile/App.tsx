@@ -13,6 +13,8 @@ import { ListingDetailScreen } from './src/screens/ListingDetailScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { MarketplaceScreen } from './src/screens/MarketplaceScreen';
 import { LivestockScreen } from './src/screens/LivestockScreen';
+import { FarmsScreen } from './src/screens/FarmsScreen';
+import { PlotCaptureScreen } from './src/screens/PlotCaptureScreen';
 import { NotificationsScreen } from './src/screens/NotificationsScreen';
 import { OrderDetailScreen } from './src/screens/OrderDetailScreen';
 import { OrdersScreen } from './src/screens/OrdersScreen';
@@ -39,6 +41,8 @@ export type RootStackParamList = {
   OrderDetail: { orderId: string };
   Notifications: undefined;
   Livestock: undefined;
+  Farms: undefined;
+  PlotCapture: undefined;
   Profile: undefined;
 };
 
@@ -68,6 +72,7 @@ export default function App() {
                 onOpenOrders={() => navigation.navigate('Orders')}
                 onOpenNotifications={() => navigation.navigate('Notifications')}
                 onOpenLivestock={() => navigation.navigate('Livestock')}
+                onOpenFarms={() => navigation.navigate('Farms')}
               />
             )}
           </Stack.Screen>
@@ -102,6 +107,14 @@ export default function App() {
           </Stack.Screen>
           <Stack.Screen name="Livestock" options={{ title: 'My livestock' }}>
             {() => <LivestockScreen />}
+          </Stack.Screen>
+          <Stack.Screen name="Farms" options={{ title: 'My plots' }}>
+            {({ navigation }) => (
+              <FarmsScreen onCapturePlot={() => navigation.navigate('PlotCapture')} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="PlotCapture" options={{ title: 'Capture plot' }}>
+            {({ navigation }) => <PlotCaptureScreen onSaved={() => navigation.goBack()} />}
           </Stack.Screen>
           <Stack.Screen name="Profile" options={{ title: 'Profile' }}>
             {() => <ProfileScreen tokenStore={tokenStore} onSignedOut={() => setUser(null)} />}
