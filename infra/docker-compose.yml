@@ -204,7 +204,7 @@ services:
 
   directus:
     profiles: ["integrations"]
-    image: directus/directus:10
+    image: directus/directus:12
     container_name: agric-directus
     environment:
       KEY: local-directus-key
