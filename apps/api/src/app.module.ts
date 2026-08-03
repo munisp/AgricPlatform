@@ -58,6 +58,8 @@ import { FarmsModule } from './modules/farms/farms.module.js';
 import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
 // Wave GEO (additive): geospatial pack — H3 indexing, boundaries, contains.
 import { GeoModule } from './modules/geo/geo.module.js';
+// Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
+import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 
 @Module({
   imports: [
@@ -128,7 +130,9 @@ import { GeoModule } from './modules/geo/geo.module.js';
     // Wave AGENTS field-agent (enumerator) capability — appended to minimise merge conflicts.
     FieldAgentsModule,
     // Wave GEO geospatial pack — appended to minimise merge conflicts.
-    GeoModule
+    GeoModule,
+    // Wave ML geo-intel flood-risk — appended to minimise merge conflicts.
+    GeoIntelModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

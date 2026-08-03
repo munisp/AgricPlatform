@@ -31,6 +31,7 @@ const MIGRATION = join(
   '..',
   '..',
   '..',
+  '..',
   'infra',
   'postgres',
   '024_sync.sql'

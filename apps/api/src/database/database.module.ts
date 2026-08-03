@@ -1263,6 +1263,8 @@ import {
       provide: SYNC_MUTATION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
+      inject: [PG_POOL]
+    },
     // Wave FARMS: farms & crop-production (appended).
     {
       provide: FARM_PLOT_REPOSITORY,
@@ -1286,6 +1288,8 @@ import {
       provide: FARM_EXPENSE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
+      inject: [PG_POOL]
+    },
     // Wave AGENTS: field-agent (enumerator) providers (additive).
     {
       provide: AGENT_ASSIGNMENT_REPOSITORY,
