@@ -13,6 +13,7 @@ import type {
   OrderStatus,
   RegisterAnimalInput,
   User,
+  VaccinationDueItem,
   WeatherSnapshot
 } from './types';
 
@@ -159,6 +160,19 @@ export function registerAnimal(
 /** Active disease recalls = pending health tasks for the dashboard card. */
 export function listActiveRecalls(client: ApiClient): Promise<{ data: HealthRecall[] }> {
   return client.apiFetch('/livestock-health/recalls', { query: { status: 'active' } });
+}
+
+/**
+ * Computed due-vaccination schedule (plain `{ data: VaccinationDueItem[] }`).
+ * Farmers see their own animals; `days` is the lookahead window (default 30)
+ * separating 'due' from 'upcoming'. This is the real pending-health-tasks
+ * source for the dashboard card.
+ */
+export function listDueVaccinations(
+  client: ApiClient,
+  days = 30
+): Promise<{ data: VaccinationDueItem[] }> {
+  return client.apiFetch('/livestock-health/vaccinations/due', { query: { days } });
 }
 
 /* ------------------------------ dashboard ------------------------------- */
