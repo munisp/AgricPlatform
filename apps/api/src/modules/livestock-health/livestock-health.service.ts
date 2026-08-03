@@ -26,10 +26,13 @@ import type {
   RecallAnimal,
   RecallScope,
   User,
-  UserRole
+  UserRole,
+  VaccinationDueItem
 } from '@agric-platform/shared';
 import {
+  DEFAULT_VACCINATION_INTERVAL_DAYS,
   NIGERIAN_STATE_CODES,
+  VACCINATION_INTERVAL_DAYS,
   VACCINATION_SCHEDULES
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
@@ -873,6 +876,91 @@ export class LivestockHealthService {
   async listMyRecalls(actor: User | null): Promise<LivestockRecall[]> {
     const caller = requireActor(actor);
     return this.recalls.recallsForOwner(caller.id);
+  }
+
+  // -------------------------------------------------------------------------
+  // Vaccination due computation (wave MOB — mobile/web dashboard card).
+  //
+  // No separate schedule table exists: the append-only health ledger is the
+  // source of truth and each scheduled vaccine's due date is derived as
+  // lastAdministeredAt + VACCINATION_INTERVAL_DAYS (never-vaccinated animals
+  // are due from their registration date). Reversed records do not count.
+
+  /**
+   * Due-vaccination schedule. Farmers see their own animals; privileged
+   * readers (admin/vet/regulator) see all animals or filter by ownerUserId.
+   * `days` is the lookahead window that separates 'due' from 'upcoming'.
+   */
+  async listDueVaccinations(
+    actor: User | null,
+    query: { days?: number; ownerUserId?: string } = {}
+  ): Promise<VaccinationDueItem[]> {
+    const caller = requireActor(actor);
+    const privileged = hasAnyRole(caller, PRIVILEGED_READERS);
+    if (query.ownerUserId && !privileged && query.ownerUserId !== caller.id) {
+      throw new ForbiddenException('You may only view vaccination schedules for your own animals');
+    }
+    const ownerScope = privileged ? query.ownerUserId : caller.id;
+    const windowDays = query.days ?? 30;
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    const animals = (await this.animals.find(ownerScope ? { ownerUserId: ownerScope } : {})).filter(
+      (animal) => animal.status === 'alive'
+    );
+    const items: VaccinationDueItem[] = [];
+    for (const animal of animals) {
+      const records = await this.healthRecords.find({ animalId: animal.id });
+      const reversedIds = new Set(
+        records.filter((record) => record.reversalOfId).map((record) => record.reversalOfId)
+      );
+      const effectiveVaccinations = records.filter(
+        (record) =>
+          record.recordType === 'vaccination' &&
+          !record.reversalOfId &&
+          !reversedIds.has(record.id)
+      );
+      for (const vaccine of VACCINATION_SCHEDULES[animal.species]) {
+        const intervalDays =
+          VACCINATION_INTERVAL_DAYS[vaccine] ?? DEFAULT_VACCINATION_INTERVAL_DAYS;
+        const matching = effectiveVaccinations.filter(
+          (record) => record.product.toLowerCase() === vaccine.toLowerCase()
+        );
+        const lastAdministeredAt = matching
+          .map((record) => record.administeredAt)
+          .sort()
+          .at(-1);
+        // Never vaccinated → due since registration; otherwise last dose + interval.
+        const dueMs = lastAdministeredAt
+          ? Date.parse(lastAdministeredAt) + intervalDays * dayMs
+          : Date.parse(animal.createdAt);
+        const dueDate = new Date(dueMs).toISOString();
+        const diffMs = dueMs - now;
+        if (diffMs <= 0) {
+          items.push({
+            animalId: animal.id,
+            vaccine,
+            dueDate,
+            lastAdministeredAt,
+            daysOverdue: Math.max(0, Math.floor(-diffMs / dayMs)),
+            status: 'overdue'
+          });
+        } else {
+          const daysUntilDue = Math.ceil(diffMs / dayMs);
+          items.push({
+            animalId: animal.id,
+            vaccine,
+            dueDate,
+            lastAdministeredAt,
+            daysUntilDue,
+            status: daysUntilDue <= windowDays ? 'due' : 'upcoming'
+          });
+        }
+      }
+    }
+    return items.sort(
+      (a, b) => a.dueDate.localeCompare(b.dueDate) || a.animalId.localeCompare(b.animalId)
+    );
   }
 
   /**

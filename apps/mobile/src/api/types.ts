@@ -155,12 +155,30 @@ export interface RegisterAnimalInput {
   notes?: string;
 }
 
-/** Disease recall from GET /livestock-health/recalls (pending health task). */
+/** Disease recall from GET /livestock-health/recalls (regulator/admin only). */
 export interface HealthRecall {
   id: string;
   status: string;
   reason?: string;
   createdAt: string;
+}
+
+/** Vaccination due status from GET /livestock-health/vaccinations/due. */
+export type VaccinationDueStatus = 'overdue' | 'due' | 'upcoming';
+
+/**
+ * One computed due-vaccination row from GET /livestock-health/vaccinations/due.
+ * `daysOverdue` is set when status is 'overdue'; `daysUntilDue` when 'due'
+ * (inside the lookahead window) or 'upcoming' (beyond it).
+ */
+export interface VaccinationDueItem {
+  animalId: string;
+  vaccine: string;
+  dueDate: string;
+  lastAdministeredAt?: string;
+  daysOverdue?: number;
+  daysUntilDue?: number;
+  status: VaccinationDueStatus;
 }
 
 export interface ApiListResponse<T> {

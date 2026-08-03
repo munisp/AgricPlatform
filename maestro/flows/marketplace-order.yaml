@@ -1,0 +1,41 @@
+# marketplace-order.yaml — browse the marketplace, open a listing, then check
+# out a draft order from My orders.
+#
+# NOTE (honest scope): the mobile app does not have a cart/checkout screen —
+# buyers confirm DRAFT orders that an agent created for them
+# (POST /draft-orders/:id/confirm behind the "Confirm order" button on
+# My orders). This flow therefore covers browse → listing detail →
+# My orders → confirm draft (when one exists for the test account). Seed a
+# draft order for the test buyer before running, or the confirm step is
+# skipped (marked optional).
+appId: com.agricplatform.app
+---
+- runFlow: auth-login.yaml
+
+# --- Browse marketplace ---
+- tapOn: "Browse marketplace"
+- assertVisible: "Marketplace"
+- assertVisible:
+    text: "View listing"
+    optional: true # empty marketplace is valid on a fresh dev seed
+
+# --- Open the first listing ---
+- tapOn:
+    text: "View listing"
+    index: 0
+- assertVisible: "Listing"
+- pressBack
+
+# --- Checkout path: confirm an agent-drafted order ---
+- tapOn: "My orders"
+- assertVisible: "My orders"
+- tapOn:
+    text: "Confirm order"
+    optional: true # requires a seeded draft order for the test buyer
+- assertVisible:
+    text: "Confirming…"
+    optional: true
+# After confirmation the draft becomes a normal order in the list.
+- assertVisible:
+    text: "View order"
+    optional: true

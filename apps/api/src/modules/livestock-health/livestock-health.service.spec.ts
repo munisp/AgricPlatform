@@ -6,7 +6,13 @@ import {
   UnauthorizedException
 } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Animal, AnimalMovement, LivestockLot, User } from '@agric-platform/shared';
+import type {
+  Animal,
+  AnimalMovement,
+  LivestockLot,
+  User,
+  VaccinationDueItem
+} from '@agric-platform/shared';
 import { DEV_VET_SIGNING_SECRET } from '../../config/livestock-health.config.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
@@ -1121,6 +1127,154 @@ describe('LivestockHealthService', () => {
       );
       await expect(service.gradeAnimal(vet, animalA.id)).resolves.toBeDefined();
       await expect(service.gradeAnimal(regulator, animalA.id)).resolves.toBeDefined();
+    });
+  });
+
+  describe('due vaccinations — computed schedule', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const daysAgo = (days: number): string => new Date(Date.now() - days * DAY_MS).toISOString();
+
+    const dueFor = (items: VaccinationDueItem[], animalId: string, vaccine: string) =>
+      items.find((item) => item.animalId === animalId && item.vaccine === vaccine);
+
+    it('requires authentication', async () => {
+      await expect(service.listDueVaccinations(null)).rejects.toBeInstanceOf(
+        UnauthorizedException
+      );
+    });
+
+    it('marks never-vaccinated animals overdue from their registration date', async () => {
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({
+        status: 'overdue',
+        dueDate: animalA.createdAt,
+        lastAdministeredAt: undefined
+      });
+      // Registration was 2025-01-01 — well over a day overdue.
+      expect(fmd!.daysOverdue).toBeGreaterThan(30);
+      // Cattle schedule covers FMD, CBPP and Anthrax for each own animal.
+      expect(items.filter((item) => item.animalId === animalA.id)).toHaveLength(3);
+    });
+
+    it('scopes farmers to their own animals only', async () => {
+      const items = await service.listDueVaccinations(farmer);
+      const animalIds = new Set(items.map((item) => item.animalId));
+      expect(animalIds).toEqual(new Set([animalA.id, animalB.id]));
+      expect(animalIds.has(animalC.id)).toBe(false);
+    });
+
+    it('rejects a farmer filtering by another owner but allows their own id', async () => {
+      await expect(
+        service.listDueVaccinations(farmer, { ownerUserId: otherFarmer.id })
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      const items = await service.listDueVaccinations(farmer, { ownerUserId: farmer.id });
+      expect(items.every((item) => item.animalId !== animalC.id)).toBe(true);
+    });
+
+    it('lets admin/vet/regulator see all animals and filter by ownerUserId', async () => {
+      for (const reader of [admin, vet, regulator]) {
+        const all = await service.listDueVaccinations(reader);
+        expect(new Set(all.map((item) => item.animalId))).toEqual(
+          new Set([animalA.id, animalB.id, animalC.id])
+        );
+        const filtered = await service.listDueVaccinations(reader, { ownerUserId: otherFarmer.id });
+        expect(new Set(filtered.map((item) => item.animalId))).toEqual(new Set([animalC.id]));
+      }
+    });
+
+    it('computes upcoming when the booster is beyond the lookahead window', async () => {
+      // FMD interval is 180 days; vaccinated 30 days ago → due in ~150 days.
+      const administeredAt = daysAgo(30);
+      await service.recordHealth(vet, vaccinationInput({ administeredAt }));
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'upcoming', lastAdministeredAt: administeredAt });
+      expect(fmd!.daysUntilDue).toBe(150);
+      expect(fmd!.dueDate).toBe(new Date(Date.parse(administeredAt) + 180 * DAY_MS).toISOString());
+    });
+
+    it('marks a vaccination due when it falls inside the lookahead window', async () => {
+      await service.recordHealth(vet, vaccinationInput({ administeredAt: daysAgo(175) }));
+      const items = await service.listDueVaccinations(farmer, { days: 30 });
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'due', daysUntilDue: 5 });
+    });
+
+    it('marks a vaccination overdue once the interval has passed', async () => {
+      await service.recordHealth(vet, vaccinationInput({ administeredAt: daysAgo(200) }));
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'overdue', daysOverdue: 20 });
+    });
+
+    it('treats a vaccination due exactly now as overdue with zero days', async () => {
+      await service.recordHealth(vet, vaccinationInput({ administeredAt: daysAgo(180) }));
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'overdue', daysOverdue: 0 });
+    });
+
+    it('honours per-vaccine intervals (Newcastle 120 days for poultry)', async () => {
+      const bird = makeAnimal({
+        id: 'NG-AVI-KD-000101',
+        species: 'chicken',
+        birthDate: undefined
+      });
+      await animals.create(bird);
+      await service.recordHealth(
+        vet,
+        vaccinationInput({
+          animalId: bird.id,
+          product: 'Newcastle',
+          administeredAt: daysAgo(115)
+        })
+      );
+      const items = await service.listDueVaccinations(farmer, { days: 30 });
+      const newcastle = dueFor(items, bird.id, 'Newcastle');
+      expect(newcastle).toMatchObject({ status: 'due', daysUntilDue: 5 });
+      // Gumboro/Fowl Pox (365-day interval, never administered) stay overdue.
+      expect(dueFor(items, bird.id, 'Gumboro')!.status).toBe('overdue');
+    });
+
+    it('ignores reversed vaccinations when computing the last dose', async () => {
+      const record = await service.recordHealth(
+        vet,
+        vaccinationInput({ administeredAt: daysAgo(30) })
+      );
+      await service.reverseHealthRecord(vet, record.id, 'Wrong batch recorded');
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'overdue', lastAdministeredAt: undefined });
+    });
+
+    it('uses the latest dose when an animal was vaccinated more than once', async () => {
+      await service.recordHealth(vet, vaccinationInput({ administeredAt: daysAgo(200) }));
+      await service.recordHealth(
+        vet,
+        vaccinationInput({ administeredAt: daysAgo(10), batchNumber: 'BATCH-2' })
+      );
+      const items = await service.listDueVaccinations(farmer);
+      const fmd = dueFor(items, animalA.id, 'FMD');
+      expect(fmd).toMatchObject({ status: 'upcoming', daysUntilDue: 170 });
+    });
+
+    it('excludes animals that are no longer alive', async () => {
+      await animals.create(makeAnimal({ id: 'NG-BOV-KD-000090', status: 'dead' }));
+      await animals.create(makeAnimal({ id: 'NG-BOV-KD-000091', status: 'sold' }));
+      const items = await service.listDueVaccinations(farmer);
+      const animalIds = new Set(items.map((item) => item.animalId));
+      expect(animalIds.has('NG-BOV-KD-000090')).toBe(false);
+      expect(animalIds.has('NG-BOV-KD-000091')).toBe(false);
+    });
+
+    it('sorts by due date ascending (most urgent first)', async () => {
+      await service.recordHealth(vet, vaccinationInput({ administeredAt: daysAgo(30) }));
+      const items = await service.listDueVaccinations(farmer, { days: 365 });
+      const dueDates = items.map((item) => item.dueDate);
+      expect([...dueDates].sort()).toEqual(dueDates);
+      // The FMD booster (upcoming) sorts after the overdue never-vaccinated rows.
+      expect(items.at(-1)).toMatchObject({ animalId: animalA.id, vaccine: 'FMD', status: 'due' });
     });
   });
 });

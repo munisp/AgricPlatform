@@ -1,24 +1,22 @@
 'use client';
 
 import Link from 'next/link';
-import { VACCINATION_SCHEDULES } from '@agric-platform/shared';
 import type { Animal } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
 import { useApiQuery } from '@/lib/api/hooks';
-import { listAnimalHealthRecords, listMyAnimals, listRecalls } from '@/lib/api/endpoints';
+import { listDueVaccinations, listMyAnimals, listRecalls } from '@/lib/api/endpoints';
 import { ForbiddenError } from '@/lib/api/errors';
 import { demoLivestockSummary } from '@/lib/content';
 import { Card, StatusBadge } from '@/components/ui';
 import { OfflineDataNotice } from '@/components/api-state';
 
-/** How many animals the widget inspects for vaccination coverage (bounded fan-out). */
-const HEALTH_CHECK_LIMIT = 20;
-
 export interface LivestockSummary {
   total: number;
   bySpecies: Array<{ species: string; count: number }>;
-  /** Animals whose species vaccination schedule is not fully covered. */
+  /** Vaccinations due or overdue (from /livestock-health/vaccinations/due). */
   pendingHealthTasks: number;
+  /** Overdue subset of pendingHealthTasks. */
+  overdueHealthTasks: number;
   /** Non-resolved recalls, or null when recalls are not visible to this role. */
   openRecalls: number | null;
 }
@@ -31,33 +29,19 @@ export async function summariseLivestock(animals: Animal[]): Promise<LivestockSu
     counts.set(animal.species, (counts.get(animal.species) ?? 0) + 1);
   }
 
-  const sampled = alive.slice(0, HEALTH_CHECK_LIMIT);
-  const coverages = await Promise.all(
-    sampled.map(async (animal) => {
-      try {
-        const records = await listAnimalHealthRecords(animal.id).then((res) => res.data);
-        const reversedIds = new Set(
-          records.filter((record) => record.reversalOfId).map((record) => record.reversalOfId)
-        );
-        const completed = new Set(
-          records
-            .filter(
-              (record) =>
-                record.recordType === 'vaccination' &&
-                !reversedIds.has(record.id) &&
-                !record.reversalOfId
-            )
-            .map((record) => record.product.toLowerCase())
-        );
-        const required = VACCINATION_SCHEDULES[animal.species];
-        return required.every((product) => completed.has(product.toLowerCase()));
-      } catch {
-        // Records not visible for this animal — do not count it as a pending task.
-        return true;
-      }
-    })
-  );
-  const pendingHealthTasks = coverages.filter((covered) => !covered).length;
+  // Pending health tasks come from the computed due-vaccination schedule
+  // (server derives due = last vaccination + interval per scheduled vaccine).
+  let pendingHealthTasks = 0;
+  let overdueHealthTasks = 0;
+  try {
+    const due = await listDueVaccinations({ days: 30 }).then((res) => res.data);
+    const pending = due.filter((item) => item.status !== 'upcoming');
+    pendingHealthTasks = pending.length;
+    overdueHealthTasks = pending.filter((item) => item.status === 'overdue').length;
+  } catch {
+    // Schedule not visible to this caller — leave the counts at zero rather
+    // than fabricating pending tasks.
+  }
 
   let openRecalls: number | null = null;
   try {
@@ -72,6 +56,7 @@ export async function summariseLivestock(animals: Animal[]): Promise<LivestockSu
     total: alive.length,
     bySpecies: [...counts.entries()].map(([species, count]) => ({ species, count })),
     pendingHealthTasks,
+    overdueHealthTasks,
     openRecalls
   };
 }
@@ -109,10 +94,11 @@ export function LivestockSummaryCard() {
           <div className="cluster" style={{ marginTop: '0.5rem' }}>
             <StatusBadge
               tone={summary.pendingHealthTasks > 0 ? 'warning' : 'success'}
-              ariaLabel={`${summary.pendingHealthTasks} animals with pending vaccinations`}
+              ariaLabel={`${summary.pendingHealthTasks} vaccinations due or overdue`}
             >
               {summary.pendingHealthTasks} pending health task
               {summary.pendingHealthTasks === 1 ? '' : 's'}
+              {summary.overdueHealthTasks > 0 ? ` (${summary.overdueHealthTasks} overdue)` : ''}
             </StatusBadge>
             {summary.openRecalls === null ? (
               <StatusBadge tone="neutral" ariaLabel="Open recalls are only visible to regulators">

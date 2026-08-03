@@ -107,6 +107,7 @@ import type {
   TrendingQuery,
   User,
   UserRole,
+  VaccinationDueItem,
   VaultDocument,
   Webinar,
   WebinarRegistration,
@@ -1484,6 +1485,18 @@ export function listAnimalHealthRecords(
   animalId: string
 ): Promise<{ data: AnimalHealthRecord[] }> {
   return apiFetch(`/livestock-health/animals/${encodeURIComponent(animalId)}/records`);
+}
+
+/**
+ * Computed due-vaccination schedule (wave MOB). Farmers see their own
+ * animals; admin/vet/regulator see all or filter by ownerUserId. `days` is
+ * the lookahead window separating 'due' from 'upcoming' (default 30).
+ * Plain `{ data: T[] }` envelope.
+ */
+export function listDueVaccinations(
+  params: { days?: number; ownerUserId?: string } = {}
+): Promise<{ data: VaccinationDueItem[] }> {
+  return apiFetch('/livestock-health/vaccinations/due', { query: { ...params } });
 }
 
 export interface StartMovementInput {

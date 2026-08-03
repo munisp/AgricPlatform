@@ -196,4 +196,87 @@ describe('HomeScreen', () => {
     expect(text).toContain('31°C');
     expect(text).toContain('Dry and sunny');
   });
+
+  const homeProps = {
+    onOpenCourses: () => {},
+    onOpenMarketplace: () => {},
+    onOpenProfile: () => {},
+    onOpenOrders: () => {},
+    onOpenNotifications: () => {},
+    onOpenLivestock: () => {}
+  };
+
+  const baseRoutes = {
+    '/pathway-enrolments/mine': { data: [] },
+    '/opportunities': { data: [], total: 0, page: 1, pageSize: 1 }
+  };
+
+  it('counts due + overdue vaccinations as pending health tasks', async () => {
+    const api = stubApi({
+      ...baseRoutes,
+      '/livestock/animals/mine': { data: [{ id: 'NG-BOV-KD-000001' }, { id: 'NG-BOV-KD-000002' }] },
+      '/livestock-health/vaccinations/due': {
+        data: [
+          {
+            animalId: 'NG-BOV-KD-000001',
+            vaccine: 'FMD',
+            dueDate: '2025-12-01T00:00:00.000Z',
+            daysOverdue: 12,
+            status: 'overdue'
+          },
+          {
+            animalId: 'NG-BOV-KD-000001',
+            vaccine: 'CBPP',
+            dueDate: '2025-12-20T00:00:00.000Z',
+            daysUntilDue: 7,
+            status: 'due'
+          },
+          {
+            animalId: 'NG-BOV-KD-000002',
+            vaccine: 'Anthrax',
+            dueDate: '2026-06-01T00:00:00.000Z',
+            daysUntilDue: 170,
+            status: 'upcoming'
+          }
+        ]
+      }
+    });
+    const renderer = await renderWithApi(api, <HomeScreen {...homeProps} />);
+    const text = screenText(renderer.root);
+
+    // 2 animals; pending tasks = overdue + due (upcoming excluded), 1 overdue.
+    expect(text).toContain('registered animals');
+    expect(text).toContain('pending health tasks (vaccinations due · 1 overdue)');
+    const farmCard = text.slice(text.indexOf('Farm summary'));
+    expect(farmCard).toContain('2');
+  });
+
+  it('requests the due-vaccination endpoint with the default 30-day window', async () => {
+    const api = stubApi({
+      ...baseRoutes,
+      '/livestock-health/vaccinations/due': { data: [] }
+    });
+    await renderWithApi(api, <HomeScreen {...homeProps} />);
+    const dueCall = api.calls.find((call) => call.url.includes('/livestock-health/vaccinations/due'));
+    expect(dueCall?.url).toContain('days=30');
+  });
+
+  it('shows an empty due list as zero pending health tasks', async () => {
+    const api = stubApi({
+      ...baseRoutes,
+      '/livestock-health/vaccinations/due': { data: [] }
+    });
+    const renderer = await renderWithApi(api, <HomeScreen {...homeProps} />);
+    const text = screenText(renderer.root);
+    expect(text).toContain('pending health tasks (vaccinations due)');
+    expect(text).not.toContain('overdue)');
+  });
+
+  it('falls back to — when the due-vaccination endpoint fails', async () => {
+    const api = stubApi({ ...baseRoutes }); // due endpoint 404s
+    const renderer = await renderWithApi(api, <HomeScreen {...homeProps} />);
+    const text = screenText(renderer.root);
+    expect(text).toContain('pending health tasks (vaccinations due)');
+    expect(text).toContain('—');
+  });
 });

@@ -225,3 +225,57 @@ export interface DiseaseMapEntry {
   confirmedFlags: number;
   latestReportedAt: string;
 }
+
+/* ---------------------------------------------------------------------------
+ * Vaccination due computation (wave MOB — mobile/web dashboard).
+ *
+ * There is deliberately no separate schedule table: the append-only health
+ * ledger is the source of truth, and a vaccination's due date is derived as
+ * `lastAdministeredAt + interval` per scheduled vaccine (intervals below).
+ * An animal with no effective vaccination record for a scheduled vaccine is
+ * due from its registration date.
+ */
+
+/**
+ * Booster interval in days per scheduled vaccine (matched case-insensitively
+ * against AnimalHealthRecord.product). Values follow common Nigerian
+ * veterinary practice: FMD is re-administered every ~6 months in endemic
+ * zones, Newcastle (I-2 thermostable) every ~4 months in village poultry,
+ * and the remaining core vaccines annually.
+ */
+export const VACCINATION_INTERVAL_DAYS: Record<string, number> = {
+  FMD: 180,
+  CBPP: 365,
+  Anthrax: 365,
+  PPR: 365,
+  'Sheep Pox': 365,
+  CCPP: 365,
+  Newcastle: 120,
+  Gumboro: 365,
+  'Fowl Pox': 365,
+  CSF: 365
+};
+
+/** Interval applied when a vaccine has no entry in VACCINATION_INTERVAL_DAYS. */
+export const DEFAULT_VACCINATION_INTERVAL_DAYS = 365;
+
+export const VACCINATION_DUE_STATUSES = ['overdue', 'due', 'upcoming'] as const;
+export type VaccinationDueStatus = (typeof VACCINATION_DUE_STATUSES)[number];
+
+/**
+ * One computed due-vaccination row (GET /livestock-health/vaccinations/due).
+ * `daysOverdue` is set only when status is 'overdue'; `daysUntilDue` only
+ * when status is 'due' or 'upcoming' ('due' means due within the requested
+ * window, 'upcoming' beyond it). `lastAdministeredAt` is absent when the
+ * animal has no effective vaccination record for the vaccine.
+ */
+export interface VaccinationDueItem {
+  animalId: string;
+  vaccine: string;
+  /** ISO-8601 instant the vaccination is/was due. */
+  dueDate: string;
+  lastAdministeredAt?: string;
+  daysOverdue?: number;
+  daysUntilDue?: number;
+  status: VaccinationDueStatus;
+}

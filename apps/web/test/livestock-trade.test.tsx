@@ -176,6 +176,20 @@ function router(url: string, init?: RequestInit) {
   if (path.endsWith(`/api/v1/livestock-health/animals/${ANIMAL.id}/records`)) {
     return jsonResponse({ data: [] });
   }
+  if (path.endsWith('/api/v1/livestock-health/vaccinations/due')) {
+    // One overdue scheduled vaccination for the single alive animal.
+    return jsonResponse({
+      data: [
+        {
+          animalId: ANIMAL.id,
+          vaccine: 'FMD',
+          dueDate: '2026-06-01T00:00:00.000Z',
+          daysOverdue: 12,
+          status: 'overdue'
+        }
+      ]
+    });
+  }
   if (path.endsWith('/api/v1/livestock-health/recalls')) {
     return jsonResponse(
       {
@@ -445,8 +459,8 @@ describe('Livestock trade', () => {
     await waitFor(() => {
       expect(screen.getByText('1 cattle')).toBeTruthy();
     });
-    // The single alive animal has no health records → one pending vaccination task.
-    expect(screen.getByLabelText('1 animals with pending vaccinations')).toBeTruthy();
+    // The due-vaccination endpoint reports one overdue item for the animal.
+    expect(screen.getByLabelText('1 vaccinations due or overdue')).toBeTruthy();
     // Recall listing is regulator-only (403) → farmer sees the limited-visibility pill.
     expect(screen.getByLabelText('Open recalls are only visible to regulators')).toBeTruthy();
   });

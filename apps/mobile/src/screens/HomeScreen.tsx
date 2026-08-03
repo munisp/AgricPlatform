@@ -4,7 +4,7 @@ import { useApiClient } from '../api/context';
 import {
   fetchSession,
   fetchWeather,
-  listActiveRecalls,
+  listDueVaccinations,
   listMyAnimals,
   listMyOrders,
   listMyPathwayEnrolments,
@@ -19,7 +19,9 @@ interface DashboardData {
   weather: WeatherSnapshot | null;
   /** Farmer summary cards (best-effort, mirror the web dashboard sources). */
   animalsTotal: number | null;
+  /** Vaccinations due or overdue (from /livestock-health/vaccinations/due). */
   pendingHealthTasks: number | null;
+  overdueHealthTasks: number | null;
   activeOrders: number | null;
 }
 
@@ -63,19 +65,27 @@ export function HomeScreen({
         // Farmer summary (animals, pending health tasks, active orders) is
         // best-effort: each source falls back to null independently.
         (async () => {
-          const [animals, recalls, orders] = await Promise.all([
+          const [animals, health, orders] = await Promise.all([
             listMyAnimals(client)
               .then((res) => res.data.length)
               .catch(() => null),
-            listActiveRecalls(client)
-              .then((res) => res.data.length)
+            // Pending health tasks = vaccinations due or overdue (the recalls
+            // list is regulator/admin-only and was never a valid proxy).
+            listDueVaccinations(client)
+              .then((res) => {
+                const pending = res.data.filter((item) => item.status !== 'upcoming');
+                return {
+                  pending: pending.length,
+                  overdue: pending.filter((item) => item.status === 'overdue').length
+                };
+              })
               .catch(() => null),
             fetchSession(client)
               .then((session) => listMyOrders(client, session.data.user.id))
               .then((res) => res.data.filter((order) => ACTIVE_ORDER_STATUSES.has(order.status)).length)
               .catch(() => null)
           ]);
-          return { animals, recalls, orders };
+          return { animals, health, orders };
         })()
       ]);
       setData({
@@ -83,7 +93,8 @@ export function HomeScreen({
         opportunitiesTotal: opportunities,
         weather,
         animalsTotal: farm.animals,
-        pendingHealthTasks: farm.recalls,
+        pendingHealthTasks: farm.health?.pending ?? null,
+        overdueHealthTasks: farm.health?.overdue ?? null,
         activeOrders: farm.orders
       });
     } catch (err) {
@@ -155,7 +166,10 @@ export function HomeScreen({
         <Text style={styles.bigNumber}>{data.animalsTotal ?? '—'}</Text>
         <Muted>registered animals</Muted>
         <Text style={styles.bigNumber}>{data.pendingHealthTasks ?? '—'}</Text>
-        <Muted>pending health tasks (active recalls)</Muted>
+        <Muted>
+          pending health tasks (vaccinations due
+          {data.overdueHealthTasks ? ` · ${data.overdueHealthTasks} overdue` : ''})
+        </Muted>
         <Text style={styles.bigNumber}>{data.activeOrders ?? '—'}</Text>
         <Muted>active orders</Muted>
       </Card>

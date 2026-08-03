@@ -4,6 +4,7 @@ import {
   confirmDraftOrder,
   listActiveRecalls,
   listDraftOrders,
+  listDueVaccinations,
   listMyAnimals,
   listMyOrders,
   listNotifications,
@@ -89,6 +90,18 @@ describe('Wave A endpoint wrappers', () => {
     const { client, calls } = stubbed();
     await listActiveRecalls(client);
     expect(calls[0].url).toBe('https://api.test/api/v1/livestock-health/recalls?status=active');
+  });
+
+  it('listDueVaccinations defaults to a 30-day lookahead window', async () => {
+    const { client, calls } = stubbed();
+    await listDueVaccinations(client);
+    expect(calls[0].url).toBe('https://api.test/api/v1/livestock-health/vaccinations/due?days=30');
+  });
+
+  it('listDueVaccinations passes an explicit window', async () => {
+    const { client, calls } = stubbed();
+    await listDueVaccinations(client, 90);
+    expect(calls[0].url).toBe('https://api.test/api/v1/livestock-health/vaccinations/due?days=90');
   });
 
   it('refreshSession posts the presented refresh token', async () => {

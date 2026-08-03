@@ -1070,6 +1070,7 @@ export const demoLivestockSummary = {
     { species: 'goat', count: 1 }
   ],
   pendingHealthTasks: 3,
+  overdueHealthTasks: 1,
   openRecalls: null as number | null
 };
 

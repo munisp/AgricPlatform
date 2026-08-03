@@ -1,0 +1,36 @@
+# livestock-add.yaml — register an animal from the My livestock screen.
+#
+# The Livestock screen exposes a "Register animal" form (species / breed /
+# sex pickers + optional ear tag). Choice buttons show a "✓" prefix when
+# selected, e.g. "✓ cattle".
+appId: com.agricplatform.app
+---
+- runFlow: auth-login.yaml
+
+- tapOn: "My livestock"
+- assertVisible: "My livestock"
+- tapOn: "Register animal"
+
+# Species picker — the selected option gains a ✓ prefix.
+- tapOn: "cattle"
+- assertVisible: "✓ cattle"
+
+# Breed picker (cattle breeds per LIVESTOCK_BREEDS in packages/shared).
+- tapOn: "White Fulani"
+- assertVisible: "✓ White Fulani"
+
+# Sex picker.
+- tapOn: "female"
+- assertVisible: "✓ female"
+
+# Optional ear tag.
+- tapOn:
+    id: "Ear tag"
+    optional: true
+- inputText: "E2E-0001"
+
+- tapOn: "Submit registration"
+# On success the form closes and the new animal appears in the list.
+- assertVisible:
+    text: "E2E-0001"
+    timeout: 10000
