@@ -132,7 +132,8 @@ import type {
   CreditRepayment,
   CreditSavingsAccount,
   CreditSavingsTransaction,
-  CreditScoreAssessment
+  CreditScoreAssessment,
+  GeoCreditShadowScore
 } from '@agric-platform/shared';
 import { apiFetch, apiUrl, type AuthIdentity } from './client';
 
@@ -3231,4 +3232,24 @@ export function fetchCreditScoreAssessment(
   userId: string
 ): Promise<{ data: CreditScoreAssessment }> {
   return apiFetch(`/credit/score/${encodeURIComponent(userId)}`);
+}
+
+/* -- geo-verified credit (wave-geocredit, SHADOW MODE — never used in decisions) -- */
+
+export function fetchGeoCreditShadow(id: string): Promise<{ data: GeoCreditShadowScore }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(id)}/geo-shadow`);
+}
+
+export interface GeoShadowRecomputeReport {
+  mode: 'off' | 'shadow';
+  applications: number;
+  recomputed: number;
+  skipped: number;
+  unavailable: number;
+  failed: number;
+  computedAt: string;
+}
+
+export function recomputeGeoCreditShadow(): Promise<{ data: GeoShadowRecomputeReport }> {
+  return apiFetch('/credit/geo-shadow/recompute', { method: 'POST' });
 }

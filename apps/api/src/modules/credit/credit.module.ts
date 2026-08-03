@@ -7,6 +7,7 @@ import { CreditPortfolioController } from './portfolio.controller.js';
 import { CreditProductsController } from './products.controller.js';
 import { CreditSavingsController } from './savings.controller.js';
 import { CreditSavingsService } from './savings.service.js';
+import { GeoVerificationModule } from './geo-verification/geo-verification.module.js';
 
 /**
  * Wave CREDIT (additive): microfinance suite — best-of-both merge of the
@@ -20,6 +21,8 @@ import { CreditSavingsService } from './savings.service.js';
  * the hardened funds/escrow flow (no funds-module changes in this wave).
  */
 @Module({
+  // Wave GEOCREDIT (additive): shadow-mode geo-verified credit factor.
+  imports: [GeoVerificationModule],
   controllers: [
     CreditProductsController,
     CreditApplicationsController,
