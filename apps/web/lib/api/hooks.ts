@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { NetworkError, TimeoutError } from './errors';
 import { useAppState } from '@/lib/app-state';
+import type { QueuedChainStep } from '@/lib/offline-queue';
 
 /**
  * Minimal SWR-style data hooks with no new dependencies.
@@ -68,11 +69,15 @@ export function useApiQuery<T>(
   const { fallbackData, staleTimeMs = 30_000, enabled = true } = options;
   const cached = key ? (cache.get(key) as CacheEntry<T> | undefined) : undefined;
 
-  const [data, setData] = useState<T | undefined>(cached?.data ?? fallbackData);
+  // Fixture data is NOT seeded up-front: on a normal online load the UI must
+  // show a loading/skeleton state, not flash fixtures with a false "live data
+  // unavailable" notice. `fallbackData` only becomes the visible data after
+  // an actual fetch failure (source === 'fallback').
+  const [data, setData] = useState<T | undefined>(cached?.data);
   const [error, setError] = useState<unknown>(undefined);
   const [isValidating, setIsValidating] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(Boolean(cached));
-  const [source, setSource] = useState<QuerySource>(cached ? 'cache' : 'fallback');
+  const [source, setSource] = useState<QuerySource>(cached ? 'cache' : 'api');
   const [refreshCount, setRefreshCount] = useState(0);
 
   const fetcherRef = useRef(fetcher);
@@ -154,9 +159,17 @@ export interface UseApiMutationOptions<TInput, TResult> {
     method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: (input: TInput) => string;
     payload?: (input: TInput) => unknown;
+    /**
+     * Compound-mutation follow-ups replayed after the primary request during
+     * a queue flush (e.g. credit draft → submit). `{id}` in a step path is
+     * substituted from the primary response's `data.id`.
+     */
+    chain?: (input: TInput) => QueuedChainStep[];
   };
   onSuccess?: (result: TResult, input: TInput) => void;
   onQueued?: (input: TInput) => void;
+  /** Called with the failure when the mutation errors (not when queued). */
+  onError?: (error: unknown, input: TInput) => void;
 }
 
 export interface UseApiMutationResult<TInput, TResult> {
@@ -191,7 +204,8 @@ export function useApiMutation<TInput, TResult>(
           label: opts.queue.label(input),
           method: opts.queue.method,
           path: opts.queue.path(input),
-          payload: opts.queue.payload ? opts.queue.payload(input) : input
+          payload: opts.queue.payload ? opts.queue.payload(input) : input,
+          chain: opts.queue.chain ? opts.queue.chain(input) : undefined
         });
         setStatus('queued');
         opts.onQueued?.(input);
@@ -217,6 +231,7 @@ export function useApiMutation<TInput, TResult>(
         }
         setError(err);
         setStatus('error');
+        opts.onError?.(err, input);
         return undefined;
       }
     },

@@ -47,6 +47,9 @@ const securityHeaders = [
   { key: 'Content-Security-Policy', value: contentSecurityPolicy },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  // HSTS: also set here as a defence-in-depth fallback. When the app sits
+  // behind a CDN/edge terminator, the CDN may own (and override) this header.
+  { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
   // camera=(self) is required by the chapter QR attendance scanner
   // (getUserMedia); it degrades to the paste-in flow when denied.
   { key: 'Permissions-Policy', value: 'camera=(self), microphone=(), geolocation=(self)' }

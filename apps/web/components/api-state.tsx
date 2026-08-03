@@ -8,6 +8,7 @@ import {
   TimeoutError,
   UnauthorizedError
 } from '@/lib/api/errors';
+import { useT } from '@/lib/i18n';
 import { EmptyState } from '@/components/ui';
 
 /**
@@ -22,24 +23,25 @@ export function ApiErrorNotice({
   error: unknown;
   onRetry?: () => void;
 }) {
-  let title = 'Something went wrong';
-  let hint = 'The request failed. Please try again.';
+  const { t } = useT();
+  let title = t('apiState.errorTitle');
+  let hint = t('apiState.errorHint');
 
   if (error instanceof UnauthorizedError) {
-    title = 'Sign in required';
-    hint = 'Your session is missing or expired. Sign in again to continue.';
+    title = t('apiState.unauthorizedTitle');
+    hint = t('apiState.unauthorizedHint');
   } else if (error instanceof ForbiddenError) {
-    title = 'No access';
-    hint = 'Your account does not have permission to view this. Switch role or contact an admin.';
+    title = t('apiState.forbiddenTitle');
+    hint = t('apiState.forbiddenHint');
   } else if (error instanceof RateLimitError) {
-    title = 'Slow down — throttled';
+    title = t('apiState.rateLimitTitle');
     hint =
       error.retryAfterSeconds !== undefined
-        ? `Too many requests. Try again in about ${error.retryAfterSeconds}s.`
-        : 'Too many requests. Please wait a moment and try again.';
+        ? t('apiState.rateLimitHintTimed', { seconds: error.retryAfterSeconds })
+        : t('apiState.rateLimitHint');
   } else if (error instanceof NetworkError || error instanceof TimeoutError) {
-    title = 'You appear to be offline';
-    hint = 'The API is unreachable. Anything you submit is queued and syncs when you reconnect.';
+    title = t('apiState.offlineTitle');
+    hint = t('apiState.offlineHint');
   } else if (error instanceof Error && error.message) {
     hint = error.message;
   }
@@ -51,7 +53,7 @@ export function ApiErrorNotice({
       {onRetry ? (
         <p style={{ marginTop: '0.75rem', marginBottom: 0 }}>
           <button type="button" className="btn btn-ghost btn-small" onClick={onRetry}>
-            Try again
+            {t('apiState.tryAgain')}
           </button>
         </p>
       ) : null}
@@ -61,18 +63,20 @@ export function ApiErrorNotice({
 
 /** Shown above fixture data when the API is unreachable (source === 'fallback'). */
 export function OfflineDataNotice({ children }: { children?: ReactNode }) {
+  const { t } = useT();
   return (
     <p className="notice notice-info" role="status">
-      {children ?? 'Offline — showing saved reference data. Live updates resume when you reconnect.'}
+      {children ?? t('apiState.offlineFallback')}
     </p>
   );
 }
 
 /** Shown when the API returned live data while a background refresh runs. */
 export function RefreshingNotice() {
+  const { t } = useT();
   return (
     <p className="small muted" role="status" aria-live="polite">
-      Refreshing…
+      {t('apiState.refreshing')}
     </p>
   );
 }
@@ -121,5 +125,11 @@ export function QueryState({
       return <ApiErrorNotice error={error} onRetry={onRetry} />;
     }
   }
-  return <>{empty ?? <EmptyState title="Nothing here yet" />}</>;
+  return <>{empty ?? <DefaultEmptyState />}</>;
+}
+
+/** Locale-aware default empty state (QueryState itself takes ReactNode). */
+function DefaultEmptyState() {
+  const { t } = useT();
+  return <EmptyState title={t('apiState.emptyDefault')} />;
 }

@@ -16,8 +16,12 @@ import { createSyncStore, type SyncStore, type SyncStoreStatus } from './store';
 import { createWebSyncStorage } from './storage';
 import { createApiSyncTransport } from './transport';
 
-/** Entities the web app syncs today (read-only proof entities, protocol §2). */
-export const WEB_SYNC_ENTITIES = ['notification', 'marketplace_listing'] as const;
+/**
+ * Entities the web app syncs today (read-only proof entities, protocol §2).
+ * `marketplace_listing` was removed: no web screen reads synced listing
+ * records — marketplace screens query the API directly (with fixtures).
+ */
+export const WEB_SYNC_ENTITIES = ['notification'] as const;
 
 let shared: SyncStore | null = null;
 

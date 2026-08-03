@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useAppState } from '@/lib/app-state';
+import { useT } from '@/lib/i18n';
 import { AutoBadge } from '@/components/ui';
 import { SyncBadge } from '@/components/sync-badge';
 
@@ -9,20 +10,18 @@ const PENDING_STATUSES = new Set(['queued', 'failed']);
 
 export function QueueList() {
   const { queue, clearQueue, syncQueue, retryItem, hydrated } = useAppState();
+  const { t } = useT();
   const [syncing, setSyncing] = useState(false);
 
   if (!hydrated) {
-    return <p className="muted small">Loading offline queue…</p>;
+    return <p className="muted small">{t('queue.loading')}</p>;
   }
 
   if (queue.length === 0) {
     return (
       <div className="empty">
-        <p style={{ fontWeight: 600, marginBottom: '0.25rem' }}>Nothing waiting to sync</p>
-        <p className="small">
-          Forms you submit while offline (applications, listings, attendance, privacy requests) will
-          appear here and sync automatically once the API is connected.
-        </p>
+        <p style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{t('queue.emptyTitle')}</p>
+        <p className="small">{t('queue.emptyHint')}</p>
       </div>
     );
   }
@@ -43,14 +42,15 @@ export function QueueList() {
       {pending.length > 0 ? (
         <div className="notice" role="status">
           <strong>
-            {pending.length} submission{pending.length === 1 ? '' : 's'} waiting to sync.
+            {t(pending.length === 1 ? 'queue.pendingOne' : 'queue.pendingMany', {
+              count: pending.length
+            })}
           </strong>{' '}
-          They are stored on this device and replay with their original idempotency keys when
-          connectivity returns.
+          {t('queue.pendingBody')}
         </div>
       ) : (
         <div className="notice notice-success" role="status">
-          <strong>All caught up.</strong> Every submission on this device has been synced.
+          <strong>{t('queue.caughtUpTitle')}</strong> {t('queue.caughtUpBody')}
         </div>
       )}
       <ul className="row-list">
@@ -60,34 +60,44 @@ export function QueueList() {
               <div className="row-title">{item.label}</div>
               <div className="small muted">
                 {item.kind} · {new Date(item.createdAt).toLocaleString('en-NG')}
-                {item.attempts > 0 ? ` · ${item.attempts} attempt${item.attempts === 1 ? '' : 's'}` : ''}
+                {item.attempts > 0
+                  ? ` · ${t(item.attempts === 1 ? 'queue.attemptOne' : 'queue.attemptMany', {
+                      count: item.attempts
+                    })}`
+                  : ''}
               </div>
               {item.lastError ? <div className="small muted">{item.lastError}</div> : null}
             </div>
-            <AutoBadge value={item.status} ariaLabel={`Sync status: ${item.status.replace(/_/g, ' ')}`} />
+            <AutoBadge
+              value={item.status}
+              ariaLabel={t('queue.statusAria', { status: item.status.replace(/_/g, ' ') })}
+            />
             {item.status === 'failed' && item.path ? (
               <button
                 type="button"
                 className="btn btn-ghost btn-small"
                 onClick={() => void retryItem(item.id)}
               >
-                Retry
+                {t('queue.retry')}
               </button>
             ) : null}
           </li>
         ))}
       </ul>
       <div className="cluster">
+        {/* Request-queue flush (queued form submissions) — deliberately
+            labelled differently from the record-level sync action in
+            SyncBadge below; the two layers have different semantics. */}
         <button
           type="button"
           className="btn btn-primary btn-small"
           disabled={syncing || pending.length === 0}
           onClick={() => void sync()}
         >
-          {syncing ? 'Syncing…' : 'Sync now'}
+          {syncing ? t('queue.sendingQueued') : t('queue.sendQueued')}
         </button>
         <button type="button" className="btn btn-ghost btn-small" onClick={clearQueue}>
-          Clear local queue
+          {t('queue.clear')}
         </button>
       </div>
       {/* Record-level sync status (notifications/listings cache) — separate

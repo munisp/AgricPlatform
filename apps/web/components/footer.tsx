@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { T } from '@/lib/i18n';
 import { LocaleSwitcher } from '@/components/locale-switcher';
 
 export function Footer() {
@@ -11,52 +12,56 @@ export function Footer() {
             AgricPlatform
           </div>
           <p className="small" style={{ marginTop: '0.75rem', maxWidth: '34ch' }}>
-            The unified digital operating system for Nigeria&apos;s young farmers — built with NYFN for
-            farmers, students, buyers, suppliers, chapters and partners.
+            <T k="footer.tagline" />
           </p>
           <div style={{ marginTop: '1rem' }}>
             <LocaleSwitcher id="locale-footer" />
           </div>
         </div>
         <div>
-          <div className="footer-title">Platform</div>
+          <div className="footer-title">
+            <T k="footer.platform" />
+          </div>
           <ul className="footer-links">
-            <li><Link href="/dashboard">Dashboard</Link></li>
-            <li><Link href="/learning">Learning Academy</Link></li>
-            <li><Link href="/opportunities">Opportunities</Link></li>
-            <li><Link href="/marketplace">Marketplace</Link></li>
-            <li><Link href="/services">Services</Link></li>
-            <li><Link href="/programmes">Programmes</Link></li>
-            <li><Link href="/pathways">Pathways</Link></li>
-            <li><Link href="/knowledge">Knowledge</Link></li>
-            <li><Link href="/advisory">Advisory</Link></li>
+            <li><Link href="/dashboard"><T k="footer.dashboard" /></Link></li>
+            <li><Link href="/learning"><T k="footer.learningAcademy" /></Link></li>
+            <li><Link href="/opportunities"><T k="footer.opportunities" /></Link></li>
+            <li><Link href="/marketplace"><T k="footer.marketplace" /></Link></li>
+            <li><Link href="/services"><T k="footer.services" /></Link></li>
+            <li><Link href="/programmes"><T k="footer.programmes" /></Link></li>
+            <li><Link href="/pathways"><T k="footer.pathways" /></Link></li>
+            <li><Link href="/knowledge"><T k="footer.knowledge" /></Link></li>
+            <li><Link href="/advisory"><T k="footer.advisory" /></Link></li>
           </ul>
         </div>
         <div>
-          <div className="footer-title">Organisation</div>
+          <div className="footer-title">
+            <T k="footer.organisation" />
+          </div>
           <ul className="footer-links">
-            <li><Link href="/chapters">Chapters</Link></li>
-            <li><Link href="/community">Community</Link></li>
-            <li><Link href="/partner">Partner Hub</Link></li>
-            <li><Link href="/admin">Admin Console</Link></li>
-            <li><Link href="/integrations">Integrations</Link></li>
+            <li><Link href="/chapters"><T k="footer.chapters" /></Link></li>
+            <li><Link href="/community"><T k="footer.community" /></Link></li>
+            <li><Link href="/partner"><T k="footer.partnerHub" /></Link></li>
+            <li><Link href="/admin"><T k="footer.adminConsole" /></Link></li>
+            <li><Link href="/integrations"><T k="footer.integrations" /></Link></li>
           </ul>
         </div>
         <div>
-          <div className="footer-title">Trust</div>
+          <div className="footer-title">
+            <T k="footer.trust" />
+          </div>
           <ul className="footer-links">
-            <li><Link href="/privacy">Privacy &amp; NDPR</Link></li>
-            <li><Link href="/search">Search</Link></li>
-            <li><Link href="/offline">Offline mode</Link></li>
-            <li><Link href="/settings">Settings</Link></li>
-            <li><Link href="/onboarding">Join NYFN</Link></li>
+            <li><Link href="/privacy"><T k="footer.privacy" /></Link></li>
+            <li><Link href="/search"><T k="footer.search" /></Link></li>
+            <li><Link href="/offline"><T k="footer.offlineMode" /></Link></li>
+            <li><Link href="/settings"><T k="footer.settings" /></Link></li>
+            <li><Link href="/onboarding"><T k="footer.joinNyfn" /></Link></li>
           </ul>
         </div>
       </div>
       <div className="container footer-bottom">
         <p>
-          Phase 1 reference build · English, Hausa, Yoruba and Igbo language structure · Works offline —
-          submissions queue on your device and sync when you reconnect.
+          <T k="footer.bottomNote" />
         </p>
       </div>
     </footer>

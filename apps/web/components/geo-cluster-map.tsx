@@ -7,7 +7,7 @@ import { useT } from '@/lib/i18n';
 import { invalidateApiQueries, useApiMutation, useApiQuery } from '@/lib/api/hooks';
 import { fetchGeoClusters, reindexGeo } from '@/lib/api/endpoints';
 import { demoGeoClusters } from '@/lib/content';
-import { ApiErrorNotice, OfflineDataNotice } from '@/components/api-state';
+import { ApiErrorNotice, OfflineDataNotice, SkeletonBlock } from '@/components/api-state';
 import { Card, EmptyState } from '@/components/ui';
 
 /**
@@ -38,7 +38,9 @@ interface ProjectedCell {
 
 /** Equirectangular fit of all cell vertices into the fixed viewBox. */
 function projectCells(clusters: GeoClustersResult): ProjectedCell[] {
-  const vertices = clusters.cells.flatMap(({ cell }) => cellToBoundary(cell, true));
+  // Compute each boundary once: the fit pass and the polygon pass share it.
+  const boundaries = clusters.cells.map(({ cell }) => cellToBoundary(cell, true));
+  const vertices = boundaries.flat();
   if (vertices.length === 0) {
     return [];
   }
@@ -55,8 +57,8 @@ function projectCells(clusters: GeoClustersResult): ProjectedCell[] {
     PAD + ((long - minLong) / spanLong) * (VIEW_W - 2 * PAD),
     VIEW_H - PAD - ((lat - minLat) / spanLat) * (VIEW_H - 2 * PAD)
   ];
-  return clusters.cells.map(({ cell, count }) => {
-    const points = cellToBoundary(cell, true)
+  return clusters.cells.map(({ cell, count }, index) => {
+    const points = (boundaries[index] ?? [])
       .map(([long, lat]) => project(long, lat).map((v) => v.toFixed(1)).join(','))
       .join(' ');
     const [lat, long] = cellToLatLng(cell);
@@ -96,7 +98,10 @@ export function GeoClusterMap() {
   const maxCount = cells.reduce((max, cell) => Math.max(max, cell.count), 1);
 
   if (!clusters) {
-    return query.error ? <ApiErrorNotice error={query.error} onRetry={query.refresh} /> : null;
+    // First load: skeleton — the fixture + offline notice only appear after
+    // an actual fetch failure (see useApiQuery source semantics).
+    if (query.error) return <ApiErrorNotice error={query.error} onRetry={query.refresh} />;
+    return <SkeletonBlock lines={4} />;
   }
 
   return (

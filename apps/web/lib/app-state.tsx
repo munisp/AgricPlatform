@@ -57,11 +57,28 @@ function writeQueue(items: QueuedSubmission[]): void {
 
 /** Replays a queued mutation against the API with its stored idempotency key. */
 async function sendQueuedItem(item: QueuedSubmission): Promise<void> {
-  await apiFetch(item.path, {
+  const primary = await apiFetch<{ data?: { id?: unknown } }>(item.path, {
     method: item.method,
     body: item.payload,
     idempotencyKey: item.idempotencyKey
   });
+  // Compound mutations (e.g. credit draft → submit): replay the follow-up
+  // steps against the id the primary request returned. Derived idempotency
+  // keys keep retries of a half-finished chain safe — the primary replays
+  // its stored response for the same key, yielding the same id.
+  if (item.chain && item.chain.length > 0) {
+    const id = primary?.data?.id;
+    if (typeof id !== 'string' || id === '') {
+      throw new Error('Queued follow-up could not resolve the primary record id');
+    }
+    for (const [index, step] of item.chain.entries()) {
+      await apiFetch(step.path.replaceAll('{id}', encodeURIComponent(id)), {
+        method: step.method,
+        body: step.payload,
+        idempotencyKey: `${item.idempotencyKey}-chain-${index}`
+      });
+    }
+  }
 }
 
 function QueueProvider({ children }: { children: ReactNode }) {

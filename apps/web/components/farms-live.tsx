@@ -41,7 +41,8 @@ import {
 } from '@/lib/content';
 import { Field, Select, TextArea, TextInput } from '@/components/forms';
 import { AutoBadge, Card, EmptyState, Section } from '@/components/ui';
-import { ApiErrorNotice, OfflineDataNotice } from '@/components/api-state';
+import { ApiErrorNotice, OfflineDataNotice, SkeletonBlock } from '@/components/api-state';
+import { useFormDraft } from '@/lib/drafts';
 
 /* ------------------------------ summary -------------------------------- */
 
@@ -55,7 +56,10 @@ export function FarmSummaryCards() {
   );
   const summary = query.data;
   if (!summary) {
-    return query.error ? <ApiErrorNotice error={query.error} onRetry={query.refresh} /> : null;
+    // First load shows a skeleton; fixtures + offline notice appear only
+    // after an actual fetch failure (source === 'fallback').
+    if (query.error) return <ApiErrorNotice error={query.error} onRetry={query.refresh} />;
+    return <SkeletonBlock lines={4} />;
   }
   return (
     <Section kicker={t('farms.summaryKicker')} title={t('farms.summaryTitle')}>
@@ -146,7 +150,18 @@ export function PlotForm({
   onCancel: () => void;
 }) {
   const { t } = useT();
-  const [form, setForm] = useState<PlotFormState>(plot ? plotFormFrom(plot) : emptyPlotForm());
+  // Draft persistence: half-filled plot forms survive reloads/offline drops.
+  const { draft: form, setDraft: setForm, clearDraft } = useFormDraft<PlotFormState>(
+    plot ? `farms.plot.${plot.id}` : 'farms.plot.new',
+    plot ? plotFormFrom(plot) : emptyPlotForm(),
+    (value) =>
+      value.name.trim() === '' &&
+      value.lga.trim() === '' &&
+      value.centroidLat.trim() === '' &&
+      value.centroidLong.trim() === '' &&
+      value.sizeHectares.trim() === '' &&
+      value.boundary.trim() === ''
+  );
   const [boundaryError, setBoundaryError] = useState<string | null>(null);
 
   const save = useApiMutation<PlotFormState, FarmPlot>({
@@ -183,10 +198,12 @@ export function PlotForm({
       })
     },
     onSuccess: (saved) => {
+      clearDraft();
       invalidateApiQueries('farms.plots', 'farms.summary');
       onSaved(saved);
     },
     onQueued: () => {
+      clearDraft();
       invalidateApiQueries('farms.plots', 'farms.summary');
       onCancel();
     }
@@ -332,23 +349,33 @@ export function PlotForm({
 
 /* ---------------------------- planting form ---------------------------- */
 
+interface PlantingDraft {
+  crop: string;
+  variety: string;
+  season: string;
+  plantedAt: string;
+  expectedHarvestAt: string;
+}
+
 function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void }) {
   const { t } = useT();
-  const [crop, setCrop] = useState('');
-  const [variety, setVariety] = useState('');
-  const [season, setSeason] = useState('');
-  const [plantedAt, setPlantedAt] = useState('');
-  const [expectedHarvestAt, setExpectedHarvestAt] = useState('');
+  const { draft, setDraft, clearDraft } = useFormDraft<PlantingDraft>(
+    `farms.planting.${plotId}`,
+    { crop: '', variety: '', season: '', plantedAt: '', expectedHarvestAt: '' },
+    (value) => value.crop.trim() === '' && value.season.trim() === '' && value.plantedAt === ''
+  );
+  const setField = <K extends keyof PlantingDraft>(key: K, value: string) =>
+    setDraft((current) => ({ ...current, [key]: value }));
 
   const save = useApiMutation<unknown, CropPlanting>({
     mutationFn: () =>
       createCropPlanting(plotId, {
-        crop: crop.trim(),
-        variety: variety.trim() || undefined,
-        season: season.trim(),
-        plantedAt: new Date(plantedAt).toISOString(),
-        expectedHarvestAt: expectedHarvestAt
-          ? new Date(expectedHarvestAt).toISOString()
+        crop: draft.crop.trim(),
+        variety: draft.variety.trim() || undefined,
+        season: draft.season.trim(),
+        plantedAt: new Date(draft.plantedAt).toISOString(),
+        expectedHarvestAt: draft.expectedHarvestAt
+          ? new Date(draft.expectedHarvestAt).toISOString()
           : undefined
       }).then((res) => res.data),
     queue: {
@@ -356,9 +383,15 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
       label: () => `Record planting on ${plotId}`,
       method: 'POST',
       path: () => `/farms/plots/${plotId}/plantings`,
-      payload: () => ({ crop: crop.trim(), season: season.trim(), plantedAt })
+      payload: () => ({ crop: draft.crop.trim(), season: draft.season.trim(), plantedAt: draft.plantedAt })
     },
     onSuccess: () => {
+      clearDraft();
+      invalidateApiQueries(`farms.plantings.${plotId}`, 'farms.summary');
+      onSaved();
+    },
+    onQueued: () => {
+      clearDraft();
       invalidateApiQueries(`farms.plantings.${plotId}`, 'farms.summary');
       onSaved();
     }
@@ -375,15 +408,15 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
         <TextInput
           id="planting-crop"
           required
-          value={crop}
-          onChange={(event) => setCrop(event.target.value)}
+          value={draft.crop}
+          onChange={(event) => setField('crop', event.target.value)}
         />
       </Field>
       <Field id="planting-variety" label={t('farms.varietyLabel')}>
         <TextInput
           id="planting-variety"
-          value={variety}
-          onChange={(event) => setVariety(event.target.value)}
+          value={draft.variety}
+          onChange={(event) => setField('variety', event.target.value)}
         />
       </Field>
       <Field id="planting-season" label={t('farms.seasonLabel')}>
@@ -391,8 +424,8 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
           id="planting-season"
           required
           placeholder="2026-wet"
-          value={season}
-          onChange={(event) => setSeason(event.target.value)}
+          value={draft.season}
+          onChange={(event) => setField('season', event.target.value)}
         />
       </Field>
       <Field id="planting-planted" label={t('farms.plantedAtLabel')}>
@@ -400,16 +433,16 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
           id="planting-planted"
           required
           type="date"
-          value={plantedAt}
-          onChange={(event) => setPlantedAt(event.target.value)}
+          value={draft.plantedAt}
+          onChange={(event) => setField('plantedAt', event.target.value)}
         />
       </Field>
       <Field id="planting-expected" label={t('farms.expectedHarvestLabel')}>
         <TextInput
           id="planting-expected"
           type="date"
-          value={expectedHarvestAt}
-          onChange={(event) => setExpectedHarvestAt(event.target.value)}
+          value={draft.expectedHarvestAt}
+          onChange={(event) => setField('expectedHarvestAt', event.target.value)}
         />
       </Field>
       {save.status === 'error' ? <ApiErrorNotice error={save.error} /> : null}
@@ -422,29 +455,47 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
 
 /* ----------------------------- harvest form ---------------------------- */
 
+interface HarvestDraft {
+  harvestedAt: string;
+  quantity: string;
+  unit: (typeof HARVEST_UNITS)[number];
+  grade: string;
+}
+
 function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () => void }) {
   const { t } = useT();
-  const [harvestedAt, setHarvestedAt] = useState('');
-  const [quantity, setQuantity] = useState('');
-  const [unit, setUnit] = useState<(typeof HARVEST_UNITS)[number]>('kg');
-  const [grade, setGrade] = useState('');
+  const { draft, setDraft, clearDraft } = useFormDraft<HarvestDraft>(
+    `farms.harvest.${plantingId}`,
+    { harvestedAt: '', quantity: '', unit: 'kg', grade: '' },
+    (value) => value.harvestedAt === '' && value.quantity.trim() === ''
+  );
 
   const save = useApiMutation<unknown, HarvestRecord>({
     mutationFn: () =>
       recordHarvest(plantingId, {
-        harvestedAt: new Date(harvestedAt).toISOString(),
-        quantity: Number(quantity),
-        unit,
-        qualityGrade: (grade || undefined) as HarvestRecord['qualityGrade']
+        harvestedAt: new Date(draft.harvestedAt).toISOString(),
+        quantity: Number(draft.quantity),
+        unit: draft.unit,
+        qualityGrade: (draft.grade || undefined) as HarvestRecord['qualityGrade']
       }).then((res) => res.data),
     queue: {
       kind: 'farms.harvest.recorded',
       label: () => `Record harvest for ${plantingId}`,
       method: 'POST',
       path: () => `/farms/plantings/${plantingId}/harvests`,
-      payload: () => ({ harvestedAt, quantity: Number(quantity), unit })
+      payload: () => ({
+        harvestedAt: draft.harvestedAt,
+        quantity: Number(draft.quantity),
+        unit: draft.unit
+      })
     },
     onSuccess: () => {
+      clearDraft();
+      invalidateApiQueries(`farms.harvests.${plantingId}`, 'farms.summary');
+      onSaved();
+    },
+    onQueued: () => {
+      clearDraft();
       invalidateApiQueries(`farms.harvests.${plantingId}`, 'farms.summary');
       onSaved();
     }
@@ -462,8 +513,8 @@ function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () 
           id="harvest-date"
           required
           type="date"
-          value={harvestedAt}
-          onChange={(event) => setHarvestedAt(event.target.value)}
+          value={draft.harvestedAt}
+          onChange={(event) => setDraft((current) => ({ ...current, harvestedAt: event.target.value }))}
         />
       </Field>
       <Field id="harvest-quantity" label={t('farms.quantityLabel')}>
@@ -473,15 +524,17 @@ function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () 
           type="number"
           min={0}
           step="any"
-          value={quantity}
-          onChange={(event) => setQuantity(event.target.value)}
+          value={draft.quantity}
+          onChange={(event) => setDraft((current) => ({ ...current, quantity: event.target.value }))}
         />
       </Field>
       <Field id="harvest-unit" label={t('farms.unitLabel')}>
         <Select
           id="harvest-unit"
-          value={unit}
-          onChange={(event) => setUnit(event.target.value as typeof unit)}
+          value={draft.unit}
+          onChange={(event) =>
+            setDraft((current) => ({ ...current, unit: event.target.value as HarvestDraft['unit'] }))
+          }
         >
           {HARVEST_UNITS.map((option) => (
             <option key={option} value={option}>
@@ -491,7 +544,11 @@ function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () 
         </Select>
       </Field>
       <Field id="harvest-grade" label={t('farms.gradeLabel')}>
-        <Select id="harvest-grade" value={grade} onChange={(event) => setGrade(event.target.value)}>
+        <Select
+          id="harvest-grade"
+          value={draft.grade}
+          onChange={(event) => setDraft((current) => ({ ...current, grade: event.target.value }))}
+        >
           <option value="">{t('farms.gradeNone')}</option>
           {HARVEST_QUALITY_GRADES.map((option) => (
             <option key={option} value={option}>
@@ -510,29 +567,47 @@ function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () 
 
 /* ----------------------------- expense form ---------------------------- */
 
+interface ExpenseDraft {
+  category: (typeof FARM_EXPENSE_CATEGORIES)[number];
+  amount: string;
+  incurredAt: string;
+  note: string;
+}
+
 function ExpenseForm({ plotId, onSaved }: { plotId: string; onSaved: () => void }) {
   const { t } = useT();
-  const [category, setCategory] = useState<(typeof FARM_EXPENSE_CATEGORIES)[number]>('seeds');
-  const [amount, setAmount] = useState('');
-  const [incurredAt, setIncurredAt] = useState('');
-  const [note, setNote] = useState('');
+  const { draft, setDraft, clearDraft } = useFormDraft<ExpenseDraft>(
+    `farms.expense.${plotId}`,
+    { category: 'seeds', amount: '', incurredAt: '', note: '' },
+    (value) => value.amount.trim() === '' && value.incurredAt === '' && value.note.trim() === ''
+  );
 
   const save = useApiMutation<unknown, FarmExpense>({
     mutationFn: () =>
       createFarmExpense(plotId, {
-        category,
-        amountKobo: Math.round(Number(amount) * 100),
-        incurredAt: new Date(incurredAt).toISOString(),
-        note: note.trim() || undefined
+        category: draft.category,
+        amountKobo: Math.round(Number(draft.amount) * 100),
+        incurredAt: new Date(draft.incurredAt).toISOString(),
+        note: draft.note.trim() || undefined
       }).then((res) => res.data),
     queue: {
       kind: 'farms.expense.recorded',
       label: () => `Record expense on ${plotId}`,
       method: 'POST',
       path: () => `/farms/plots/${plotId}/expenses`,
-      payload: () => ({ category, amountKobo: Math.round(Number(amount) * 100), incurredAt })
+      payload: () => ({
+        category: draft.category,
+        amountKobo: Math.round(Number(draft.amount) * 100),
+        incurredAt: draft.incurredAt
+      })
     },
     onSuccess: () => {
+      clearDraft();
+      invalidateApiQueries(`farms.expenses.${plotId}`, 'farms.summary');
+      onSaved();
+    },
+    onQueued: () => {
+      clearDraft();
       invalidateApiQueries(`farms.expenses.${plotId}`, 'farms.summary');
       onSaved();
     }
@@ -548,8 +623,13 @@ function ExpenseForm({ plotId, onSaved }: { plotId: string; onSaved: () => void 
       <Field id="expense-category" label={t('farms.categoryLabel')}>
         <Select
           id="expense-category"
-          value={category}
-          onChange={(event) => setCategory(event.target.value as typeof category)}
+          value={draft.category}
+          onChange={(event) =>
+            setDraft((current) => ({
+              ...current,
+              category: event.target.value as ExpenseDraft['category']
+            }))
+          }
         >
           {FARM_EXPENSE_CATEGORIES.map((option) => (
             <option key={option} value={option}>
@@ -565,8 +645,8 @@ function ExpenseForm({ plotId, onSaved }: { plotId: string; onSaved: () => void 
           type="number"
           min={0}
           step="any"
-          value={amount}
-          onChange={(event) => setAmount(event.target.value)}
+          value={draft.amount}
+          onChange={(event) => setDraft((current) => ({ ...current, amount: event.target.value }))}
         />
       </Field>
       <Field id="expense-date" label={t('farms.incurredAtLabel')}>
@@ -574,15 +654,15 @@ function ExpenseForm({ plotId, onSaved }: { plotId: string; onSaved: () => void 
           id="expense-date"
           required
           type="date"
-          value={incurredAt}
-          onChange={(event) => setIncurredAt(event.target.value)}
+          value={draft.incurredAt}
+          onChange={(event) => setDraft((current) => ({ ...current, incurredAt: event.target.value }))}
         />
       </Field>
       <Field id="expense-note" label={t('farms.noteLabel')}>
         <TextInput
           id="expense-note"
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
+          value={draft.note}
+          onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
         />
       </Field>
       {save.status === 'error' ? <ApiErrorNotice error={save.error} /> : null}
@@ -667,7 +747,9 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'plantings' ? (
         <Card>
-          {(plantings.data ?? []).length === 0 ? (
+          {plantings.isLoading ? (
+            <SkeletonBlock lines={3} />
+          ) : (plantings.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.plantingsEmpty')} />
           ) : (
             (plantings.data ?? []).map((planting) => (
@@ -730,7 +812,9 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'harvests' ? (
         <Card>
-          {!firstPlantingId || (harvests.data ?? []).length === 0 ? (
+          {firstPlantingId && harvests.isLoading ? (
+            <SkeletonBlock lines={3} />
+          ) : !firstPlantingId || (harvests.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.harvestsEmpty')} />
           ) : (
             (harvests.data ?? []).map((harvest) => (
@@ -746,7 +830,9 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'expenses' ? (
         <Card>
-          {(expenses.data ?? []).length === 0 ? (
+          {expenses.isLoading ? (
+            <SkeletonBlock lines={3} />
+          ) : (expenses.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.expensesEmpty')} />
           ) : (
             (expenses.data ?? []).map((expense) => (
@@ -806,7 +892,9 @@ export function FarmsHub() {
         {plots.error && plots.source !== 'fallback' ? (
           <ApiErrorNotice error={plots.error} onRetry={plots.refresh} />
         ) : null}
-        {(plots.data ?? []).length === 0 ? (
+        {plots.isLoading ? (
+          <SkeletonBlock lines={4} />
+        ) : (plots.data ?? []).length === 0 ? (
           <EmptyState title={t('farms.plotsEmpty')} />
         ) : (
           (plots.data ?? []).map((plot) => (

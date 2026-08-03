@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { I18nProvider } from '@/lib/i18n';
 import { ServiceWorkerRegister } from '@/components/sw-register';
 
 /**
@@ -44,7 +45,7 @@ describe('ServiceWorkerRegister', () => {
   it('renders nothing and does not register when serviceWorker is unsupported', () => {
     vi.stubEnv('NODE_ENV', 'production');
     deleteServiceWorker();
-    const { container } = render(<ServiceWorkerRegister />);
+    const { container } = render(<I18nProvider><ServiceWorkerRegister /></I18nProvider>);
     expect(container.firstChild).toBeNull();
   });
 
@@ -52,7 +53,7 @@ describe('ServiceWorkerRegister', () => {
     vi.stubEnv('NODE_ENV', 'development');
     const register = vi.fn();
     stubServiceWorker({ register });
-    render(<ServiceWorkerRegister />);
+    render(<I18nProvider><ServiceWorkerRegister /></I18nProvider>);
     expect(register).not.toHaveBeenCalled();
   });
 
@@ -63,7 +64,7 @@ describe('ServiceWorkerRegister', () => {
       addEventListener: vi.fn()
     });
     stubServiceWorker({ register });
-    const { container } = render(<ServiceWorkerRegister />);
+    const { container } = render(<I18nProvider><ServiceWorkerRegister /></I18nProvider>);
     await waitFor(() => expect(register).toHaveBeenCalledWith('/sw.js'));
     expect(container.firstChild).toBeNull();
   });
@@ -72,7 +73,7 @@ describe('ServiceWorkerRegister', () => {
     vi.stubEnv('NODE_ENV', 'production');
     const register = vi.fn().mockRejectedValue(new Error('no sw'));
     stubServiceWorker({ register });
-    const { container } = render(<ServiceWorkerRegister />);
+    const { container } = render(<I18nProvider><ServiceWorkerRegister /></I18nProvider>);
     await waitFor(() => expect(register).toHaveBeenCalled());
     expect(container.firstChild).toBeNull();
   });
@@ -85,7 +86,7 @@ describe('ServiceWorkerRegister', () => {
       addEventListener: vi.fn()
     });
     stubServiceWorker({ register });
-    render(<ServiceWorkerRegister />);
+    render(<I18nProvider><ServiceWorkerRegister /></I18nProvider>);
 
     const banner = await screen.findByRole('status');
     expect(banner.textContent).toContain('Update available.');

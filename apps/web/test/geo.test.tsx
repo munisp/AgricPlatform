@@ -131,4 +131,27 @@ describe('GeoClusterMap (admin /admin/geo)', () => {
     await waitFor(() => expect(screen.getByText('4 farms indexed')).toBeTruthy());
     expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
   });
+
+  it('shows a skeleton while loading — no fixture flash, no false offline notice', async () => {
+    // A fetch that never resolves keeps the query in its first-load state.
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    renderWithProviders(<GeoClusterMap />);
+    await waitFor(() => expect(screen.getAllByTestId('skeleton').length).toBeGreaterThan(0));
+    // No fixture polygons and no "live data unavailable" notice yet.
+    expect(document.querySelectorAll('g[data-cell]')).toHaveLength(0);
+    expect(screen.queryByText(/Live data unavailable/i)).toBeNull();
+  });
+
+  it('shows fixtures with the offline notice only after an actual fetch failure', async () => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(() => Promise.reject(new TypeError('fetch failed')));
+    renderWithProviders(<GeoClusterMap />);
+    // Demo fixture cells render once the request has failed…
+    await waitFor(() =>
+      expect(document.querySelectorAll('g[data-cell]').length).toBeGreaterThan(0)
+    );
+    // …and only now is the offline notice honest.
+    expect(screen.getByText(/Live data unavailable/i)).toBeTruthy();
+  });
 });

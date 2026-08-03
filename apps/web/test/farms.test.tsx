@@ -5,6 +5,7 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 import { AppProvider } from '@/lib/app-state';
 import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
+import { getDraftsDb } from '@/lib/drafts';
 import { FarmsHub, PlotForm } from '@/components/farms-live';
 
 expect.extend(toHaveNoViolations);
@@ -96,10 +97,12 @@ function router(url: string, init?: RequestInit) {
 describe('FarmsHub', () => {
   const fetchMock = vi.fn();
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearApiCache();
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockImplementation(router);
+    const db = getDraftsDb();
+    if (db) await db.drafts.clear();
   });
 
   afterEach(() => {
@@ -166,6 +169,41 @@ describe('FarmsHub', () => {
     await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
     const results = await axe(container, AXE_OPTIONS);
     expect(results).toHaveNoViolations();
+  });
+
+  it('shows skeletons while loading — no fixture flash, no false offline notice', async () => {
+    // A fetch that never resolves keeps every query in its first-load state.
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    renderWithProviders(<FarmsHub />);
+    await waitFor(() => expect(screen.getAllByTestId('skeleton').length).toBeGreaterThan(0));
+    // Neither the fixture plot nor the offline notice may appear yet.
+    expect(screen.queryByText('Zaria North Plot')).toBeNull();
+    expect(screen.queryByText(/showing reference data/i)).toBeNull();
+  });
+
+  it('autosaves the plot form draft and restores it after a remount', async () => {
+    const first = renderWithProviders(<FarmsHub />);
+    await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
+    fireEvent.click(screen.getByText('Register plot'));
+    fireEvent.change(screen.getByLabelText('Plot name'), { target: { value: 'Draft Plot' } });
+    fireEvent.change(screen.getByLabelText('LGA'), { target: { value: 'Kura' } });
+    // Debounced autosave (300ms) lands in IndexedDB.
+    await waitFor(
+      async () => {
+        const record = await getDraftsDb()?.drafts.get('farms.plot.new');
+        expect(record?.data).toMatchObject({ name: 'Draft Plot', lga: 'Kura' });
+      },
+      { timeout: 3000 }
+    );
+    first.unmount();
+
+    renderWithProviders(<FarmsHub />);
+    await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
+    fireEvent.click(screen.getByText('Register plot'));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Plot name') as HTMLInputElement).value).toBe('Draft Plot');
+    });
+    expect((screen.getByLabelText('LGA') as HTMLInputElement).value).toBe('Kura');
   });
 });
 
