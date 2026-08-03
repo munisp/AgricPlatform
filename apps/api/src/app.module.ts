@@ -48,6 +48,8 @@ import { FeatureFlagsModule } from './common/feature-flags/feature-flags.module.
 import { RedisThrottlerStorage } from './common/rate-limit/redis-throttler.storage.js';
 import { REDIS_CLIENT } from './database/persistence.tokens.js';
 import { CommerceModule } from './modules/commerce/commerce.module.js';
+// Wave COMP (additive): NDPA 2023 compliance tooling.
+import { ComplianceModule } from './modules/compliance/compliance.module.js';
 
 @Module({
   imports: [
@@ -108,7 +110,9 @@ import { CommerceModule } from './modules/commerce/commerce.module.js';
     // Wave M marketplace commerce depth — appended to minimise merge conflicts.
     CommerceModule,
     // Wave P platform foundation — appended to minimise merge conflicts.
-    FeatureFlagsModule
+    FeatureFlagsModule,
+    // Wave COMP NDPA 2023 compliance tooling — appended to minimise merge conflicts.
+    ComplianceModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

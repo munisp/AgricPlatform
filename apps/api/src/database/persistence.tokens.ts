@@ -150,3 +150,8 @@ export const PROCESSED_EVENT_REPOSITORY = Symbol('PROCESSED_EVENT_REPOSITORY');
 
 // Wave B: analytics star-schema marts (analytics schema, migration 019).
 export const ANALYTICS_STAR_REPOSITORY = Symbol('ANALYTICS_STAR_REPOSITORY');
+
+// Wave COMP: NDPA 2023 compliance tooling (compliance schema, migration 021).
+export const COMPLIANCE_CONSENT_REPOSITORY = Symbol('COMPLIANCE_CONSENT_REPOSITORY');
+export const DATA_SUBJECT_REQUEST_REPOSITORY = Symbol('DATA_SUBJECT_REQUEST_REPOSITORY');
+export const RETENTION_POLICY_REPOSITORY = Symbol('RETENTION_POLICY_REPOSITORY');

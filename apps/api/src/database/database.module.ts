@@ -441,6 +441,22 @@ import {
   createPgReturnRequestRepository,
   createPgSellerRatingRepository
 } from './repositories/commerce-depth.pg-repository.js';
+// Wave COMP: NDPA 2023 compliance tooling persistence (additive).
+import {
+  COMPLIANCE_CONSENT_REPOSITORY,
+  DATA_SUBJECT_REQUEST_REPOSITORY,
+  RETENTION_POLICY_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryComplianceConsentRepository,
+  createInMemoryDataSubjectRequestRepository,
+  createInMemoryRetentionPolicyRepository
+} from './repositories/compliance.repository.js';
+import {
+  createPgComplianceConsentRepository,
+  createPgDataSubjectRequestRepository,
+  createPgRetentionPolicyRepository
+} from './repositories/compliance.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1149,6 +1165,25 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgSellerRatingRepository(pool) : createInMemorySellerRatingRepository(),
       inject: [PG_POOL]
+    },
+    // Wave COMP: NDPA 2023 compliance tooling providers (additive).
+    {
+      provide: COMPLIANCE_CONSENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgComplianceConsentRepository(pool) : createInMemoryComplianceConsentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DATA_SUBJECT_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDataSubjectRequestRepository(pool) : createInMemoryDataSubjectRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RETENTION_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRetentionPolicyRepository(pool) : createInMemoryRetentionPolicyRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1263,7 +1298,10 @@ import {
     AUTH_SESSION_REPOSITORY,
     FEATURE_FLAG_REPOSITORY,
     PROCESSED_EVENT_REPOSITORY,
-    ANALYTICS_STAR_REPOSITORY
+    ANALYTICS_STAR_REPOSITORY,
+    COMPLIANCE_CONSENT_REPOSITORY,
+    DATA_SUBJECT_REQUEST_REPOSITORY,
+    RETENTION_POLICY_REPOSITORY
   ]
 })
 export class DatabaseModule {}

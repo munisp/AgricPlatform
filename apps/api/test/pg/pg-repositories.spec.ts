@@ -20,6 +20,11 @@ import { createPgEscrowRepository } from '../../src/database/repositories/commer
 import { createPgListingVariantRepository } from '../../src/database/repositories/commerce-depth.pg-repository.js';
 import { createPgWebhookDedupeStore } from '../../src/database/repositories/phase3.pg-repository.js';
 import { createPgUserRepository } from '../../src/database/repositories/user.pg-repository.js';
+import {
+  createPgComplianceConsentRepository,
+  createPgDataSubjectRequestRepository,
+  createPgRetentionPolicyRepository
+} from '../../src/database/repositories/compliance.pg-repository.js';
 import { contractCases } from '../contract/cases.js';
 import { runRepositoryContract } from '../contract/repository.contract.js';
 
@@ -332,5 +337,143 @@ describePg('pg funds-integrity guarantees', () => {
     expect(await first.recordIfNew('contract-paystack', digest, { ref: 1 })).toBe(true);
     expect(await second.recordIfNew('contract-paystack', digest, { ref: 1 })).toBe(false);
     expect(await second.recordIfNew('contract-paystack', 'b'.repeat(64), { ref: 2 })).toBe(true);
+  });
+});
+
+/**
+ * Wave COMP: pg behaviour of the NDPA compliance repositories (migration
+ * 021). Mirrors the in-memory contract: consent grant/revoke, DSR workflow,
+ * retention sweeper set operations, policy upsert.
+ */
+describePg('pg compliance repositories (Wave COMP)', () => {
+  const consents = () => createPgComplianceConsentRepository(pool!);
+  const dsr = () => createPgDataSubjectRequestRepository(pool!);
+  const policies = () => createPgRetentionPolicyRepository(pool!);
+
+  const DAYS = 86_400_000;
+  const isoDaysAgo = (days: number) => new Date(Date.now() - days * DAYS).toISOString();
+
+  async function cleanComplianceRows(): Promise<void> {
+    if (!pool) return;
+    await pool.query(`DELETE FROM compliance.consent_records WHERE id LIKE 'contract-%'`);
+    await pool.query(`DELETE FROM compliance.data_subject_requests WHERE id LIKE 'contract-%'`);
+    await pool.query(`DELETE FROM compliance.retention_policies WHERE entity LIKE 'contract-%'`);
+  }
+
+  beforeAll(cleanComplianceRows);
+  afterEach(cleanComplianceRows);
+
+  it('consent lifecycle: create → findByUser → findActive → revoke (once)', async () => {
+    if (!pool) return;
+    await consents().create({
+      id: 'contract-consent-comp-1',
+      userId: 'contract-user-comp',
+      purpose: 'marketing_sms',
+      policyVersion: '2026-06',
+      grantedAt: new Date().toISOString(),
+      source: 'web'
+    });
+    expect(await consents().findByUser('contract-user-comp')).toHaveLength(1);
+    const active = await consents().findActive('contract-user-comp', 'marketing_sms');
+    expect(active?.policyVersion).toBe('2026-06');
+    const revoked = await consents().revoke('contract-consent-comp-1', new Date().toISOString());
+    expect(revoked.revokedAt).toBeDefined();
+    expect(await consents().findActive('contract-user-comp', 'marketing_sms')).toBeUndefined();
+    await expect(
+      consents().revoke('contract-consent-comp-1', new Date().toISOString())
+    ).rejects.toThrow(/already revoked/i);
+    await expect(consents().revoke('contract-missing', new Date().toISOString())).rejects.toThrow(
+      /not found/i
+    );
+  });
+
+  it('consent retention ops: count → anonymize (idempotent) → purge', async () => {
+    if (!pool) return;
+    await consents().create({
+      id: 'contract-consent-comp-old',
+      userId: 'contract-user-comp',
+      purpose: 'marketing_sms',
+      policyVersion: '2024-01',
+      grantedAt: isoDaysAgo(900),
+      revokedAt: isoDaysAgo(800),
+      source: 'web'
+    });
+    await consents().create({
+      id: 'contract-consent-comp-recent',
+      userId: 'contract-user-comp',
+      purpose: 'marketing_email',
+      policyVersion: '2026-01',
+      grantedAt: isoDaysAgo(30),
+      revokedAt: isoDaysAgo(10),
+      source: 'web'
+    });
+    const cutoff = isoDaysAgo(730);
+    expect(await consents().countRevokedBefore(cutoff)).toBe(1);
+    // Idempotent tombstone function (mirrors the service's pseudonymFor).
+    const pseudonym = (userId: string) =>
+      userId.startsWith('redacted:') ? userId : `redacted:pg-${userId}`;
+    expect(await consents().anonymizeRevokedBefore(cutoff, pseudonym)).toBe(1);
+    expect((await consents().findById('contract-consent-comp-old'))?.userId).toBe(
+      'redacted:pg-contract-user-comp'
+    );
+    // Second pass is a no-op.
+    expect(await consents().anonymizeRevokedBefore(cutoff, pseudonym)).toBe(0);
+    expect(await consents().purgeRevokedBefore(cutoff)).toBe(1);
+    expect(await consents().findById('contract-consent-comp-old')).toBeUndefined();
+    expect(await consents().findById('contract-consent-comp-recent')).toBeDefined();
+  });
+
+  it('DSR lifecycle: create → getById → update → closed-before retention ops', async () => {
+    if (!pool) return;
+    await dsr().create({
+      id: 'contract-dsr-comp-1',
+      userId: 'contract-user-comp',
+      type: 'export',
+      status: 'processing',
+      requestedAt: isoDaysAgo(1200)
+    });
+    const completed = await dsr().update('contract-dsr-comp-1', {
+      status: 'completed',
+      completedAt: isoDaysAgo(1200),
+      resultRef: 'sha256:abc'
+    });
+    expect(completed.status).toBe('completed');
+    expect((await dsr().getById('contract-dsr-comp-1')).resultRef).toBe('sha256:abc');
+    expect(await dsr().findByUser('contract-user-comp')).toHaveLength(1);
+    await expect(dsr().getById('contract-missing')).rejects.toThrow(/not found/i);
+
+    const cutoff = isoDaysAgo(1095);
+    expect(await dsr().countClosedBefore(cutoff)).toBe(1);
+    const pseudonym = (userId: string) =>
+      userId.startsWith('redacted:') ? userId : `redacted:pg-${userId}`;
+    expect(await dsr().anonymizeClosedBefore(cutoff, pseudonym)).toBe(1);
+    expect((await dsr().getById('contract-dsr-comp-1')).userId).toBe('redacted:pg-contract-user-comp');
+    expect(await dsr().anonymizeClosedBefore(cutoff, pseudonym)).toBe(0);
+    expect(await dsr().purgeClosedBefore(cutoff)).toBe(1);
+    expect(await dsr().findById('contract-dsr-comp-1')).toBeUndefined();
+  });
+
+  it('retention policies: migration seeds defaults; upsert inserts and updates', async () => {
+    if (!pool) return;
+    const seeded = await policies().list();
+    expect(seeded.map((p) => p.entity)).toContain('compliance.consent_records');
+    expect(seeded.map((p) => p.entity)).toContain('notifications.messages');
+
+    await policies().upsert({
+      entity: 'contract-policy-entity',
+      retainDays: 90,
+      anonymizeNotDelete: true,
+      updatedAt: new Date().toISOString()
+    });
+    expect((await policies().findByEntity('contract-policy-entity'))?.retainDays).toBe(90);
+    await policies().upsert({
+      entity: 'contract-policy-entity',
+      retainDays: 30,
+      anonymizeNotDelete: false,
+      updatedAt: new Date().toISOString()
+    });
+    const updated = await policies().findByEntity('contract-policy-entity');
+    expect(updated?.retainDays).toBe(30);
+    expect(updated?.anonymizeNotDelete).toBe(false);
   });
 });
