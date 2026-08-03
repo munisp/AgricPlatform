@@ -30,6 +30,7 @@ const MIGRATION_PATH = join(
   '..',
   '..',
   '..',
+  '..',
   'infra',
   'postgres',
   '027_voice.sql'

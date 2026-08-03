@@ -191,9 +191,22 @@ export const CREDIT_GROUP_REPOSITORY = Symbol('CREDIT_GROUP_REPOSITORY');
 export const CREDIT_GROUP_MEMBER_REPOSITORY = Symbol('CREDIT_GROUP_MEMBER_REPOSITORY');
 export const CREDIT_SAVINGS_ACCOUNT_REPOSITORY = Symbol('CREDIT_SAVINGS_ACCOUNT_REPOSITORY');
 export const CREDIT_SAVINGS_TRANSACTION_REPOSITORY = Symbol('CREDIT_SAVINGS_TRANSACTION_REPOSITORY');
+
+// Wave EUDR: traceability passport — commodity lots, append-only custody
+// hash chain, immutable plot snapshots, shipments (traceability schema,
+// migrations 029/030).
+export const COMMODITY_LOT_REPOSITORY = Symbol('COMMODITY_LOT_REPOSITORY');
+export const CUSTODY_EVENT_REPOSITORY = Symbol('CUSTODY_EVENT_REPOSITORY');
+export const LOT_PLOT_LINK_REPOSITORY = Symbol('LOT_PLOT_LINK_REPOSITORY');
+export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_REPOSITORY');
 // Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
+
+// Wave MECHANIZATION: equipment hire marketplace (mechanization schema,
+// migration 033) — listings with H3 service areas + the booking workflow.
+export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');
+export const EQUIPMENT_BOOKING_REPOSITORY = Symbol('EQUIPMENT_BOOKING_REPOSITORY');
 
 // Wave-INSURANCE: parametric insurance rail (insurance schema, migration 031).
 // Distinct from the livestock-trade INSURANCE_POLICY_REPOSITORY (animal

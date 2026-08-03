@@ -3346,7 +3346,7 @@ export function recomputeGeoCreditShadow(): Promise<{ data: GeoShadowRecomputeRe
   return apiFetch('/credit/geo-shadow/recompute', { method: 'POST' });
 }
 
-/* ========================================================================
+/* =================================================================
  * Parametric insurance rail (wave-insurance).
  * Mirrors apps/api/src/modules/insurance (insurance.controller). Plain
  * `{ data: T }` envelopes throughout. Admin/cron endpoints (evaluate-
@@ -3394,3 +3394,337 @@ export function fetchMyInsuranceTriggerEvents(): Promise<{ data: ParametricTrigg
 export function fetchMyInsurancePayouts(): Promise<{ data: ParametricPayout[] }> {
   return apiFetch('/insurance/payouts');
 }
+/* -- EUDR traceability passport (wave-eudr) -- */
+
+export type CustodyEventType =
+  | 'CREATED'
+  | 'AGGREGATED'
+  | 'SPLIT'
+  | 'TRANSFORMED'
+  | 'SHIPPED'
+  | 'RECEIVED';
+
+export interface CommodityLot {
+  id: string;
+  ownerUserId: string;
+  crop: string;
+  variety?: string;
+  harvestWindowStart: string;
+  harvestWindowEnd: string;
+  quantity: number;
+  unit: string;
+  status: 'active' | 'aggregated' | 'split' | 'shipped' | 'received';
+  parentLotIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustodyEvent {
+  id: string;
+  lotId: string;
+  seq: number;
+  type: CustodyEventType;
+  actorId: string;
+  occurredAt: string;
+  latitude: number;
+  longitude: number;
+  h3Cell?: string;
+  quantity?: number;
+  unit?: string;
+  parentLotIds: string[];
+  note?: string;
+  prevEventHash: string;
+  eventHash: string;
+  createdAt: string;
+}
+
+export interface EventVerification {
+  eventId: string;
+  lotId: string;
+  seq: number;
+  type: CustodyEventType;
+  hashValid: boolean;
+  prevLinkValid: boolean;
+  valid: boolean;
+  expectedHash: string;
+  storedHash: string;
+}
+
+export interface ChainVerification {
+  lotId: string;
+  eventCount: number;
+  valid: boolean;
+  events: EventVerification[];
+}
+
+export interface LotTimeline {
+  lot: CommodityLot;
+  events: CustodyEvent[];
+  verification: ChainVerification;
+}
+
+export interface TraceabilityShipment {
+  id: string;
+  creatorId: string;
+  creatorKind: 'user' | 'partner';
+  reference?: string;
+  status: 'created' | 'exported';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EudrDds {
+  statementVersion: '1.0';
+  generatedAt: string;
+  ddsReference: string;
+  operator: {
+    status: 'TO_BE_COMPLETED_BY_EXPORTER';
+    legalName: string | null;
+    eori: string | null;
+    address: string | null;
+    note: string;
+  };
+  commodity: { description: string; crops: string[] };
+  quantity: { value: number; unit: string };
+  countryOfProduction: 'NG';
+  productionPlots: Array<{
+    plotId: string;
+    lotId: string;
+    latitude: number;
+    longitude: number;
+    h3Cell?: string;
+    snapshotAt: string;
+  }>;
+  harvestWindow: { start: string; end: string };
+  custodySummary: {
+    lotCount: number;
+    eventCount: number;
+    firstEventAt?: string;
+    lastEventAt?: string;
+    eventTypes: string[];
+  };
+  deforestationRisk: {
+    basis: 'live' | 'stub' | 'unavailable' | 'none';
+    note: string;
+    assessments: Array<{
+      plotId: string;
+      basis: string;
+      floodDetected?: boolean;
+      severity?: string;
+      source?: string;
+      detail?: string;
+    }>;
+  };
+  chainIntegrity: {
+    verified: boolean;
+    eventCount: number;
+    lots: Array<{ lotId: string; valid: boolean; eventCount: number; headHash?: string }>;
+    verifiedAt: string;
+  };
+  disclaimers: string[];
+}
+
+export interface ShipmentVerification {
+  shipmentId: string;
+  allValid: boolean;
+  eventCount: number;
+  lots: ChainVerification[];
+}
+
+export interface CreateCommodityLotInput {
+  crop: string;
+  variety?: string;
+  harvestWindowStart: string;
+  harvestWindowEnd: string;
+  quantity: number;
+  unit: string;
+}
+
+export interface AddCustodyEventInput {
+  type: CustodyEventType;
+  occurredAt: string;
+  latitude: number;
+  longitude: number;
+  h3Cell?: string;
+  quantity?: number;
+  unit?: string;
+  note?: string;
+}
+
+export function listCommodityLots(): Promise<{ data: CommodityLot[] }> {
+  return apiFetch('/traceability/lots');
+}
+
+export function createCommodityLot(
+  input: CreateCommodityLotInput,
+  idempotencyKey?: string
+): Promise<{ data: CommodityLot }> {
+  return apiFetch('/traceability/lots', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function fetchLotTimeline(lotId: string): Promise<{ data: LotTimeline }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/timeline`);
+}
+
+export function addCustodyEvent(
+  lotId: string,
+  input: AddCustodyEventInput,
+  idempotencyKey?: string
+): Promise<{ data: CustodyEvent }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/events`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function createTraceabilityShipment(
+  input: { lotIds: string[]; reference?: string },
+  idempotencyKey?: string
+): Promise<{ data: { shipment: TraceabilityShipment; lots: CommodityLot[] } }> {
+  return apiFetch('/traceability/shipments', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function fetchShipmentDds(shipmentId: string): Promise<{ data: EudrDds }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds`);
+}
+
+export function verifyShipmentDds(shipmentId: string): Promise<{ data: ShipmentVerification }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/verify`);
+}
+
+/* -------- mechanization marketplace (wave-mechanization) -------- */
+
+import type {
+  EquipmentBooking,
+  EquipmentListing,
+  EquipmentType,
+  MechBookingStatus,
+  OperatorVerificationStatus,
+  OwnerUtilizationStats
+} from '@agric-platform/shared';
+
+export function listEquipmentListings(params: {
+  type?: EquipmentType;
+  h3Cell?: string;
+  lat?: number;
+  long?: number;
+  availableFrom?: string;
+  availableTo?: string;
+} = {}): Promise<{ data: EquipmentListing[] }> {
+  return apiFetch('/mechanization/listings', { query: { ...params } });
+}
+
+export function fetchEquipmentListing(id: string): Promise<{ data: EquipmentListing }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}`);
+}
+
+export function createEquipmentListing(input: {
+  ownerType: EquipmentListing['ownerType'];
+  type: EquipmentType;
+  title: string;
+  description?: string;
+  specs?: Record<string, unknown>;
+  baseLat: number;
+  baseLong: number;
+  serviceAreaResolution: number;
+  serviceAreaRing: number;
+  rates: EquipmentListing['rates'];
+  availability: { start: string; end: string }[];
+  operatorLicenseRef?: string;
+}): Promise<{ data: EquipmentListing }> {
+  return apiFetch('/mechanization/listings', { method: 'POST', body: input });
+}
+
+export function listMyEquipmentListings(): Promise<{ data: EquipmentListing[] }> {
+  return apiFetch('/mechanization/listings/mine');
+}
+
+export function setEquipmentListingStatus(
+  id: string,
+  status: EquipmentListing['status']
+): Promise<{ data: EquipmentListing }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}/status`, {
+    method: 'POST',
+    body: { status }
+  });
+}
+
+export function requestEquipmentBooking(
+  listingId: string,
+  input: {
+    plotId?: string;
+    plotLat: number;
+    plotLong: number;
+    areaHa: number;
+    estimatedHours?: number;
+    windowStart: string;
+    windowEnd: string;
+  },
+  idempotencyKey?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/listings/${encodeURIComponent(listingId)}/bookings`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+/** Own bookings (farmer), newest first. Plain `{ data: T[] }` envelope. */
+export function listMyEquipmentBookings(): Promise<{ data: EquipmentBooking[] }> {
+  return apiFetch('/mechanization/bookings/mine');
+}
+
+/** Owner booking queue. Plain `{ data: T[] }` envelope. */
+export function listOwnerEquipmentBookings(params: {
+  status?: MechBookingStatus;
+} = {}): Promise<{ data: EquipmentBooking[] }> {
+  return apiFetch('/mechanization/bookings/queue', { query: { ...params } });
+}
+
+export function fetchEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}`);
+}
+
+export function quoteEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/quote`, { method: 'POST' });
+}
+
+export function confirmEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
+}
+
+export function startEquipmentService(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/start`, { method: 'POST' });
+}
+
+export function completeEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/complete`, { method: 'POST' });
+}
+
+export function cancelEquipmentBooking(
+  id: string,
+  reason?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+export function rateEquipmentBooking(
+  id: string,
+  rating: number,
+  comment?: string
+): Promise<{ data: EquipmentBooking }> {
+  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/rate`, {
+    method: 'POST',
+    body: { rating, comment }
+  });
+}
+
+export function fetchOwnerUtilization(): Promise<{ data: OwnerUtilizationStats }> {
+  return apiFetch('/mechanization/owner/stats');
+}
+
+export type { EquipmentBooking, EquipmentListing, MechBookingStatus, OperatorVerificationStatus };
