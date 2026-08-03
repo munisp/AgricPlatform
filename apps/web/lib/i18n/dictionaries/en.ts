@@ -752,6 +752,48 @@ export const en = {
     groupLoansTitle: 'VSLA group loans',
     groupLoansEmpty: 'No group loans yet.',
     coObligorsLabel: '{count} co-obligors'
+  },
+  // --- voice agronomist (wave-voice) ---
+  voice: {
+    kicker: 'Voice agronomist',
+    queueTitle: 'Agent-assist queue',
+    queueDescription:
+      'Escalations from the IVR/USSD voice agronomist, ordered by SLA deadline. Answer grounded cases fast — farmers are waiting on a phone line.',
+    queueEmpty: 'No cases in this view — the voice agronomist is handling everything.',
+    allStatuses: 'All statuses',
+    openStatuses: 'Needs an agent',
+    overdueOnly: 'Overdue only',
+    caseTitle: 'Case detail',
+    channelLabel: 'Channel',
+    slaLabel: 'SLA due',
+    slaAgeLabel: 'SLA age',
+    overdueBadge: 'overdue',
+    statusLabel: 'Status',
+    reasonLabel: 'Reason',
+    priorityLabel: 'Priority',
+    phoneLabel: 'Farmer phone',
+    assignedLabel: 'Assigned to',
+    unassigned: 'Unassigned',
+    localeNote:
+      'Farmer locale is captured; voice responses are English-only pending professional translation.',
+    transcriptTitle: 'Session transcript',
+    citationsLabel: 'RAG citations',
+    noCitations: 'No citations — menu prompt or safe fallback (never improvised advice).',
+    suggestedTitle: 'Suggested answer from retrieval (review before sending)',
+    responseLabel: 'Your response to the farmer',
+    responsePlaceholder: 'Write the agronomic advice for this farmer…',
+    respondAction: 'Send response',
+    resolveAction: 'Send and resolve',
+    working: 'Sending…',
+    respondedNotice: 'Response recorded and the farmer session updated.',
+    resolvedNotice: 'Case resolved — the farmer session is closed.',
+    backToQueue: '← Back to the queue',
+    farmerLabel: 'Farmer',
+    assistantLabel: 'Assistant',
+    agentLabel: 'Agent',
+    groundedBadge: 'grounded answer',
+    fallbackBadge: 'safe fallback',
+    loadError: 'Could not load the agent-assist data.'
   }
 };
 

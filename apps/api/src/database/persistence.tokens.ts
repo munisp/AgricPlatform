@@ -174,6 +174,12 @@ export const AGENT_ACTIVITY_LOG_REPOSITORY = Symbol('AGENT_ACTIVITY_LOG_REPOSITO
 export const H3_INDEX_REPOSITORY = Symbol('H3_INDEX_REPOSITORY');
 export const GEO_BOUNDARY_REPOSITORY = Symbol('GEO_BOUNDARY_REPOSITORY');
 
+// Wave VOICE: voice agronomist — IVR/USSD RAG advisory sessions, transcript
+// turns and the agent-escalation queue (voice schema, migration 027).
+export const VOICE_SESSION_REPOSITORY = Symbol('VOICE_SESSION_REPOSITORY');
+export const VOICE_TURN_REPOSITORY = Symbol('VOICE_TURN_REPOSITORY');
+export const AGENT_CASE_REPOSITORY = Symbol('AGENT_CASE_REPOSITORY');
+
 // Wave CREDIT: microfinance suite (loan products/applications, repayments,
 // collateral, guarantors, VSLA groups, savings) — schema `credit`.
 export const CREDIT_PRODUCT_REPOSITORY = Symbol('CREDIT_PRODUCT_REPOSITORY');

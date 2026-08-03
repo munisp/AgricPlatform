@@ -3232,3 +3232,90 @@ export function fetchCreditScoreAssessment(
 ): Promise<{ data: CreditScoreAssessment }> {
   return apiFetch(`/credit/score/${encodeURIComponent(userId)}`);
 }
+
+/* ------------------------- voice agronomist (wave-voice) ---------------- */
+/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T } */
+/* envelopes throughout. Agent-assist console endpoints are role-gated        */
+/* (agronomist/admin) server-side.                                            */
+
+export type VoiceChannel = 'ivr' | 'ussd' | 'assisted';
+export type VoiceSessionState = 'intake' | 'triage' | 'advisory' | 'escalated' | 'resolved';
+export type VoiceAgentCaseStatus = 'open' | 'assigned' | 'responded' | 'resolved';
+export type VoiceAgentCaseReason = 'requested' | 'low_confidence' | 'no_grounding';
+
+export interface VoiceAgentCase {
+  id: string;
+  sessionId: string;
+  farmerUserId?: string;
+  phone: string;
+  channel: VoiceChannel;
+  status: VoiceAgentCaseStatus;
+  reason: VoiceAgentCaseReason;
+  priority: 'normal' | 'high';
+  slaDueAt: string;
+  assignedAgentId?: string;
+  suggestedAnswer?: string;
+  citationChunkIds: string[];
+  response?: string;
+  respondedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoiceSession {
+  id: string;
+  channel: VoiceChannel;
+  state: VoiceSessionState;
+  phone: string;
+  ninRef?: string;
+  farmerUserId?: string;
+  locale: string;
+  crop?: string;
+  symptomCategory?: string;
+  activeCaseId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoiceTurn {
+  id: string;
+  sessionId: string;
+  turnIndex: number;
+  speaker: 'farmer' | 'assistant' | 'agent';
+  text: string;
+  citedChunkIds: string[];
+  confidence?: number;
+  createdAt: string;
+}
+
+export interface VoiceAgentCaseDetail {
+  agentCase: VoiceAgentCase;
+  session: VoiceSession;
+  turns: VoiceTurn[];
+}
+
+/** Agent queue, ordered by SLA deadline (soonest first). */
+export function fetchVoiceAgentCases(filter?: {
+  status?: VoiceAgentCaseStatus;
+  overdue?: boolean;
+}): Promise<{ data: VoiceAgentCase[] }> {
+  return apiFetch('/voice/agent-cases', {
+    query: { status: filter?.status, overdue: filter?.overdue ? 'true' : undefined }
+  });
+}
+
+/** Case detail: case + session + full transcript with RAG citations. */
+export function fetchVoiceAgentCase(id: string): Promise<{ data: VoiceAgentCaseDetail }> {
+  return apiFetch(`/voice/agent-cases/${encodeURIComponent(id)}`);
+}
+
+/** Agent first response; resolve=true closes the case and the session. */
+export function respondVoiceAgentCase(
+  id: string,
+  body: { response: string; resolve?: boolean }
+): Promise<{ data: { agentCase: VoiceAgentCase; session: VoiceSession } }> {
+  return apiFetch(`/voice/agent-cases/${encodeURIComponent(id)}/respond`, {
+    method: 'POST',
+    body
+  });
+}
