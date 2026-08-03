@@ -4,7 +4,9 @@ import type {
   Animal,
   ApiListResponse,
   Course,
+  CreateFarmPlotInput,
   DraftOrder,
+  FarmPlot,
   HealthRecall,
   MarketplaceListing,
   MyPathwayEnrolmentSummary,
@@ -194,6 +196,96 @@ export function listOpportunities(
 
 export function fetchWeather(client: ApiClient, state: string): Promise<{ data: WeatherSnapshot }> {
   return client.apiFetch(`/advisory/weather/${encodeURIComponent(state)}`);
+}
+
+/* --------------------- sync protocol v1 (Wave SYNCSRV) -------------------- */
+/* Contract: docs/sync-protocol.md. All operations are scoped to the caller. */
+
+export type SyncPushOp = 'upsert' | 'delete';
+
+export interface SyncPushItem {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  baseVersion: number;
+  op: SyncPushOp;
+  payload?: Record<string, unknown>;
+}
+
+export interface SyncPushItemResult {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  status: 'applied' | 'conflict' | 'error';
+  newVersion?: number;
+  serverVersion?: number;
+  serverPayload?: unknown;
+  error?: string;
+}
+
+export interface SyncPullItem {
+  entityId: string;
+  version: number;
+  deleted: boolean;
+  payload: unknown;
+}
+
+export interface SyncPullPage {
+  entity: string;
+  items: SyncPullItem[];
+  /** Monotonic per (user, entity); pass back as `since` on the next pull. */
+  cursor: number;
+  hasMore: boolean;
+}
+
+export interface SyncStatusEntry {
+  entity: string;
+  serverMaxVersion: number;
+  cursor: number;
+}
+
+/** Push a batch of offline mutations (1–200 items; outcomes are per item). */
+export function syncPush(
+  client: ApiClient,
+  items: SyncPushItem[]
+): Promise<{ data: { results: SyncPushItemResult[] } }> {
+  return client.apiFetch('/sync/push', { method: 'POST', body: { items } });
+}
+
+/** Pull caller-scoped changes since a cursor (version-ordered, tombstoned). */
+export function syncPull(
+  client: ApiClient,
+  params: { entity: string; since?: number; limit?: number }
+): Promise<{ data: SyncPullPage }> {
+  return client.apiFetch('/sync/pull', { query: { ...params } });
+}
+
+/** Per-entity server max version + recorded cursor for the caller. */
+export function syncStatus(client: ApiClient): Promise<{ data: SyncStatusEntry[] }> {
+  return client.apiFetch('/sync/status');
+}
+
+/* -------------------------------- farms --------------------------------- */
+
+/**
+ * Own farm plots (GET /farms/plots — owner-scoped server-side, so the
+ * caller only ever receives their own). Plain `{ data: FarmPlot[] }`.
+ */
+export function listMyFarmPlots(client: ApiClient): Promise<{ data: FarmPlot[] }> {
+  return client.apiFetch('/farms/plots');
+}
+
+/**
+ * Direct plot creation. The capture screen normally writes through the
+ * offline queue (src/offline/queue.ts) instead — this wrapper is for the
+ * queue's flush sender and online-first callers.
+ */
+export function createFarmPlot(
+  client: ApiClient,
+  input: CreateFarmPlotInput,
+  idempotencyKey?: string
+): Promise<{ data: FarmPlot }> {
+  return client.apiFetch('/farms/plots', { method: 'POST', body: input, idempotencyKey });
 }
 
 /* ---------------------------- field agents ------------------------------- */

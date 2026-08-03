@@ -188,6 +188,38 @@ export interface ApiListResponse<T> {
   pageSize: number;
 }
 
+/* ------------------------- farms (farms wave) -------------------------- */
+
+/** Farm plot — mirrors packages/shared farms.ts (kept self-contained). */
+export interface FarmPlot {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  state: string;
+  lga: string;
+  centroidLat: number;
+  centroidLong: number;
+  boundaryGeojson?: unknown;
+  sizeHectares: number;
+  soilType?: string;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  clientId?: string;
+}
+
+export interface CreateFarmPlotInput {
+  name: string;
+  state: string;
+  lga: string;
+  centroidLat: number;
+  centroidLong: number;
+  boundaryGeojson?: unknown;
+  sizeHectares: number;
+  soilType?: string;
+  clientId?: string;
+}
+
 /* ------------------------- field agents (Wave AGENTS) -------------------- */
 
 export type AgentAssignmentStatus = 'assigned' | 'in_progress' | 'completed' | 'cancelled';

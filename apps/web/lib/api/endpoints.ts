@@ -32,6 +32,16 @@ import type {
   EscrowRecord,
   ExportDocument,
   ExportDocumentType,
+  CropPlanting,
+  FarmExpense,
+  FarmExpenseCategory,
+  FarmPlot,
+  FarmSummary,
+  HarvestQualityGrade,
+  HarvestRecord,
+  HarvestUnit,
+  PlantingStatus,
+  SoilType,
   ForumTopic,
   HealthRecordType,
   InstallmentStatus,
@@ -2568,6 +2578,222 @@ export function requestDataErasure(): Promise<{ data: DataSubjectRequest }> {
 /** Note: returns a plain `{ data: T[] }` envelope (no pagination). */
 export function listMyDataSubjectRequests(): Promise<{ data: DataSubjectRequest[] }> {
   return apiFetch('/compliance/dsr/mine');
+}
+
+/* --------------------- sync protocol v1 (Wave SYNCSRV) -------------------- */
+/* Contract: docs/sync-protocol.md. All operations are scoped to the caller. */
+
+export type SyncPushOp = 'upsert' | 'delete';
+
+export interface SyncPushItem {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  baseVersion: number;
+  op: SyncPushOp;
+  payload?: Record<string, unknown>;
+}
+
+export interface SyncPushItemResult {
+  entity: string;
+  entityId: string;
+  clientMutationId: string;
+  status: 'applied' | 'conflict' | 'error';
+  newVersion?: number;
+  serverVersion?: number;
+  serverPayload?: unknown;
+  error?: string;
+}
+
+export interface SyncPullItem {
+  entityId: string;
+  version: number;
+  deleted: boolean;
+  payload: unknown;
+}
+
+export interface SyncPullPage {
+  entity: string;
+  items: SyncPullItem[];
+  /** Monotonic per (user, entity); pass back as `since` on the next pull. */
+  cursor: number;
+  hasMore: boolean;
+}
+
+export interface SyncStatusEntry {
+  entity: string;
+  serverMaxVersion: number;
+  cursor: number;
+}
+
+/** Push a batch of offline mutations (1–200 items; outcomes are per item). */
+export function syncPush(items: SyncPushItem[]): Promise<{ data: { results: SyncPushItemResult[] } }> {
+  return apiFetch('/sync/push', { method: 'POST', body: { items } });
+}
+
+/** Pull caller-scoped changes since a cursor (version-ordered, tombstoned). */
+export function syncPull(params: {
+  entity: string;
+  since?: number;
+  limit?: number;
+}): Promise<{ data: SyncPullPage }> {
+  return apiFetch('/sync/pull', { query: { ...params } });
+}
+
+/** Per-entity server max version + recorded cursor for the caller. */
+export function syncStatus(): Promise<{ data: SyncStatusEntry[] }> {
+  return apiFetch('/sync/status');
+}
+
+/* ========================================================================
+ * Farms & crop-production (farms wave).
+ * Mirrors apps/api/src/modules/farms (farms.controller). All endpoints
+ * return a plain `{ data: T }` envelope; mutations support Idempotency-Key.
+ * ====================================================================== */
+
+export interface CreateFarmPlotInput {
+  name: string;
+  state: string;
+  lga: string;
+  centroidLat: number;
+  centroidLong: number;
+  boundaryGeojson?: unknown;
+  sizeHectares: number;
+  soilType?: SoilType;
+  clientId?: string;
+}
+
+export interface UpdateFarmPlotInput {
+  name?: string;
+  state?: string;
+  lga?: string;
+  centroidLat?: number;
+  centroidLong?: number;
+  boundaryGeojson?: unknown;
+  sizeHectares?: number;
+  soilType?: SoilType;
+}
+
+export function createFarmPlot(
+  input: CreateFarmPlotInput,
+  idempotencyKey?: string
+): Promise<{ data: FarmPlot }> {
+  return apiFetch('/farms/plots', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Owner-scoped on the server: non-admins only ever receive their own plots. */
+export function listFarmPlots(params: {
+  ownerUserId?: string;
+  state?: string;
+} = {}): Promise<{ data: FarmPlot[] }> {
+  return apiFetch('/farms/plots', { query: { ...params } });
+}
+
+export function fetchFarmPlot(id: string): Promise<{ data: FarmPlot }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(id)}`);
+}
+
+export function updateFarmPlot(
+  id: string,
+  patch: UpdateFarmPlotInput,
+  idempotencyKey?: string
+): Promise<{ data: FarmPlot }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch,
+    idempotencyKey
+  });
+}
+
+export function removeFarmPlot(id: string): Promise<{ data: { removed: boolean } }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export interface CreateCropPlantingInput {
+  crop: string;
+  variety?: string;
+  season: string;
+  plantedAt: string;
+  expectedHarvestAt?: string;
+  clientId?: string;
+}
+
+export function createCropPlanting(
+  plotId: string,
+  input: CreateCropPlantingInput,
+  idempotencyKey?: string
+): Promise<{ data: CropPlanting }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(plotId)}/plantings`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function listCropPlantings(plotId: string): Promise<{ data: CropPlanting[] }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(plotId)}/plantings`);
+}
+
+export function transitionCropPlanting(
+  id: string,
+  status: PlantingStatus,
+  idempotencyKey?: string
+): Promise<{ data: CropPlanting }> {
+  return apiFetch(`/farms/plantings/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: { status },
+    idempotencyKey
+  });
+}
+
+export interface RecordHarvestInput {
+  harvestedAt: string;
+  quantity: number;
+  unit: HarvestUnit;
+  qualityGrade?: HarvestQualityGrade;
+}
+
+export function recordHarvest(
+  plantingId: string,
+  input: RecordHarvestInput,
+  idempotencyKey?: string
+): Promise<{ data: HarvestRecord }> {
+  return apiFetch(`/farms/plantings/${encodeURIComponent(plantingId)}/harvests`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function listHarvestRecords(plantingId: string): Promise<{ data: HarvestRecord[] }> {
+  return apiFetch(`/farms/plantings/${encodeURIComponent(plantingId)}/harvests`);
+}
+
+export interface CreateFarmExpenseInput {
+  category: FarmExpenseCategory;
+  amountKobo: number;
+  incurredAt: string;
+  note?: string;
+}
+
+export function createFarmExpense(
+  plotId: string,
+  input: CreateFarmExpenseInput,
+  idempotencyKey?: string
+): Promise<{ data: FarmExpense }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(plotId)}/expenses`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function listFarmExpenses(plotId: string): Promise<{ data: FarmExpense[] }> {
+  return apiFetch(`/farms/plots/${encodeURIComponent(plotId)}/expenses`);
+}
+
+export function fetchFarmSummary(ownerUserId?: string): Promise<{ data: FarmSummary }> {
+  return apiFetch('/farms/summary', { query: ownerUserId ? { ownerUserId } : {} });
 }
 
 /* --------------------- field agents (Wave AGENTS, enumerators) --------------------- */

@@ -156,6 +156,15 @@ export const COMPLIANCE_CONSENT_REPOSITORY = Symbol('COMPLIANCE_CONSENT_REPOSITO
 export const DATA_SUBJECT_REQUEST_REPOSITORY = Symbol('DATA_SUBJECT_REQUEST_REPOSITORY');
 export const RETENTION_POLICY_REPOSITORY = Symbol('RETENTION_POLICY_REPOSITORY');
 
+// Wave SYNCSRV: record-level offline sync protocol v1 (sync schema, migration 024).
+export const ENTITY_VERSION_REPOSITORY = Symbol('ENTITY_VERSION_REPOSITORY');
+export const SYNC_CURSOR_REPOSITORY = Symbol('SYNC_CURSOR_REPOSITORY');
+export const SYNC_MUTATION_REPOSITORY = Symbol('SYNC_MUTATION_REPOSITORY');
+// Wave FARMS: farms & crop-production (farms schema, migration 022).
+export const FARM_PLOT_REPOSITORY = Symbol('FARM_PLOT_REPOSITORY');
+export const CROP_PLANTING_REPOSITORY = Symbol('CROP_PLANTING_REPOSITORY');
+export const HARVEST_RECORD_REPOSITORY = Symbol('HARVEST_RECORD_REPOSITORY');
+export const FARM_EXPENSE_REPOSITORY = Symbol('FARM_EXPENSE_REPOSITORY');
 // Wave AGENTS: field-agent (enumerator) assignments + activity trail
 // (agents schema, migration 023).
 export const AGENT_ASSIGNMENT_REPOSITORY = Symbol('AGENT_ASSIGNMENT_REPOSITORY');

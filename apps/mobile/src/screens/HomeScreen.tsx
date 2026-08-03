@@ -40,6 +40,7 @@ export function HomeScreen({
   onOpenOrders,
   onOpenNotifications,
   onOpenLivestock,
+  onOpenFarms,
   onOpenAgentQueue
 }: {
   state?: string;
@@ -49,6 +50,8 @@ export function HomeScreen({
   onOpenOrders: () => void;
   onOpenNotifications: () => void;
   onOpenLivestock: () => void;
+  /** Farms wave: plot list/capture entry (optional until all callers wire it). */
+  onOpenFarms?: () => void;
   /** Wave AGENTS: enumerators jump straight to their field queue. */
   onOpenAgentQueue?: () => void;
 }) {
@@ -184,6 +187,7 @@ export function HomeScreen({
         <PrimaryButton label="My orders" onPress={onOpenOrders} />
         <PrimaryButton label="Notifications" onPress={onOpenNotifications} />
         <PrimaryButton label="My livestock" onPress={onOpenLivestock} />
+        {onOpenFarms ? <PrimaryButton label="My plots" onPress={onOpenFarms} /> : null}
         {onOpenAgentQueue ? (
           <PrimaryButton label="My field queue" onPress={onOpenAgentQueue} />
         ) : null}
