@@ -1,0 +1,61 @@
+# Prometheus scrape configuration for the AgricPlatform API (Wave OPS).
+#
+# The API exposes Prometheus text format at /api/v1/metrics, protected by
+# the METRICS_TOKEN bearer credential (or an admin OIDC token). Put the
+# token in a file next to this config — NEVER inline it here:
+#
+#   echo -n "$METRICS_TOKEN" > /etc/prometheus/secrets/metrics_token
+#   chmod 0400 /etc/prometheus/secrets/metrics_token
+#
+# Alert rules live in alerts.yml (same directory); reference it via
+# rule_files in your top-level prometheus.yml, or use this file directly:
+#
+#   prometheus --config.file=infra/observability/prometheus.yml
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    platform: agric-platform
+
+rule_files:
+  - alerts.yml
+
+# Alertmanager wiring is environment-specific; example:
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: agric-api
+    metrics_path: /api/v1/metrics
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics_token
+    static_configs:
+      # Replace with the real API hosts (or switch to a service-discovery
+      # mechanism, e.g. kubernetes_sd_configs, in your overlay).
+      - targets:
+          - api.agric-platform.example.com
+        labels:
+          service: agric-api
+          environment: production
+    # Scrape failures surface via the standard `up` metric; alerts.yml
+    # pages when the API is down or the scrape credential stops working.
+
+  # Optional blackbox readiness probe (requires the blackbox exporter):
+  # - job_name: agric-api-ready
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx]
+  #   static_configs:
+  #     - targets: ["https://api.agric-platform.example.com/api/v1/health/ready"]
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: blackbox-exporter:9115
