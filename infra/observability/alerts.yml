@@ -1,0 +1,176 @@
+# SLO-based alert rules for the AgricPlatform API (Wave OPS).
+# Every expr references only series the API actually exports:
+#   http_requests_total / http_request_duration_seconds (RED, by route/status)
+#   agric_errors_5xx_total, agric_otp_*, agric_idempotent_replays_total
+#   agric_outbox_backlog_records{state}, agric_outbox_oldest_pending_age_seconds
+#   agric_notifications_queued, agric_notification_dlq_depth
+#   agric_escrow_locked_amount_kobo{status}
+# Thresholds are starting recommendations — tune against real traffic before
+# tightening paging policies. Runbook: docs/runbooks/ops.md#on-call-alerts.
+
+groups:
+  - name: agric-api-availability
+    rules:
+      - alert: AgricApiDown
+        expr: up{job="agric-api"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: API unreachable (or /metrics scrape failing)
+          action: >-
+            Check pod health (kubectl get pods -n agric-platform), then
+            /health/live directly. If pods are up but scrapes fail, verify the
+            METRICS_TOKEN credential file and that the metrics route returns
+            401/200 (not 404) — see docs/runbooks/ops.md#on-call-alerts.
+
+      - alert: AgricApiHigh5xxRate
+        # SLO: < 5% of requests may 5xx over any 10-minute window.
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[10m]))
+            / sum(rate(http_requests_total[10m])) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: API 5xx ratio above 5% for 10m
+          action: >-
+            Identify the failing routes (Grafana: HTTP 5xx rate panel),
+            check agric_errors_5xx_total and Sentry for the exception, and
+            /health/ready for a degraded dependency (postgres/redis).
+
+      - alert: AgricApiHighLatencyP95
+        # SLO: p95 request latency < 2s (low-bandwidth PWA budget).
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: API p95 latency above 2s for 10m
+          action: >-
+            Break down by route (Grafana: p95 latency panel). Common causes:
+            missing DB index on a hot query, N+1 in a listing endpoint,
+            Redis down forcing in-memory fallback.
+
+  - name: agric-platform-backlogs
+    rules:
+      - alert: AgricOutboxBacklogGrowing
+        # SLO: event outbox drains continuously; sustained backlog = relay down.
+        expr: agric_outbox_backlog_records{state="pending"} > 100
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: Domain-event outbox backlog above 100 for 15m
+          action: >-
+            The external sweeper may have stopped: check the cron/CronJob that
+            runs scripts/sweep-outbox.mjs, then run one manual sweep
+            (npm run sweep:outbox) and watch agric_outbox_backlog_records drop.
+
+      - alert: AgricOutboxOldestPendingOld
+        # SLO: no outbox row may sit unpublished for over 30 minutes.
+        expr: agric_outbox_oldest_pending_age_seconds > 1800
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Oldest unpublished outbox row older than 30m
+          action: >-
+            A row is stuck (listener throws every sweep). Inspect the API logs
+            for "outbox relay failed", fix the listener, then re-sweep. Rows
+            dead-letter after 8 attempts — see AgricOutboxDeadLetters.
+
+      - alert: AgricOutboxDeadLetters
+        expr: agric_outbox_backlog_records{state="dead_lettered"} > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Outbox rows dead-lettered (event delivery lost)
+          action: >-
+            Events exhausted retries — downstream consumers missed them.
+            List dead letters via the admin outbox endpoints, fix the failing
+            listener, then replay. Verify consumer lag via the analytics
+            projector heartbeat on /health/modules (admin).
+
+      - alert: AgricNotificationDlqNonEmpty
+        expr: agric_notification_dlq_depth > 0
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Notification delivery dead letters present
+          action: >-
+            Messages failed all delivery retries. Check the provider driver
+            (termii/whatsapp/mailgun) credentials with npm run verify:providers,
+            then requeue or notify affected users per docs/runbooks/ops.md.
+
+      - alert: AgricNotificationQueueStuck
+        expr: agric_notifications_queued > 500
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: More than 500 notifications queued for 30m
+          action: >-
+            Delivery pipeline is not draining. Check provider health
+            (npm run verify:providers) and API logs for delivery errors.
+
+  - name: agric-escrow-invariants
+    rules:
+      - alert: AgricEscrowNegativeBalance
+        # Invariant: locked escrow can never be negative — a negative reading
+        # means double-release/refund logic corrupted the ledger view.
+        expr: agric_escrow_locked_amount_kobo < 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: NEGATIVE locked escrow amount — funds-integrity incident
+          action: >-
+            Treat as a funds-integrity incident: freeze escrow transitions,
+            run the escrow/order reconciliation against the ledger, and page
+            the payments on-call per docs/runbooks/ops.md#escrow-invariants.
+
+      - alert: AgricEscrowStuckPendingState
+        # Invariant: releasing/refunding are system-driven pending states that
+        # must clear in minutes; a non-zero amount for 6h means a provider
+        # call is wedged and buyer funds are in limbo.
+        expr: |
+          min_over_time(agric_escrow_locked_amount_kobo{status=~"releasing|refunding"}[6h]) > 0
+        for: 6h
+        labels:
+          severity: page
+        annotations:
+          summary: Escrow stuck in releasing/refunding for over 6h
+          action: >-
+            A provider-backed release/refund crashed mid-call. The records are
+            resumable by design: re-drive the transition as admin (guarded
+            write happened before the provider call) after verifying the
+            provider side with npm run verify:providers.
+
+  - name: agric-auth-abuse
+    rules:
+      - alert: AgricOtpLockoutStorm
+        expr: rate(agric_otp_verifications_total{result="locked"}[15m]) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: OTP lockouts climbing — possible credential stuffing
+          action: >-
+            Check OTP request sources; consider tightening throttler limits on
+            /auth/otp/* per docs/security-compliance.md §7.
+
+      - alert: AgricIdempotentReplayStorm
+        expr: rate(agric_idempotent_replays_total[10m]) > 1
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: Idempotency replay storm — client retry loop
+          action: >-
+            A client is retrying in a tight loop. Identify the route via the
+            http_requests_total by-route panel and contact the integrator.
