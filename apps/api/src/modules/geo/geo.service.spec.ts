@@ -162,9 +162,11 @@ describe('GeoService reindex', () => {
     await expect(service.reindex(farmerOne)).rejects.toThrow(ForbiddenException);
     await expect(service.reindex(null)).rejects.toThrow(UnauthorizedException);
     await service.reindex(admin);
-    const entries = await audit.list({ action: 'geo.reindex' });
+    const entries = (await audit.list({ actorId: admin.id })).filter(
+      (entry) => entry.action === 'geo.reindex'
+    );
     expect(entries).toHaveLength(1);
-    expect(entries[0].actorId).toBe(admin.id);
+    expect(entries[0].entityType).toBe('h3_index');
   });
 });
 

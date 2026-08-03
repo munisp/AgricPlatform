@@ -153,6 +153,25 @@ const GEO_BOUNDARY_MAPPING = {
   created_at: 'createdAt'
 } as const;
 
+/**
+ * toRow only emits keys present on the item so Partial<T> patches update
+ * exactly the patched columns (present-but-undefined → SQL NULL = clearing)
+ * — same convention as the farms wave mappers.
+ */
+function present<T extends object>(
+  item: Partial<T>,
+  mapping: Record<string, keyof Partial<T>>
+): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  for (const [column, key] of Object.entries(mapping)) {
+    if (key in item) {
+      const value = (item as unknown as Record<string, unknown>)[key as string];
+      row[column] = value === undefined ? null : value;
+    }
+  }
+  return row;
+}
+
 export const geoBoundaryMapper: RowMapper<GeoBoundary> = {
   columns: Object.keys(GEO_BOUNDARY_MAPPING),
   fromRow: (row) => ({
@@ -163,16 +182,7 @@ export const geoBoundaryMapper: RowMapper<GeoBoundary> = {
     boundaryGeojson: row.boundary_geojson,
     createdAt: ts(row.created_at)
   }),
-  toRow: (item) => {
-    const row: Record<string, unknown> = {};
-    for (const [column, key] of Object.entries(GEO_BOUNDARY_MAPPING)) {
-      if (key in item) {
-        const value = (item as Record<string, unknown>)[key as string];
-        row[column] = value === undefined ? null : value;
-      }
-    }
-    return row;
-  }
+  toRow: (item) => present(item, GEO_BOUNDARY_MAPPING)
 };
 
 export function geoBoundaryCriteriaSql(criteria: GeoBoundaryCriteria): WhereClause {
