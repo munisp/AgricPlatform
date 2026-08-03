@@ -122,6 +122,7 @@ export default function App() {
           </Stack.Screen>
           <Stack.Screen name="PlotCapture" options={{ title: 'Capture plot' }}>
             {({ navigation }) => <PlotCaptureScreen onSaved={() => navigation.goBack()} />}
+          </Stack.Screen>
           <Stack.Screen name="AgentQueue" options={{ title: 'My field queue' }}>
             {() => <AgentQueueScreen />}
           </Stack.Screen>
