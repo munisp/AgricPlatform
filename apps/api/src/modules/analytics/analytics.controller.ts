@@ -10,6 +10,7 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { AuditService } from '../../core/audit.service.js';
 import { AnalyticsDepthService } from './analytics-depth.service.js';
 import { AnalyticsService } from './analytics.service.js';
+import { LakehouseExporterService } from './exporter/lakehouse-exporter.service.js';
 import { analyticsExportCsv, analyticsExportPdf } from './export-formats.js';
 import { MART_NAMES, type MartName } from './marts.js';
 import { AnalyticsProjectorService } from './projector.service.js';
@@ -86,7 +87,8 @@ export class AnalyticsController {
     private readonly depth: AnalyticsDepthService,
     private readonly audit: AuditService,
     private readonly projector: AnalyticsProjectorService,
-    private readonly star: AnalyticsStarService
+    private readonly star: AnalyticsStarService,
+    private readonly lakehouse: LakehouseExporterService
   ) {}
 
   @Get('metrics')
@@ -142,6 +144,42 @@ export class AnalyticsController {
       return new StreamableFile(pdf);
     }
     return { data: bundle };
+  }
+
+  // -- Wave lakehouse-export: marts → object storage (parquet + manifest) ------
+
+  @Post('export')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Lakehouse export run: writes every analytics star mart (migration 019) to S3-compatible object storage as Parquet part-files under hive-style dt=YYYY-MM-DD/ partitions, plus a _manifest.json (row counts, part files, SHA-256 per file). Idempotent per run date — re-running replaces the day partition. Requires LAKEHOUSE_ENABLED=true with bucket/credentials, otherwise 503. Admin only; audit-logged.'
+  })
+  async exportLakehouse(@CurrentUser() actor: User | null) {
+    const manifest = await this.lakehouse.runExport();
+    await this.audit.record({
+      actorId: actor?.id ?? 'unknown',
+      action: 'analytics.export.lakehouse',
+      entityType: 'lakehouse_export',
+      entityId: manifest.runId,
+      metadata: {
+        runDate: manifest.runDate,
+        totalRows: manifest.totalRows,
+        totalBytes: manifest.totalBytes
+      }
+    });
+    return { data: manifest };
+  }
+
+  @Get('export/last')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Last lakehouse export status: { enabled, manifest }. manifest is the _manifest.json of the most recent run (object storage is the source of truth; no new database table exists) or null before the first run. When LAKEHOUSE_ENABLED=false, enabled=false with a reason. Admin only.'
+  })
+  async lakehouseExportLast() {
+    return { data: await this.lakehouse.lastExportStatus() };
   }
 
   // -- M13 analytics depth (Wave P5c) -------------------------------------------

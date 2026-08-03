@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@agric-platform/shared": "0.1.0",
+    "@aws-sdk/client-s3": "^3.1101.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
@@ -31,6 +32,7 @@
     "ioredis": "^5.4.2",
     "jose": "^6.2.7",
     "nestjs-pino": "^4.6.1",
+    "parquetjs-lite": "^0.8.7",
     "pdfkit": "^0.19.1",
     "pg": "^8.13.1",
     "pino": "^10.3.1",
