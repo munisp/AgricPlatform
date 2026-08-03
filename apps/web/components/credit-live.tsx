@@ -7,7 +7,8 @@ import type {
   CreditRepayment
 } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
-import { useApiQuery } from '@/lib/api/hooks';
+import { useApiMutation, useApiQuery } from '@/lib/api/hooks';
+import { useFormDraft } from '@/lib/drafts';
 import {
   applyForCreditLoan,
   createCreditGroup,
@@ -93,46 +94,83 @@ export function CreditProductsSection() {
 
 /* ----------------------------- apply wizard ------------------------------ */
 
+interface CreditApplyDraft {
+  productId: string;
+  amountNaira: string;
+  purpose: string;
+}
+
+const EMPTY_APPLY_DRAFT: CreditApplyDraft = { productId: '', amountNaira: '', purpose: '' };
+
+function isEmptyApplyDraft(draft: CreditApplyDraft): boolean {
+  return draft.productId === '' && draft.amountNaira.trim() === '' && draft.purpose.trim() === '';
+}
+
+interface CreditApplyInput {
+  productId: string;
+  principalKobo: number;
+  purpose?: string;
+}
+
 export function CreditApplySection() {
   const { userId } = useAppState();
   const { t } = useT();
   const products = useApiQuery('credit:products', () =>
     listCreditProducts().then((res) => res.data)
   );
-  const [productId, setProductId] = useState('');
-  const [amountNaira, setAmountNaira] = useState('');
-  const [purpose, setPurpose] = useState('');
-  const [pending, setPending] = useState(false);
+  // Draft persistence: an interrupted application (dropped connection,
+  // closed browser) restores on the next visit; cleared on submit/queue.
+  const { draft, setDraft, clearDraft } = useFormDraft<CreditApplyDraft>(
+    'credit-apply',
+    EMPTY_APPLY_DRAFT,
+    isEmptyApplyDraft
+  );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const eligible = (products.data ?? []).filter((product) => !product.groupLending);
-  const selected = eligible.find((product) => product.id === productId);
+  const selected = eligible.find((product) => product.id === draft.productId);
+
+  // Two-step draft → submit runs through useApiMutation so a network failure
+  // parks ONE queue item whose replay chains: re-POST the draft, then submit
+  // by the id the (idempotent) draft replay returns.
+  const apply = useApiMutation<CreditApplyInput, CreditLoanApplication>({
+    mutationFn: async (input) => {
+      const draftRes = await applyForCreditLoan(input);
+      const submitted = await submitCreditLoan(draftRes.data.id);
+      return submitted.data;
+    },
+    queue: {
+      kind: 'credit.loan.application',
+      label: (input) => `Loan application ₦${(input.principalKobo / 100).toLocaleString('en-NG')}`,
+      method: 'POST',
+      path: () => '/credit/applications',
+      payload: (input) => input,
+      chain: () => [{ method: 'POST', path: '/credit/applications/{id}/submit' }]
+    },
+    onSuccess: (loan) => {
+      setNotice(t('credit.appliedNotice', { id: loan.id }));
+      clearDraft();
+    },
+    onQueued: () => {
+      setNotice(t('credit.queuedNotice'));
+      clearDraft();
+    }
+  });
 
   async function submit() {
-    const principalKobo = nairaToKobo(amountNaira);
+    const principalKobo = nairaToKobo(draft.amountNaira);
     if (!selected || principalKobo === null) {
-      setError('Choose a product and enter a valid amount.');
+      setError(t('credit.errorInvalidInput'));
       return;
     }
-    setPending(true);
     setError(null);
     setNotice(null);
-    try {
-      const draft = await applyForCreditLoan({
-        productId: selected.id,
-        principalKobo,
-        purpose: purpose || undefined
-      });
-      const submitted = await submitCreditLoan(draft.data.id);
-      setNotice(t('credit.appliedNotice', { id: submitted.data.id }));
-      setAmountNaira('');
-      setPurpose('');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Application failed');
-    } finally {
-      setPending(false);
-    }
+    await apply.mutate({
+      productId: selected.id,
+      principalKobo,
+      purpose: draft.purpose || undefined
+    });
   }
 
   return (
@@ -153,8 +191,8 @@ export function CreditApplySection() {
         <Field id="credit-product" label={t('credit.productsTitle')}>
           <select
             id="credit-product"
-            value={productId}
-            onChange={(event) => setProductId(event.target.value)}
+            value={draft.productId}
+            onChange={(event) => setDraft((current) => ({ ...current, productId: event.target.value }))}
           >
             <option value="">—</option>
             {eligible.map((product: CreditLoanProduct) => (
@@ -168,8 +206,10 @@ export function CreditApplySection() {
           <TextInput
             id="credit-amount"
             inputMode="numeric"
-            value={amountNaira}
-            onChange={(event) => setAmountNaira(event.target.value)}
+            value={draft.amountNaira}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, amountNaira: event.target.value }))
+            }
           />
         </Field>
         {selected ? (
@@ -181,8 +221,8 @@ export function CreditApplySection() {
           <TextArea
             id="credit-purpose"
             placeholder={t('credit.purposePlaceholder')}
-            value={purpose}
-            onChange={(event) => setPurpose(event.target.value)}
+            value={draft.purpose}
+            onChange={(event) => setDraft((current) => ({ ...current, purpose: event.target.value }))}
           />
         </Field>
         {error ? (
@@ -190,13 +230,24 @@ export function CreditApplySection() {
             {error}
           </p>
         ) : null}
+        {apply.status === 'error' ? (
+          <p role="alert" className="notice notice-error">
+            {apply.error instanceof Error && apply.error.message
+              ? apply.error.message
+              : t('credit.errorApplyFailed')}
+          </p>
+        ) : null}
         {notice ? (
           <p role="status" className="notice notice-success">
             {notice}
           </p>
         ) : null}
-        <button type="submit" className="button button-primary" disabled={pending || !userId}>
-          {pending ? t('credit.submitting') : t('credit.submitApplication')}
+        <button
+          type="submit"
+          className="button button-primary"
+          disabled={apply.status === 'pending' || !userId}
+        >
+          {apply.status === 'pending' ? t('credit.submitting') : t('credit.submitApplication')}
         </button>
       </form>
     </QueryState>
@@ -345,7 +396,7 @@ export function CreditGroupsSection() {
       setJoinId('');
       query.refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Group action failed');
+      setError(cause instanceof Error ? cause.message : t('credit.errorGroupAction'));
     } finally {
       setPending(false);
     }
@@ -447,7 +498,7 @@ export function CreditSavingsSection() {
   async function transact(direction: 'deposit' | 'withdrawal') {
     const amountKobo = nairaToKobo(amount);
     if (amountKobo === null) {
-      setError('Enter a valid amount.');
+      setError(t('credit.errorInvalidAmount'));
       return;
     }
     setPending(true);
@@ -463,7 +514,7 @@ export function CreditSavingsSection() {
       account.refresh();
       transactions.refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Savings transaction failed');
+      setError(cause instanceof Error ? cause.message : t('credit.errorSavingsFailed'));
     } finally {
       setPending(false);
     }

@@ -5,6 +5,7 @@ import {
   CreditReviewQueueSection
 } from '@/components/admin-credit-live';
 import { PageHeader, Section } from '@/components/ui';
+import { T } from '@/lib/i18n';
 
 export const metadata: Metadata = {
   title: 'Credit Operations',
@@ -16,24 +17,24 @@ export default function AdminCreditPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Credit operations"
-        title="Loan review and portfolio risk"
-        description="Score applications, approve or reject, and watch portfolio-at-risk ratios."
+        kicker={<T k="credit.adminKicker" />}
+        title={<T k="credit.adminTitle" />}
+        description={<T k="credit.adminDescription" />}
       />
 
-      <Section kicker="Portfolio at risk" title="PAR ratios">
+      <Section kicker={<T k="credit.portfolioKicker" />} title={<T k="credit.portfolioTitle" />}>
         <CreditPortfolioSection />
       </Section>
 
       <Section
-        kicker="Review queue"
-        title="Applications needing review"
-        description="Deterministic five-factor scores accompany every submitted application."
+        kicker={<T k="credit.queueKicker" />}
+        title={<T k="credit.queueTitle" />}
+        description={<T k="credit.queueDescription" />}
       >
         <CreditReviewQueueSection />
       </Section>
 
-      <Section kicker="Group lending" title="VSLA group loans">
+      <Section kicker={<T k="credit.groupLoansKicker" />} title={<T k="credit.groupLoansTitle" />}>
         <CreditGroupLoansSection />
       </Section>
     </div>

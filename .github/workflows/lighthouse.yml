@@ -1,7 +1,10 @@
 name: Lighthouse CI
 
 # Wave P3 NFR tooling: mobile, throttled-3G Lighthouse assertions on the key
-# web routes (/, /login, /courses, /marketplace) against a deployed preview.
+# web routes (/, /onboarding, /learning, /marketplace, /farms, /credit)
+# against a deployed preview. Assertions live in lighthouserc.json (repo
+# root): accessibility >= 0.95 is error-level; performance/best-practice
+# budgets are advisory warnings sized for a 3G PWA.
 #
 # - pull_request / main: advisory (continue-on-error) — results are uploaded
 #   to temporary public storage for inspection but never block.
@@ -53,6 +56,8 @@ jobs:
           npm install --no-save @lhci/cli@0.14.x
           npx lhci autorun \
             --collect.url="${PREVIEW_URL}/" \
-            --collect.url="${PREVIEW_URL}/login" \
-            --collect.url="${PREVIEW_URL}/courses" \
-            --collect.url="${PREVIEW_URL}/marketplace"
+            --collect.url="${PREVIEW_URL}/onboarding" \
+            --collect.url="${PREVIEW_URL}/learning" \
+            --collect.url="${PREVIEW_URL}/marketplace" \
+            --collect.url="${PREVIEW_URL}/farms" \
+            --collect.url="${PREVIEW_URL}/credit"

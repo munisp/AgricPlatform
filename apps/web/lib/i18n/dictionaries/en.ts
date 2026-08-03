@@ -26,6 +26,8 @@ export const en = {
     chapters: 'Chapters',
     marketplace: 'Marketplace',
     livestock: 'Livestock',
+    farms: 'Farms',
+    agents: 'Field agents',
     finance: 'Finance',
     credit: 'Credit',
     advisory: 'Advisory',
@@ -246,7 +248,107 @@ export const en = {
     failed: 'Sync failed — will retry',
     pending: 'Pending {count}',
     conflictsResolved: 'Conflicts resolved {count}',
+    // Record-level sync (notifications cache) — deliberately different copy
+    // from the request-queue action (`queue.sendQueued`) so the two layers
+    // are never confused.
     syncNow: 'Sync now'
+  },
+  queue: {
+    loading: 'Loading offline queue…',
+    emptyTitle: 'Nothing waiting to sync',
+    emptyHint:
+      'Forms you submit while offline (applications, listings, attendance, privacy requests) will appear here and sync automatically once the API is connected.',
+    pendingOne: '{count} submission waiting to sync.',
+    pendingMany: '{count} submissions waiting to sync.',
+    pendingBody:
+      'They are stored on this device and replay with their original idempotency keys when connectivity returns.',
+    caughtUpTitle: 'All caught up.',
+    caughtUpBody: 'Every submission on this device has been synced.',
+    attemptOne: '{count} attempt',
+    attemptMany: '{count} attempts',
+    statusAria: 'Sync status: {status}',
+    retry: 'Retry',
+    // Request-queue action: replays queued form submissions (transport layer).
+    sendQueued: 'Send queued submissions',
+    sendingQueued: 'Sending…',
+    clear: 'Clear local queue'
+  },
+  apiState: {
+    errorTitle: 'Something went wrong',
+    errorHint: 'The request failed. Please try again.',
+    unauthorizedTitle: 'Sign in required',
+    unauthorizedHint: 'Your session is missing or expired. Sign in again to continue.',
+    forbiddenTitle: 'No access',
+    forbiddenHint:
+      'Your account does not have permission to view this. Switch role or contact an admin.',
+    rateLimitTitle: 'Slow down — throttled',
+    rateLimitHintTimed: 'Too many requests. Try again in about {seconds}s.',
+    rateLimitHint: 'Too many requests. Please wait a moment and try again.',
+    offlineTitle: 'You appear to be offline',
+    offlineHint:
+      'The API is unreachable. Anything you submit is queued and syncs when you reconnect.',
+    tryAgain: 'Try again',
+    offlineFallback:
+      'Offline — showing saved reference data. Live updates resume when you reconnect.',
+    refreshing: 'Refreshing…',
+    emptyDefault: 'Nothing here yet'
+  },
+  sw: {
+    updateAvailable: 'Update available.',
+    refreshNow: 'Refresh now'
+  },
+  offline: {
+    kicker: 'Offline mode',
+    title: 'You are offline — no problem.',
+    description:
+      'AgricPlatform keeps working without connectivity. Pages you have visited are cached on this device, and anything you submit is queued locally and syncs when you reconnect.',
+    noticeTitle: 'Queued submissions stay safe.',
+    noticeBody:
+      'Applications, listings, attendance records and privacy requests are stored on this device with idempotency keys until they can be sent.',
+    retry: 'Retry connection',
+    dashboard: 'Open cached dashboard'
+  },
+  notFound: {
+    kicker: '404',
+    title: 'Page not found',
+    description:
+      'This page does not exist or has moved. Offline, only pages you visited before open.',
+    home: 'Go to the homepage',
+    offline: 'See what works offline'
+  },
+  install: {
+    title: 'Install AgricPlatform',
+    body: 'Add it to your home screen. Opens faster and works offline.',
+    action: 'Install app',
+    dismiss: 'Not now'
+  },
+  footer: {
+    tagline:
+      "The unified digital operating system for Nigeria's young farmers — built with NYFN for farmers, students, buyers, suppliers, chapters and partners.",
+    platform: 'Platform',
+    organisation: 'Organisation',
+    trust: 'Trust',
+    dashboard: 'Dashboard',
+    learningAcademy: 'Learning Academy',
+    opportunities: 'Opportunities',
+    marketplace: 'Marketplace',
+    services: 'Services',
+    programmes: 'Programmes',
+    pathways: 'Pathways',
+    knowledge: 'Knowledge',
+    advisory: 'Advisory',
+    chapters: 'Chapters',
+    community: 'Community',
+    partnerHub: 'Partner Hub',
+    adminConsole: 'Admin Console',
+    integrations: 'Integrations',
+    privacy: 'Privacy & NDPR',
+    search: 'Search',
+    offlineMode: 'Offline mode',
+    settings: 'Settings',
+    joinNyfn: 'Join NYFN',
+    bottomNote:
+      'Phase 1 reference build · English, Hausa, Yoruba and Igbo language structure · Works offline — submissions queue on your device and sync when you reconnect.'
   },
   adminStatus: {
     title: 'Module status',
@@ -414,6 +516,10 @@ export const en = {
     dueAt: 'Due date (optional)',
     create: 'Create assignment',
     creating: 'Creating…',
+    myQueueLink: 'Open my field queue',
+    errorRequired: 'Enumerator, state, LGA and purpose are required',
+    errorTarget: 'Target count must be at least 1',
+    errorCreate: 'Could not create the assignment — check the details and try again.',
     boardKicker: 'Board',
     boardTitle: 'Assignments',
     empty: 'No assignments yet — create the first one above.',
@@ -541,8 +647,19 @@ export const en = {
     refNote: 'Each transaction gets a unique reference — safe to retry offline.',
     transactionsTitle: 'Transactions',
     transactionsEmpty: 'No savings transactions yet.',
+    scoreKicker: 'Credit score',
+    scoreSectionTitle: 'Your score preview',
     scoreTitle: 'Credit score preview',
     scoreOutOf: '{score} out of 1000',
+    applyDescription: 'Drafts submit straight into scoring — the review team sees your factor breakdown.',
+    queueDescription: 'Deterministic five-factor scores accompany every submitted application.',
+    groupsDescription: 'Group members co-guarantee group loans and share a group savings account.',
+    errorInvalidInput: 'Choose a product and enter a valid amount.',
+    errorApplyFailed: 'Application failed',
+    errorGroupAction: 'Group action failed',
+    errorInvalidAmount: 'Enter a valid amount.',
+    errorSavingsFailed: 'Savings transaction failed',
+    queuedNotice: 'No connection — the application is saved on this device and submits when you reconnect.',
     factorRepayment: 'Repayment history',
     factorProfile: 'Profile completeness',
     factorVolume: 'Transaction volume',

@@ -42,6 +42,36 @@ export default function AdminPage() {
             description="H3-indexed farm plots clustered per grid cell, with index rebuild controls."
             tag="Geospatial"
           />
+          <ModuleCard
+            href="/admin/credit"
+            title="Credit operations"
+            description="Loan review queue with score breakdowns, PAR ratios and VSLA group lending."
+            tag="Credit"
+          />
+          <ModuleCard
+            href="/admin/analytics"
+            title="Analytics marts"
+            description="Platform analytics snapshots, funnel drill-downs and export jobs."
+            tag="Analytics"
+          />
+          <ModuleCard
+            href="/admin/status"
+            title="Module status"
+            description="Readiness of each platform module. Cheap checks only."
+            tag="Operations"
+          />
+          <ModuleCard
+            href="/admin/audit-verify"
+            title="Audit chain check"
+            description="Verify the tamper-evident audit log chain end to end."
+            tag="Audit"
+          />
+          <ModuleCard
+            href="/admin/feature-flags"
+            title="Feature flags"
+            description="Toggle platform features per audience with audit-logged changes."
+            tag="Rollout"
+          />
         </div>
       </Section>
 

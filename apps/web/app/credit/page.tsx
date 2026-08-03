@@ -8,6 +8,7 @@ import {
   MyCreditLoansSection
 } from '@/components/credit-live';
 import { PageHeader, Section } from '@/components/ui';
+import { T } from '@/lib/i18n';
 
 export const metadata: Metadata = {
   title: 'Credit & Savings',
@@ -19,40 +20,40 @@ export default function CreditPage() {
   return (
     <div className="container">
       <PageHeader
-        kicker="Credit & savings"
-        title="Loans, groups and savings"
-        description="Apply for a loan, join a savings group, and track every repayment — online or offline."
+        kicker={<T k="credit.kicker" />}
+        title={<T k="credit.title" />}
+        description={<T k="credit.description" />}
       />
 
-      <Section kicker="Credit score" title="Your score preview">
+      <Section kicker={<T k="credit.scoreKicker" />} title={<T k="credit.scoreSectionTitle" />}>
         <CreditScorePreviewSection />
       </Section>
 
-      <Section kicker="Loan products" title="Choose a product">
+      <Section kicker={<T k="credit.productsKicker" />} title={<T k="credit.productsTitle" />}>
         <CreditProductsSection />
       </Section>
 
       <Section
-        kicker="Apply"
-        title="Loan application"
-        description="Drafts submit straight into scoring — the review team sees your factor breakdown."
+        kicker={<T k="credit.applyKicker" />}
+        title={<T k="credit.applyTitle" />}
+        description={<T k="credit.applyDescription" />}
       >
         <CreditApplySection />
       </Section>
 
-      <Section kicker="My loans" title="Applications and repayments">
+      <Section kicker={<T k="credit.loansKicker" />} title={<T k="credit.loansTitle" />}>
         <MyCreditLoansSection />
       </Section>
 
       <Section
-        kicker="Savings groups"
-        title="My VSLA groups"
-        description="Group members co-guarantee group loans and share a group savings account."
+        kicker={<T k="credit.groupsKicker" />}
+        title={<T k="credit.groupsTitle" />}
+        description={<T k="credit.groupsDescription" />}
       >
         <CreditGroupsSection />
       </Section>
 
-      <Section kicker="Savings" title="My savings account">
+      <Section kicker={<T k="credit.savingsKicker" />} title={<T k="credit.savingsTitle" />}>
         <CreditSavingsSection />
       </Section>
     </div>

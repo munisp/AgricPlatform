@@ -3,38 +3,35 @@ import type { Metadata } from 'next';
 import { T } from '@/lib/i18n';
 
 export const metadata: Metadata = {
-  title: 'Offline'
+  title: 'Page not found'
 };
 
-export default function OfflinePage() {
+/**
+ * Branded 404. Offline-aware copy: on a dropped connection the shell may
+ * serve this for routes the service worker has never cached, so the copy
+ * points at the offline page instead of implying the platform is broken.
+ */
+export default function NotFound() {
   return (
     <div className="container">
       <header className="page-header">
         <span className="kicker">
-          <T k="offline.kicker" />
+          <T k="notFound.kicker" />
         </span>
         <h1>
-          <T k="offline.title" />
+          <T k="notFound.title" />
         </h1>
         <p className="muted">
-          <T k="offline.description" />
+          <T k="notFound.description" />
         </p>
       </header>
       <section className="section-tight">
-        <div className="notice" role="status">
-          <strong>
-            <T k="offline.noticeTitle" />
-          </strong>{' '}
-          <T k="offline.noticeBody" />
-        </div>
-      </section>
-      <section className="section-tight">
         <div className="cluster">
           <Link href="/" className="btn btn-primary">
-            <T k="offline.retry" />
+            <T k="notFound.home" />
           </Link>
-          <Link href="/dashboard" className="btn btn-ghost">
-            <T k="offline.dashboard" />
+          <Link href="/offline" className="btn btn-ghost">
+            <T k="notFound.offline" />
           </Link>
         </div>
       </section>

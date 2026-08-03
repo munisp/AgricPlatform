@@ -19,6 +19,8 @@ const TOP_LINKS: { href: string; labelKey: TranslationKey }[] = [
   { href: '/chapters', labelKey: 'nav.chapters' },
   { href: '/marketplace', labelKey: 'nav.marketplace' },
   { href: '/livestock', labelKey: 'nav.livestock' },
+  { href: '/farms', labelKey: 'nav.farms' },
+  { href: '/agents', labelKey: 'nav.agents' },
   { href: '/finance', labelKey: 'nav.finance' },
   { href: '/credit', labelKey: 'nav.credit' },
   { href: '/advisory', labelKey: 'nav.advisory' },
@@ -70,6 +72,9 @@ export function Nav() {
             <Link href="/search" className="btn btn-ghost btn-small" aria-label={t('nav.searchLabel')}>
               {t('nav.search')}
             </Link>
+            {/* Dev-only role preview: the API ignores x-user-id when
+                NODE_ENV === 'production', so the pill is hidden there too. */}
+            {process.env.NODE_ENV !== 'production' ? (
             <span
               className="role-pill"
               title="Development preview: switch between seeded dev users (x-user-id header). Not available in production."
@@ -94,6 +99,7 @@ export function Nav() {
                 ))}
               </select>
             </span>
+            ) : null}
           </div>
         </div>
       </header>

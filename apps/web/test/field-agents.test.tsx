@@ -1,11 +1,19 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
 import { AppProvider } from '@/lib/app-state';
 import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
+import { getDraftsDb } from '@/lib/drafts';
 import { AgentsBoard } from '@/components/agents-board';
 import { AgentQueue } from '@/components/agent-queue';
+
+expect.extend(toHaveNoViolations);
+
+// jsdom does no layout and the stylesheet is not loaded — color contrast is
+// covered by test/contrast.test.ts against the CSS source.
+const AXE_OPTIONS = { rules: { 'color-contrast': { enabled: false } } };
 
 function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve(
@@ -59,12 +67,14 @@ const PRODUCTIVITY = {
 describe('AgentsBoard (admin/chapter lead console)', () => {
   const fetchMock = vi.fn();
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearApiCache();
     window.localStorage.clear();
     window.sessionStorage.clear();
     previewRole('admin', 'user-admin');
     vi.stubGlobal('fetch', fetchMock);
+    const db = getDraftsDb();
+    if (db) await db.drafts.clear();
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
       const method = init?.method ?? 'GET';
@@ -148,6 +158,63 @@ describe('AgentsBoard (admin/chapter lead console)', () => {
       String(url).endsWith('/api/v1/field-agents/productivity')
     );
     expect(productivityCalls).toHaveLength(0);
+  });
+
+  it('wraps the productivity table in the responsive table pattern', async () => {
+    renderWithProviders(<AgentsBoard />);
+    await waitFor(() => expect(screen.getByText('63%')).toBeTruthy());
+    const table = screen.getByRole('table');
+    expect(table.className).toBe('table');
+    expect(table.parentElement?.className).toBe('table-wrap');
+  });
+
+  it('shows the translated validation error when required fields are missing', async () => {
+    renderWithProviders(<AgentsBoard />);
+    await waitFor(() => expect(screen.getByText('farmer-registration')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Create assignment' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain(
+        'Could not create the assignment — check the details and try again.'
+      );
+    });
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'POST'
+    );
+    expect(posts).toHaveLength(0);
+  });
+
+  it('autosaves the assignment draft and restores it after a remount', async () => {
+    const first = renderWithProviders(<AgentsBoard />);
+    await waitFor(() => expect(screen.getByText('farmer-registration')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('Enumerator user id'), {
+      target: { value: 'user-enumerator' }
+    });
+    fireEvent.change(screen.getByLabelText('Purpose'), { target: { value: 'farm-visit' } });
+    await waitFor(
+      async () => {
+        const record = await getDraftsDb()?.drafts.get('agents.assignment.new');
+        expect(record?.data).toMatchObject({
+          agentUserId: 'user-enumerator',
+          purpose: 'farm-visit'
+        });
+      },
+      { timeout: 3000 }
+    );
+    first.unmount();
+
+    renderWithProviders(<AgentsBoard />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Enumerator user id') as HTMLInputElement).value).toBe(
+        'user-enumerator'
+      );
+    });
+    expect((screen.getByLabelText('Purpose') as HTMLInputElement).value).toBe('farm-visit');
+  });
+
+  it('has no accessibility violations (board composite)', async () => {
+    const { container } = renderWithProviders(<AgentsBoard />);
+    await waitFor(() => expect(screen.getByText('63%')).toBeTruthy());
+    expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
   });
 });
 

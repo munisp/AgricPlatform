@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useT } from '@/lib/i18n';
 
 /**
  * Registers /sw.js and surfaces a message-gated update flow: when a new
@@ -11,6 +12,7 @@ import { useEffect, useState } from 'react';
  * mid-form by a background update.
  */
 export function ServiceWorkerRegister() {
+  const { t } = useT();
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
 
   useEffect(() => {
@@ -55,13 +57,13 @@ export function ServiceWorkerRegister() {
 
   return (
     <div className="sw-update" role="status">
-      <span>Update available.</span>
+      <span>{t('sw.updateAvailable')}</span>
       <button
         type="button"
         className="btn btn-primary btn-small"
         onClick={() => waitingWorker.postMessage({ type: 'SKIP_WAITING' })}
       >
-        Refresh now
+        {t('sw.refreshNow')}
       </button>
     </div>
   );

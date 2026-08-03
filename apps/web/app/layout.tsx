@@ -6,6 +6,7 @@ import { I18nProvider, T } from '@/lib/i18n';
 import { Nav } from '@/components/nav';
 import { Footer } from '@/components/footer';
 import { ServiceWorkerRegister } from '@/components/sw-register';
+import { InstallPrompt } from '@/components/install-prompt';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://app.agricplatform.ng'),
@@ -60,6 +61,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </main>
             <Footer />
             <ServiceWorkerRegister />
+            <InstallPrompt />
           </I18nProvider>
         </AppProvider>
       </body>

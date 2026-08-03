@@ -1,9 +1,18 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { AppProvider } from '@/lib/app-state';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { AppProvider, useAppState } from '@/lib/app-state';
 import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
+import { getDraftsDb } from '@/lib/drafts';
+import type { QueuedSubmission } from '@/lib/offline-queue';
+
+expect.extend(toHaveNoViolations);
+
+// jsdom does no layout and the stylesheet is not loaded — color contrast is
+// covered by test/contrast.test.ts against the CSS source.
+const AXE_OPTIONS = { rules: { 'color-contrast': { enabled: false } } };
 import {
   CreditApplySection,
   CreditGroupsSection,
@@ -204,13 +213,34 @@ function router(url: string, init?: RequestInit) {
   return jsonResponse({ data: null });
 }
 
+function readStoredQueue(): QueuedSubmission[] {
+  return JSON.parse(window.localStorage.getItem('agric.queue') ?? '[]') as QueuedSubmission[];
+}
+
+function setOnline(online: boolean) {
+  Object.defineProperty(window.navigator, 'onLine', { value: online, configurable: true });
+}
+
+/** Test probe: flushes the offline queue from inside AppProvider. */
+function FlushProbe() {
+  const { syncQueue } = useAppState();
+  return (
+    <button type="button" data-testid="flush-queue" onClick={() => void syncQueue()}>
+      flush
+    </button>
+  );
+}
+
 describe('Credit pages (farmer)', () => {
   const fetchMock = vi.fn();
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearApiCache();
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockImplementation(router);
+    setOnline(true);
+    const db = getDraftsDb();
+    if (db) await db.drafts.clear();
   });
 
   afterEach(() => {
@@ -311,6 +341,121 @@ describe('Credit pages (farmer)', () => {
     });
     expect(screen.getByText('Repayment history')).toBeTruthy();
     expect(screen.getByText('Group standing')).toBeTruthy();
+  });
+
+  it('queues the application offline and replays draft → submit chained by the returned id', async () => {
+    setOnline(false);
+    renderWithProviders(
+      <>
+        <CreditApplySection />
+        <FlushProbe />
+      </>
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Seasonal input loan')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Choose a product'), {
+      target: { value: 'cprd-seasonal' }
+    });
+    fireEvent.change(screen.getByLabelText('Amount (naira)'), { target: { value: '10000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit application' }));
+
+    // Nothing was sent; one compound queue item holds both steps.
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('saved on this device');
+    });
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'POST'
+    );
+    expect(posts).toHaveLength(0);
+    const queued = readStoredQueue();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.kind).toBe('credit.loan.application');
+    expect(queued[0]!.path).toBe('/credit/applications');
+    expect(queued[0]!.chain).toEqual([
+      { method: 'POST', path: '/credit/applications/{id}/submit' }
+    ]);
+
+    // Reconnect and flush: the draft replays first, then submit runs against
+    // the id the draft replay returned (cloan-new) — a chained compound replay.
+    setOnline(true);
+    fireEvent.click(screen.getByTestId('flush-queue'));
+    await waitFor(() => {
+      const sent = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'POST'
+      );
+      expect(sent).toHaveLength(2);
+    });
+    const sent = fetchMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'POST'
+    );
+    expect(String(sent[0]![0])).toMatch(/\/api\/v1\/credit\/applications$/);
+    expect(String(sent[1]![0])).toContain('/api/v1/credit/applications/cloan-new/submit');
+    await waitFor(() => {
+      expect(readStoredQueue()[0]!.status).toBe('sent');
+    });
+  });
+
+  it('keeps the application draft offline-safe across a remount (draft persistence)', async () => {
+    setOnline(true);
+    const first = renderWithProviders(<CreditApplySection />);
+    await waitFor(() => {
+      expect(screen.getByText('Seasonal input loan')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Choose a product'), {
+      target: { value: 'cprd-seasonal' }
+    });
+    fireEvent.change(screen.getByLabelText('Amount (naira)'), { target: { value: '10000' } });
+    await waitFor(
+      async () => {
+        const record = await getDraftsDb()?.drafts.get('credit-apply');
+        expect(record?.data).toMatchObject({ productId: 'cprd-seasonal', amountNaira: '10000' });
+      },
+      { timeout: 3000 }
+    );
+    first.unmount();
+
+    renderWithProviders(<CreditApplySection />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Amount (naira)') as HTMLInputElement).value).toBe('10000');
+    });
+    expect((screen.getByLabelText('Choose a product') as HTMLSelectElement).value).toBe(
+      'cprd-seasonal'
+    );
+  });
+
+  it('clears the application draft after a successful submit', async () => {
+    renderWithProviders(<CreditApplySection />);
+    await waitFor(() => {
+      expect(screen.getByText('Seasonal input loan')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('Choose a product'), {
+      target: { value: 'cprd-seasonal' }
+    });
+    fireEvent.change(screen.getByLabelText('Amount (naira)'), { target: { value: '10000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit application' }));
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('cloan-new');
+    });
+    await waitFor(async () => {
+      const record = await getDraftsDb()?.drafts.get('credit-apply');
+      const data = record?.data as { amountNaira?: string } | undefined;
+      expect(record === undefined || data?.amountNaira === '').toBe(true);
+    });
+    expect((screen.getByLabelText('Amount (naira)') as HTMLInputElement).value).toBe('');
+  });
+
+  it('has no accessibility violations (apply wizard + products composite)', async () => {
+    const { container } = renderWithProviders(
+      <>
+        <CreditProductsSection />
+        <CreditApplySection />
+      </>
+    );
+    await waitFor(() => {
+      expect(screen.getAllByText('Seasonal input loan').length).toBeGreaterThan(0);
+    });
+    expect(await axe(container, AXE_OPTIONS)).toHaveNoViolations();
   });
 });
 

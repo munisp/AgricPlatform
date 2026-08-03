@@ -11,6 +11,7 @@ import {
   type AgentAssignment
 } from '@/lib/api/endpoints';
 import { useT, type TranslationKey } from '@/lib/i18n';
+import { useFormDraft } from '@/lib/drafts';
 import { ApiErrorNotice, QueryState } from '@/components/api-state';
 import { Field, TextInput } from '@/components/forms';
 import { EmptyState, ProgressBar, StatusBadge, type Tone } from '@/components/ui';
@@ -41,16 +42,41 @@ function progressPercent(assignment: AgentAssignment): number {
  * per-enumerator completion rates. Chapter-lead scoping is enforced
  * server-side; the board simply renders what the API returns.
  */
+interface AssignmentDraft {
+  agentUserId: string;
+  state: string;
+  lga: string;
+  purpose: string;
+  targetCount: string;
+  chapterId: string;
+}
+
+const EMPTY_ASSIGNMENT_DRAFT: AssignmentDraft = {
+  agentUserId: '',
+  state: '',
+  lga: '',
+  purpose: '',
+  targetCount: '1',
+  chapterId: ''
+};
+
 export function AgentsBoard() {
   const { t } = useT();
   const { hydrated, role } = useAppState();
-  const [agentUserId, setAgentUserId] = useState('');
-  const [state, setState] = useState('');
-  const [lga, setLga] = useState('');
-  const [purpose, setPurpose] = useState('');
-  const [targetCount, setTargetCount] = useState('1');
-  const [chapterId, setChapterId] = useState('');
+  // Draft persistence: assignment forms survive reloads/offline drops.
+  const { draft, setDraft, clearDraft } = useFormDraft<AssignmentDraft>(
+    'agents.assignment.new',
+    EMPTY_ASSIGNMENT_DRAFT,
+    (value) =>
+      value.agentUserId.trim() === '' &&
+      value.state.trim() === '' &&
+      value.lga.trim() === '' &&
+      value.purpose.trim() === '' &&
+      value.chapterId.trim() === ''
+  );
   const [formError, setFormError] = useState<string | null>(null);
+  const setField = (key: keyof AssignmentDraft, value: string) =>
+    setDraft((current) => ({ ...current, [key]: value }));
 
   const board = useApiQuery(
     hydrated ? 'field-agents:assignments' : null,
@@ -67,29 +93,31 @@ export function AgentsBoard() {
 
   const createMutation = useApiMutation<void, AgentAssignment>({
     mutationFn: async () => {
-      const target = Number.parseInt(targetCount, 10);
-      if (!agentUserId.trim() || !state.trim() || !lga.trim() || !purpose.trim()) {
-        throw new Error('Enumerator, state, LGA and purpose are required');
+      const target = Number.parseInt(draft.targetCount, 10);
+      if (!draft.agentUserId.trim() || !draft.state.trim() || !draft.lga.trim() || !draft.purpose.trim()) {
+        throw new Error(t('agents.errorRequired'));
       }
       if (!Number.isInteger(target) || target < 1) {
-        throw new Error('Target count must be at least 1');
+        throw new Error(t('agents.errorTarget'));
       }
       const res = await createAgentAssignment({
-        agentUserId: agentUserId.trim(),
-        state: state.trim(),
-        lga: lga.trim(),
-        purpose: purpose.trim(),
+        agentUserId: draft.agentUserId.trim(),
+        state: draft.state.trim(),
+        lga: draft.lga.trim(),
+        purpose: draft.purpose.trim(),
         targetCount: target,
-        ...(chapterId.trim() ? { chapterId: chapterId.trim() } : {})
+        ...(draft.chapterId.trim() ? { chapterId: draft.chapterId.trim() } : {})
       });
       return res.data;
     },
     onSuccess: () => {
-      setAgentUserId('');
-      setPurpose('');
+      clearDraft();
       setFormError(null);
       board.refresh();
       productivity.refresh();
+    },
+    onError: () => {
+      setFormError(t('agents.errorCreate'));
     }
   });
 
@@ -103,10 +131,9 @@ export function AgentsBoard() {
 
   async function submitCreate() {
     setFormError(null);
-    const result = await createMutation.mutate();
-    if (result === undefined && createMutation.status === 'error') {
-      setFormError('Could not create the assignment — check the details and try again.');
-    }
+    // Errors surface via the mutation's onError callback (fresh state, no
+    // stale-closure read of createMutation.status after the await).
+    await createMutation.mutate();
   }
 
   return (
@@ -117,39 +144,39 @@ export function AgentsBoard() {
           <Field id="agent-user" label={t('agents.agentUserId')}>
             <TextInput
               id="agent-user"
-              value={agentUserId}
-              onChange={(event) => setAgentUserId(event.target.value)}
+              value={draft.agentUserId}
+              onChange={(event) => setField('agentUserId', event.target.value)}
               placeholder="user-enumerator"
             />
           </Field>
           <Field id="agent-chapter" label={t('agents.chapterId')}>
             <TextInput
               id="agent-chapter"
-              value={chapterId}
-              onChange={(event) => setChapterId(event.target.value)}
+              value={draft.chapterId}
+              onChange={(event) => setField('chapterId', event.target.value)}
             />
           </Field>
           <Field id="agent-state" label={t('agents.state')}>
             <TextInput
               id="agent-state"
-              value={state}
-              onChange={(event) => setState(event.target.value)}
+              value={draft.state}
+              onChange={(event) => setField('state', event.target.value)}
               placeholder="Kaduna"
             />
           </Field>
           <Field id="agent-lga" label={t('agents.lga')}>
             <TextInput
               id="agent-lga"
-              value={lga}
-              onChange={(event) => setLga(event.target.value)}
+              value={draft.lga}
+              onChange={(event) => setField('lga', event.target.value)}
               placeholder="Zaria"
             />
           </Field>
           <Field id="agent-purpose" label={t('agents.purpose')}>
             <TextInput
               id="agent-purpose"
-              value={purpose}
-              onChange={(event) => setPurpose(event.target.value)}
+              value={draft.purpose}
+              onChange={(event) => setField('purpose', event.target.value)}
               placeholder="farmer-registration"
             />
           </Field>
@@ -157,8 +184,8 @@ export function AgentsBoard() {
             <TextInput
               id="agent-target"
               inputMode="numeric"
-              value={targetCount}
-              onChange={(event) => setTargetCount(event.target.value)}
+              value={draft.targetCount}
+              onChange={(event) => setField('targetCount', event.target.value)}
             />
           </Field>
         </div>
@@ -231,32 +258,34 @@ export function AgentsBoard() {
             onRetry={productivity.refresh}
             empty={<EmptyState title={t('agents.productivityEmpty')} />}
           >
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('agents.colAgent')}</th>
-                  <th>{t('agents.colActive')}</th>
-                  <th>{t('agents.colCompleted')}</th>
-                  <th>{t('agents.colCancelled')}</th>
-                  <th>{t('agents.colTarget')}</th>
-                  <th>{t('agents.colDone')}</th>
-                  <th>{t('agents.colRate')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(productivity.data ?? []).map((row) => (
-                  <tr key={row.agentUserId}>
-                    <td>{row.agentUserId}</td>
-                    <td>{row.activeAssignments}</td>
-                    <td>{row.completedAssignments}</td>
-                    <td>{row.cancelledAssignments}</td>
-                    <td>{row.targetCount}</td>
-                    <td>{row.completedCount}</td>
-                    <td>{Math.round(row.completionRate * 100)}%</td>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>{t('agents.colAgent')}</th>
+                    <th>{t('agents.colActive')}</th>
+                    <th>{t('agents.colCompleted')}</th>
+                    <th>{t('agents.colCancelled')}</th>
+                    <th>{t('agents.colTarget')}</th>
+                    <th>{t('agents.colDone')}</th>
+                    <th>{t('agents.colRate')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(productivity.data ?? []).map((row) => (
+                    <tr key={row.agentUserId}>
+                      <td>{row.agentUserId}</td>
+                      <td>{row.activeAssignments}</td>
+                      <td>{row.completedAssignments}</td>
+                      <td>{row.cancelledAssignments}</td>
+                      <td>{row.targetCount}</td>
+                      <td>{row.completedCount}</td>
+                      <td>{Math.round(row.completionRate * 100)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </QueryState>
         </section>
       ) : null}

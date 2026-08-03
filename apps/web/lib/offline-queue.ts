@@ -11,6 +11,19 @@
  */
 export type QueueStatus = 'queued' | 'sending' | 'sent' | 'failed';
 
+/**
+ * Follow-up request for compound mutations (e.g. credit loan draft →
+ * submit). During a flush the primary request runs first; `{id}` in the
+ * step path is then substituted from the primary response's `data.id` and
+ * the steps replay in order, each with a derived idempotency key, so a
+ * retried half-finished chain converges instead of duplicating drafts.
+ */
+export interface QueuedChainStep {
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  payload?: unknown;
+}
+
 export interface QueuedSubmission {
   id: string;
   /** Short machine kind for grouping/analytics, e.g. 'order.place'. */
@@ -21,6 +34,8 @@ export interface QueuedSubmission {
   /** API path relative to the base URL, e.g. '/listings/abc/orders'. */
   path: string;
   payload?: unknown;
+  /** Optional compound-mutation follow-ups (see QueuedChainStep). */
+  chain?: QueuedChainStep[];
   idempotencyKey: string;
   createdAt: string;
   status: QueueStatus;
@@ -34,6 +49,7 @@ export interface EnqueueInput {
   method: QueuedSubmission['method'];
   path: string;
   payload?: unknown;
+  chain?: QueuedChainStep[];
   id?: string;
   idempotencyKey?: string;
   createdAt?: string;
@@ -54,6 +70,7 @@ export function createQueueItem(input: EnqueueInput): QueuedSubmission {
     method: input.method,
     path: input.path,
     payload: input.payload,
+    chain: input.chain,
     idempotencyKey: input.idempotencyKey ?? randomKey(),
     createdAt: input.createdAt ?? new Date().toISOString(),
     status: 'queued',
