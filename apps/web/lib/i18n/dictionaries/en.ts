@@ -306,6 +306,16 @@ export const en = {
       'CSV exports mirror the mart columns 1:1 — the ingestion contract for a future lakehouse (object storage + Iceberg + Trino).',
     exportFactOrders: 'Download fact_orders.csv',
     exportFactPayments: 'Download fact_payments.csv',
+    lakehouseTitle: 'Lakehouse export',
+    lakehouseDescription:
+      'Writes every analytics mart to S3-compatible object storage as parquet part-files under hive-style dt=YYYY-MM-DD/ partitions, plus a _manifest.json with row counts and SHA-256 checksums per file. This is object storage with a manifest contract — not a managed lakehouse.',
+    lakehouseRun: 'Run lakehouse export',
+    lakehouseRunning: 'Exporting…',
+    lakehouseDisabled: 'Lakehouse export is disabled on this API.',
+    lakehouseNever: 'No export run yet.',
+    lakehouseLastRun:
+      'Last run {runId} · {date} · {rows} rows · {bytes} bytes across {tables} tables',
+    lakehouseRunComplete: 'Export complete: run {runId} ({date}) — {rows} rows in {tables} tables.',
     offlineNotice: 'Live analytics unavailable — showing reference metrics.'
   }
 };

@@ -2426,3 +2426,56 @@ export function fetchAnalyticsSummary(): Promise<{ data: AnalyticsSummary }> {
 export function runProjection(): Promise<{ data: ProjectionRun }> {
   return apiFetch('/analytics/project', { method: 'POST' });
 }
+
+/* ------------- Wave lakehouse-export: marts → object storage ------------- */
+
+/** One exported parquet part-file (as listed in the run manifest). */
+export interface LakehousePartFile {
+  key: string;
+  bytes: number;
+  sha256: string;
+}
+
+/** Per-table export summary inside the run manifest. */
+export interface LakehouseTableExport {
+  table: string;
+  rows: number;
+  files: LakehousePartFile[];
+}
+
+/**
+ * _manifest.json of one lakehouse export run — the real contract written to
+ * object storage by POST /analytics/export.
+ */
+export interface LakehouseManifest {
+  runId: string;
+  runDate: string;
+  bucket: string;
+  prefix: string;
+  format: 'parquet';
+  startedAt: string;
+  finishedAt: string;
+  tables: LakehouseTableExport[];
+  totalRows: number;
+  totalBytes: number;
+}
+
+/** GET /analytics/export/last response payload. */
+export interface LakehouseExportStatus {
+  enabled: boolean;
+  /** Present when enabled=false: why the exporter is off. */
+  reason?: string;
+  bucket?: string;
+  prefix: string;
+  manifest: LakehouseManifest | null;
+}
+
+/** Admin only. Honest disabled state when LAKEHOUSE_ENABLED=false. */
+export function fetchLakehouseExportStatus(): Promise<{ data: LakehouseExportStatus }> {
+  return apiFetch('/analytics/export/last');
+}
+
+/** Admin only. Triggers one export run; 503 when the exporter is disabled. */
+export function runLakehouseExport(): Promise<{ data: LakehouseManifest }> {
+  return apiFetch('/analytics/export', { method: 'POST' });
+}

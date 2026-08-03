@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import {
   AnalyticsSummaryCards,
   DailyMetricsTable,
+  LakehouseExportPanel,
   ProjectionPanel
 } from '@/components/admin-analytics-live';
 import { PageHeader, Section } from '@/components/ui';
@@ -18,7 +19,7 @@ export default function AdminAnalyticsPage() {
       <PageHeader
         kicker="Admin console"
         title="Analytics marts"
-        description="The platform's real analytical store: star-schema marts in PostgreSQL, projected from the domain event outbox. No Spark, Iceberg or Trino is deployed — the CSV exports below are the handoff contract for that future infrastructure."
+        description="The platform's real analytical store: star-schema marts in PostgreSQL, projected from the domain event outbox. The lakehouse export ships them to S3-compatible object storage as parquet + a manifest when enabled — no managed lakehouse (Iceberg catalog, managed Trino) exists."
       />
 
       <Section
@@ -40,9 +41,12 @@ export default function AdminAnalyticsPage() {
       <Section
         kicker="Pipeline"
         title="Projection and lakehouse handoff"
-        description="Run a projection pass (normally driven by an external scheduler) or download the parquet-ready fact CSVs."
+        description="Run a projection pass (normally driven by an external scheduler), download the parquet-ready fact CSVs, or export the marts to object storage."
       >
         <ProjectionPanel />
+        <div style={{ marginTop: '1rem' }}>
+          <LakehouseExportPanel />
+        </div>
       </Section>
     </div>
   );

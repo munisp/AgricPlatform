@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
 import { ROLES_KEY } from '../../common/auth/roles.decorator.js';
@@ -28,14 +28,35 @@ function makeController() {
     factCsv: vi.fn().mockResolvedValue('h1,h2\r\na,b\r\n')
   };
   const audit = { record: vi.fn().mockResolvedValue(undefined) };
+  const lakehouse = {
+    runExport: vi.fn().mockResolvedValue({
+      runId: 'run-1',
+      runDate: '2026-08-06',
+      bucket: 'agric-lakehouse',
+      prefix: 'lakehouse',
+      format: 'parquet',
+      startedAt: '2026-08-06T00:00:00.000Z',
+      finishedAt: '2026-08-06T00:00:01.000Z',
+      tables: [{ table: 'fact_orders', rows: 3, files: [{ key: 'lakehouse/fact_orders/dt=2026-08-06/part-run-1-00000.parquet', bytes: 1024, sha256: 'abc' }] }],
+      totalRows: 3,
+      totalBytes: 1024
+    }),
+    lastExportStatus: vi.fn().mockResolvedValue({
+      enabled: false,
+      reason: 'LAKEHOUSE_ENABLED is not true',
+      prefix: 'lakehouse',
+      manifest: null
+    })
+  };
   const controller = new AnalyticsController(
     {} as never,
     {} as never,
     audit as never,
     projector as never,
-    star as never
+    star as never,
+    lakehouse as never
   );
-  return { controller, projector, star, audit };
+  return { controller, projector, star, audit, lakehouse };
 }
 
 function rolesOf(handler: string): string[] | undefined {
@@ -68,6 +89,14 @@ describe('AnalyticsController Wave B role gating', () => {
 
   it('GET /analytics/export/:fact.csv requires admin or regulator', () => {
     expect(rolesOf('exportFact')).toEqual(['admin', 'regulator']);
+  });
+
+  it('POST /analytics/export requires admin (non-admin gets 403 from the guard)', () => {
+    expect(rolesOf('exportLakehouse')).toEqual(['admin']);
+  });
+
+  it('GET /analytics/export/last requires admin (non-admin gets 403 from the guard)', () => {
+    expect(rolesOf('lakehouseExportLast')).toEqual(['admin']);
   });
 });
 
@@ -119,5 +148,43 @@ describe('AnalyticsController Wave B handlers', () => {
     await expect(
       controller.exportFact('fact_secrets', {} as never, null, fakeResponse() as never)
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('AnalyticsController lakehouse export endpoints', () => {
+  it('POST /analytics/export runs the export, audit-logs and returns the manifest', async () => {
+    const { controller, lakehouse, audit } = makeController();
+    const result = await controller.exportLakehouse({ id: 'admin-1' } as never);
+    expect(lakehouse.runExport).toHaveBeenCalledOnce();
+    expect(result.data).toMatchObject({
+      runId: 'run-1',
+      runDate: '2026-08-06',
+      format: 'parquet',
+      totalRows: 3
+    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: 'admin-1',
+        action: 'analytics.export.lakehouse',
+        entityId: 'run-1'
+      })
+    );
+  });
+
+  it('GET /analytics/export/last returns the honest disabled state', async () => {
+    const { controller, lakehouse } = makeController();
+    const result = await controller.lakehouseExportLast();
+    expect(lakehouse.lastExportStatus).toHaveBeenCalledOnce();
+    expect(result.data).toMatchObject({ enabled: false, manifest: null });
+  });
+
+  it('POST /analytics/export surfaces the disabled 503 from the service', async () => {
+    const { controller, lakehouse } = makeController();
+    lakehouse.runExport.mockRejectedValueOnce(
+      new ServiceUnavailableException('Lakehouse export is disabled.')
+    );
+    await expect(controller.exportLakehouse(null)).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
   });
 });
