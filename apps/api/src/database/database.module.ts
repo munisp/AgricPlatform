@@ -457,6 +457,22 @@ import {
   createPgDataSubjectRequestRepository,
   createPgRetentionPolicyRepository
 } from './repositories/compliance.pg-repository.js';
+// Wave SYNCSRV: record-level offline sync protocol v1 persistence (additive).
+import {
+  ENTITY_VERSION_REPOSITORY,
+  SYNC_CURSOR_REPOSITORY,
+  SYNC_MUTATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryEntityVersionRepository,
+  createInMemorySyncCursorRepository,
+  createInMemorySyncMutationRepository
+} from './repositories/sync.repository.js';
+import {
+  createPgEntityVersionRepository,
+  createPgSyncCursorRepository,
+  createPgSyncMutationRepository
+} from './repositories/sync.pg-repository.js';
 // Wave FARMS: farms & crop-production persistence (additive).
 import {
   CROP_PLANTING_REPOSITORY,
@@ -1204,6 +1220,23 @@ import {
         pool ? createPgRetentionPolicyRepository(pool) : createInMemoryRetentionPolicyRepository(),
       inject: [PG_POOL]
     },
+    // Wave SYNCSRV: record-level offline sync protocol v1 (additive).
+    {
+      provide: ENTITY_VERSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEntityVersionRepository(pool) : createInMemoryEntityVersionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SYNC_CURSOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSyncCursorRepository(pool) : createInMemorySyncCursorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SYNC_MUTATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
     // Wave FARMS: farms & crop-production (appended).
     {
       provide: FARM_PLOT_REPOSITORY,
@@ -1346,6 +1379,9 @@ import {
     COMPLIANCE_CONSENT_REPOSITORY,
     DATA_SUBJECT_REQUEST_REPOSITORY,
     RETENTION_POLICY_REPOSITORY,
+    ENTITY_VERSION_REPOSITORY,
+    SYNC_CURSOR_REPOSITORY,
+    SYNC_MUTATION_REPOSITORY,
     FARM_PLOT_REPOSITORY,
     CROP_PLANTING_REPOSITORY,
     HARVEST_RECORD_REPOSITORY,
