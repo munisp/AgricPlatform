@@ -37,6 +37,39 @@
   --shadow-s: 0 1px 2px rgba(31, 61, 43, 0.08);
   --shadow-m: 0 6px 24px rgba(31, 61, 43, 0.1);
   --font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+
+  /* ---------- Tokens v2 (additive; v1 names above stay canonical) ----------
+     Spacing scale on an 8pt rhythm (4px half-step for fine adjustments).
+     Use these instead of ad-hoc rem values so every surface breathes the
+     same way. --space-4 (16px) is the default card rhythm. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  /* Radius scale: s = controls, m = cards, l = hero/panels, full = pills. */
+  --radius-full: 999px;
+  /* Elevation: s resting card, m hover/popover, l modal/hero overlay.
+     All shadows stay green-tinted (never pure black) to keep the warm feel. */
+  --shadow-l: 0 14px 40px rgba(31, 61, 43, 0.14);
+  /* Soft ring used behind focus/hover states on light surfaces. */
+  --shadow-focus: 0 0 0 3px var(--green-100);
+  /* Type scale (rem, 16px base). Body stays 16px+ for low-literacy
+     readability; nothing below --text-xs (12px) ever carries meaning. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.85rem;
+  --text-base: 1rem;
+  --text-lg: 1.1rem;
+  --text-xl: 1.35rem;
+  --text-2xl: 1.8rem;
+  --text-3xl: 2.6rem;
+  /* Layout tokens */
+  --content-max: 1120px;
+  /* Minimum interactive target (WCAG 2.5.5 / Apple HIG 44pt). */
+  --target-min: 44px;
 }
 
 * {
@@ -1348,6 +1381,260 @@ fieldset.card legend {
   max-width: 460px;
   width: 100%;
   box-shadow: var(--shadow-m);
+}
+
+/* ---------- Nav overflow ("More" menu, Wave UIUX) ---------- */
+
+.nav-overflow {
+  position: relative;
+  display: inline-flex;
+}
+
+.nav-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: var(--target-min);
+  padding: 0.45rem 0.7rem;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nav-more::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.nav-more:hover,
+.nav-more[aria-expanded='true'] {
+  background: var(--green-100);
+  color: var(--green-900);
+}
+
+.nav-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 70;
+  display: grid;
+  gap: 2px;
+  min-width: 230px;
+  padding: var(--space-2);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-l);
+}
+
+.nav-menu a {
+  display: flex;
+  align-items: center;
+  min-height: var(--target-min);
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--radius-s);
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+.nav-menu a:hover {
+  background: var(--green-100);
+  text-decoration: none;
+}
+
+.nav-menu a[aria-current='page'] {
+  color: var(--green-900);
+  font-weight: 600;
+  background: var(--green-100);
+}
+
+.nav-menu .nav-menu-hub {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 8px;
+  font-weight: 700;
+  color: var(--green-800);
+}
+
+/* "All products" accent link in the primary row. */
+.nav-links a.nav-products {
+  color: var(--green-800);
+  font-weight: 700;
+  border: 1px solid var(--green-200);
+  background: var(--green-100);
+}
+
+.nav-links a.nav-products:hover {
+  background: var(--green-200);
+}
+
+/* ---------- Product hub (/products, Wave UIUX) ---------- */
+
+.product-group + .product-group {
+  margin-top: var(--space-6);
+}
+
+.product-group-head {
+  margin-bottom: var(--space-3);
+}
+
+.product-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+}
+
+.product-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  min-height: 160px;
+  color: var(--ink);
+  box-shadow: var(--shadow-s);
+}
+
+a.product-card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+a.product-card:hover {
+  text-decoration: none;
+  border-color: var(--green-300);
+  box-shadow: var(--shadow-m);
+  transform: translateY(-2px);
+}
+
+/* Planned products are honest placeholders: not links, dashed border,
+   reduced contrast chrome — the same "not set up" honesty as flood risk. */
+.product-card.is-planned {
+  border-style: dashed;
+  background: var(--sand-50);
+  box-shadow: none;
+}
+
+.product-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* CSS-only glyphs: warm tinted tiles with a single geometric mark.
+   Shapes differ per product family so cards are scannable without text. */
+.product-glyph {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--green-100);
+  position: relative;
+  flex: none;
+}
+
+.product-glyph::after {
+  content: '';
+  position: absolute;
+  inset: 10px;
+  background: var(--green-600);
+  border-radius: 100% 5px 100% 5px; /* leaf (default) */
+}
+
+.product-glyph.glyph-earth {
+  background: var(--sand-200);
+}
+
+.product-glyph.glyph-earth::after {
+  background: var(--earth-500);
+  border-radius: 50%; /* seed / coin */
+}
+
+.product-glyph.glyph-clay {
+  background: #f3ded8;
+}
+
+.product-glyph.glyph-clay::after {
+  background: var(--clay-500);
+  border-radius: 5px; /* crate / warehouse */
+}
+
+.product-glyph.glyph-amber {
+  background: #f3ead2;
+}
+
+.product-glyph.glyph-amber::after {
+  background: var(--amber-500);
+  border-radius: 50% 50% 50% 5px; /* drop */
+}
+
+.product-card .product-title {
+  font-weight: 700;
+  color: var(--green-950);
+  font-size: 1.02rem;
+}
+
+.product-card .product-desc {
+  font-size: 0.88rem;
+  color: var(--ink-mute);
+  flex: 1;
+}
+
+/* ---------- Quick actions (dashboard, Wave UIUX) ---------- */
+
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.quick-actions .chip {
+  text-decoration: none;
+}
+
+.quick-actions .chip:hover {
+  border-color: var(--green-300);
+  background: var(--green-100);
+}
+
+/* ---------- Skeleton primitives (Wave UIUX) ---------- */
+
+.skeleton-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--card);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-s);
+}
+
+.skeleton-title {
+  height: 1.15rem;
+  width: 45%;
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--sand-200) 25%, var(--sand-100, #f4f0e6) 50%, var(--sand-200) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.skeleton-chip {
+  display: inline-block;
+  height: 1.4rem;
+  width: 5.5rem;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--sand-200) 25%, var(--sand-100, #f4f0e6) 50%, var(--sand-200) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
 /* ---------- QR scanner (Wave P6c) ---------- */

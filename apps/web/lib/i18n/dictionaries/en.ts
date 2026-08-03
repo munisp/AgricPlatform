@@ -38,6 +38,9 @@ export const en = {
     tabMarket: 'Market',
     search: 'Search',
     searchLabel: 'Search the platform',
+    products: 'All products',
+    more: 'More',
+    moreMenuLabel: 'More pages',
     rolePreview: 'View as role (development preview)'
   },
   dashboard: {
@@ -51,7 +54,66 @@ export const en = {
     activityKicker: 'Activity',
     activityTitle: 'Recent notifications',
     prefsKicker: 'Communication',
-    prefsTitle: 'Notification preferences'
+    prefsTitle: 'Notification preferences',
+    quickActionsTitle: 'Quick actions',
+    quick: {
+      moduleStatus: 'Module status',
+      featureFlags: 'Feature flags',
+      animalHealth: 'Animal health',
+      certifiedTrade: 'Certified trade',
+      fieldQueue: 'My field queue'
+    }
+  },
+  products: {
+    kicker: 'Products',
+    title: 'All products',
+    description:
+      'Every AgricPlatform product in one place. Items marked Coming soon are still being built.',
+    statusLive: 'Available',
+    statusBeta: 'Beta',
+    statusPlanned: 'Coming soon',
+    groups: {
+      grow: 'Farm and grow',
+      trade: 'Trade and services',
+      money: 'Money and risk',
+      livestock: 'Livestock and traceability',
+      community: 'Community and programmes',
+      climate: 'Climate and data',
+      ops: 'Platform operations'
+    },
+    items: {
+      farms: { title: 'Farms and plots', desc: 'Map plots, plantings and harvests.' },
+      advisory: { title: 'Advisory', desc: 'Weather, pests and prices for your state.' },
+      learning: { title: 'Learning Academy', desc: 'Short courses with verifiable certificates.' },
+      knowledge: { title: 'Knowledge library', desc: 'Guides and podcasts that work offline.' },
+      marketplace: { title: 'Marketplace', desc: 'Buy and sell with escrow-ready orders.' },
+      services: { title: 'Services directory', desc: 'Verified input and equipment suppliers.' },
+      mechanization: { title: 'Mechanization', desc: 'Book tractors and equipment hire.' },
+      warehouseReceipts: { title: 'Warehouse receipts', desc: 'Stored crops become loan collateral.' },
+      finance: { title: 'Finance hub', desc: 'KYC tiers, documents and lender matching.' },
+      credit: { title: 'Credit', desc: 'Loans, savings groups and credit scores.' },
+      geoCredit: { title: 'Geo credit', desc: 'Plot data unlocks location-based loans.' },
+      insurance: { title: 'Crop insurance', desc: 'Weather-indexed cover for your farm.' },
+      agentBanking: { title: 'Agent banking', desc: 'Cash in and out near your farm.' },
+      vouchers: { title: 'Input vouchers', desc: 'Redeem subsidised seeds and fertiliser.' },
+      livestock: { title: 'Livestock registry', desc: 'National IDs for every animal.' },
+      traceability: { title: 'Traceability', desc: 'Movement permits and health records.' },
+      livestockTrade: { title: 'Certified trade', desc: 'Verified sales, contracts and liens.' },
+      livestockPassport: { title: 'Livestock passport', desc: 'One digital identity per animal.' },
+      community: { title: 'Community', desc: 'Forums, mentors and peer groups.' },
+      chapters: { title: 'Chapters', desc: 'Local chapters, events and attendance.' },
+      opportunities: { title: 'Opportunities', desc: 'Grants, jobs and programmes for you.' },
+      programmes: { title: 'Programmes', desc: 'Women and youth cohorts with milestones.' },
+      pathways: { title: 'Pathways', desc: 'Student and NYSC agribusiness journeys.' },
+      agents: { title: 'Field agents', desc: 'Enumerator assignments and field work.' },
+      voiceAgronomist: { title: 'Voice agronomist', desc: 'Ask farm questions by voice.' },
+      carbon: { title: 'Carbon credits', desc: 'Earn from climate-smart practices.' },
+      floodRisk: { title: 'Flood risk', desc: 'Seasonal flood outlook for your state.' },
+      partner: { title: 'Partner hub', desc: 'Scoped programmes and impact reports.' },
+      admin: { title: 'Admin console', desc: 'Users, reviews, flags and audit.' },
+      moduleStatus: { title: 'Module status', desc: 'Database, cache and queue health.' },
+      fieldQueue: { title: 'My field queue', desc: 'Your open enumerator assignments.' }
+    }
   },
   opportunities: {
     kicker: 'Opportunity marketplace',

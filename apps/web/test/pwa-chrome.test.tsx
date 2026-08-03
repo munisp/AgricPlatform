@@ -51,8 +51,13 @@ afterEach(() => {
 describe('top navigation', () => {
   it('links to the previously orphaned /farms and /agents routes', () => {
     renderWithProviders(<Nav />);
+    // /farms is on the primary row; /agents moved to the "More" overflow
+    // menu in the Wave UIUX restructure (still one click from the header).
     expect(screen.getByRole('link', { name: 'Farms' }).getAttribute('href')).toBe('/farms');
-    expect(screen.getByRole('link', { name: 'Field agents' }).getAttribute('href')).toBe('/agents');
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('menuitem', { name: 'Field agents' }).getAttribute('href')).toBe(
+      '/agents'
+    );
   });
 
   it('hides the dev role pill in production builds', () => {
