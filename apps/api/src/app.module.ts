@@ -62,6 +62,7 @@ import { GeoModule } from './modules/geo/geo.module.js';
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
+import { TraceabilityModule } from './modules/traceability/traceability.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
 
 @Module({
@@ -139,7 +140,9 @@ import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js
     // Wave CREDIT microfinance suite — appended to minimise merge conflicts.
     CreditModule,
     // Wave FABRIC workflow registrations (loan disbursement port proof) — appended to minimise merge conflicts.
-    WorkflowsModule
+    WorkflowsModule,
+    // Wave EUDR traceability passport — appended to minimise merge conflicts.
+    TraceabilityModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

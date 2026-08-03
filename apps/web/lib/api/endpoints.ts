@@ -3232,3 +3232,202 @@ export function fetchCreditScoreAssessment(
 ): Promise<{ data: CreditScoreAssessment }> {
   return apiFetch(`/credit/score/${encodeURIComponent(userId)}`);
 }
+
+/* -- EUDR traceability passport (wave-eudr) -- */
+
+export type CustodyEventType =
+  | 'CREATED'
+  | 'AGGREGATED'
+  | 'SPLIT'
+  | 'TRANSFORMED'
+  | 'SHIPPED'
+  | 'RECEIVED';
+
+export interface CommodityLot {
+  id: string;
+  ownerUserId: string;
+  crop: string;
+  variety?: string;
+  harvestWindowStart: string;
+  harvestWindowEnd: string;
+  quantity: number;
+  unit: string;
+  status: 'active' | 'aggregated' | 'split' | 'shipped' | 'received';
+  parentLotIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustodyEvent {
+  id: string;
+  lotId: string;
+  seq: number;
+  type: CustodyEventType;
+  actorId: string;
+  occurredAt: string;
+  latitude: number;
+  longitude: number;
+  h3Cell?: string;
+  quantity?: number;
+  unit?: string;
+  parentLotIds: string[];
+  note?: string;
+  prevEventHash: string;
+  eventHash: string;
+  createdAt: string;
+}
+
+export interface EventVerification {
+  eventId: string;
+  lotId: string;
+  seq: number;
+  type: CustodyEventType;
+  hashValid: boolean;
+  prevLinkValid: boolean;
+  valid: boolean;
+  expectedHash: string;
+  storedHash: string;
+}
+
+export interface ChainVerification {
+  lotId: string;
+  eventCount: number;
+  valid: boolean;
+  events: EventVerification[];
+}
+
+export interface LotTimeline {
+  lot: CommodityLot;
+  events: CustodyEvent[];
+  verification: ChainVerification;
+}
+
+export interface TraceabilityShipment {
+  id: string;
+  creatorId: string;
+  creatorKind: 'user' | 'partner';
+  reference?: string;
+  status: 'created' | 'exported';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EudrDds {
+  statementVersion: '1.0';
+  generatedAt: string;
+  ddsReference: string;
+  operator: {
+    status: 'TO_BE_COMPLETED_BY_EXPORTER';
+    legalName: string | null;
+    eori: string | null;
+    address: string | null;
+    note: string;
+  };
+  commodity: { description: string; crops: string[] };
+  quantity: { value: number; unit: string };
+  countryOfProduction: 'NG';
+  productionPlots: Array<{
+    plotId: string;
+    lotId: string;
+    latitude: number;
+    longitude: number;
+    h3Cell?: string;
+    snapshotAt: string;
+  }>;
+  harvestWindow: { start: string; end: string };
+  custodySummary: {
+    lotCount: number;
+    eventCount: number;
+    firstEventAt?: string;
+    lastEventAt?: string;
+    eventTypes: string[];
+  };
+  deforestationRisk: {
+    basis: 'live' | 'stub' | 'unavailable' | 'none';
+    note: string;
+    assessments: Array<{
+      plotId: string;
+      basis: string;
+      floodDetected?: boolean;
+      severity?: string;
+      source?: string;
+      detail?: string;
+    }>;
+  };
+  chainIntegrity: {
+    verified: boolean;
+    eventCount: number;
+    lots: Array<{ lotId: string; valid: boolean; eventCount: number; headHash?: string }>;
+    verifiedAt: string;
+  };
+  disclaimers: string[];
+}
+
+export interface ShipmentVerification {
+  shipmentId: string;
+  allValid: boolean;
+  eventCount: number;
+  lots: ChainVerification[];
+}
+
+export interface CreateCommodityLotInput {
+  crop: string;
+  variety?: string;
+  harvestWindowStart: string;
+  harvestWindowEnd: string;
+  quantity: number;
+  unit: string;
+}
+
+export interface AddCustodyEventInput {
+  type: CustodyEventType;
+  occurredAt: string;
+  latitude: number;
+  longitude: number;
+  h3Cell?: string;
+  quantity?: number;
+  unit?: string;
+  note?: string;
+}
+
+export function listCommodityLots(): Promise<{ data: CommodityLot[] }> {
+  return apiFetch('/traceability/lots');
+}
+
+export function createCommodityLot(
+  input: CreateCommodityLotInput,
+  idempotencyKey?: string
+): Promise<{ data: CommodityLot }> {
+  return apiFetch('/traceability/lots', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function fetchLotTimeline(lotId: string): Promise<{ data: LotTimeline }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/timeline`);
+}
+
+export function addCustodyEvent(
+  lotId: string,
+  input: AddCustodyEventInput,
+  idempotencyKey?: string
+): Promise<{ data: CustodyEvent }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/events`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function createTraceabilityShipment(
+  input: { lotIds: string[]; reference?: string },
+  idempotencyKey?: string
+): Promise<{ data: { shipment: TraceabilityShipment; lots: CommodityLot[] } }> {
+  return apiFetch('/traceability/shipments', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function fetchShipmentDds(shipmentId: string): Promise<{ data: EudrDds }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds`);
+}
+
+export function verifyShipmentDds(shipmentId: string): Promise<{ data: ShipmentVerification }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/verify`);
+}

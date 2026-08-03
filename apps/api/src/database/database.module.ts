@@ -1412,6 +1412,33 @@ import {
               transactions as Parameters<typeof createInMemoryCreditSavingsAccountRepository>[0]
             ),
       inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
+    },
+    // Wave EUDR: traceability passport providers (additive).
+    {
+      provide: COMMODITY_LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityLotRepository(pool) : createInMemoryCommodityLotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CUSTODY_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCustodyEventRepository(pool) : createInMemoryCustodyEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOT_PLOT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLotPlotLinkRepository(pool) : createInMemoryLotPlotLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: TRACEABILITY_SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgTraceabilityShipmentRepository(pool)
+          : createInMemoryTraceabilityShipmentRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1549,7 +1576,11 @@ import {
     CREDIT_GROUP_REPOSITORY,
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
-    CREDIT_SAVINGS_TRANSACTION_REPOSITORY
+    CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+    COMMODITY_LOT_REPOSITORY,
+    CUSTODY_EVENT_REPOSITORY,
+    LOT_PLOT_LINK_REPOSITORY,
+    TRACEABILITY_SHIPMENT_REPOSITORY
   ]
 })
 export class DatabaseModule {}
