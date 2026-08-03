@@ -116,6 +116,10 @@ services:
       # LAKEHOUSE_S3_REGION: us-east-1
       # LAKEHOUSE_S3_ACCESS_KEY: lakehouse
       # LAKEHOUSE_S3_SECRET_KEY: local-lakehouse-secret
+      # Flood-risk ML sidecar (OPTIONAL). Uncomment together with the
+      # "flood-ml" profile; requires Sentinel Hub credentials on flood-ml.
+      # FLOOD_ML_DRIVER: http
+      # FLOOD_ML_URL: http://flood-ml:8001
     ports:
       - "3001:3001"
     depends_on:
@@ -298,6 +302,31 @@ services:
     depends_on:
       - minio
       - minio-bootstrap
+    networks: [agric]
+
+  # ---- OPTIONAL flood-detection ML sidecar (profile: flood-ml) ----
+  # IBM Granite geospatial flood detection (services/flood-ml), ported from
+  # farmer-data-collection ml-service. NOT required for the platform to run;
+  # the API only calls it when FLOOD_ML_DRIVER=http and FLOOD_ML_URL are set
+  # on the api service (stub driver remains the default). Real inference
+  # requires Sentinel Hub credentials — create an OAuth client at
+  # https://www.sentinel-hub.com/ and pass BOTH variables below.
+  #   docker compose -f infra/docker-compose.yml --profile flood-ml up -d flood-ml
+  flood-ml:
+    profiles: ["flood-ml"]
+    build:
+      context: ../services/flood-ml
+    container_name: agric-flood-ml
+    environment:
+      # REQUIRED for real inference (without them /predict answers 503).
+      SENTINEL_HUB_CLIENT_ID: ${SENTINEL_HUB_CLIENT_ID:-}
+      SENTINEL_HUB_CLIENT_SECRET: ${SENTINEL_HUB_CLIENT_SECRET:-}
+      SENTINEL_HUB_INSTANCE_ID: ${SENTINEL_HUB_INSTANCE_ID:-}
+      # Optional result cache (reuses the stack Redis; runs fine without).
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8001:8001"
     networks: [agric]
 
 volumes:

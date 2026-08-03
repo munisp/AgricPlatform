@@ -2922,3 +2922,52 @@ export function captureFarmerProfile(
 ): Promise<{ data: CaptureFarmerProfileResult }> {
   return apiFetch('/field-agents/capture/profile', { method: 'POST', body: input });
 }
+
+/* ========================================================================
+ * Geo-intel flood risk (wave ML, union-append).
+ * Mirrors apps/api/src/modules/geo-intel (geo-intel.controller). The
+ * flood-ml sidecar is OPTIONAL — `driver`/`liveInference` on the status
+ * payload say honestly whether assessments are live model output or the
+ * deterministic simulated fixture.
+ * ====================================================================== */
+
+export interface FloodRiskStatus {
+  driver: 'stub' | 'http';
+  configured: boolean;
+  healthy: boolean;
+  /** True only when assessments come from the real flood-ml sidecar. */
+  liveInference: boolean;
+  detail: string;
+}
+
+export interface FloodRiskAssessment {
+  floodDetected: boolean;
+  severity: string;
+  floodPercentage: number;
+  floodAreaKm2: number;
+  confidence: number;
+  source: string;
+  assessedAt: string;
+  message: string;
+  recommendedActions: string[];
+  assessedLocation: { latitude: number; longitude: number };
+  driver: 'stub' | 'http';
+  plot?: { id: string; name: string; distanceKm: number };
+}
+
+/** Honest driver/config status for the flood-risk integration. */
+export function fetchFloodRiskStatus(): Promise<{ data: FloodRiskStatus }> {
+  return apiFetch('/geo-intel/flood-risk/status');
+}
+
+/**
+ * Flood-risk assessment. Without lat/long the API assesses the caller's own
+ * farm plot (nearest/first with coordinates); with them it assesses the
+ * point and attaches the nearest own plot when close by.
+ */
+export function fetchFloodRisk(params?: {
+  lat?: number;
+  long?: number;
+}): Promise<{ data: FloodRiskAssessment }> {
+  return apiFetch('/geo-intel/flood-risk', { query: { ...params } });
+}

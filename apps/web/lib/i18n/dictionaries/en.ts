@@ -451,6 +451,27 @@ export const en = {
     capturing: 'Saving…',
     captureDone: 'Profile saved. Consent {consentId} recorded.',
     offlineNotice: 'Live data unavailable — showing saved reference data.'
+  },
+  // Wave ML (union-append): flood-risk card (optional flood-ml sidecar).
+  floodRisk: {
+    kicker: 'Flood risk',
+    title: 'Flood risk for your plots',
+    demoBadge: 'demo data',
+    liveBadge: 'model estimate',
+    demoNote:
+      'Demo data — the flood detection service is not enabled on this deployment.',
+    notConfiguredTitle: 'Flood risk is not set up',
+    notConfiguredNote:
+      'Ask your administrator to enable the flood detection service.',
+    unavailableNote: 'Flood risk is unavailable right now. Try again later.',
+    severityLabel: 'Risk level',
+    floodedAreaLabel: 'Flooded area',
+    confidenceLabel: 'Confidence',
+    plotLabel: 'Plot',
+    locationLabel: 'Location',
+    caveat:
+      'Early estimate only — always confirm with NiMet advisories and local reports.',
+    retry: 'Retry'
   }
 };
 

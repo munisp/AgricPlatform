@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { AdvisoryFeed } from '@/components/advisory-live';
+import { FloodRiskCard } from '@/components/flood-risk-card';
 import { Card, PageHeader, Section, StatusBadge, Timeline } from '@/components/ui';
 
 export const metadata: Metadata = {
@@ -25,6 +26,10 @@ export default function AdvisoryPage() {
 
       <Section kicker="Alerts" title="Latest advisories">
         <AdvisoryFeed />
+      </Section>
+
+      <Section kicker="Flood risk" title="Flood risk for your plots">
+        <FloodRiskCard />
       </Section>
 
       <Section kicker="Crop calendar" title="Rainfed maize — Northern Guinea Savanna">
