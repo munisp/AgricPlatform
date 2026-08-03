@@ -473,6 +473,25 @@ import {
   createPgSyncCursorRepository,
   createPgSyncMutationRepository
 } from './repositories/sync.pg-repository.js';
+// Wave FARMS: farms & crop-production persistence (additive).
+import {
+  CROP_PLANTING_REPOSITORY,
+  FARM_EXPENSE_REPOSITORY,
+  FARM_PLOT_REPOSITORY,
+  HARVEST_RECORD_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCropPlantingRepository,
+  createInMemoryFarmExpenseRepository,
+  createInMemoryFarmPlotRepository,
+  createInMemoryHarvestRecordRepository
+} from './repositories/farms.repository.js';
+import {
+  createPgCropPlantingRepository,
+  createPgFarmExpenseRepository,
+  createPgFarmPlotRepository,
+  createPgHarvestRecordRepository
+} from './repositories/farms.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1218,6 +1237,29 @@ import {
       provide: SYNC_MUTATION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
+    // Wave FARMS: farms & crop-production (appended).
+    {
+      provide: FARM_PLOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmPlotRepository(pool) : createInMemoryFarmPlotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CROP_PLANTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCropPlantingRepository(pool) : createInMemoryCropPlantingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: HARVEST_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgHarvestRecordRepository(pool) : createInMemoryHarvestRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FARM_EXPENSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
       inject: [PG_POOL]
     }
   ],
@@ -1339,7 +1381,11 @@ import {
     RETENTION_POLICY_REPOSITORY,
     ENTITY_VERSION_REPOSITORY,
     SYNC_CURSOR_REPOSITORY,
-    SYNC_MUTATION_REPOSITORY
+    SYNC_MUTATION_REPOSITORY,
+    FARM_PLOT_REPOSITORY,
+    CROP_PLANTING_REPOSITORY,
+    HARVEST_RECORD_REPOSITORY,
+    FARM_EXPENSE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

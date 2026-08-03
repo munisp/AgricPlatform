@@ -52,6 +52,8 @@ import { CommerceModule } from './modules/commerce/commerce.module.js';
 import { ComplianceModule } from './modules/compliance/compliance.module.js';
 // Wave SYNCSRV (additive): record-level offline sync protocol v1.
 import { SyncModule } from './modules/sync/sync.module.js';
+// Wave FARMS (additive): farms & crop-production.
+import { FarmsModule } from './modules/farms/farms.module.js';
 
 @Module({
   imports: [
@@ -116,7 +118,9 @@ import { SyncModule } from './modules/sync/sync.module.js';
     // Wave COMP NDPA 2023 compliance tooling — appended to minimise merge conflicts.
     ComplianceModule,
     // Wave SYNCSRV record-level offline sync protocol v1 — appended to minimise merge conflicts.
-    SyncModule
+    SyncModule,
+    // Wave FARMS farms & crop-production — appended to minimise merge conflicts.
+    FarmsModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
