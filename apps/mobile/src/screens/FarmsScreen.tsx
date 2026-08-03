@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
 import { useApiClient } from '../api/context';
 import { listMyFarmPlots } from '../api/endpoints';
 import type { FarmPlot } from '../api/types';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
 
 /**
@@ -24,13 +25,16 @@ export function FarmsScreen({ onCapturePlot }: { onCapturePlot?: () => void }) {
     }
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Reload on mount + whenever this screen regains focus (e.g. after
+  // PlotCapture onSaved → goBack), plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   if (error && !plots) {
     return (
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <ErrorNotice message={error} onRetry={() => void load()} />
       </ScrollView>
     );
@@ -40,7 +44,10 @@ export function FarmsScreen({ onCapturePlot }: { onCapturePlot?: () => void }) {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+    >
       {error ? <ErrorNotice message={error} /> : null}
       <Card>
         <CardTitle>My plots ({plots.length})</CardTitle>

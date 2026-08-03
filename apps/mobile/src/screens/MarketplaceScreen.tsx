@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { FlatList, StyleSheet, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { useApiClient } from '../api/context';
 import { listListings } from '../api/endpoints';
 import type { MarketplaceListing } from '../api/types';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
 
 function formatNaira(amount: number): string {
@@ -28,9 +29,8 @@ export function MarketplaceScreen({
     }
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   if (error) {
     return (
@@ -46,6 +46,7 @@ export function MarketplaceScreen({
   return (
     <FlatList
       contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       data={listings}
       keyExtractor={(listing) => listing.id}
       ListEmptyComponent={

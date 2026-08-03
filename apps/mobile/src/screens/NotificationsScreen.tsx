@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useApiClient } from '../api/context';
 import { fetchSession, listNotifications, markNotificationRead } from '../api/endpoints';
 import type { NotificationMessage } from '../api/types';
 import { useSyncStatus, useSyncStore } from '../sync/context';
 import { SyncBadge } from '../sync/SyncBadge';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton, styles as uiStyles } from './ui';
 
 const SYNC_ENTITY = 'notification';
@@ -75,9 +76,8 @@ export function NotificationsScreen() {
     }
   }, [client, store, readCache]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Re-sync on mount + on focus, plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   async function markRead(item: NotificationMessage) {
     setMarking(item.id);
@@ -94,7 +94,10 @@ export function NotificationsScreen() {
 
   if (error && !items) {
     return (
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+      >
         <ErrorNotice message={error} onRetry={() => void load()} />
       </ScrollView>
     );
@@ -104,7 +107,10 @@ export function NotificationsScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+    >
       <SyncBadge status={status} />
       {error ? <ErrorNotice message={error} /> : null}
       {fromCache ? (

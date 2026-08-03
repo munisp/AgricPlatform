@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput } from 'react-native';
+import { useCallback, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput
+} from 'react-native';
 import { useApiClient } from '../api/context';
 import { listMyAnimals, registerAnimal } from '../api/endpoints';
 import type { Animal, AnimalSex, LivestockSpecies } from '../api/types';
+import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton, styles as ui } from './ui';
 
 const SPECIES: LivestockSpecies[] = ['cattle', 'sheep', 'goat', 'chicken', 'pig'];
@@ -44,9 +53,8 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
     }
   }, [client]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
+  const { refreshing, refresh } = useListRefresh(load);
 
   function pickSpecies(next: LivestockSpecies) {
     setSpecies(next);
@@ -86,7 +94,15 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+    <ScrollView
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
+    >
       {error ? <ErrorNotice message={error} /> : null}
 
       <Card>
@@ -162,10 +178,12 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
         </Card>
       ) : null}
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   container: { padding: 16, backgroundColor: '#f7f7f5' },
   line: { fontSize: 15, fontWeight: '600', marginBottom: 4, color: '#1b1b1b' },
   label: { marginTop: 12, marginBottom: 4, fontWeight: '600' },

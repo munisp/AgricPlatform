@@ -17,7 +17,9 @@ export default tseslint.config(
       globals: {
         module: 'writable',
         require: 'readonly',
-        __dirname: 'readonly'
+        __dirname: 'readonly',
+        // app.config.js reads EAS build-profile env vars at config-eval time.
+        process: 'readonly'
       }
     }
   },

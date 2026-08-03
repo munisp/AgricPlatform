@@ -1,8 +1,14 @@
 import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput } from 'react-native';
 import { useApiClient } from '../api/context';
 import { createFarmPlot } from '../api/endpoints';
 import type { CreateFarmPlotInput, FarmPlot } from '../api/types';
+import {
+  GOOD_FIX_ACCURACY_METERS,
+  LocationPermissionDeniedError,
+  type GeoPoint,
+  type LocationService
+} from '../location/location-service';
 import {
   createInMemoryStorage,
   createOfflineQueue,
@@ -10,22 +16,13 @@ import {
 } from '../offline/queue';
 import { Card, CardTitle, ErrorNotice, Muted, PrimaryButton } from './ui';
 
-/** A single GPS reading. */
-export interface GeoPoint {
-  lat: number;
-  long: number;
-  accuracyMeters?: number;
-}
+export type { GeoPoint, LocationService } from '../location/location-service';
 
 /**
- * GPS provider abstraction — the production app injects an expo-location
- * adapter; tests inject a stub. The default FAILS CLOSED: no silent fake
- * coordinates ever reach a plot record.
+ * Default when no GPS provider is injected — FAILS CLOSED: no silent fake
+ * coordinates ever reach a plot record. App.tsx injects the real
+ * expo-location adapter (src/location/location-service.ts).
  */
-export interface LocationService {
-  getCurrentPoint(): Promise<GeoPoint>;
-}
-
 const unconfiguredLocationService: LocationService = {
   getCurrentPoint: () =>
     Promise.reject(new Error('No GPS provider configured on this device build'))
@@ -65,13 +62,42 @@ export function PlotCaptureScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // GPS UX (audit P2-15): dedicated states for permission-denied guidance
+  // and poor-accuracy warnings instead of one opaque error string.
+  const [permissionDenied, setPermissionDenied] = useState<LocationPermissionDeniedError | null>(
+    null
+  );
+  const [accuracyWarning, setAccuracyWarning] = useState<string | null>(null);
+
+  function handleCapturedPoint(point: GeoPoint): void {
+    setPermissionDenied(null);
+    if (point.accuracyMeters !== undefined && point.accuracyMeters > GOOD_FIX_ACCURACY_METERS) {
+      setAccuracyWarning(
+        `GPS accuracy is low (±${Math.round(point.accuracyMeters)} m). ` +
+          'Move away from buildings/tree cover into the open and capture the point again for a reliable plot map.'
+      );
+    } else {
+      setAccuracyWarning(null);
+    }
+  }
+
+  function handleCaptureError(err: unknown): void {
+    if (err instanceof LocationPermissionDeniedError) {
+      setPermissionDenied(err);
+      setError(null);
+      return;
+    }
+    setError(err instanceof Error ? err.message : 'Could not read GPS');
+  }
 
   async function captureCentroid() {
     setError(null);
     try {
-      setCentroid(await locationService.getCurrentPoint());
+      const point = await locationService.getCurrentPoint();
+      setCentroid(point);
+      handleCapturedPoint(point);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not read GPS');
+      handleCaptureError(err);
     }
   }
 
@@ -80,8 +106,9 @@ export function PlotCaptureScreen({
     try {
       const point = await locationService.getCurrentPoint();
       setBoundary((points) => [...points, point]);
+      handleCapturedPoint(point);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not read GPS');
+      handleCaptureError(err);
     }
   }
 
@@ -114,8 +141,19 @@ export function PlotCaptureScreen({
         sizeHectares: hectares
       };
       // Stable idempotency key per logical capture: enqueue dedupes on it,
-      // so a double-tap or a replay cannot create two plots.
-      const idempotencyKey = `farms.plot.${centroid.lat.toFixed(5)}.${centroid.long.toFixed(5)}.${input.name}`;
+      // so a double-tap or a replay cannot create two plots. The key covers
+      // EVERY editable field (audit P2-17) — a legitimate edit (e.g. fixing
+      // the LGA after a failed send) produces a different key and is not
+      // deduped away.
+      const idempotencyKey = [
+        'farms.plot',
+        centroid.lat.toFixed(5),
+        centroid.long.toFixed(5),
+        input.name,
+        input.state,
+        input.lga,
+        input.sizeHectares
+      ].join('.');
       await offlineQueue.enqueue({
         kind: 'farms.plot.created',
         method: 'POST',
@@ -151,9 +189,35 @@ export function PlotCaptureScreen({
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       {error ? <ErrorNotice message={error} /> : null}
       {notice ? <Muted>{notice}</Muted> : null}
+
+      {permissionDenied ? (
+        <Card>
+          <CardTitle>Location permission needed</CardTitle>
+          <Muted>
+            AgricPlatform uses your GPS only to map this plot&apos;s centre and boundary — nothing
+            else.
+          </Muted>
+          <Muted>
+            {permissionDenied.canAskAgain
+              ? 'Tap a capture button again and choose "Allow" when Android/iOS asks for location access.'
+              : 'Open your device Settings → Apps → AgricPlatform → Permissions, allow Location, then come back and capture again.'}
+          </Muted>
+        </Card>
+      ) : null}
+
+      {accuracyWarning ? (
+        <Card>
+          <CardTitle>Low GPS accuracy</CardTitle>
+          <Muted>{accuracyWarning}</Muted>
+        </Card>
+      ) : null}
 
       <Card>
         <CardTitle>Capture a plot</CardTitle>
@@ -204,10 +268,12 @@ export function PlotCaptureScreen({
 
       <PrimaryButton label={busy ? 'Saving…' : 'Save plot'} disabled={busy} onPress={() => void submit()} />
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   container: { padding: 16, backgroundColor: '#f7f7f5' },
   label: { fontSize: 13, fontWeight: '600', color: '#1b1b1b', marginTop: 8 },
   input: {

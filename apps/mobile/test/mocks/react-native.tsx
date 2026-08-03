@@ -22,6 +22,7 @@ declare module 'react' {
       'rn-text-input': AnyProps;
       'rn-flat-list': AnyProps;
       'rn-flatlist-item': AnyProps;
+      'rn-refresh-control': AnyProps;
     }
   }
 }
@@ -34,8 +35,15 @@ export function Text(props: AnyProps) {
   return <rn-text {...props} />;
 }
 
-export function ScrollView(props: AnyProps) {
-  return <rn-scroll-view {...props} />;
+export function ScrollView({ refreshControl, ...props }: AnyProps) {
+  // The real ScrollView adopts the RefreshControl natively; the mock mounts
+  // it so tests can locate the control and invoke its onRefresh.
+  return (
+    <rn-scroll-view {...props}>
+      {refreshControl ? (refreshControl as ReactNode) : null}
+      {props.children}
+    </rn-scroll-view>
+  );
 }
 
 export function ActivityIndicator(props: AnyProps) {
@@ -81,4 +89,52 @@ export const StyleSheet = {
 
 export function useColorScheme(): 'light' | 'dark' {
   return 'light';
+}
+
+/**
+ * Pull-to-refresh control. Kept as a composite component (renders a host
+ * element) so tests can find it by type and invoke `props.onRefresh`.
+ */
+export function RefreshControl(props: AnyProps) {
+  return <rn-refresh-control {...props} />;
+}
+
+/** KeyboardAvoidingView collapses to a plain view under Node. */
+export function KeyboardAvoidingView(props: AnyProps) {
+  return <rn-view {...props} />;
+}
+
+export const Platform = {
+  OS: 'android' as const,
+  select<T>(choices: { android?: T; ios?: T; default?: T }): T | undefined {
+    return choices.android ?? choices.default;
+  }
+};
+
+/* ------------------------------- AppState ------------------------------- */
+
+type AppStateListener = (state: string) => void;
+const appStateListeners = new Set<AppStateListener>();
+
+export const AppState = {
+  currentState: 'active',
+  addEventListener(_type: string, listener: AppStateListener) {
+    appStateListeners.add(listener);
+    return {
+      remove() {
+        appStateListeners.delete(listener);
+      }
+    };
+  }
+};
+
+/** Test helper: simulate a foreground/background transition. */
+export function __emitAppState(state: string): void {
+  AppState.currentState = state;
+  for (const listener of [...appStateListeners]) listener(state);
+}
+
+export function __resetAppState(): void {
+  appStateListeners.clear();
+  AppState.currentState = 'active';
 }
