@@ -121,7 +121,18 @@ import type {
   VaultDocument,
   Webinar,
   WebinarRegistration,
-  WebinarStatus
+  WebinarStatus,
+  CreditCollateral,
+  CreditGroup,
+  CreditGroupMember,
+  CreditGuarantor,
+  CreditLoanApplication,
+  CreditLoanProduct,
+  CreditPortfolioReport,
+  CreditRepayment,
+  CreditSavingsAccount,
+  CreditSavingsTransaction,
+  CreditScoreAssessment
 } from '@agric-platform/shared';
 import { apiFetch, apiUrl, type AuthIdentity } from './client';
 
@@ -2923,8 +2934,7 @@ export function captureFarmerProfile(
   return apiFetch('/field-agents/capture/profile', { method: 'POST', body: input });
 }
 
-/* ========================================================================
- * Geospatial pack (Wave GEO).
+/* ================================================================= * Geospatial pack (Wave GEO).
  * Mirrors apps/api/src/modules/geo (geo.controller). H3-based spatial
  * indexing computed on the API — no PostGIS. All endpoints return a plain
  * `{ data: T }` envelope.
@@ -3047,4 +3057,178 @@ export function fetchFloodRisk(params?: {
   long?: number;
 }): Promise<{ data: FloodRiskAssessment }> {
   return apiFetch('/geo-intel/flood-risk', { query: { ...params } });
+}
+
+/* ------------------------------ credit suite ---------------------------- */
+/* Wave CREDIT: microfinance (products, applications, repayments, groups,  */
+/* savings, portfolio). Plain `{ data: T }` envelopes throughout.           */
+
+export interface CreditGroupWithMembers {
+  group: CreditGroup;
+  members: CreditGroupMember[];
+}
+
+export interface SavingsTransactionResult {
+  account: CreditSavingsAccount;
+  transaction: CreditSavingsTransaction;
+  replay: boolean;
+}
+
+/* -- products -- */
+
+export function listCreditProducts(all = false): Promise<{ data: CreditLoanProduct[] }> {
+  return apiFetch('/credit/products', { query: all ? { all: 'true' } : {} });
+}
+
+export function createCreditProduct(
+  input: Omit<CreditLoanProduct, 'id' | 'createdAt'>,
+  idempotencyKey?: string
+): Promise<{ data: CreditLoanProduct }> {
+  return apiFetch('/credit/products', { method: 'POST', body: input, idempotencyKey });
+}
+
+/* -- applications -- */
+
+export function applyForCreditLoan(input: {
+  productId: string;
+  principalKobo: number;
+  purpose?: string;
+}): Promise<{ data: CreditLoanApplication }> {
+  return apiFetch('/credit/applications', { method: 'POST', body: input });
+}
+
+export function applyForGroupCreditLoan(input: {
+  productId: string;
+  principalKobo: number;
+  groupId: string;
+  purpose?: string;
+}): Promise<{ data: CreditLoanApplication }> {
+  return apiFetch('/credit/applications/group', { method: 'POST', body: input });
+}
+
+export function listCreditLoans(params?: {
+  status?: string;
+  applicantUserId?: string;
+  groupId?: string;
+}): Promise<{ data: CreditLoanApplication[] }> {
+  return apiFetch('/credit/applications', { query: { ...params } });
+}
+
+export function fetchCreditLoan(id: string): Promise<{ data: CreditLoanApplication }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(id)}`);
+}
+
+function creditLoanAction(id: string, action: string): Promise<{ data: CreditLoanApplication }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+}
+
+export function submitCreditLoan(id: string) {
+  return creditLoanAction(id, 'submit');
+}
+export function scoreCreditLoan(id: string) {
+  return creditLoanAction(id, 'score');
+}
+export function approveCreditLoan(id: string) {
+  return creditLoanAction(id, 'approve');
+}
+export function rejectCreditLoan(id: string) {
+  return creditLoanAction(id, 'reject');
+}
+export function disburseCreditLoan(id: string) {
+  return creditLoanAction(id, 'disburse');
+}
+export function startCreditRepayment(id: string) {
+  return creditLoanAction(id, 'start-repayment');
+}
+export function defaultCreditLoan(id: string) {
+  return creditLoanAction(id, 'default');
+}
+
+/* -- repayments -- */
+
+export function fetchCreditSchedule(loanId: string): Promise<{ data: CreditRepayment[] }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/schedule`);
+}
+
+export function payCreditInstallment(
+  loanId: string,
+  sequence: number
+): Promise<{ data: CreditRepayment }> {
+  return apiFetch(
+    `/credit/applications/${encodeURIComponent(loanId)}/repayments/${sequence}/pay`,
+    { method: 'POST' }
+  );
+}
+
+/* -- collateral + guarantors -- */
+
+export function listCreditCollateral(loanId: string): Promise<{ data: CreditCollateral[] }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/collateral`);
+}
+
+export function listCreditGuarantors(loanId: string): Promise<{ data: CreditGuarantor[] }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/guarantors`);
+}
+
+/* -- groups -- */
+
+export function listCreditGroups(): Promise<{ data: CreditGroup[] }> {
+  return apiFetch('/credit/groups');
+}
+
+export function listMyCreditGroups(): Promise<{ data: CreditGroupWithMembers[] }> {
+  return apiFetch('/credit/groups/mine');
+}
+
+export function createCreditGroup(input: {
+  name: string;
+  chapterId?: string;
+}): Promise<{ data: CreditGroupWithMembers }> {
+  return apiFetch('/credit/groups', { method: 'POST', body: input });
+}
+
+export function joinCreditGroup(groupId: string): Promise<{ data: CreditGroupMember }> {
+  return apiFetch(`/credit/groups/${encodeURIComponent(groupId)}/join`, { method: 'POST' });
+}
+
+/* -- savings -- */
+
+export function fetchOwnSavingsAccount(): Promise<{ data: CreditSavingsAccount }> {
+  return apiFetch('/credit/savings/accounts/mine');
+}
+
+export function fetchOwnSavingsTransactions(): Promise<{ data: CreditSavingsTransaction[] }> {
+  return apiFetch('/credit/savings/accounts/mine/transactions');
+}
+
+export function depositOwnSavings(
+  amountKobo: number,
+  ref: string
+): Promise<{ data: SavingsTransactionResult }> {
+  return apiFetch('/credit/savings/accounts/mine/deposits', {
+    method: 'POST',
+    body: { amountKobo, ref }
+  });
+}
+
+export function withdrawOwnSavings(
+  amountKobo: number,
+  ref: string
+): Promise<{ data: SavingsTransactionResult }> {
+  return apiFetch('/credit/savings/accounts/mine/withdrawals', {
+    method: 'POST',
+    body: { amountKobo, ref }
+  });
+}
+
+/* -- portfolio + scoring -- */
+
+export function fetchCreditPortfolio(): Promise<{ data: CreditPortfolioReport }> {
+  return apiFetch('/credit/portfolio');
+}
+
+export function fetchCreditScoreAssessment(
+  userId: string
+): Promise<{ data: CreditScoreAssessment }> {
+  return apiFetch(`/credit/score/${encodeURIComponent(userId)}`);
 }

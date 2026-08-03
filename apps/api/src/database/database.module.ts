@@ -518,6 +518,40 @@ import {
   createPgGeoBoundaryRepository,
   createPgH3IndexRepository
 } from './repositories/geo.pg-repository.js';
+// Wave CREDIT: microfinance suite persistence (additive).
+import {
+  CREDIT_COLLATERAL_REPOSITORY,
+  CREDIT_GROUP_MEMBER_REPOSITORY,
+  CREDIT_GROUP_REPOSITORY,
+  CREDIT_GUARANTOR_REPOSITORY,
+  CREDIT_LOAN_REPOSITORY,
+  CREDIT_PRODUCT_REPOSITORY,
+  CREDIT_REPAYMENT_REPOSITORY,
+  CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+  CREDIT_SAVINGS_TRANSACTION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditCollateralRepository,
+  createInMemoryCreditGroupMemberRepository,
+  createInMemoryCreditGroupRepository,
+  createInMemoryCreditGuarantorRepository,
+  createInMemoryCreditLoanRepository,
+  createInMemoryCreditProductRepository,
+  createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditSavingsAccountRepository,
+  createInMemoryCreditSavingsTransactionRepository
+} from './repositories/credit-suite.repository.js';
+import {
+  createPgCreditCollateralRepository,
+  createPgCreditGroupMemberRepository,
+  createPgCreditGroupRepository,
+  createPgCreditGuarantorRepository,
+  createPgCreditLoanRepository,
+  createPgCreditProductRepository,
+  createPgCreditRepaymentRepository,
+  createPgCreditSavingsAccountRepository,
+  createPgCreditSavingsTransactionRepository
+} from './repositories/credit-suite.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1315,6 +1349,69 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgGeoBoundaryRepository(pool) : createInMemoryGeoBoundaryRepository(),
       inject: [PG_POOL]
+    },
+    // Wave CREDIT: microfinance suite providers (additive). The in-memory
+    // savings account repo shares the transaction store so guarded
+    // balance+transaction bodies stay atomic in unit tests.
+    {
+      provide: CREDIT_PRODUCT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditProductRepository(pool) : createInMemoryCreditProductRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_LOAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditLoanRepository(pool) : createInMemoryCreditLoanRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_REPAYMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditRepaymentRepository(pool) : createInMemoryCreditRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_COLLATERAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditCollateralRepository(pool) : createInMemoryCreditCollateralRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GUARANTOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGuarantorRepository(pool) : createInMemoryCreditGuarantorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGroupRepository(pool) : createInMemoryCreditGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GROUP_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGroupMemberRepository(pool) : createInMemoryCreditGroupMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditSavingsTransactionRepository(pool)
+          : createInMemoryCreditSavingsTransactionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transactions: unknown) =>
+        pool
+          ? createPgCreditSavingsAccountRepository(pool)
+          : createInMemoryCreditSavingsAccountRepository(
+              transactions as Parameters<typeof createInMemoryCreditSavingsAccountRepository>[0]
+            ),
+      inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
     }
   ],
   exports: [
@@ -1443,7 +1540,16 @@ import {
     AGENT_ASSIGNMENT_REPOSITORY,
     AGENT_ACTIVITY_LOG_REPOSITORY,
     H3_INDEX_REPOSITORY,
-    GEO_BOUNDARY_REPOSITORY
+    GEO_BOUNDARY_REPOSITORY,
+    CREDIT_PRODUCT_REPOSITORY,
+    CREDIT_LOAN_REPOSITORY,
+    CREDIT_REPAYMENT_REPOSITORY,
+    CREDIT_COLLATERAL_REPOSITORY,
+    CREDIT_GUARANTOR_REPOSITORY,
+    CREDIT_GROUP_REPOSITORY,
+    CREDIT_GROUP_MEMBER_REPOSITORY,
+    CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+    CREDIT_SAVINGS_TRANSACTION_REPOSITORY
   ]
 })
 export class DatabaseModule {}

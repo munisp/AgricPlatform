@@ -10,3 +10,4 @@ export * from './commerce.js';
 export * from './farms.js';
 // Wave GEO (additive): geospatial pack — H3 indexing + boundaries.
 export * from './geo.js';
+export * from './credit.js';

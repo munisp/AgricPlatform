@@ -60,6 +60,8 @@ import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js
 import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
+// Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
+import { CreditModule } from './modules/credit/credit.module.js';
 
 @Module({
   imports: [
@@ -132,7 +134,9 @@ import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
     // Wave GEO geospatial pack — appended to minimise merge conflicts.
     GeoModule,
     // Wave ML geo-intel flood-risk — appended to minimise merge conflicts.
-    GeoIntelModule
+    GeoIntelModule,
+    // Wave CREDIT microfinance suite — appended to minimise merge conflicts.
+    CreditModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
