@@ -202,3 +202,48 @@ export interface CreditPortfolioReport {
   par60Bps: number;
   par90Bps: number;
 }
+
+/* ------------------------- geo-verified credit (wave-geocredit, shadow) -- */
+
+/** Provenance of a geo factor input: stub fixture vs live sidecar inference. */
+export type GeoCreditInputBasis = 'stub' | 'live';
+
+/** Crop input can additionally be honestly 'unavailable' (fail-closed). */
+export type GeoCreditCropBasis = 'stub' | 'live' | 'unavailable';
+
+export type GeoCreditFactorStatus = 'computed' | 'unavailable';
+
+/** Component breakdown of the geo-verified credit factor (max 100 total). */
+export interface GeoCreditFactorBreakdown {
+  /** 0 or 25 — plot exists, has coordinates and belongs to the applicant. */
+  plotVerification: number;
+  /** 0 or 15 — stored plot area inside the plausible band (0.01–100 ha). */
+  areaPlausibility: number;
+  /** 0–20 — flood-risk band points (none=20 … severe=0). */
+  floodRisk: number;
+  /** 0–30 — crop health_score scaled from 0–100. */
+  cropHealth: number;
+  /** 0–10 — freshness of the underlying plot record. */
+  dataFreshness: number;
+}
+
+export interface GeoCreditBasisFlags {
+  flood: GeoCreditInputBasis;
+  crop: GeoCreditCropBasis;
+}
+
+/**
+ * A shadow-mode geo-verified credit score. Persisted ONLY to
+ * credit.geo_credit_shadow_scores (migration 028) and never read by the
+ * live approve/decline decision path. factorScore is null when status is
+ * 'unavailable' (live crop-ml configured but unreachable — fail-closed).
+ */
+export interface GeoCreditShadowScore {
+  applicationId: string;
+  factorScore: number | null;
+  status: GeoCreditFactorStatus;
+  breakdown: GeoCreditFactorBreakdown;
+  basis: GeoCreditBasisFlags;
+  inputFingerprint: string;
+  computedAt: string;
+}
