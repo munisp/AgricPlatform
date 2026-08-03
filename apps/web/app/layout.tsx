@@ -17,11 +17,24 @@ export const metadata: Metadata = {
     'The unified digital operating system for NYFN stakeholders: onboarding, learning, community, opportunities, chapters, advisory, marketplace, finance and privacy — online and offline.',
   applicationName: 'AgricPlatform',
   manifest: '/manifest.webmanifest',
-  icons: { icon: '/icon.svg', apple: '/icon.svg' },
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' }
+    ],
+    // iOS cannot use SVG touch icons — real raster asset generated from icon.svg.
+    apple: '/apple-touch-icon.png'
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
     title: 'AgricPlatform'
+  },
+  other: {
+    // Next 16 emits the standard `mobile-web-app-capable` for
+    // appleWebApp.capable but not the legacy prefixed name that older iOS
+    // Safari standalone mode still keys on — declare it explicitly.
+    'apple-mobile-web-app-capable': 'yes'
   },
   formatDetection: { telephone: false }
 };

@@ -1,10 +1,17 @@
 import type { ApiClient } from './client';
 import type {
+  Animal,
   ApiListResponse,
   Course,
+  DraftOrder,
+  HealthRecall,
   MarketplaceListing,
   MyPathwayEnrolmentSummary,
+  NotificationMessage,
   Opportunity,
+  Order,
+  OrderStatus,
+  RegisterAnimalInput,
   User,
   WeatherSnapshot
 } from './types';
@@ -25,16 +32,40 @@ export function requestOtp(
   return client.apiFetch('/auth/otp/request', { method: 'POST', body: { phone } });
 }
 
+/** Login response (Wave P): access token + first-generation refresh token. */
+export interface SessionTokens {
+  token: string;
+  refreshToken: string;
+  refreshTokenExpiresAt?: string;
+  user: User;
+}
+
 export function verifyOtp(
   client: ApiClient,
   requestId: string,
   code: string
-): Promise<{ data: { token: string; user: User } }> {
+): Promise<{ data: SessionTokens }> {
   return client.apiFetch('/auth/otp/verify', { method: 'POST', body: { requestId, code } });
 }
 
 export function fetchSession(client: ApiClient): Promise<{ data: { user: User } }> {
   return client.apiFetch('/auth/session');
+}
+
+/** Rotate a refresh token (the client also does this automatically on 401). */
+export function refreshSession(
+  client: ApiClient,
+  refreshToken: string
+): Promise<{ data: { user: User; refreshToken: string; refreshTokenExpiresAt?: string } }> {
+  return client.apiFetch('/auth/refresh', { method: 'POST', body: { refreshToken } });
+}
+
+/** Revoke the refresh-token session on sign-out (idempotent server-side). */
+export function logoutSession(
+  client: ApiClient,
+  refreshToken: string
+): Promise<{ data: { revoked: boolean } }> {
+  return client.apiFetch('/auth/logout', { method: 'POST', body: { refreshToken } });
 }
 
 /* ------------------------------ learning ------------------------------- */
@@ -61,6 +92,73 @@ export function listListings(
 
 export function fetchListing(client: ApiClient, id: string): Promise<{ data: MarketplaceListing }> {
   return client.apiFetch(`/listings/${encodeURIComponent(id)}`);
+}
+
+/* ------------------------------- orders -------------------------------- */
+
+/** Own orders (buyer side). Plain `{ data: Order[] }`. */
+export function listMyOrders(
+  client: ApiClient,
+  buyerId: string,
+  status?: OrderStatus
+): Promise<{ data: Order[] }> {
+  return client.apiFetch('/orders', { query: { buyerId, status } });
+}
+
+export function fetchOrder(client: ApiClient, id: string): Promise<{ data: Order }> {
+  return client.apiFetch(`/orders/${encodeURIComponent(id)}`);
+}
+
+/** Draft orders created for the buyer by an agent (Wave M). Plain list. */
+export function listDraftOrders(
+  client: ApiClient,
+  buyerId: string
+): Promise<{ data: DraftOrder[] }> {
+  return client.apiFetch('/draft-orders', { query: { buyerId } });
+}
+
+/** Buyer confirms a draft order into a normal order. */
+export function confirmDraftOrder(
+  client: ApiClient,
+  id: string
+): Promise<{ data: DraftOrder }> {
+  return client.apiFetch(`/draft-orders/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
+}
+
+/* ---------------------------- notifications ----------------------------- */
+
+/** Own notifications, newest first. Plain `{ data: NotificationMessage[] }`. */
+export function listNotifications(
+  client: ApiClient,
+  userId: string
+): Promise<{ data: NotificationMessage[] }> {
+  return client.apiFetch('/notifications', { query: { userId } });
+}
+
+export function markNotificationRead(
+  client: ApiClient,
+  id: string
+): Promise<{ data: NotificationMessage }> {
+  return client.apiFetch(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' });
+}
+
+/* ------------------------------ livestock ------------------------------- */
+
+/** Own registered animals. Plain `{ data: Animal[] }`. */
+export function listMyAnimals(client: ApiClient): Promise<{ data: Animal[] }> {
+  return client.apiFetch('/livestock/animals/mine');
+}
+
+export function registerAnimal(
+  client: ApiClient,
+  input: RegisterAnimalInput
+): Promise<{ data: Animal }> {
+  return client.apiFetch('/livestock/animals', { method: 'POST', body: input });
+}
+
+/** Active disease recalls = pending health tasks for the dashboard card. */
+export function listActiveRecalls(client: ApiClient): Promise<{ data: HealthRecall[] }> {
+  return client.apiFetch('/livestock-health/recalls', { query: { status: 'active' } });
 }
 
 /* ------------------------------ dashboard ------------------------------- */

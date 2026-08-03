@@ -35,7 +35,7 @@ describe('offline mutation queue', () => {
     const result = await queue.flush(async (request) => {
       sent.push(request);
     });
-    expect(result).toEqual({ sent: 2, failed: 0 });
+    expect(result).toEqual({ sent: 2, failed: 0, parked: 0 });
     expect(sent.map((request) => request.idempotencyKey)).toEqual(['idem-1', 'idem-2']);
     expect(await queue.pending()).toHaveLength(0);
   });
@@ -50,7 +50,7 @@ describe('offline mutation queue', () => {
       calls += 1;
       if (calls === 1) throw new Error('offline');
     });
-    expect(result).toEqual({ sent: 1, failed: 1 });
+    expect(result).toEqual({ sent: 1, failed: 1, parked: 0 });
     const remaining = await queue.pending();
     expect(remaining).toHaveLength(1);
     expect(remaining[0].idempotencyKey).toBe('idem-1');

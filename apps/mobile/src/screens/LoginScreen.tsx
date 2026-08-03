@@ -46,7 +46,9 @@ export function LoginScreen({
     setError(null);
     try {
       const res = await verifyOtp(client, requestId, code.trim());
-      await tokenStore.setToken(res.data.token);
+      // Wave P sessions: keep both halves — the client rotates the refresh
+      // token on a 401 and revokes it on sign-out.
+      await tokenStore.setSession({ token: res.data.token, refreshToken: res.data.refreshToken });
       onLoggedIn(res.data.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed');
