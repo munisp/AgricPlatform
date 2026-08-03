@@ -50,6 +50,8 @@ import { REDIS_CLIENT } from './database/persistence.tokens.js';
 import { CommerceModule } from './modules/commerce/commerce.module.js';
 // Wave COMP (additive): NDPA 2023 compliance tooling.
 import { ComplianceModule } from './modules/compliance/compliance.module.js';
+// Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
+import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
 
 @Module({
   imports: [
@@ -112,7 +114,9 @@ import { ComplianceModule } from './modules/compliance/compliance.module.js';
     // Wave P platform foundation — appended to minimise merge conflicts.
     FeatureFlagsModule,
     // Wave COMP NDPA 2023 compliance tooling — appended to minimise merge conflicts.
-    ComplianceModule
+    ComplianceModule,
+    // Wave AGENTS field-agent (enumerator) capability — appended to minimise merge conflicts.
+    FieldAgentsModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

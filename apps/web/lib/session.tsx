@@ -52,7 +52,8 @@ export const DEV_PREVIEW_USERS: Record<UserRole, { userId: string; displayName: 
   lender: { userId: 'user-lender', displayName: 'Livestock Credit Cooperative' },
   insurer: { userId: 'user-insurer', displayName: 'Sahel Livestock Insurance' },
   regulator: { userId: 'user-regulator', displayName: 'State Vet Regulator' },
-  donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' }
+  donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' },
+  enumerator: { userId: 'user-enumerator', displayName: 'Field Enumerator' }
 };
 
 const SESSION_KEY = 'agric.session';

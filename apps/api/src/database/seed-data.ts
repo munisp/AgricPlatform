@@ -203,6 +203,19 @@ export const seedUsers: User[] = [
     isVerified: true,
     createdAt: '2025-10-01T09:00:00.000Z',
     lastActiveAt: NOW
+  },
+  // Wave AGENTS persona (appended): field enumerator who captures farmer
+  // data on behalf of farmers.
+  {
+    id: 'user-enumerator',
+    phone: '+2348010000013',
+    fullName: 'Field Enumerator',
+    roles: ['enumerator'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_2',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
   }
 ];
 

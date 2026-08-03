@@ -39,7 +39,8 @@ export function HomeScreen({
   onOpenProfile,
   onOpenOrders,
   onOpenNotifications,
-  onOpenLivestock
+  onOpenLivestock,
+  onOpenAgentQueue
 }: {
   state?: string;
   onOpenCourses: () => void;
@@ -48,6 +49,8 @@ export function HomeScreen({
   onOpenOrders: () => void;
   onOpenNotifications: () => void;
   onOpenLivestock: () => void;
+  /** Wave AGENTS: enumerators jump straight to their field queue. */
+  onOpenAgentQueue?: () => void;
 }) {
   const client = useApiClient();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -181,6 +184,9 @@ export function HomeScreen({
         <PrimaryButton label="My orders" onPress={onOpenOrders} />
         <PrimaryButton label="Notifications" onPress={onOpenNotifications} />
         <PrimaryButton label="My livestock" onPress={onOpenLivestock} />
+        {onOpenAgentQueue ? (
+          <PrimaryButton label="My field queue" onPress={onOpenAgentQueue} />
+        ) : null}
         <PrimaryButton label="View profile" onPress={onOpenProfile} />
       </Card>
     </ScrollView>

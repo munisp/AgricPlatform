@@ -13,7 +13,10 @@ export const USER_ROLES = [
   'lender',
   'insurer',
   'regulator',
-  'donor'
+  'donor',
+  // Wave AGENTS: field enumerator — captures farmer data on behalf of
+  // farmers (agent assignments queue, migration 023).
+  'enumerator'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
@@ -558,3 +561,70 @@ export interface CreditScoreResult {
   components: Record<string, number>;
   computedAt: string;
 }
+
+/* ---------------------------------------------------------------------------
+ * Wave AGENTS: field-agent (enumerator) assignments + productivity.
+ * Enumerators are field staff who capture farmer data on behalf of farmer
+ * users; assignments are the unit of work handed out by admins/chapter leads
+ * (migration 023, schema `agents`).
+ * ------------------------------------------------------------------------- */
+
+export const AGENT_ASSIGNMENT_STATUSES = [
+  'assigned',
+  'in_progress',
+  'completed',
+  'cancelled'
+] as const;
+export type AgentAssignmentStatus = (typeof AGENT_ASSIGNMENT_STATUSES)[number];
+
+/** Unit of field work assigned to an enumerator. */
+export interface AgentAssignment {
+  id: string;
+  /** Enumerator (users.id with the 'enumerator' role) who owns the work. */
+  agentUserId: string;
+  /** Optional specific farmer the assignment targets. */
+  farmerUserId?: string;
+  chapterId?: string;
+  state: string;
+  lga: string;
+  ward?: string;
+  /** Free-text purpose, e.g. 'farmer-registration', 'farm-visit'. */
+  purpose: string;
+  /** Number of captures/visits expected (>= 1). */
+  targetCount: number;
+  completedCount: number;
+  status: AgentAssignmentStatus;
+  dueAt?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Append-only activity trail for enumerator actions (agents.agent_activity_log). */
+export interface AgentActivityLogEntry {
+  id: string;
+  agentUserId: string;
+  assignmentId?: string;
+  /** e.g. 'assignment_created' | 'assignment_progress' | 'profile_captured'. */
+  action: string;
+  /** Subject of the action when it concerns a person (e.g. the farmer). */
+  subjectUserId?: string;
+  meta: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Per-agent productivity aggregate (GET /field-agents/productivity). */
+export interface AgentProductivity {
+  agentUserId: string;
+  totalAssignments: number;
+  activeAssignments: number;
+  completedAssignments: number;
+  cancelledAssignments: number;
+  targetCount: number;
+  completedCount: number;
+  /** completedCount / targetCount in [0, 1]; 0 when no target was set. */
+  completionRate: number;
+}
+
+/** Consent purpose recorded when an enumerator captures data on behalf of a farmer. */
+export const FIELD_DATA_CAPTURE_CONSENT_PURPOSE = 'field-data-capture';

@@ -2569,3 +2569,130 @@ export function requestDataErasure(): Promise<{ data: DataSubjectRequest }> {
 export function listMyDataSubjectRequests(): Promise<{ data: DataSubjectRequest[] }> {
   return apiFetch('/compliance/dsr/mine');
 }
+
+/* --------------------- field agents (Wave AGENTS, enumerators) --------------------- */
+
+export type AgentAssignmentStatus = 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+
+/** Unit of field work assigned to an enumerator (agents.agent_assignments). */
+export interface AgentAssignment {
+  id: string;
+  agentUserId: string;
+  farmerUserId?: string;
+  chapterId?: string;
+  state: string;
+  lga: string;
+  ward?: string;
+  purpose: string;
+  targetCount: number;
+  completedCount: number;
+  status: AgentAssignmentStatus;
+  dueAt?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Per-agent productivity aggregate (GET /field-agents/productivity, admin). */
+export interface AgentProductivity {
+  agentUserId: string;
+  totalAssignments: number;
+  activeAssignments: number;
+  completedAssignments: number;
+  cancelledAssignments: number;
+  targetCount: number;
+  completedCount: number;
+  /** completedCount / targetCount in [0, 1]; 0 when no target was set. */
+  completionRate: number;
+}
+
+export interface CreateAgentAssignmentInput {
+  agentUserId: string;
+  farmerUserId?: string;
+  chapterId?: string;
+  state: string;
+  lga: string;
+  ward?: string;
+  purpose: string;
+  targetCount?: number;
+  dueAt?: string;
+}
+
+/** Admin/chapter-lead creation. Plain `{ data: T }` envelope. */
+export function createAgentAssignment(
+  input: CreateAgentAssignmentInput
+): Promise<{ data: AgentAssignment }> {
+  return apiFetch('/field-agents/assignments', { method: 'POST', body: input });
+}
+
+/** Admin/chapter-lead listing (chapter leads are scoped server-side). */
+export function listAgentAssignments(filter?: {
+  agentUserId?: string;
+  status?: AgentAssignmentStatus;
+  state?: string;
+  chapterId?: string;
+}): Promise<{ data: AgentAssignment[] }> {
+  const params = new URLSearchParams();
+  if (filter?.agentUserId) params.set('agentUserId', filter.agentUserId);
+  if (filter?.status) params.set('status', filter.status);
+  if (filter?.state) params.set('state', filter.state);
+  if (filter?.chapterId) params.set('chapterId', filter.chapterId);
+  const query = params.toString();
+  return apiFetch(`/field-agents/assignments${query ? `?${query}` : ''}`);
+}
+
+/** Enumerator's own open queue. Plain `{ data: T[] }` envelope. */
+export function listMyAgentAssignments(): Promise<{ data: AgentAssignment[] }> {
+  return apiFetch('/field-agents/assignments/mine');
+}
+
+/** Enumerator progress report; auto-completes server-side at the target. */
+export function reportAgentAssignmentProgress(
+  id: string,
+  count = 1
+): Promise<{ data: AgentAssignment }> {
+  return apiFetch(`/field-agents/assignments/${encodeURIComponent(id)}/progress`, {
+    method: 'POST',
+    body: { count }
+  });
+}
+
+export function cancelAgentAssignment(id: string): Promise<{ data: AgentAssignment }> {
+  return apiFetch(`/field-agents/assignments/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST'
+  });
+}
+
+/** Admin-only per-agent completion aggregates. */
+export function fetchAgentProductivity(): Promise<{ data: AgentProductivity[] }> {
+  return apiFetch('/field-agents/productivity');
+}
+
+export interface CaptureFarmerProfileInput {
+  farmerUserId?: string;
+  farmerPhone?: string;
+  location?: { state: string; lga: string; ward?: string; latitude?: number; longitude?: number };
+  farmingInterests?: string[];
+  valueChains?: string[];
+  bio?: string;
+  farmSizeHectares?: number;
+  yearsExperience?: number;
+  policyVersion?: string;
+}
+
+export interface CaptureFarmerProfileResult {
+  profile: unknown;
+  farmerUserId: string;
+  consentId: string;
+  capturedBy: string;
+}
+
+/**
+ * Enumerator on-behalf capture: upserts the farmer's profile and records a
+ * 'field-data-capture' consent attributed to the agent.
+ */
+export function captureFarmerProfile(
+  input: CaptureFarmerProfileInput
+): Promise<{ data: CaptureFarmerProfileResult }> {
+  return apiFetch('/field-agents/capture/profile', { method: 'POST', body: input });
+}

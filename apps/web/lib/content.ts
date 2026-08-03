@@ -63,7 +63,8 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   lender: 'Lender',
   insurer: 'Insurer',
   regulator: 'Regulator',
-  donor: 'Donor'
+  donor: 'Donor',
+  enumerator: 'Enumerator'
 };
 
 export const ROLE_SUMMARIES: Record<UserRole, string> = {
@@ -78,7 +79,8 @@ export const ROLE_SUMMARIES: Record<UserRole, string> = {
   lender: 'Register and manage liens over livestock collateral.',
   insurer: 'Bind livestock insurance policies and settle claims.',
   regulator: 'Export compliance reports and oversee disease surveillance, recalls and movement control.',
-  donor: 'Schedule and track milestone-based programme disbursements.'
+  donor: 'Schedule and track milestone-based programme disbursements.',
+  enumerator: 'Capture farmer data in the field and work through your assignment queue.'
 };
 
 export interface ModuleDef {
@@ -230,6 +232,21 @@ export const MODULES: ModuleDef[] = [
     description: 'Verify the tamper-evident audit hash chain over a range.',
     tag: 'Operations',
     roles: ['admin']
+  },
+  // Wave AGENTS (union-append): enumerator console + field queue.
+  {
+    href: '/agents',
+    title: 'Field agents',
+    description: 'Assign field work to enumerators and track completion rates.',
+    tag: 'Field operations',
+    roles: ['admin', 'chapter_lead']
+  },
+  {
+    href: '/agents/my-queue',
+    title: 'My field queue',
+    description: 'Your open enumerator assignments with progress reporting.',
+    tag: 'Field operations',
+    roles: ['enumerator']
   }
 ];
 
