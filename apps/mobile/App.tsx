@@ -6,6 +6,7 @@ import { ApiProvider } from './src/api/context';
 import { createInMemoryTokenStore, type TokenStore } from './src/api/token-store';
 import { API_BASE_URL } from './src/config';
 import type { User } from './src/api/types';
+import { AgentQueueScreen } from './src/screens/AgentQueueScreen';
 import { CourseDetailScreen } from './src/screens/CourseDetailScreen';
 import { CoursesScreen } from './src/screens/CoursesScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -43,6 +44,7 @@ export type RootStackParamList = {
   Livestock: undefined;
   Farms: undefined;
   PlotCapture: undefined;
+  AgentQueue: undefined;
   Profile: undefined;
 };
 
@@ -73,6 +75,7 @@ export default function App() {
                 onOpenNotifications={() => navigation.navigate('Notifications')}
                 onOpenLivestock={() => navigation.navigate('Livestock')}
                 onOpenFarms={() => navigation.navigate('Farms')}
+                onOpenAgentQueue={() => navigation.navigate('AgentQueue')}
               />
             )}
           </Stack.Screen>
@@ -115,6 +118,8 @@ export default function App() {
           </Stack.Screen>
           <Stack.Screen name="PlotCapture" options={{ title: 'Capture plot' }}>
             {({ navigation }) => <PlotCaptureScreen onSaved={() => navigation.goBack()} />}
+          <Stack.Screen name="AgentQueue" options={{ title: 'My field queue' }}>
+            {() => <AgentQueueScreen />}
           </Stack.Screen>
           <Stack.Screen name="Profile" options={{ title: 'Profile' }}>
             {() => <ProfileScreen tokenStore={tokenStore} onSignedOut={() => setUser(null)} />}

@@ -165,3 +165,7 @@ export const FARM_PLOT_REPOSITORY = Symbol('FARM_PLOT_REPOSITORY');
 export const CROP_PLANTING_REPOSITORY = Symbol('CROP_PLANTING_REPOSITORY');
 export const HARVEST_RECORD_REPOSITORY = Symbol('HARVEST_RECORD_REPOSITORY');
 export const FARM_EXPENSE_REPOSITORY = Symbol('FARM_EXPENSE_REPOSITORY');
+// Wave AGENTS: field-agent (enumerator) assignments + activity trail
+// (agents schema, migration 023).
+export const AGENT_ASSIGNMENT_REPOSITORY = Symbol('AGENT_ASSIGNMENT_REPOSITORY');
+export const AGENT_ACTIVITY_LOG_REPOSITORY = Symbol('AGENT_ACTIVITY_LOG_REPOSITORY');

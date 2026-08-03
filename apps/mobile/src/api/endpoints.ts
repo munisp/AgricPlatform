@@ -1,5 +1,6 @@
 import type { ApiClient } from './client';
 import type {
+  AgentAssignment,
   Animal,
   ApiListResponse,
   Course,
@@ -285,4 +286,31 @@ export function createFarmPlot(
   idempotencyKey?: string
 ): Promise<{ data: FarmPlot }> {
   return client.apiFetch('/farms/plots', { method: 'POST', body: input, idempotencyKey });
+}
+
+/* ---------------------------- field agents ------------------------------- */
+
+/** Enumerator's own open assignment queue. Plain `{ data: T[] }` envelope. */
+export function listMyAgentAssignments(
+  client: ApiClient
+): Promise<{ data: AgentAssignment[] }> {
+  return client.apiFetch('/field-agents/assignments/mine');
+}
+
+/**
+ * Report progress on an own assignment (auto-completes server-side at the
+ * target count). Idempotency-keyed by the caller when replayed from the
+ * offline queue, so a replay cannot double-count a visit.
+ */
+export function reportAgentAssignmentProgress(
+  client: ApiClient,
+  id: string,
+  count = 1,
+  idempotencyKey?: string
+): Promise<{ data: AgentAssignment }> {
+  return client.apiFetch(`/field-agents/assignments/${encodeURIComponent(id)}/progress`, {
+    method: 'POST',
+    body: { count },
+    ...(idempotencyKey ? { idempotencyKey } : {})
+  });
 }

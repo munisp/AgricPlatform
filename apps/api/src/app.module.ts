@@ -54,6 +54,8 @@ import { ComplianceModule } from './modules/compliance/compliance.module.js';
 import { SyncModule } from './modules/sync/sync.module.js';
 // Wave FARMS (additive): farms & crop-production.
 import { FarmsModule } from './modules/farms/farms.module.js';
+// Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
+import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
 
 @Module({
   imports: [
@@ -120,7 +122,9 @@ import { FarmsModule } from './modules/farms/farms.module.js';
     // Wave SYNCSRV record-level offline sync protocol v1 — appended to minimise merge conflicts.
     SyncModule,
     // Wave FARMS farms & crop-production — appended to minimise merge conflicts.
-    FarmsModule
+    FarmsModule,
+    // Wave AGENTS field-agent (enumerator) capability — appended to minimise merge conflicts.
+    FieldAgentsModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

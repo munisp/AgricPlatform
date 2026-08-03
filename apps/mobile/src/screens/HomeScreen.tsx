@@ -40,7 +40,8 @@ export function HomeScreen({
   onOpenOrders,
   onOpenNotifications,
   onOpenLivestock,
-  onOpenFarms
+  onOpenFarms,
+  onOpenAgentQueue
 }: {
   state?: string;
   onOpenCourses: () => void;
@@ -51,6 +52,8 @@ export function HomeScreen({
   onOpenLivestock: () => void;
   /** Farms wave: plot list/capture entry (optional until all callers wire it). */
   onOpenFarms?: () => void;
+  /** Wave AGENTS: enumerators jump straight to their field queue. */
+  onOpenAgentQueue?: () => void;
 }) {
   const client = useApiClient();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -185,6 +188,9 @@ export function HomeScreen({
         <PrimaryButton label="Notifications" onPress={onOpenNotifications} />
         <PrimaryButton label="My livestock" onPress={onOpenLivestock} />
         {onOpenFarms ? <PrimaryButton label="My plots" onPress={onOpenFarms} /> : null}
+        {onOpenAgentQueue ? (
+          <PrimaryButton label="My field queue" onPress={onOpenAgentQueue} />
+        ) : null}
         <PrimaryButton label="View profile" onPress={onOpenProfile} />
       </Card>
     </ScrollView>

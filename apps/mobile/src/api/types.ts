@@ -219,3 +219,26 @@ export interface CreateFarmPlotInput {
   soilType?: string;
   clientId?: string;
 }
+
+/* ------------------------- field agents (Wave AGENTS) -------------------- */
+
+export type AgentAssignmentStatus = 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+
+/** One enumerator assignment from GET /field-agents/assignments/mine. */
+export interface AgentAssignment {
+  id: string;
+  agentUserId: string;
+  farmerUserId?: string;
+  chapterId?: string;
+  state: string;
+  lga: string;
+  ward?: string;
+  purpose: string;
+  targetCount: number;
+  completedCount: number;
+  status: AgentAssignmentStatus;
+  dueAt?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}

@@ -492,6 +492,19 @@ import {
   createPgFarmPlotRepository,
   createPgHarvestRecordRepository
 } from './repositories/farms.pg-repository.js';
+// Wave AGENTS: field-agent (enumerator) persistence (additive).
+import {
+  AGENT_ACTIVITY_LOG_REPOSITORY,
+  AGENT_ASSIGNMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentActivityLogRepository,
+  createInMemoryAgentAssignmentRepository
+} from './repositories/field-agents.repository.js';
+import {
+  createPgAgentActivityLogRepository,
+  createPgAgentAssignmentRepository
+} from './repositories/field-agents.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1260,6 +1273,17 @@ import {
       provide: FARM_EXPENSE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
+    // Wave AGENTS: field-agent (enumerator) providers (additive).
+    {
+      provide: AGENT_ASSIGNMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentAssignmentRepository(pool) : createInMemoryAgentAssignmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_ACTIVITY_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentActivityLogRepository(pool) : createInMemoryAgentActivityLogRepository(),
       inject: [PG_POOL]
     }
   ],
@@ -1385,7 +1409,9 @@ import {
     FARM_PLOT_REPOSITORY,
     CROP_PLANTING_REPOSITORY,
     HARVEST_RECORD_REPOSITORY,
-    FARM_EXPENSE_REPOSITORY
+    FARM_EXPENSE_REPOSITORY,
+    AGENT_ASSIGNMENT_REPOSITORY,
+    AGENT_ACTIVITY_LOG_REPOSITORY
   ]
 })
 export class DatabaseModule {}
