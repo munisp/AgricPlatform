@@ -27,6 +27,10 @@ import { WebhookDispatchService } from './webhook-dispatch.service.js';
     PartnerRateService,
     PartnerApiService,
     WebhookDispatchService
-  ]
+  ],
+  // Exported so feature modules hosting partner-scoped controllers (e.g.
+  // traceability's exporter surface) can resolve PartnerAuthGuard's
+  // collaborators when the guard is applied outside this module.
+  exports: [PartnerAuthService, PartnerRateService]
 })
 export class PartnerApiModule {}
