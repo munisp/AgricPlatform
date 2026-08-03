@@ -9,7 +9,10 @@ import { createInMemoryOutboxRepository } from '../../database/repositories/outb
 import { createInMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryInvoiceRepository } from '../../database/repositories/invoice.repository.js';
 import { createInMemoryReviewRepository } from '../../database/repositories/review.repository.js';
-import { createInMemorySellerRatingRepository } from '../../database/repositories/commerce-depth.repository.js';
+import {
+  createInMemoryOrderExtensionRepository,
+  createInMemorySellerRatingRepository
+} from '../../database/repositories/commerce-depth.repository.js';
 import { EscrowService } from './escrow.service.js';
 import { InvoiceService } from './invoice.service.js';
 import { MarketplaceService } from './marketplace.service.js';
@@ -242,6 +245,98 @@ describe('MarketplaceService listing search seller ratings (Wave M)', () => {
     const page = await marketplace.listListings({});
     expect(page.data.length).toBeGreaterThan(0);
     expect(page.data[0].sellerRating).toBeUndefined();
+  });
+});
+
+describe('MarketplaceService orders channel filter (G19)', () => {
+  function makeChannelStack() {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const listings = createInMemoryListingRepository();
+    const orders = createInMemoryOrderRepository(listings);
+    const extensions = createInMemoryOrderExtensionRepository();
+    const marketplace = new MarketplaceService(
+      events,
+      listings,
+      orders,
+      createInMemoryReviewRepository(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      extensions
+    );
+    return { marketplace, orders, extensions };
+  }
+
+  it('filters orders by sales channel via the order_extensions side table', async () => {
+    const { marketplace, orders, extensions } = makeChannelStack();
+    const [webOrder] = await orders.all();
+    const agentOrder = await orders.create({
+      id: 'order-channel-test-2',
+      listingId: webOrder.listingId,
+      buyerId: 'user-channel-buyer',
+      sellerId: webOrder.sellerId,
+      quantity: 1,
+      totalNaira: 1000,
+      status: 'requested',
+      escrowRequired: false,
+      createdAt: new Date().toISOString()
+    });
+    const all = await orders.all();
+    const now = new Date().toISOString();
+    await extensions.create({
+      id: webOrder.id,
+      orderId: webOrder.id,
+      channel: 'web',
+      unitPriceKobo: 100,
+      subtotalKobo: 100,
+      discountKobo: 0,
+      totalKobo: 100,
+      createdAt: now,
+      updatedAt: now
+    });
+    await extensions.create({
+      id: agentOrder.id,
+      orderId: agentOrder.id,
+      channel: 'agent',
+      unitPriceKobo: 100,
+      subtotalKobo: 100,
+      discountKobo: 0,
+      totalKobo: 100,
+      createdAt: now,
+      updatedAt: now
+    });
+    const web = await marketplace.listOrders({ channel: 'web' });
+    expect(web.map((order) => order.id)).toEqual([webOrder.id]);
+    const agent = await marketplace.listOrders({ channel: 'agent' });
+    expect(agent.map((order) => order.id)).toEqual([agentOrder.id]);
+    // No channel filter → unchanged behaviour.
+    const unfiltered = await marketplace.listOrders({});
+    expect(unfiltered.length).toBe(all.length);
+  });
+
+  it('keeps party scoping when the channel filter is combined with buyerId', async () => {
+    const { marketplace, orders, extensions } = makeChannelStack();
+    const all = await orders.all();
+    const now = new Date().toISOString();
+    for (const order of all) {
+      await extensions.create({
+        id: order.id,
+        orderId: order.id,
+        channel: 'mobile',
+        unitPriceKobo: 100,
+        subtotalKobo: 100,
+        discountKobo: 0,
+        totalKobo: 100,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    const buyerOrders = await marketplace.listOrders({ buyerId: all[0].buyerId, channel: 'mobile' });
+    expect(buyerOrders.every((order) => order.buyerId === all[0].buyerId)).toBe(true);
+    const noMatch = await marketplace.listOrders({ channel: 'agent' });
+    expect(noMatch).toEqual([]);
   });
 });
 

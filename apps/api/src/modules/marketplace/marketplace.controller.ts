@@ -27,6 +27,7 @@ import {
   type LocationRef,
   type MarketplaceListing,
   type OrderStatus,
+  type SalesChannel,
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -220,12 +221,15 @@ export class MarketplaceController {
   @Get('orders')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'List orders by buyer, seller or status (own records or admin)' })
+  @ApiOperation({
+    summary: 'List orders by buyer, seller, status or sales channel (own records or admin)'
+  })
   async listOrders(
     @CurrentUser() actor: User | null,
     @Query('buyerId') buyerId?: string,
     @Query('sellerId') sellerId?: string,
-    @Query('status') status?: OrderStatus
+    @Query('status') status?: OrderStatus,
+    @Query('channel') channel?: SalesChannel
   ) {
     if (!actor) {
       throw new UnauthorizedException('Authentication required');
@@ -233,7 +237,7 @@ export class MarketplaceController {
     if (!actor.roles.includes('admin') && buyerId !== actor.id && sellerId !== actor.id) {
       assertSelfOrAdmin(actor, buyerId ?? sellerId ?? '');
     }
-    return { data: await this.marketplace.listOrders({ buyerId, sellerId, status }) };
+    return { data: await this.marketplace.listOrders({ buyerId, sellerId, status, channel }) };
   }
 
   @Get('orders/:id')
