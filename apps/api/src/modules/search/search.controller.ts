@@ -1,8 +1,9 @@
-import { Controller, Get, NotFoundException, Query } from '@nestjs/common';
+import { Controller, Get, Inject, NotFoundException, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
-import { SearchService, type SearchResultType } from './search.service.js';
+import { SEARCH_PROVIDER, type SearchProvider } from './search.provider.js';
+import { type SearchResultType } from './search.service.js';
 
 const RESULT_TYPES: SearchResultType[] = ['course', 'opportunity', 'listing', 'advisory', 'chapter', 'topic'];
 
@@ -58,7 +59,12 @@ class RelatedQuery {
 @ApiTags('search')
 @Controller('search')
 export class SearchController {
-  constructor(private readonly searchService: SearchService) {}
+  // Wave FABRIC: queries go through the SearchProvider port — the in-process
+  // SearchService by default, the OpenSearch driver when SEARCH_DRIVER=
+  // opensearch is selected (fail-closed at boot without OPENSEARCH_NODE).
+  constructor(
+    @Inject(SEARCH_PROVIDER) private readonly searchService: SearchProvider
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Cross-domain search across courses, opportunities, listings, advisory, chapters, topics' })

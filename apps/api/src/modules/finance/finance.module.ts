@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
 import { LearningModule } from '../learning/learning.module.js';
+import {
+  LEDGER_BACKEND,
+  createLedgerBackendDriver
+} from '../integrations/drivers/tigerbeetle.driver.js';
 import { CreditController } from './credit.controller.js';
 import { CreditService } from './credit.service.js';
 import { FinanceController } from './finance.controller.js';
@@ -12,7 +16,16 @@ import { LoanService } from './loan.service.js';
 @Module({
   imports: [LearningModule],
   controllers: [FinanceController, LedgerController, CreditController, LoanController],
-  providers: [FinanceService, LedgerService, CreditService, LoanService],
-  exports: [FinanceService, LedgerService, CreditService, LoanService]
+  providers: [
+    FinanceService,
+    LedgerService,
+    CreditService,
+    LoanService,
+    // Wave FABRIC: ledger-backend driver port (stub = Postgres ledger
+    // authoritative; tigerbeetle proof-of-port, legal-gated OFF by default,
+    // fail-closed when selected without its envs).
+    { provide: LEDGER_BACKEND, useFactory: () => createLedgerBackendDriver(process.env) }
+  ],
+  exports: [FinanceService, LedgerService, CreditService, LoanService, LEDGER_BACKEND]
 })
 export class FinanceModule {}

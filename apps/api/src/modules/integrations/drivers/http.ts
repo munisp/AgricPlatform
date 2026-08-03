@@ -87,7 +87,9 @@ export async function httpRequest(
     headers['content-type'] = 'application/x-www-form-urlencoded';
     body = new URLSearchParams(options.form).toString();
   } else if (options.body !== undefined) {
-    headers['content-type'] = 'application/json';
+    // An explicitly supplied content-type (e.g. FSPIOP vendor types for
+    // Mojaloop) takes precedence over the JSON default.
+    headers['content-type'] = headers['content-type'] ?? 'application/json';
     body = JSON.stringify(options.body);
   }
   let response: Response;

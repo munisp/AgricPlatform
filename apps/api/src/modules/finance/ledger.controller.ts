@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
+  Optional,
   Param,
   Post,
   Query,
@@ -30,6 +32,10 @@ import {
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import {
+  LEDGER_BACKEND,
+  type LedgerBackendDriver
+} from '../integrations/drivers/tigerbeetle.driver.js';
 import { LedgerService, type PostEntryInput } from './ledger.service.js';
 
 class CreateLedgerAccountDto {
@@ -90,7 +96,27 @@ function actorIdOf(actor: User | null): string {
 @ApiTags('finance')
 @Controller('finance/ledger')
 export class LedgerController {
-  constructor(private readonly ledger: LedgerService) {}
+  constructor(
+    private readonly ledger: LedgerService,
+    @Optional() @Inject(LEDGER_BACKEND) private readonly backend?: LedgerBackendDriver
+  ) {}
+
+  /**
+   * Wave FABRIC: selected ledger-backend driver status (stub = Postgres
+   * ledger authoritative; tigerbeetle = proof-of-port, legal-gated OFF by
+   * default). Diagnostics only — never moves money.
+   */
+  @Get('backend-status')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Ledger-backend driver status (admin, diagnostics)' })
+  async backendStatus() {
+    return {
+      data: this.backend
+        ? { driver: this.backend.name, ...(await this.backend.status()) }
+        : { driver: 'stub', configured: true, healthy: true, detail: 'No backend driver bound.' }
+    };
+  }
 
   @Get('accounts')
   @UseGuards(RolesGuard)

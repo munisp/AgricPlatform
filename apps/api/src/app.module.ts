@@ -62,6 +62,7 @@ import { GeoModule } from './modules/geo/geo.module.js';
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
+import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
 
 @Module({
   imports: [
@@ -136,7 +137,9 @@ import { CreditModule } from './modules/credit/credit.module.js';
     // Wave ML geo-intel flood-risk — appended to minimise merge conflicts.
     GeoIntelModule,
     // Wave CREDIT microfinance suite — appended to minimise merge conflicts.
-    CreditModule
+    CreditModule,
+    // Wave FABRIC workflow registrations (loan disbursement port proof) — appended to minimise merge conflicts.
+    WorkflowsModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

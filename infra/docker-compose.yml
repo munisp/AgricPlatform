@@ -55,7 +55,11 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      # Imports every realm file in ./keycloak: realm-export.json (legacy dev
+      # realm `agric-platform`) plus realm-agricplatform.json (wave FABRIC
+      # canonical realm `agricplatform` with lender/enumerator roles and a
+      # confidential agric-api client). See docs/integration-fabric.md.
+      - ./keycloak:/opt/keycloak/data/import:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready | grep -q UP"]
       interval: 10s
@@ -247,7 +251,7 @@ services:
   # LAKEHOUSE_S3_SECRET_KEY=local-lakehouse-secret (LOCAL-ONLY defaults below).
 
   minio:
-    profiles: ["lakehouse", "lakehouse-query"]
+    profiles: ["lakehouse", "lakehouse-query", "sedona"]
     image: minio/minio:latest
     container_name: agric-minio
     command: server /data --console-address ":9001"
@@ -268,7 +272,7 @@ services:
     networks: [agric]
 
   minio-bootstrap:
-    profiles: ["lakehouse", "lakehouse-query"]
+    profiles: ["lakehouse", "lakehouse-query", "sedona"]
     image: minio/mc:latest
     container_name: agric-minio-bootstrap
     depends_on:
@@ -329,6 +333,245 @@ services:
       - "8001:8001"
     networks: [agric]
 
+  # ==========================================================================
+  # Wave FABRIC optional middleware profiles — NONE start by default. Each
+  # pairs with a fail-closed API driver (docs/integration-fabric.md); the API
+  # keeps its stub drivers until the matching *_DRIVER env is set. All
+  # credentials are LOCAL-ONLY development defaults. Several tags are moving
+  # targets ('latest') where upstream offers no stable alias — pin versions
+  # before any non-local use. Compose file validity is verified in CI; the
+  # services themselves have NOT been run as part of this wave.
+  # ==========================================================================
+
+  # ---- Event bus (profile: redpanda) ----
+  # Kafka-compatible single-binary broker. API wiring:
+  #   EVENT_BUS_DRIVER=kafka KAFKA_BROKERS=redpanda:9092
+  redpanda:
+    profiles: ["redpanda"]
+    image: redpandadata/redpanda:latest
+    container_name: agric-redpanda
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    networks: [agric]
+
+  # ---- Workflow orchestration (profile: temporal) ----
+  # Temporal server (auto-setup, own postgres) + web UI. API wiring:
+  #   WORKFLOW_DRIVER=temporal TEMPORAL_ADDRESS=temporal:7233
+  # Worker (not auto-started): TEMPORAL_ADDRESS=localhost:7233 \
+  #   npm run worker:temporal -w @agric-platform/api
+  temporal-db:
+    profiles: ["temporal"]
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-db-data:/var/lib/postgresql/data
+    networks: [agric]
+
+  temporal:
+    profiles: ["temporal"]
+    image: temporalio/auto-setup:latest
+    container_name: agric-temporal
+    depends_on:
+      - temporal-db
+    environment:
+      DB: postgresql
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: temporal-db
+    ports:
+      - "7233:7233"
+    networks: [agric]
+
+  temporal-ui:
+    profiles: ["temporal"]
+    image: temporalio/ui:latest
+    container_name: agric-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8088:8080"
+    networks: [agric]
+
+  # ---- Relationship-based authorization (profile: permify) ----
+  # In-memory storage (dev only — schema/tuples lost on restart). API wiring:
+  #   AUTHORIZATION_DRIVER=permify PERMIFY_URL=http://permify:3476
+  # Schema + relationship tuples are provisioned out-of-band — see
+  # docs/integration-fabric.md for the credit_loan schema snippet.
+  permify:
+    profiles: ["permify"]
+    image: ghcr.io/permify/permify:latest
+    container_name: agric-permify
+    command: ["serve", "--database-engine=memory"]
+    ports:
+      - "3476:3476" # REST
+      - "3478:3478" # gRPC
+    networks: [agric]
+
+  # ---- Search engine (profile: opensearch) ----
+  # Single node WITH the security plugin demo config enabled (self-signed
+  # demo certs, TLS + basic auth required). API wiring:
+  #   SEARCH_DRIVER=opensearch OPENSEARCH_NODE=https://opensearch:9200
+  #   OPENSEARCH_USERNAME=admin OPENSEARCH_PASSWORD=<OPENSEARCH_ADMIN_PASSWORD>
+  #   OPENSEARCH_TLS_REJECT_UNAUTHORIZED=false   (demo certs only!)
+  opensearch:
+    profiles: ["opensearch"]
+    image: opensearchproject/opensearch:2
+    container_name: agric-opensearch
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "false"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:-LocalDevOnly-ChangeMe1}
+      OPENSEARCH_JAVA_OPTS: -Xms256m -Xmx256m
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks: [agric]
+
+  # ---- Append-only ledger backend (profile: tigerbeetle) ----
+  # Single-replica dev cluster on a data volume. LEGAL GATE: the API driver
+  # defaults OFF (Postgres ledger stays the system of record). API wiring:
+  #   LEDGER_DRIVER=tigerbeetle TIGERBEETLE_ADDRESSES=tigerbeetle:3000
+  #   TIGERBEETLE_CLUSTER_ID=0
+  # NOTE: re-running `up` after the data file exists makes tigerbeetle-init
+  # fail its format step (by design — format is one-shot); remove the init
+  # container (`docker compose ... rm -s tigerbeetle-init`) on subsequent runs.
+  tigerbeetle-init:
+    profiles: ["tigerbeetle"]
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    container_name: agric-tigerbeetle-init
+    command: format --cluster=0 --replica=0 --replica-count=1 --development /data/0_0.tigerbeetle
+    volumes:
+      - tigerbeetle-data:/data
+    networks: [agric]
+
+  tigerbeetle:
+    profiles: ["tigerbeetle"]
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    container_name: agric-tigerbeetle
+    command: start --addresses=0.0.0.0:3000 --development /data/0_0.tigerbeetle
+    depends_on:
+      tigerbeetle-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    volumes:
+      - tigerbeetle-data:/data
+    networks: [agric]
+
+  # ---- API gateway (profile: apisix) ----
+  # APISIX in standalone data-plane mode: declarative routes from
+  # infra/apisix/apisix.yaml (key-auth placeholder + limit-count mirroring
+  # the app throttler). etcd is provisioned alongside for teams that want
+  # the traditional admin-API mode instead — the default profile does NOT
+  # use it. Gateway listens on :9080 (routes api:3001 / web:3000).
+  apisix-etcd:
+    profiles: ["apisix"]
+    image: bitnami/etcd:3.5
+    environment:
+      ETCD_ENABLE_V2: "true"
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: http://apisix-etcd:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+    volumes:
+      - apisix-etcd-data:/bitnami/etcd
+    networks: [agric]
+
+  apisix:
+    profiles: ["apisix"]
+    image: apache/apisix:latest
+    container_name: agric-apisix
+    depends_on:
+      - apisix-etcd
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+    ports:
+      - "9080:9080"
+    networks: [agric]
+
+  # ---- WAF / API security agent (profile: openappsec) ----
+  # open-appsec nano-agent + nginx attachment in front of web/api (edge
+  # listens on :8090, proxies to api:3001 and web:3000 via
+  # infra/openappsec/nginx-proxy.conf). Policy management needs EITHER a
+  # SaaS profile token (APPSEC_AGENT_TOKEN) or a local policy file under
+  # infra/openappsec/localconf — see docs/integration-fabric.md. Never
+  # verified against live traffic in this wave.
+  openappsec-agent:
+    profiles: ["openappsec"]
+    image: ghcr.io/openappsec/agent:latest
+    container_name: agric-appsec-agent
+    ipc: host
+    environment:
+      registered_server: NGINX
+      autoPolicyLoad: "true"
+      AGENT_TOKEN: ${APPSEC_AGENT_TOKEN:-}
+    volumes:
+      - appsec-conf:/etc/cp/conf
+      - appsec-data:/etc/cp/data
+      - appsec-logs:/var/log/nano_agent
+      - ./openappsec/localconf:/ext/appsec
+      - appsec-shm:/dev/shm/check-point
+    command: /cp-nano-agent
+    networks: [agric]
+
+  openappsec-nginx:
+    profiles: ["openappsec"]
+    image: ghcr.io/openappsec/nginx-attachment:latest
+    container_name: agric-appsec-nginx
+    ipc: host
+    depends_on:
+      - openappsec-agent
+    volumes:
+      - ./openappsec/nginx-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - appsec-shm:/dev/shm/check-point
+    ports:
+      - "8090:80"
+    networks: [agric]
+
+  # ---- Batch geo analytics (profile: sedona) ----
+  # Apache Sedona one-shot Spark job over the MinIO lakehouse parquet.
+  # BATCH ONLY — not wired into any request path (infra/sedona/README.md).
+  # Requires a prior lakehouse export (--profile lakehouse + POST
+  # /api/v1/analytics/export). minio/minio-bootstrap also carry the sedona
+  # profile so `--profile sedona up -d` starts the object store too.
+  sedona:
+    profiles: ["sedona"]
+    image: apache/sedona:latest
+    container_name: agric-sedona
+    depends_on:
+      - minio
+    volumes:
+      - ./sedona/batch-geo.py:/opt/job/batch-geo.py:ro
+    entrypoint: /opt/spark/bin/spark-submit
+    command:
+      - --master
+      - local[2]
+      - --packages
+      - org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+      - /opt/job/batch-geo.py
+    environment:
+      S3A_ENDPOINT: http://minio:9000
+      S3A_ACCESS_KEY: lakehouse
+      S3A_SECRET_KEY: local-lakehouse-secret
+    networks: [agric]
+
 volumes:
   postgres-data:
   redis-data:
@@ -337,6 +580,19 @@ volumes:
   discourse-db-data:
   minio-data:
   trino-metastore:
+  redpanda-data:
+  temporal-db-data:
+  opensearch-data:
+  tigerbeetle-data:
+  apisix-etcd-data:
+  appsec-conf:
+  appsec-data:
+  appsec-logs:
+  appsec-shm:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
 
 networks:
   agric:

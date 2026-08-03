@@ -1,0 +1,39 @@
+# APISIX declarative routes (wave FABRIC, LOCAL DEV ONLY).
+# Standalone mode (config_provider: yaml — see config.yaml in this folder).
+# Routes the gateway to the api and web services of the compose stack.
+# The key-auth credential below is a DOCUMENTED PLACEHOLDER — rotate before
+# any non-local use. The limit-count plugin mirrors the app-level throttler
+# (apps/api ThrottlerModule: 120 req/min default) so abusive clients are
+# shed at the edge before they reach the API.
+routes:
+  - id: agric-api-v1
+    uri: /api/*
+    name: agric-api
+    upstream:
+      type: roundrobin
+      nodes:
+        "api:3001": 1
+    plugins:
+      # Edge rate limit mirroring the app throttler (120 requests/min/IP).
+      limit-count:
+        count: 120
+        time_window: 60
+        rejected_code: 429
+        key: remote_addr
+      # Placeholder key-auth for machine consumers of the gateway. The app
+      # keeps its own OIDC/RBAC — this key only gates gateway passage.
+      key-auth: {}
+  - id: agric-web
+    uri: /*
+    name: agric-web
+    upstream:
+      type: roundrobin
+      nodes:
+        "web:3000": 1
+consumers:
+  # LOCAL DEV PLACEHOLDER consumer key — never reuse outside local dev.
+  - username: partner-local
+    plugins:
+      key-auth:
+        key: local-dev-partner-key
+#END

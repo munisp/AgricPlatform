@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { newId } from '../common/async-repository.js';
 import { OUTBOX_REPOSITORY } from '../database/persistence.tokens.js';
 import type { OutboxRepository } from '../database/repositories/outbox.repository.js';
+import { EVENT_BUS, type EventBus } from './events/event-bus.driver.js';
 
 export interface DomainEvent<T = unknown> {
   id: string;
@@ -28,7 +29,8 @@ export class DomainEventsService {
   private readonly emitter = new EventEmitter();
 
   constructor(
-    @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository
+    @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
+    @Optional() @Inject(EVENT_BUS) private readonly bus?: EventBus
   ) {}
 
   async publish<T>(name: string, payload: T, actorId?: string): Promise<DomainEvent<T>> {
@@ -61,7 +63,14 @@ export class DomainEventsService {
   /** Appends a pre-built event to the outbox, then fans out to listeners. */
   async persist<T>(event: DomainEvent<T>): Promise<void> {
     await this.outbox.append(event as DomainEvent);
-    this.emit(event);
+    // Wave FABRIC: with a live event-bus driver selected (EVENT_BUS_DRIVER),
+    // the event is published to the external bus BEFORE listener fan-out and
+    // bus failures fail closed (publish throws — callers answer 503). The
+    // default stub bus is a no-op, so default behaviour is unchanged.
+    if (this.bus && this.bus.name !== 'stub') {
+      await this.bus.publish(event as DomainEvent);
+    }
+    this.fanOut(event);
     // Deterministic publish marking on the non-transactional path (the
     // transactional path's post-commit emit marks fire-and-forget).
     await this.markPublished(event.id);
@@ -69,12 +78,26 @@ export class DomainEventsService {
 
   /** Listener fan-out only — for events already persisted transactionally. */
   emit<T>(event: DomainEvent<T>): void {
-    this.logger.log(`event ${event.name} (${event.id})`);
-    this.emitter.emit(event.name, event);
-    this.emitter.emit('*', event);
+    // Wave FABRIC (transactional path): state is already committed, so bus
+    // delivery here is best-effort — failures are logged, not thrown, and
+    // the outbox row remains for the sweeper to retry.
+    if (this.bus && this.bus.name !== 'stub') {
+      void this.bus.publish(event as DomainEvent).catch((error: unknown) => {
+        this.logger.warn(
+          `event-bus publish failed for ${event.name} (${event.id}): ${(error as Error)?.message ?? error}`
+        );
+      });
+    }
+    this.fanOut(event);
     // Wave P: mark the outbox row published after successful fan-out so the
     // sweeper only retries rows whose delivery actually stalled.
     void this.markPublished(event.id);
+  }
+
+  private fanOut<T>(event: DomainEvent<T>): void {
+    this.logger.log(`event ${event.name} (${event.id})`);
+    this.emitter.emit(event.name, event);
+    this.emitter.emit('*', event);
   }
 
   /**
