@@ -244,3 +244,37 @@ describe('MarketplaceService listing search seller ratings (Wave M)', () => {
     expect(page.data[0].sellerRating).toBeUndefined();
   });
 });
+
+describe('MarketplaceService certified listing link (G18)', () => {
+  it('persists certifiedListingId on creation and returns it in responses', async () => {
+    const { marketplace } = makeService();
+    const created = await marketplace.createListing({
+      sellerId: seller.id!,
+      kind: 'produce',
+      title: 'Certified White Fulani bull',
+      quantity: 1,
+      unit: 'head',
+      priceNaira: 450_000,
+      location: { state: 'Kaduna', lga: 'Kaduna North' },
+      certifiedListingId: 'listing-certified-1'
+    });
+    expect(created.certifiedListingId).toBe('listing-certified-1');
+    const fetched = await marketplace.getListing(created.id);
+    expect(fetched.certifiedListingId).toBe('listing-certified-1');
+  });
+
+  it('leaves certifiedListingId absent for ordinary crop listings', async () => {
+    const { marketplace } = makeService();
+    const created = await marketplace.createListing({
+      sellerId: seller.id!,
+      kind: 'produce',
+      title: 'Maize lot',
+      crop: 'maize',
+      quantity: 10,
+      unit: 'tonnes',
+      priceNaira: 250_000,
+      location: { state: 'Kano', lga: 'Kano Municipal' }
+    });
+    expect(created.certifiedListingId).toBeUndefined();
+  });
+});

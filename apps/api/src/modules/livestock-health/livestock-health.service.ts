@@ -866,6 +866,16 @@ export class LivestockHealthService {
   }
 
   /**
+   * Owner-scoped recall list (G18): a farmer sees the recalls that affect
+   * their own animals via the recall_animals join; regulators/admins keep
+   * the full list via listRecalls.
+   */
+  async listMyRecalls(actor: User | null): Promise<LivestockRecall[]> {
+    const caller = requireActor(actor);
+    return this.recalls.recallsForOwner(caller.id);
+  }
+
+  /**
    * Internal lifecycle hook: flips initiated → notified after the recall
    * listener has delivered owner notifications. Not an endpoint.
    */

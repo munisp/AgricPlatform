@@ -221,6 +221,15 @@ export class LivestockTradeController {
     return { data: await this.listings.listMine(actor) };
   }
 
+  @Get('certified-listings/:id/provenance')
+  @ApiOperation({
+    summary:
+      'Public buyer-safe provenance summary (certification status, species, ownership depth, state). No authentication required; no PII beyond what certified listings already expose publicly.'
+  })
+  async provenanceSummary(@Param('id') id: string) {
+    return { data: await this.listings.provenanceSummary(id) };
+  }
+
   @Get('listings/:id')
   @Authenticated()
   @ApiOperation({ summary: 'Listing detail (active listings are discoverable; others owner or admin)' })

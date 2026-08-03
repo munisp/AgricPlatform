@@ -1691,6 +1691,25 @@ export function fetchCertifiedListing(id: string): Promise<{ data: CertifiedList
   return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}`);
 }
 
+/** Buyer-safe public provenance summary (G18) — no PII, no auth required. */
+export interface CertifiedProvenanceSummary {
+  listingId: string;
+  certificationStatus: CertifiedListing['status'];
+  subjectType: CertifiedListing['subjectType'];
+  species: string;
+  breed?: string;
+  quantity?: number;
+  ownershipDepth: number;
+  state?: string;
+}
+
+/** Public provenance summary for a certified listing (buyer-safe). */
+export function fetchCertifiedProvenance(
+  id: string
+): Promise<{ data: CertifiedProvenanceSummary }> {
+  return apiFetch(`/livestock-trade/certified-listings/${encodeURIComponent(id)}/provenance`);
+}
+
 export function activateCertifiedListing(id: string): Promise<{ data: CertifiedListing }> {
   return apiFetch(`/livestock-trade/listings/${encodeURIComponent(id)}/activate`, {
     method: 'POST'

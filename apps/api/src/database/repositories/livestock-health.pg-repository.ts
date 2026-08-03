@@ -283,6 +283,19 @@ export class PgRecallRepository
       ownerUserId: row.owner_user_id as string
     }));
   }
+
+  /** Owner-scoped recall list via the recall_animals join (G18). */
+  async recallsForOwner(ownerUserId: string): Promise<LivestockRecall[]> {
+    const result = await this.pool.query(
+      `SELECT DISTINCT ${recallMapper.columns.map((column) => `r.${column}`).join(', ')}
+         FROM livestock.recalls r
+         JOIN livestock.recall_animals ra ON ra.recall_id = r.id
+        WHERE ra.owner_user_id = $1
+        ORDER BY r.id`,
+      [ownerUserId]
+    );
+    return result.rows.map((row) => recallMapper.fromRow(row));
+  }
 }
 
 export function createPgRecallRepository(pool: pg.Pool): PgRecallRepository {

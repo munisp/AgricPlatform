@@ -752,6 +752,28 @@ describe('LivestockHealthService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it('recalls/mine: owners see only recalls affecting their own animals (G18)', async () => {
+      const { recall: mine } = await service.initiateRecall(
+        regulator,
+        recallInput({ animalId: animalA.id })
+      );
+      const { recall: otherRecall } = await service.initiateRecall(
+        regulator,
+        recallInput({ animalId: animalC.id })
+      );
+      const farmerRecalls = await service.listMyRecalls(farmer);
+      expect(farmerRecalls.map((recall) => recall.id)).toEqual([mine.id]);
+      const otherRecalls = await service.listMyRecalls(otherFarmer);
+      expect(otherRecalls.map((recall) => recall.id)).toEqual([otherRecall.id]);
+    });
+
+    it('recalls/mine: a user with no affected animals sees an empty list', async () => {
+      await service.initiateRecall(regulator, recallInput({ animalId: animalA.id }));
+      expect(await service.listMyRecalls(vet)).toEqual([]);
+      // Unauthenticated callers are rejected.
+      await expect(service.listMyRecalls(null)).rejects.toThrow();
+    });
+
     it('requires a reason and a sane date range', async () => {
       await expect(
         service.initiateRecall(regulator, { animalId: animalA.id, reason: ' ' })

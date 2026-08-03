@@ -385,6 +385,58 @@ describe('Livestock trade', () => {
     expect(link.getAttribute('href')).toBe('/livestock/trade#certified-listing-cert-1');
   });
 
+  it('badge prefers the direct certifiedListingId link via the public provenance API (G18)', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/api/v1/livestock-trade/certified-listings/cert-link-9/provenance')) {
+        return jsonResponse({
+          data: {
+            listingId: 'cert-link-9',
+            certificationStatus: 'active',
+            subjectType: 'animal',
+            species: 'goat',
+            breed: 'Red Sokoto',
+            ownershipDepth: 3,
+            state: 'Kaduna'
+          }
+        });
+      }
+      return jsonResponse({ error: { message: 'not found' } }, 404);
+    });
+    // No livestock crop term in the title — only the direct link can resolve.
+    const linked: MarketplaceListing = {
+      ...CROP_LISTING,
+      id: 'listing-mkt-77',
+      title: 'Breeding doe, vaccinated',
+      crop: undefined,
+      certifiedListingId: 'cert-link-9'
+    };
+    renderWithProviders(<LivestockProvenanceBadge listing={linked} />);
+    await waitFor(() => {
+      expect(screen.getByText(/ALTP certified · 3 transfers/)).toBeTruthy();
+    });
+    const link = screen.getByRole('link', { name: /Livestock provenance/ });
+    expect(link.getAttribute('href')).toBe('/livestock/trade#certified-cert-link-9');
+    // The legacy per-id fallback endpoint was NOT consulted.
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes('/api/v1/livestock-trade/listings/listing-mkt-77')
+      )
+    ).toBe(false);
+  });
+
+  it('badge stays absent when the linked certified listing is not public (draft/withdrawn 404)', async () => {
+    fetchMock.mockImplementation(() => jsonResponse({ error: { message: 'not found' } }, 404));
+    const linked: MarketplaceListing = {
+      ...CROP_LISTING,
+      id: 'listing-mkt-78',
+      certifiedListingId: 'cert-hidden-1'
+    };
+    const { container } = renderWithProviders(<LivestockProvenanceBadge listing={linked} />);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(container.textContent).toBe('');
+  });
+
   it('renders the dashboard livestock summary for farmers with species counts', async () => {
     renderWithProviders(<LivestockSummaryCard />);
     await waitFor(() => {

@@ -110,6 +110,11 @@ class CreateListingDto implements CreateListingInput {
   @IsOptional()
   @IsString()
   harvestDate?: string;
+
+  /** Link to a livestock-trade certified listing (provenance badge source). */
+  @IsOptional()
+  @IsString()
+  certifiedListingId?: string;
 }
 
 class UpdateListingDto implements UpdateListingInput {

@@ -597,6 +597,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
     'location_latitude',
     'location_longitude',
     'harvest_date',
+    'certified_listing_id',
     'is_active'
   ],
   fromRow: (row) => ({
@@ -610,6 +611,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
     priceNaira: num(row.price_ngn),
     location: locationFromRow(row),
     harvestDate: row.harvest_date ? ts(row.harvest_date).slice(0, 10) : undefined,
+    certifiedListingId: (row.certified_listing_id as string) ?? undefined,
     isActive: row.is_active as boolean
   }),
   toRow: (item) => ({
@@ -623,6 +625,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
       unit: 'unit',
       price_ngn: 'priceNaira',
       harvest_date: 'harvestDate',
+      certified_listing_id: 'certifiedListingId',
       is_active: 'isActive'
     }),
     ...(item.location !== undefined

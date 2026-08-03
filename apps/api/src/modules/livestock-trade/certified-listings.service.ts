@@ -3,7 +3,8 @@ import {
   ConflictException,
   ForbiddenException,
   Inject,
-  Injectable
+  Injectable,
+  NotFoundException
 } from '@nestjs/common';
 import type {
   CertifiedListing,
@@ -35,6 +36,18 @@ export interface CreateCertifiedListingInput {
   subjectType: LivestockSubjectType;
   subjectId: string;
   askingPriceKobo?: number;
+}
+
+/** Buyer-safe public provenance summary (G18) — no PII. */
+export interface CertifiedProvenanceSummary {
+  listingId: string;
+  certificationStatus: CertifiedListingStatus;
+  subjectType: LivestockSubjectType;
+  species: string;
+  breed?: string;
+  quantity?: number;
+  ownershipDepth: number;
+  state?: string;
 }
 
 /**
@@ -140,6 +153,40 @@ export class CertifiedListingsService {
   async listMine(actor: User | null): Promise<CertifiedListing[]> {
     const caller = requireActor(actor);
     return this.listings.find({ sellerUserId: caller.id });
+  }
+
+  /**
+   * Public, buyer-safe provenance summary (G18): certification status,
+   * species, ownership depth and state — exactly what a certified-listing
+   * badge may show a buyer. No seller identity or subject id is exposed.
+   * Draft/withdrawn listings were never (or are no longer) on the market,
+   * so they 404 here rather than leak existence; `revoked` stays visible —
+   * a buyer MUST be able to discover that a certification was pulled.
+   */
+  async provenanceSummary(id: string): Promise<CertifiedProvenanceSummary> {
+    const listing = await this.listings.getById(id);
+    if (listing.status === 'draft' || listing.status === 'withdrawn') {
+      throw new NotFoundException(`Certified listing '${id}' was not found`);
+    }
+    let state: string | undefined;
+    try {
+      state = (
+        await resolveSubject(this.animals, this.lots, listing.subjectType, listing.subjectId)
+      ).state;
+    } catch {
+      // Subject left the registry (archived animal) — state is optional.
+      state = undefined;
+    }
+    return {
+      listingId: listing.id,
+      certificationStatus: listing.status,
+      subjectType: listing.subjectType,
+      species: listing.species,
+      breed: listing.breed,
+      quantity: listing.quantity,
+      ownershipDepth: listing.provenance.ownershipDepth,
+      state
+    };
   }
 
   /** Active listings are discoverable by any authenticated user; anything

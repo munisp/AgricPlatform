@@ -210,6 +210,12 @@ export interface MarketplaceListing {
   priceNaira: number;
   location: LocationRef;
   harvestDate?: string;
+  /**
+   * Link to the certified livestock listing this marketplace listing was
+   * created from (migration 019a). Buyer-facing provenance badges prefer
+   * this direct field over crop-term heuristics.
+   */
+  certifiedListingId?: string;
   isActive: boolean;
 }
 

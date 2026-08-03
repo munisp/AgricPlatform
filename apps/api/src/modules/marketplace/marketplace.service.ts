@@ -86,6 +86,8 @@ export interface CreateListingInput {
   priceNaira: number;
   location: LocationRef;
   harvestDate?: string;
+  /** Optional link to the certified livestock listing (G18; migration 019a). */
+  certifiedListingId?: string;
 }
 
 export interface UpdateListingInput {
@@ -164,6 +166,7 @@ export class MarketplaceService {
       priceNaira: input.priceNaira,
       location: input.location,
       harvestDate: input.harvestDate,
+      certifiedListingId: input.certifiedListingId,
       isActive: true
     };
     const created = await this.listings.create(listing);

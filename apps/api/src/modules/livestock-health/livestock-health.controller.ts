@@ -354,6 +354,15 @@ export class LivestockHealthController {
     return { data: await this.health.listRecalls(actor, { status: query.status }) };
   }
 
+  @Get('recalls/mine')
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Recalls affecting the caller’s own animals (any authenticated owner; regulator/admin use GET /recalls)'
+  })
+  async listMyRecalls(@CurrentUser() actor: User | null) {
+    return { data: await this.health.listMyRecalls(actor) };
+  }
+
   @Get('recalls/:id')
   @Authenticated()
   @ApiOperation({ summary: 'Recall detail with materialised animals (regulator/admin or an affected owner)' })
