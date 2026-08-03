@@ -248,6 +248,7 @@ jobs:
           # deployments must provide real OIDC/Postgres/Redis/secrets.
           NODE_ENV=production PORT=3001 \
             OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform \
+            OIDC_AUDIENCE=ci-smoke-api-audience \
             ALLOW_INMEMORY_PERSISTENCE=true ALLOW_INMEMORY_CACHE=true \
             ATTENDANCE_SIGNING_SECRET=ci-smoke-attendance-signing-key \
             VET_SIGNING_SECRET=ci-smoke-vet-signing-key \
