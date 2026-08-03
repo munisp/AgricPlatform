@@ -39,6 +39,7 @@ import { computeQuote, haversineKm } from './pricing.js';
 import {
   bufferedWindow,
   findConflicts,
+  MAX_TRAVEL_BUFFER_MS,
   suggestFreeWindows,
   withinAvailability
 } from './scheduling.js';
@@ -645,17 +646,19 @@ export class MechanizationService {
     target: MechBookingStatus,
     actor: Actor
   ): Promise<void> {
+    // Entitlement is checked BEFORE state validity: non-parties must not be
+    // able to probe the state machine (403 regardless of current status),
+    // while entitled parties get precise 400 feedback on illegal jumps.
+    if (!actor.roles.includes('admin')) {
+      const party = await this.partyOf(booking, actor);
+      if (!party || !TRANSITION_ACTORS[target].includes(party)) {
+        throw new ForbiddenException('Only the entitled booking party may perform this transition');
+      }
+    }
     if (!MECH_TRANSITIONS[booking.status].includes(target)) {
       throw new BadRequestException(
         `Invalid booking transition from '${booking.status}' to '${target}'`
       );
-    }
-    if (actor.roles.includes('admin')) {
-      return;
-    }
-    const party = await this.partyOf(booking, actor);
-    if (!party || !TRANSITION_ACTORS[target].includes(party)) {
-      throw new ForbiddenException('Only the entitled booking party may perform this transition');
     }
   }
 
@@ -699,10 +702,16 @@ export class MechanizationService {
       candidate.plotLat,
       candidate.plotLong
     );
+    // Query with bounds expanded by the maximum possible travel buffer on
+    // each side — the repository overlap test is raw-window, but a booking
+    // whose raw window merely comes close can still clash once buffers are
+    // applied, and it must be fetched for findConflicts to see it.
+    const queryStart = new Date(Date.parse(candidate.windowStart) - MAX_TRAVEL_BUFFER_MS).toISOString();
+    const queryEnd = new Date(Date.parse(candidate.windowEnd) + MAX_TRAVEL_BUFFER_MS).toISOString();
     const overlapping = (await this.bookings.findOverlapping(
       listing.id,
-      candidate.windowStart,
-      candidate.windowEnd
+      queryStart,
+      queryEnd
     )).filter((booking) => booking.id !== candidate.id);
     if (overlapping.length === 0) {
       return;

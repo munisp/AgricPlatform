@@ -190,7 +190,7 @@ describe('Mechanization marketplace (wave-mechanization)', () => {
     renderWithProviders(<EquipmentListingDetail listingId={LISTING.id} />);
     await waitFor(() => expect(screen.getByText('Operator verified')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Request booking' }));
-    const submit = screen.getAllByRole('button', { name: 'Request booking' })[1];
+    const submit = screen.getAllByRole('button', { name: 'Request booking' })[0];
     expect(submit.hasAttribute('disabled')).toBe(true);
     fireEvent.change(screen.getByLabelText('Plot latitude'), { target: { value: '12.05' } });
     fireEvent.change(screen.getByLabelText('Plot longitude'), { target: { value: '8.62' } });

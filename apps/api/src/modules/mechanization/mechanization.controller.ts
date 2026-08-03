@@ -11,7 +11,6 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   IsArray,
-  IsBoolean,
   IsIn,
   IsISO8601,
   IsInt,
@@ -41,7 +40,6 @@ import {
   OPERATOR_VERIFICATION_STATUSES
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import {
