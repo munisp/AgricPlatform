@@ -7,6 +7,7 @@ import { clearApiCache } from '@/lib/api/hooks';
 import {
   AnalyticsSummaryCards,
   DailyMetricsTable,
+  LakehouseExportPanel,
   ProjectionPanel
 } from '@/components/admin-analytics-live';
 
@@ -146,5 +147,101 @@ describe('Admin analytics marts page', () => {
     renderWithProviders(<ProjectionPanel />);
     expect(screen.getByRole('button', { name: 'Download fact_orders.csv' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Download fact_payments.csv' })).toBeTruthy();
+  });
+});
+
+const LAKEHOUSE_MANIFEST = {
+  runId: 'a1b2c3d4-0000-4000-8000-000000000000',
+  runDate: '2026-08-06',
+  bucket: 'agric-lakehouse',
+  prefix: 'lakehouse',
+  format: 'parquet',
+  startedAt: '2026-08-06T00:00:00.000Z',
+  finishedAt: '2026-08-06T00:00:01.000Z',
+  tables: [
+    {
+      table: 'fact_orders',
+      rows: 3,
+      files: [{ key: 'lakehouse/fact_orders/dt=2026-08-06/part-x-00000.parquet', bytes: 2048, sha256: 'abc' }]
+    }
+  ],
+  totalRows: 3,
+  totalBytes: 2048
+};
+
+describe('Lakehouse export card', () => {
+  const fetchMock = vi.fn();
+
+  function mockStatus(status: unknown, postResponse?: unknown) {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/api/v1/analytics/export/last')) {
+        return jsonResponse({ data: status });
+      }
+      if (path.endsWith('/api/v1/analytics/export') && init?.method === 'POST') {
+        return postResponse
+          ? Promise.resolve(postResponse as Response)
+          : jsonResponse({ data: LAKEHOUSE_MANIFEST });
+      }
+      return jsonResponse({ statusCode: 404, message: 'not found' }, 404);
+    });
+  }
+
+  beforeEach(() => {
+    clearApiCache();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the honest disabled state when LAKEHOUSE_ENABLED=false', async () => {
+    mockStatus({
+      enabled: false,
+      reason: 'LAKEHOUSE_ENABLED is not true — the lakehouse exporter is disabled on this API.',
+      prefix: 'lakehouse',
+      manifest: null
+    });
+    renderWithProviders(<LakehouseExportPanel />);
+    await waitFor(() =>
+      expect(screen.getByText(/lakehouse exporter is disabled/)).toBeTruthy()
+    );
+    expect(screen.queryByRole('button', { name: 'Run lakehouse export' })).toBeNull();
+  });
+
+  it('shows the last run manifest when enabled', async () => {
+    mockStatus({ enabled: true, bucket: 'agric-lakehouse', prefix: 'lakehouse', manifest: LAKEHOUSE_MANIFEST });
+    renderWithProviders(<LakehouseExportPanel />);
+    await waitFor(() => expect(screen.getByText(/Last run a1b2c3d4/)).toBeTruthy());
+    expect(screen.getByText(/2026-08-06 · 3 rows · 2048 bytes across 1 tables/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Run lakehouse export' })).toBeTruthy();
+  });
+
+  it('shows the honest empty state before the first run', async () => {
+    mockStatus({ enabled: true, bucket: 'agric-lakehouse', prefix: 'lakehouse', manifest: null });
+    renderWithProviders(<LakehouseExportPanel />);
+    await waitFor(() => expect(screen.getByText('No export run yet.')).toBeTruthy());
+  });
+
+  it('trigger button posts to /analytics/export and shows the run result', async () => {
+    mockStatus({ enabled: true, bucket: 'agric-lakehouse', prefix: 'lakehouse', manifest: null });
+    renderWithProviders(<LakehouseExportPanel />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Run lakehouse export' })).toBeTruthy()
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Run lakehouse export' }));
+    await waitFor(() =>
+      expect(screen.getByText(/Export complete: run a1b2c3d4/)).toBeTruthy()
+    );
+    const calls = fetchMock.mock.calls.map((call) => [String(call[0]), call[1]] as const);
+    expect(
+      calls.some(
+        ([url, init]) =>
+          url.includes('/api/v1/analytics/export') &&
+          (init as RequestInit | undefined)?.method === 'POST'
+      )
+    ).toBe(true);
   });
 });

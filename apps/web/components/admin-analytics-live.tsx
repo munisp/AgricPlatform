@@ -6,10 +6,13 @@ import { ForbiddenError, UnauthorizedError } from '@/lib/api/errors';
 import {
   fetchAnalyticsSummary,
   fetchDailyMetrics,
+  fetchLakehouseExportStatus,
+  runLakehouseExport,
   runProjection,
   STAR_FACTS,
   type AnalyticsSummary,
   type DailyMetric,
+  type LakehouseManifest,
   type StarFact
 } from '@/lib/api/endpoints';
 import { downloadFactExport } from '@/lib/api/export';
@@ -277,5 +280,86 @@ export function ProjectionPanel() {
         ) : null}
       </Card>
     </div>
+  );
+}
+
+/**
+ * Lakehouse export card: trigger POST /analytics/export and show the last
+ * run's manifest from GET /analytics/export/last. When the API reports
+ * enabled=false (LAKEHOUSE_ENABLED off or misconfigured outside production)
+ * the honest disabled reason is shown instead of any fake state.
+ */
+export function LakehouseExportPanel() {
+  const { t } = useT();
+  const statusQuery = useApiQuery(
+    'admin:analytics:lakehouse-last',
+    () => fetchLakehouseExportStatus().then((res) => res.data),
+    { staleTimeMs: 30_000 }
+  );
+  const exportRun = useApiMutation<void, LakehouseManifest>({
+    mutationFn: () => runLakehouseExport().then((res) => res.data)
+  });
+  const status = isAuthzError(statusQuery.error) ? undefined : statusQuery.data;
+  const manifest = exportRun.data ?? status?.manifest ?? null;
+
+  return (
+    <Card title={t('adminAnalytics.lakehouseTitle')}>
+      <p className="small muted">{t('adminAnalytics.lakehouseDescription')}</p>
+      <QueryState
+        isLoading={statusQuery.isLoading}
+        error={statusQuery.error}
+        data={status}
+        onRetry={statusQuery.refresh}
+      >
+        {status ? (
+          status.enabled ? (
+            <>
+              <div className="cluster" style={{ justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={exportRun.status === 'pending'}
+                  onClick={() => {
+                    void exportRun.mutate().then(() => statusQuery.refresh());
+                  }}
+                >
+                  {exportRun.status === 'pending'
+                    ? t('adminAnalytics.lakehouseRunning')
+                    : t('adminAnalytics.lakehouseRun')}
+                </button>
+              </div>
+              {manifest ? (
+                <p className="small muted" role="status">
+                  {t('adminAnalytics.lakehouseLastRun', {
+                    runId: manifest.runId.slice(0, 8),
+                    date: manifest.runDate,
+                    rows: manifest.totalRows,
+                    bytes: manifest.totalBytes,
+                    tables: manifest.tables.length
+                  })}
+                </p>
+              ) : (
+                <p className="small muted">{t('adminAnalytics.lakehouseNever')}</p>
+              )}
+            </>
+          ) : (
+            <div className="notice" role="status">
+              {status.reason ?? t('adminAnalytics.lakehouseDisabled')}
+            </div>
+          )
+        ) : null}
+      </QueryState>
+      {exportRun.status === 'success' && exportRun.data ? (
+        <div className="notice notice-success" role="status">
+          {t('adminAnalytics.lakehouseRunComplete', {
+            runId: exportRun.data.runId.slice(0, 8),
+            date: exportRun.data.runDate,
+            rows: exportRun.data.totalRows,
+            tables: exportRun.data.tables.length
+          })}
+        </div>
+      ) : null}
+      {exportRun.status === 'error' ? <ApiErrorNotice error={exportRun.error} /> : null}
+    </Card>
   );
 }
