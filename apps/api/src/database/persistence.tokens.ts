@@ -169,3 +169,7 @@ export const FARM_EXPENSE_REPOSITORY = Symbol('FARM_EXPENSE_REPOSITORY');
 // (agents schema, migration 023).
 export const AGENT_ASSIGNMENT_REPOSITORY = Symbol('AGENT_ASSIGNMENT_REPOSITORY');
 export const AGENT_ACTIVITY_LOG_REPOSITORY = Symbol('AGENT_ACTIVITY_LOG_REPOSITORY');
+// Wave GEO: geospatial pack — H3 cell index + named boundaries (geo schema,
+// migration 026). No PostGIS: cells are computed in the app layer (h3-js).
+export const H3_INDEX_REPOSITORY = Symbol('H3_INDEX_REPOSITORY');
+export const GEO_BOUNDARY_REPOSITORY = Symbol('GEO_BOUNDARY_REPOSITORY');

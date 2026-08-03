@@ -2922,3 +2922,80 @@ export function captureFarmerProfile(
 ): Promise<{ data: CaptureFarmerProfileResult }> {
   return apiFetch('/field-agents/capture/profile', { method: 'POST', body: input });
 }
+
+/* ========================================================================
+ * Geospatial pack (Wave GEO).
+ * Mirrors apps/api/src/modules/geo (geo.controller). H3-based spatial
+ * indexing computed on the API — no PostGIS. All endpoints return a plain
+ * `{ data: T }` envelope.
+ * ====================================================================== */
+
+import type {
+  GeoBoundary,
+  GeoBoundaryKind,
+  GeoCellBoundary,
+  GeoClustersResult,
+  GeoContainsResult,
+  GeoFarmsNearResult,
+  GeoReindexResult,
+  H3Resolution
+} from '@agric-platform/shared';
+
+/** Admin-only H3 index rebuild (idempotent; reports per-entity counts). */
+export function reindexGeo(): Promise<{ data: GeoReindexResult }> {
+  return apiFetch('/geo/reindex', { method: 'POST' });
+}
+
+/**
+ * Farms inside the k-ring around (lat, long). Owner-scoped server-side:
+ * non-managers only ever receive their own plots.
+ */
+export function fetchFarmsNear(params: {
+  lat: number;
+  long: number;
+  res?: H3Resolution;
+  ring?: number;
+}): Promise<{ data: GeoFarmsNearResult }> {
+  return apiFetch('/geo/farms/near', { query: { ...params } });
+}
+
+/** Manager-only per-cell farm counts for cluster map rendering. */
+export function fetchGeoClusters(res: H3Resolution = 5): Promise<{ data: GeoClustersResult }> {
+  return apiFetch('/geo/farms/clusters', { query: { res } });
+}
+
+export function listGeoBoundaries(kind?: GeoBoundaryKind): Promise<{ data: GeoBoundary[] }> {
+  return apiFetch('/geo/boundaries', { query: kind ? { kind } : {} });
+}
+
+export interface CreateGeoBoundaryInput {
+  kind: GeoBoundaryKind;
+  name: string;
+  parentId?: string;
+  boundaryGeojson: unknown;
+}
+
+/** Admin-only boundary registration. */
+export function createGeoBoundary(
+  input: CreateGeoBoundaryInput
+): Promise<{ data: GeoBoundary }> {
+  return apiFetch('/geo/boundaries', { method: 'POST', body: input });
+}
+
+/** H3 cell boundary as closed GeoJSON for map rendering. */
+export function fetchGeoCell(h3: string): Promise<{ data: GeoCellBoundary }> {
+  return apiFetch(`/geo/cells/${encodeURIComponent(h3)}`);
+}
+
+/**
+ * Point-in-boundary check (ray casting server-side). Used by movement-permit
+ * zone rules; accepts a stored boundaryId or an inline GeoJSON geometry.
+ */
+export function checkGeoContains(input: {
+  lat: number;
+  long: number;
+  boundaryId?: string;
+  geojson?: unknown;
+}): Promise<{ data: GeoContainsResult }> {
+  return apiFetch('/geo/contains', { method: 'POST', body: input });
+}
