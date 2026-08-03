@@ -10,10 +10,13 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   IsIn,
+  IsInt,
   IsISO8601,
   IsNotEmpty,
   IsOptional,
-  IsString
+  IsString,
+  Max,
+  Min
 } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
@@ -183,6 +186,20 @@ class ListRecallsQuery {
   status?: (typeof RECALL_STATUSES)[number];
 }
 
+class ListDueVaccinationsQuery {
+  /** Lookahead window in days separating 'due' from 'upcoming' (default 30). */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  days?: number;
+
+  /** Admin/vet/regulator only: restrict to one owner's animals. */
+  @IsOptional()
+  @IsString()
+  ownerUserId?: string;
+}
+
 class ReportDiseaseFlagDto implements ReportDiseaseFlagInput {
   @IsString()
   @IsNotEmpty()
@@ -267,6 +284,24 @@ export class LivestockHealthController {
   @ApiOperation({ summary: 'Health ledger for an animal (owner, admin, vet or regulator)' })
   async listHealthRecords(@Param('animalId') animalId: string, @CurrentUser() actor: User | null) {
     return { data: await this.health.listHealthRecords(actor, animalId) };
+  }
+
+  @Get('vaccinations/due')
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'Computed due-vaccination schedule (due = last vaccination + interval per scheduled vaccine; never-vaccinated animals are due from registration). Farmers see their own animals; admin/vet/regulator see all or filter by ownerUserId. `days` (1–365, default 30) is the lookahead window separating due from upcoming.'
+  })
+  async listDueVaccinations(
+    @Query() query: ListDueVaccinationsQuery,
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.health.listDueVaccinations(actor, {
+        days: query.days,
+        ownerUserId: query.ownerUserId
+      })
+    };
   }
 
   // --- Movement log --------------------------------------------------------
