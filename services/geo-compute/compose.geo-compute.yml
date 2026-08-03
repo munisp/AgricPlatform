@@ -1,0 +1,25 @@
+# Service fragment for the geo-compute sidecar. The orchestrator merges this
+# into the platform compose file; it is intentionally standalone.
+# Merge example:
+#   docker compose -f infra/docker-compose.yml \
+#     -f services/geo-compute/compose.geo-compute.yml \
+#     --profile geo-compute up -d geo-compute
+#
+# NOTE: the runtime image is distroless (no shell, no curl), so no in-container
+# healthcheck is defined here — probe http://<host>:8200/healthz from outside
+# (e.g. from the API service or the orchestrator's health probe).
+services:
+  geo-compute:
+    profiles: ["geo-compute"]
+    build:
+      context: ./services/geo-compute
+    image: agricplatform/geo-compute:local
+    restart: unless-stopped
+    environment:
+      GEOCOMPUTE_MODE: ${GEOCOMPUTE_MODE:-stub}
+      GEOCOMPUTE_PORT: 8200
+      GEOCOMPUTE_MAX_CELLS: ${GEOCOMPUTE_MAX_CELLS:-100000}
+      GEOCOMPUTE_MAX_POINTS: ${GEOCOMPUTE_MAX_POINTS:-100000}
+      GEOCOMPUTE_MAX_COMPACT_INPUT: ${GEOCOMPUTE_MAX_COMPACT_INPUT:-1000000}
+    ports:
+      - "8200:8200"

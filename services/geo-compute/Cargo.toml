@@ -1,0 +1,25 @@
+[package]
+name = "geo-compute"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Geospatial batch-compute sidecar for AgricPlatform (H3 indexing/compaction, polygon metrics, geofence batch checks)"
+
+[dependencies]
+# Minimal dependency set (deliberate: compile time + sandbox wipe risk).
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# h3o: pure-Rust H3 implementation. The `geo` feature (non-default) is
+# required for the polygon-to-cells tiler (`h3o::geom::TilerBuilder`), whose
+# public API takes `geo::Polygon`.
+h3o = { version = "0.9", features = ["geo"] }
+# geo is pulled in by h3o itself (default-features = false), so declaring it
+# here with the same settings adds zero extra crates to the tree and
+# guarantees the exact same `Polygon`/`LineString` types h3o expects.
+geo = { version = "0.33", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
