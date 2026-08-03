@@ -128,16 +128,19 @@ timestamp and revocation). Map the store forms to it as follows:
 - Offline behaviour: dashboard and lists degrade gracefully (inline
   error + retry); no personal data leaves the device except to the
   platform API over TLS.
+- Plot capture offline behaviour (wave W-SYNCWRITE, done): captures are
+  written to the durable record-level sync outbox, pushed via
+  `POST /sync/push` with clientMutationId idempotency and baseVersion
+  compare-and-set, and flushed automatically on reconnect (metered
+  connections included); conflicts resolve server-wins and surface in the
+  sync badge count. The legacy transport queue now carries only agent
+  progress reports.
 
 ## Known follow-ups (out of scope for the current wave — do not claim as done)
 
 - **Push notifications** (expo-notifications): needs the real Expo project
   ID plus FCM/APNs credentials — human-gated. The notification inbox is
   currently pull/sync-based only.
-- **Writable sync routing for plot capture**: plot saves still go through
-  the legacy durable offline queue (src/offline/queue.ts). Routing plot
-  writes through the record-level sync outbox is owned by wave W-SYNCWRITE
-  (server + client change together).
 - **Per-record conflict detail UI**: sync conflicts resolve server-wins and
   are counted in the conflict log; a detail screen is not built yet.
 - **react-test-renderer replacement**: the test stack still uses

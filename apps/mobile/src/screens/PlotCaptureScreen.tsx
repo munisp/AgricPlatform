@@ -1,19 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput } from 'react-native';
-import { useApiClient } from '../api/context';
-import { createFarmPlot } from '../api/endpoints';
-import type { CreateFarmPlotInput, FarmPlot } from '../api/types';
+import type { CreateFarmPlotInput } from '../api/types';
 import {
   GOOD_FIX_ACCURACY_METERS,
   LocationPermissionDeniedError,
   type GeoPoint,
   type LocationService
 } from '../location/location-service';
-import {
-  createInMemoryStorage,
-  createOfflineQueue,
-  type OfflineQueue
-} from '../offline/queue';
+import { useSyncStore } from '../sync/context';
+import { SYNC_ENTITY_FARM_PLOT } from '../sync/entities';
+import type { SyncStore } from '../sync/store';
 import { Card, CardTitle, ErrorNotice, Muted, PrimaryButton } from './ui';
 
 export type { GeoPoint, LocationService } from '../location/location-service';
@@ -28,31 +24,67 @@ const unconfiguredLocationService: LocationService = {
     Promise.reject(new Error('No GPS provider configured on this device build'))
 };
 
+/** A capture the screen has accepted — confirmed by the server or queued. */
+export interface SavedPlotSummary {
+  /** Client-stable id; becomes the server record id once applied. */
+  id: string;
+  name: string;
+  state: string;
+  lga: string;
+  sizeHectares: number;
+  /** Server version after apply (0 while the capture is still queued). */
+  version: number;
+  /** True when the server confirmed the capture during this save. */
+  synced: boolean;
+}
+
+/** FNV-1a 32-bit — deterministic, dependency-free id derivation. */
+function fnv1a(value: string, seed: number): number {
+  let hash = seed;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Client-stable plot id derived from the mutation key. Deterministic on
+ * purpose: a double-submit or an offline replay of the SAME logical capture
+ * targets the same record, so server-side idempotency replays the original
+ * outcome instead of failing on a mismatched id. Two 32-bit lanes keep
+ * accidental collisions negligible at single-device capture volumes.
+ */
+export function derivedPlotId(clientMutationId: string): string {
+  const forward = fnv1a(clientMutationId, 0x811c9dc5);
+  const backward = fnv1a(clientMutationId, 0x811c9dc5 ^ 0x9e3779b9);
+  return `plot-${forward.toString(36)}${backward.toString(36)}`;
+}
+
 /**
  * Plot capture: name/LGA/size form with GPS centroid capture and a
  * walk-the-perimeter boundary point list (≥3 points become a closed GeoJSON
- * Polygon). Writes go through the offline queue with a stable idempotency
- * key, so a capture made in the field with no signal replays exactly once
- * when the device reconnects.
+ * Polygon). Writes go through the record-level sync OUTBOX (W-SYNCWRITE —
+ * no longer the legacy transport queue): the capture is enqueued with a
+ * stable clientMutationId, pushed immediately when online, and flushed by
+ * the connectivity sync when the device reconnects. The server applies it
+ * exactly once (clientMutationId idempotency), and FarmsScreen picks the
+ * confirmed plot up on its next focus refresh / sync pull.
  */
 export function PlotCaptureScreen({
   state = 'Kano',
   locationService = unconfiguredLocationService,
-  queue,
+  store,
   onSaved
 }: {
   state?: string;
   locationService?: LocationService;
-  queue?: OfflineQueue;
-  onSaved?: (plot: FarmPlot) => void;
+  /** Sync store override (tests); defaults to the app-wide provider store. */
+  store?: SyncStore;
+  onSaved?: (plot: SavedPlotSummary) => void;
 }) {
-  const client = useApiClient();
-  // Default queue is module-scoped in-memory (AsyncStorage adapter lands
-  // with the expo secure-store wave, same as the token store).
-  const offlineQueue = useMemo(
-    () => queue ?? createOfflineQueue(createInMemoryStorage()),
-    [queue]
-  );
+  const ambientStore = useSyncStore();
+  const syncStore = store ?? ambientStore;
 
   const [name, setName] = useState('');
   const [lga, setLga] = useState('');
@@ -140,12 +172,12 @@ export function PlotCaptureScreen({
         boundaryGeojson: boundaryGeojson(),
         sizeHectares: hectares
       };
-      // Stable idempotency key per logical capture: enqueue dedupes on it,
-      // so a double-tap or a replay cannot create two plots. The key covers
-      // EVERY editable field (audit P2-17) — a legitimate edit (e.g. fixing
-      // the LGA after a failed send) produces a different key and is not
-      // deduped away.
-      const idempotencyKey = [
+      // Stable mutation key per logical capture: the outbox dedupes on it,
+      // so a double-tap or an offline replay cannot create two plots. The
+      // key covers EVERY editable field (audit P2-17) — a legitimate edit
+      // (e.g. fixing the LGA after a failed send) produces a different key
+      // and is not deduped away.
+      const clientMutationId = [
         'farms.plot',
         centroid.lat.toFixed(5),
         centroid.long.toFixed(5),
@@ -154,32 +186,51 @@ export function PlotCaptureScreen({
         input.lga,
         input.sizeHectares
       ].join('.');
-      await offlineQueue.enqueue({
-        kind: 'farms.plot.created',
-        method: 'POST',
-        path: '/farms/plots',
-        payload: input,
-        idempotencyKey
+      const entityId = derivedPlotId(clientMutationId);
+      // Record-level outbox (docs/sync-protocol.md §4/§5). baseVersion 0 =
+      // "new record"; the server CAS-guards it.
+      const entry = await syncStore.enqueue({
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId,
+        op: 'upsert',
+        payload: { ...input },
+        clientMutationId
       });
-      const result = await offlineQueue.flush(async (request) => {
-        const res = await createFarmPlot(
-          client,
-          request.payload as CreateFarmPlotInput,
-          request.idempotencyKey
-        );
-        onSaved?.(res.data);
-      });
-      setNotice(
-        result.sent > 0
-          ? 'Plot saved.'
-          : 'No connection — the plot is queued and will sync when you are back online.'
-      );
-      if (result.sent > 0) {
+      // Online: push immediately. Offline: the entry stays durable in the
+      // outbox and the connectivity sync flushes it on reconnect.
+      await syncStore.pushPending();
+      const stillPending = syncStore
+        .getOutbox()
+        .some((candidate) => candidate.clientMutationId === entry.clientMutationId);
+      if (stillPending) {
+        setNotice('No connection — the plot is queued and will sync when you are back online.');
+        return;
+      }
+      const confirmed = syncStore
+        .getRecords(SYNC_ENTITY_FARM_PLOT)
+        .find((record) => record.entityId === entityId);
+      if (confirmed && confirmed.version > 0) {
+        // Applied — or a conflict the store already resolved server-wins
+        // (the confirmed record then carries the server version).
+        onSaved?.({
+          id: entityId,
+          name: input.name,
+          state: input.state,
+          lga: input.lga,
+          sizeHectares: input.sizeHectares,
+          version: confirmed.version,
+          synced: true
+        });
+        setNotice('Plot saved.');
         setName('');
         setLga('');
         setSize('');
         setCentroid(null);
         setBoundary([]);
+      } else {
+        // Permanently rejected by the server (e.g. forbidden) — the outbox
+        // dropped the mutation; nothing is saved locally or remotely.
+        setError('The server rejected this plot — it was not saved.');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the plot');

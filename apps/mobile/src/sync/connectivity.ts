@@ -10,13 +10,14 @@ import { useSyncStore } from './context';
  *
  * Behaviour contract (documented for store review + users):
  * - On REGAINING connectivity (offline → online): the legacy offline
- *   mutation queue is flushed immediately so field work (plot captures,
- *   agent progress) reaches the server as soon as possible, then the
- *   record-level sync store pulls the latest server state.
+ *   mutation queue is flushed immediately so field work (agent progress)
+ *   reaches the server as soon as possible, together with the record-level
+ *   sync outbox (plot captures, W-SYNCWRITE); then the sync store pulls the
+ *   latest server state.
  * - On returning to FOREGROUND: the same flush + pull runs, so data seen
  *   after switching apps is fresh.
- * - METERED CONNECTIONS (NetInfo `details.isConnectionExpensive`): the
- *   outbox flush still runs — those are the user's own queued writes and
+ * - METERED CONNECTIONS (NetInfo `details.isConnectionExpensive`): both
+ *   outbox flushes still run — those are the user's own queued writes and
  *   delaying them risks data loss — but background PULLS are skipped to
  *   conserve mobile data. Pulls still happen on unmetered connections and
  *   whenever a screen explicitly syncs.
@@ -89,14 +90,20 @@ export function useConnectivitySync({
         const subscription = AppState.addEventListener('change', listener);
         return () => subscription.remove();
       },
-      flushOutbox: () =>
-        queue.flush((request) =>
+      flushOutbox: async () => {
+        // Legacy transport queue (agent progress reports) AND the
+        // record-level sync outbox (farm_plot writes, W-SYNCWRITE) — both
+        // are the user's own queued writes, so both flush on reconnect,
+        // including on metered connections (see module note).
+        await queue.flush((request) =>
           client.apiFetch(request.path, {
             method: request.method,
             body: request.payload,
             idempotencyKey: request.idempotencyKey
           })
-        ),
+        );
+        await store.pushPending();
+      },
       pullLatest: () => store.syncNow(entities)
     });
   }, [client, store, queue, entities]);

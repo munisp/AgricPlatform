@@ -1,6 +1,7 @@
 # Sync Protocol v1 — Record-Level Offline Sync (Server Contract)
 
-**Status:** v1, implemented by Wave SYNCSRV. This document is the contract the
+**Status:** v1, implemented by Wave SYNCSRV; first writable entity
+(`farm_plot`) shipped by Wave W-SYNCWRITE. This document is the contract the
 client-sync wave builds against (mobile/web offline stores). Server code:
 `apps/api/src/modules/sync/`; schema: `infra/postgres/024_sync.sql`.
 
@@ -28,26 +29,52 @@ protocol never silently overwrites server state.
 
 ## 2. Entities & the Registry
 
-Only entities registered in the `SyncEntityRegistry` participate. v1 ships two
-**read-only** proof entities:
+Only entities registered in the `SyncEntityRegistry` participate. The
+registry ships two **read-only** proof entities plus the first **writable**
+production entity:
 
 | Entity key           | Source table                  | Owner (scope) field | Writable |
 |----------------------|-------------------------------|---------------------|----------|
 | `marketplace_listing`| `marketplace.listings`        | `sellerId`          | no       |
 | `notification`       | `notifications.notifications` | `userId`            | no       |
+| `farm_plot`          | `farms.farm_plots`            | `ownerUserId`       | **yes**  |
 
 - **Read-only** means the server is the only writer: pulls work; push items
   for these entities are rejected per item with `error: "read_only_entity"`.
+- **`farm_plot` (Wave W-SYNCWRITE)** accepts `upsert` and `delete` pushes:
+  - Upsert payloads are full replacements validated like the REST DTO
+    (`name`, `state`, `lga`, `centroidLat`, `centroidLong`, `sizeHectares`
+    required; `boundaryGeojson`, `soilType`, `clientId` optional). A create
+    (`baseVersion: 0`) persists the plot under the client-stable `entityId`,
+    so the sync ledger and the source row share one identity; the
+    `clientMutationId` is stored as the plot's `clientId` on creates.
+  - Deletes cascade exactly like the REST delete (child plantings,
+    harvests and expenses go with the plot) and leave a tombstone version
+    row scoped to the original owner.
+  - Writes through the REST endpoints (`FarmsService.createPlot` /
+    `updatePlot` / `removePlot`) also bump `sync.entity_versions`, so
+    server-side writes are sync-visible on the next pull.
+  - Field-agent on-behalf capture is NOT routed through sync in v1: the
+    field-agents module has no plot-capture write path to reuse, so
+    `farm_plot` push/pull is scoped to the owning farmer (admins may push,
+    per §3). If agent capture is added later it must come with its existing
+    consent checks before joining this entity's writable path.
+  - Tombstones need no `farm_plots` schema change: they live in
+    `sync.entity_versions.deleted` (migration 024), whose `owner_id`
+    captured at bump time keeps scoping intact after the source row is
+    hard-deleted.
 - Unknown entity keys are rejected: per-item `error: "unknown_entity"` on
   push, **400** on pull.
-- **Extensibility (farms wave and later):** the owning module injects
+- **Extensibility (later waves):** the owning module injects
   `SyncEntityRegistry` and registers a `SyncableEntityDescriptor`
   (`name`, `ownerField`, `writable`, `getOwnerId`, `getPayloads`, and for
   writable entities `apply(actor, item)` which MUST advance
   `sync.entity_versions` via `EntityVersionRepository.bumpExpected`).
-  No sync-module changes are required. Writes through the entity's service
-  must call `SyncVersioningService.recordChange(...)` so server-side writes
-  become sync-visible.
+  No sync-module changes are required — `farm_plot` is the reference
+  implementation (`apps/api/src/modules/farms/farms-sync.ts`). Writes
+  through the entity's service must call
+  `SyncVersioningService.recordChange(...)` so server-side writes become
+  sync-visible.
 
 ## 3. Scoping Rules
 
@@ -220,7 +247,9 @@ the highest version visible in the caller's scope (0 when nothing visible),
   item's `baseVersion`. Two concurrent pushes for the same record cannot both
   win; the loser gets `conflict`.
 - Server-side write paths currently bumping: `MarketplaceService`
-  (create/update listing), `NotificationsService` (send, markRead).
+  (create/update listing), `NotificationsService` (send, markRead),
+  `FarmsService` (create/update/remove plot — plus the sync push apply path
+  itself, which CAS-bumps via `bumpExpected`).
 
 ## 10. Client Retry Guidance
 
