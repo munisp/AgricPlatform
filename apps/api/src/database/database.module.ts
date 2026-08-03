@@ -226,6 +226,14 @@ import {
 } from './repositories/services-marketplace.pg-repository.js';
 import { createInMemorySupplierRepository } from './repositories/supplier.repository.js';
 import {
+  createInMemoryEquipmentBookingRepository,
+  createInMemoryEquipmentListingRepository
+} from './repositories/mechanization.repository.js';
+import {
+  createPgEquipmentBookingRepository,
+  createPgEquipmentListingRepository
+} from './repositories/mechanization.pg-repository.js';
+import {
   createInMemoryWebinarRegistrationRepository,
   createInMemoryWebinarRepository
 } from './repositories/webinar.repository.js';
@@ -545,7 +553,9 @@ import {
   CREDIT_REPAYMENT_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
-  GEO_CREDIT_SHADOW_REPOSITORY
+  GEO_CREDIT_SHADOW_REPOSITORY,
+  EQUIPMENT_LISTING_REPOSITORY,
+  EQUIPMENT_BOOKING_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -1457,6 +1467,19 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
       inject: [PG_POOL]
+    },
+    // Wave MECHANIZATION (additive): equipment hire marketplace.
+    {
+      provide: EQUIPMENT_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentListingRepository(pool) : createInMemoryEquipmentListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EQUIPMENT_BOOKING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentBookingRepository(pool) : createInMemoryEquipmentBookingRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1598,7 +1621,9 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
     VOICE_SESSION_REPOSITORY,
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
-    GEO_CREDIT_SHADOW_REPOSITORY
+    GEO_CREDIT_SHADOW_REPOSITORY,
+    EQUIPMENT_LISTING_REPOSITORY,
+    EQUIPMENT_BOOKING_REPOSITORY
   ]
 })
 export class DatabaseModule {}

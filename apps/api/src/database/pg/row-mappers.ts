@@ -13,6 +13,8 @@ import type {
   CreditProfile,
   CreditScoreResult,
   Enrolment,
+  EquipmentBooking,
+  EquipmentListing,
   EscrowRecord,
   ForumTopic,
   Invoice,
@@ -2622,4 +2624,179 @@ export const coldChainLogMapper: RowMapper<ColdChainLog> = {
       source: 'source',
       created_at: 'createdAt'
     })
+};
+
+// ---------------------------------------------------------------------------
+// Wave MECHANIZATION: equipment hire marketplace (mechanization schema, 033).
+// ---------------------------------------------------------------------------
+
+export const equipmentListingMapper: RowMapper<EquipmentListing> = {
+  columns: [
+    'id',
+    'owner_user_id',
+    'owner_type',
+    'type',
+    'title',
+    'description',
+    'specs',
+    'base_lat',
+    'base_long',
+    'service_area_h3',
+    'service_area_resolution',
+    'rates',
+    'availability',
+    'operator_license_ref',
+    'operator_verification',
+    'status',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    ownerUserId: row.owner_user_id as string,
+    ownerType: row.owner_type as EquipmentListing['ownerType'],
+    type: row.type as EquipmentListing['type'],
+    title: row.title as string,
+    description: row.description as string,
+    specs: (row.specs as EquipmentListing['specs']) ?? {},
+    baseLat: num(row.base_lat),
+    baseLong: num(row.base_long),
+    serviceAreaH3: (row.service_area_h3 as string[]) ?? [],
+    serviceAreaResolution: num(row.service_area_resolution),
+    rates: row.rates as EquipmentListing['rates'],
+    availability: (row.availability as EquipmentListing['availability']) ?? [],
+    operatorLicenseRef: (row.operator_license_ref as string) ?? undefined,
+    operatorVerification: row.operator_verification as EquipmentListing['operatorVerification'],
+    status: row.status as EquipmentListing['status'],
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) => {
+    const row = present(item, {
+      id: 'id',
+      owner_user_id: 'ownerUserId',
+      owner_type: 'ownerType',
+      type: 'type',
+      title: 'title',
+      description: 'description',
+      specs: 'specs',
+      base_lat: 'baseLat',
+      base_long: 'baseLong',
+      service_area_h3: 'serviceAreaH3',
+      service_area_resolution: 'serviceAreaResolution',
+      rates: 'rates',
+      availability: 'availability',
+      operator_license_ref: 'operatorLicenseRef',
+      operator_verification: 'operatorVerification',
+      status: 'status',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    });
+    // jsonb object columns: node-pg serialises plain objects but turns JS
+    // arrays into Postgres array literals — serialise explicitly.
+    if ('specs' in row) {
+      row.specs = row.specs === null ? null : JSON.stringify(row.specs);
+    }
+    if ('rates' in row) {
+      row.rates = row.rates === null ? null : JSON.stringify(row.rates);
+    }
+    if ('availability' in row) {
+      row.availability = row.availability === null ? null : JSON.stringify(row.availability);
+    }
+    return row;
+  }
+};
+
+export const equipmentBookingMapper: RowMapper<EquipmentBooking> = {
+  columns: [
+    'id',
+    'listing_id',
+    'owner_user_id',
+    'farmer_id',
+    'plot_id',
+    'plot_lat',
+    'plot_long',
+    'plot_h3',
+    'area_ha',
+    'estimated_hours',
+    'window_start',
+    'window_end',
+    'status',
+    'quote',
+    'advisory',
+    'hold_entry_id',
+    'farmer_confirmed_completion_at',
+    'owner_confirmed_completion_at',
+    'rating',
+    'review_comment',
+    'cancelled_by',
+    'cancel_reason',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    listingId: row.listing_id as string,
+    ownerUserId: row.owner_user_id as string,
+    farmerId: row.farmer_id as string,
+    plotId: (row.plot_id as string) ?? undefined,
+    plotLat: num(row.plot_lat),
+    plotLong: num(row.plot_long),
+    plotH3: row.plot_h3 as string,
+    areaHa: num(row.area_ha),
+    estimatedHours: row.estimated_hours != null ? num(row.estimated_hours) : undefined,
+    windowStart: ts(row.window_start),
+    windowEnd: ts(row.window_end),
+    status: row.status as EquipmentBooking['status'],
+    quote: (row.quote as EquipmentBooking['quote']) ?? undefined,
+    advisory: (row.advisory as EquipmentBooking['advisory']) ?? undefined,
+    holdEntryId: (row.hold_entry_id as string) ?? undefined,
+    farmerConfirmedCompletionAt:
+      row.farmer_confirmed_completion_at != null
+        ? ts(row.farmer_confirmed_completion_at)
+        : undefined,
+    ownerConfirmedCompletionAt:
+      row.owner_confirmed_completion_at != null ? ts(row.owner_confirmed_completion_at) : undefined,
+    rating: row.rating != null ? num(row.rating) : undefined,
+    reviewComment: (row.review_comment as string) ?? undefined,
+    cancelledBy: (row.cancelled_by as EquipmentBooking['cancelledBy']) ?? undefined,
+    cancelReason: (row.cancel_reason as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) => {
+    const row = present(item, {
+      id: 'id',
+      listing_id: 'listingId',
+      owner_user_id: 'ownerUserId',
+      farmer_id: 'farmerId',
+      plot_id: 'plotId',
+      plot_lat: 'plotLat',
+      plot_long: 'plotLong',
+      plot_h3: 'plotH3',
+      area_ha: 'areaHa',
+      estimated_hours: 'estimatedHours',
+      window_start: 'windowStart',
+      window_end: 'windowEnd',
+      status: 'status',
+      quote: 'quote',
+      advisory: 'advisory',
+      hold_entry_id: 'holdEntryId',
+      farmer_confirmed_completion_at: 'farmerConfirmedCompletionAt',
+      owner_confirmed_completion_at: 'ownerConfirmedCompletionAt',
+      rating: 'rating',
+      review_comment: 'reviewComment',
+      cancelled_by: 'cancelledBy',
+      cancel_reason: 'cancelReason',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    });
+    if ('quote' in row) {
+      row.quote = row.quote === null ? null : JSON.stringify(row.quote);
+    }
+    if ('advisory' in row) {
+      row.advisory = row.advisory === null ? null : JSON.stringify(row.advisory);
+    }
+    return row;
+  }
 };

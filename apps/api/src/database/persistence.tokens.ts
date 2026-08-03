@@ -194,3 +194,8 @@ export const CREDIT_SAVINGS_TRANSACTION_REPOSITORY = Symbol('CREDIT_SAVINGS_TRAN
 // Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
+
+// Wave MECHANIZATION: equipment hire marketplace (mechanization schema,
+// migration 033) — listings with H3 service areas + the booking workflow.
+export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');
+export const EQUIPMENT_BOOKING_REPOSITORY = Symbol('EQUIPMENT_BOOKING_REPOSITORY');
