@@ -27,6 +27,10 @@ import { WebhookDispatchService } from './webhook-dispatch.service.js';
     PartnerRateService,
     PartnerApiService,
     WebhookDispatchService
-  ]
+  ],
+  // Wave-INSURANCE (additive): the insurer read API reuses the scope-checking
+  // PartnerAuthGuard; exporting it (and its auth/rate deps) changes nothing
+  // about the existing partner-api surface.
+  exports: [PartnerAuthGuard, PartnerAuthService, PartnerRateService]
 })
 export class PartnerApiModule {}

@@ -89,6 +89,11 @@ import type {
   Order,
   OwnershipTransfer,
   OwnershipTransferType,
+  ParametricPayout,
+  ParametricPolicy,
+  ParametricProduct,
+  ParametricQuote,
+  ParametricTriggerEvent,
   PastoralistProfile,
   PathwayEnrolment,
   PathwayStage,
@@ -3339,4 +3344,53 @@ export interface GeoShadowRecomputeReport {
 
 export function recomputeGeoCreditShadow(): Promise<{ data: GeoShadowRecomputeReport }> {
   return apiFetch('/credit/geo-shadow/recompute', { method: 'POST' });
+}
+
+/* ========================================================================
+ * Parametric insurance rail (wave-insurance).
+ * Mirrors apps/api/src/modules/insurance (insurance.controller). Plain
+ * `{ data: T }` envelopes throughout. Admin/cron endpoints (evaluate-
+ * triggers, expire, payout confirm) are role-gated server-side and not
+ * called from the farmer UI.
+ * ====================================================================== */
+
+export type { ParametricPayout, ParametricPolicy, ParametricProduct, ParametricQuote, ParametricTriggerEvent };
+
+export interface ParametricQuoteInput {
+  productCode: string;
+  plotId: string;
+  season: string;
+  sumInsuredKobo: number;
+}
+
+export interface ParametricQuoteResponse {
+  quote: ParametricQuote;
+  policy: ParametricPolicy;
+}
+
+export function fetchInsuranceProducts(): Promise<{ data: ParametricProduct[] }> {
+  return apiFetch('/insurance/products');
+}
+
+export function quoteParametricPolicy(
+  input: ParametricQuoteInput,
+  idempotencyKey?: string
+): Promise<{ data: ParametricQuoteResponse }> {
+  return apiFetch('/insurance/quotes', { method: 'POST', body: input, idempotencyKey });
+}
+
+export function issueInsurancePolicy(id: string): Promise<{ data: ParametricPolicy }> {
+  return apiFetch(`/insurance/policies/${encodeURIComponent(id)}/issue`, { method: 'POST' });
+}
+
+export function fetchMyInsurancePolicies(): Promise<{ data: ParametricPolicy[] }> {
+  return apiFetch('/insurance/policies/mine');
+}
+
+export function fetchMyInsuranceTriggerEvents(): Promise<{ data: ParametricTriggerEvent[] }> {
+  return apiFetch('/insurance/trigger-events');
+}
+
+export function fetchMyInsurancePayouts(): Promise<{ data: ParametricPayout[] }> {
+  return apiFetch('/insurance/payouts');
 }

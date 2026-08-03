@@ -194,3 +194,11 @@ export const CREDIT_SAVINGS_TRANSACTION_REPOSITORY = Symbol('CREDIT_SAVINGS_TRAN
 // Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
+
+// Wave-INSURANCE: parametric insurance rail (insurance schema, migration 031).
+// Distinct from the livestock-trade INSURANCE_POLICY_REPOSITORY (animal
+// mortality cover); these are the plot-level parametric products/policies.
+export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITORY');
+export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
+export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
+export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');

@@ -11,3 +11,5 @@ export * from './farms.js';
 // Wave GEO (additive): geospatial pack — H3 indexing + boundaries.
 export * from './geo.js';
 export * from './credit.js';
+// Wave-INSURANCE (additive): parametric insurance rail.
+export * from './insurance.js';
