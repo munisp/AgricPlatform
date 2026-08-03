@@ -191,3 +191,6 @@ export const CREDIT_GROUP_REPOSITORY = Symbol('CREDIT_GROUP_REPOSITORY');
 export const CREDIT_GROUP_MEMBER_REPOSITORY = Symbol('CREDIT_GROUP_MEMBER_REPOSITORY');
 export const CREDIT_SAVINGS_ACCOUNT_REPOSITORY = Symbol('CREDIT_SAVINGS_ACCOUNT_REPOSITORY');
 export const CREDIT_SAVINGS_TRANSACTION_REPOSITORY = Symbol('CREDIT_SAVINGS_TRANSACTION_REPOSITORY');
+// Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
+// 028). Shadow mode only — the live decision path never injects this token.
+export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');

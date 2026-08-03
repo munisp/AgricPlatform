@@ -544,7 +544,8 @@ import {
   CREDIT_PRODUCT_REPOSITORY,
   CREDIT_REPAYMENT_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
-  CREDIT_SAVINGS_TRANSACTION_REPOSITORY
+  CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+  GEO_CREDIT_SHADOW_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -568,6 +569,8 @@ import {
   createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
 } from './repositories/credit-suite.pg-repository.js';
+import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
+import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1447,6 +1450,13 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
       inject: [PG_POOL]
+    },
+    // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
+    {
+      provide: GEO_CREDIT_SHADOW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1587,7 +1597,8 @@ import {
     CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
     VOICE_SESSION_REPOSITORY,
     VOICE_TURN_REPOSITORY,
-    AGENT_CASE_REPOSITORY
+    AGENT_CASE_REPOSITORY,
+    GEO_CREDIT_SHADOW_REPOSITORY
   ]
 })
 export class DatabaseModule {}

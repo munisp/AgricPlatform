@@ -1,0 +1,13 @@
+# Pinned to the exact versions verified in CI (Python 3.12).
+# Deliberately no rasterio/GDAL: the service consumes per-plot band
+# statistics, never raw rasters.
+anyio==4.9.0
+fastapi==0.116.1
+httpx==0.28.1
+numpy==2.2.5
+pydantic==2.11.4
+pydantic_core==2.33.2
+scipy==1.16.2
+starlette==0.46.2
+typing_extensions==4.13.2
+uvicorn==0.34.2
