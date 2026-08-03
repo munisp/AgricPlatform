@@ -108,6 +108,14 @@ services:
       WEATHER_DRIVER: stub
       LMS_DRIVER: stub
       COMMUNITY_DRIVER: stub
+      # Lakehouse export (marts -> parquet on MinIO). Uncomment together with
+      # the "lakehouse" profile to enable POST /api/v1/analytics/export.
+      # LAKEHOUSE_ENABLED: "true"
+      # LAKEHOUSE_BUCKET: agric-lakehouse
+      # LAKEHOUSE_S3_ENDPOINT: http://minio:9000
+      # LAKEHOUSE_S3_REGION: us-east-1
+      # LAKEHOUSE_S3_ACCESS_KEY: lakehouse
+      # LAKEHOUSE_S3_SECRET_KEY: local-lakehouse-secret
     ports:
       - "3001:3001"
     depends_on:
@@ -224,12 +232,82 @@ services:
         condition: service_healthy
     networks: [agric]
 
+  # ---- Lakehouse export target (profile: lakehouse) ----
+  # MinIO is the local S3-compatible object store the analytics lakehouse
+  # exporter (POST /api/v1/analytics/export) writes parquet part-files to.
+  # This is dev-only infrastructure — it is object storage plus a manifest
+  # contract, NOT a managed lakehouse. To use it:
+  #   docker compose -f infra/docker-compose.yml --profile lakehouse up -d
+  # then run the API with LAKEHOUSE_ENABLED=true LAKEHOUSE_BUCKET=agric-lakehouse
+  # LAKEHOUSE_S3_ENDPOINT=http://localhost:9000 LAKEHOUSE_S3_ACCESS_KEY=lakehouse
+  # LAKEHOUSE_S3_SECRET_KEY=local-lakehouse-secret (LOCAL-ONLY defaults below).
+
+  minio:
+    profiles: ["lakehouse", "lakehouse-query"]
+    image: minio/minio:latest
+    container_name: agric-minio
+    command: server /data --console-address ":9001"
+    environment:
+      # LOCAL-ONLY development credentials. Never reuse outside local dev.
+      MINIO_ROOT_USER: lakehouse
+      MINIO_ROOT_PASSWORD: local-lakehouse-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -f http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [agric]
+
+  minio-bootstrap:
+    profiles: ["lakehouse", "lakehouse-query"]
+    image: minio/mc:latest
+    container_name: agric-minio-bootstrap
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 lakehouse local-lakehouse-secret;
+        mc mb --ignore-existing local/agric-lakehouse;
+        echo "bucket agric-lakehouse ready";
+    networks: [agric]
+
+  # ---- OPTIONAL query convenience (profile: lakehouse-query) ----
+  # Trino over the MinIO parquet prefix, for local ad-hoc SQL only. There is
+  # NO table-format catalog: the hive connector below uses a local file
+  # metastore and each mart table must be registered by hand (CREATE TABLE
+  # ... WITH (external_location = 's3a://agric-lakehouse/lakehouse/<table>/',
+  # format = 'PARQUET', partitioned_by = dt)) — see docs/analytics-lakehouse.md
+  # for the exact DDL. Not started by default; not a managed lakehouse.
+  trino:
+    profiles: ["lakehouse-query"]
+    image: trinodb/trino:latest
+    container_name: agric-trino
+    ports:
+      - "8086:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+      - trino-metastore:/var/trino/metastore
+    depends_on:
+      - minio
+      - minio-bootstrap
+    networks: [agric]
+
 volumes:
   postgres-data:
   redis-data:
   meili-data:
   moodle-db-data:
   discourse-db-data:
+  minio-data:
+  trino-metastore:
 
 networks:
   agric:
