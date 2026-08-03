@@ -1,17 +1,22 @@
 # Analytics & Lakehouse — honest status and upgrade path
 
 **Audience:** operators, data engineers, reviewers.
-**Wave:** B (analytics foundation).
+**Waves:** B (analytics foundation), lakehouse-export (object-storage export).
 **Status of this document:** describes what EXISTS today and what does NOT.
-Nothing in this file claims a lakehouse is deployed — because none is.
+Sections marked *implemented* describe code that ships in this repository and
+is covered by tests. Sections marked *organizational choice* describe things
+that are deliberately NOT built — no ambiguity either way.
 
 ---
 
 ## 1. What exists now (real, deployed in this codebase)
 
-The platform's analytical store today is a **star schema inside the same
-PostgreSQL cluster** as the OLTP workload, fed by the transactional outbox.
-There is no separate analytics infrastructure.
+The platform's analytical store is a **star schema inside the same PostgreSQL
+cluster** as the OLTP workload, fed by the transactional outbox — plus, since
+the lakehouse-export wave, a **real export path from those marts to
+S3-compatible object storage** (parquet part-files + a manifest contract).
+There is still no managed lakehouse: no Iceberg/Delta catalog, no managed
+query engine, no CDC pipeline.
 
 ### 1.1 Star-schema marts — `analytics` schema (migration `infra/postgres/019_analytics.sql`)
 
@@ -82,9 +87,12 @@ affiliation table, so the column is mostly NULL until membership is modelled.
 | `POST /api/v1/analytics/project` | admin | one projection pass (external scheduler calls this) |
 | `GET /api/v1/analytics/export/fact_orders.csv?from&to` | admin, regulator | CSV of `fact_orders`, columns 1:1 with migration 019 |
 | `GET /api/v1/analytics/export/fact_payments.csv?from&to` | admin, regulator | CSV of `fact_payments` (account arrays `;`-joined) |
+| `POST /api/v1/analytics/export` | admin | **lakehouse export run** — see §2; 503 when disabled |
+| `GET /api/v1/analytics/export/last` | admin | last export status: `{ enabled, manifest }` — see §2.5 |
 
 All exports are audit-logged. Web surface: `/admin/analytics` (summary stat
-cards, daily metrics table, projection trigger, CSV downloads).
+cards, daily metrics table, projection trigger, CSV downloads, and the
+lakehouse export card with an honest disabled state).
 
 ### 1.4 Health
 
@@ -95,109 +103,199 @@ star table plus the projector heartbeat (`lastProjectionAt`,
 
 ---
 
-## 2. The honest gap statement
+## 2. Lakehouse export path — IMPLEMENTED
 
-**What does NOT exist today:**
+`apps/api/src/modules/analytics/exporter/` (`LakehouseExporterService`).
 
-- **No object storage** (S3/GCS/MinIO) holding analytical data.
-- **No columnar file format** (Parquet) — exports are CSV only.
-- **No table format / catalog** (Apache Iceberg, Delta, Hudi).
-- **No distributed query engine** (Trino, Presto, Spark SQL, DuckDB cluster).
-- **No stream processor or CDC publisher** beyond the Postgres outbox table
-  and its in-process sweeper (no Debezium, no Kafka).
-- **No geospatial analytics stack** (Sedona/GeoMesa etc.).
+### 2.1 What it does
 
-Consequences, stated plainly: analytical queries share the OLTP Postgres
-cluster (large scans compete with transactions); there is no petabyte-scale
-path; historical fact evolution is limited to what the outbox retains; CSV
-exports are file downloads, not a queryable external table.
+One export run serialises **all six mart tables** to parquet part-files
+(parquetjs-lite) on S3-compatible object storage, in
+hive-style partitions:
 
-The older `analytics_marts.*` KPI tables (migration 009, Wave P5c: member
-KPIs, marketplace and learning dailies, snapshot-based) coexist with the new
-star schema. They serve different consumers (segmentation/retention UI) and
-are NOT replaced by this wave.
+```
+s3://{bucket}/lakehouse/{table}/dt=YYYY-MM-DD/part-{runId}-00000.parquet
+s3://{bucket}/lakehouse/_manifests/dt=YYYY-MM-DD/{runId}.json
+s3://{bucket}/lakehouse/_manifest.json          ← latest-run pointer
+```
+
+- `dt` is the **Africa/Lagos calendar day** of the run (same calendar the
+  marts use). One run rewrites the whole day partition for every table —
+  the marts are small enough that full-snapshot-per-day is the honest,
+  correct unit; there is no incremental append logic to get wrong.
+- Column names in the parquet files are the snake_case mart columns (1:1
+  with migration 019 and the CSV contract). Timestamp columns are ISO-8601
+  UTC **strings** (UTF8), the same representation the CSV exports use.
+  Array columns (`roles`, `debit_accounts`, `credit_accounts`) are native
+  parquet REPEATED UTF8 fields.
+
+### 2.2 The manifest contract
+
+`_manifest.json` (and each per-run manifest under `_manifests/`) contains:
+`runId`, `runDate`, `bucket`, `prefix`, `format: "parquet"`,
+`startedAt`/`finishedAt`, and per table: row count plus the part-file list
+with `bytes` and a **SHA-256 hex digest per file**, plus `totalRows` /
+`totalBytes`. There is no table-format catalog — these manifests are the
+contract a loader or query engine integrates against.
+
+### 2.3 Idempotent re-runs ("atomically-ish")
+
+Re-running the same day **replaces** that day's partition:
+
+1. new part files are written (run-scoped names: `part-{runId}-…`),
+2. the per-run manifest is written, then the `_manifest.json` pointer is
+   flipped — the pointer flip is the commit point,
+3. only then are part files from superseded runs of the same day deleted.
+
+A reader that follows `_manifest.json` therefore never sees a half-written
+partition. Object storage gives no multi-key transactions, so a crash
+between steps can leave orphaned part files from the interrupted run;
+those are overwritten-and-cleaned by the next run of the same day. Per-run
+manifests under `_manifests/` are kept as an audit trail.
+
+### 2.4 Configuration and fail-closed behaviour
+
+Environment variables (documented in `apps/api/.env.example`; credentials
+from env ONLY, never logged, never in manifests):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LAKEHOUSE_ENABLED` | `false` | master switch; when not `true` the exporter is cleanly disabled |
+| `LAKEHOUSE_BUCKET` | — | target bucket; required when enabled |
+| `LAKEHOUSE_S3_ENDPOINT` | — | MinIO-compatible endpoint (empty = AWS S3 default) |
+| `LAKEHOUSE_S3_REGION` | `us-east-1` | SDK region (MinIO ignores it) |
+| `LAKEHOUSE_S3_ACCESS_KEY` / `LAKEHOUSE_S3_SECRET_KEY` | — | credentials, env only |
+
+**Fail-closed:** with `LAKEHOUSE_ENABLED=true` in production
+(`NODE_ENV=production`), a missing bucket or credentials aborts Nest module
+init — the API refuses to start rather than silently dropping the export
+path. Outside production the same misconfiguration degrades to disabled
+with a startup warning. When disabled, `POST /api/v1/analytics/export`
+returns **503** with the reason and `GET /api/v1/analytics/export/last`
+returns `{ enabled: false, reason, manifest: null }`.
+
+### 2.5 Last-manifest persistence (deliberately simple)
+
+`GET /api/v1/analytics/export/last` serves the latest manifest from an
+in-memory cache, falling back to reading `_manifest.json` from object
+storage. **No new database table exists** (this wave has a zero migration
+budget), and none is needed: object storage is the source of truth, so the
+status endpoint survives API restarts. `manifest` is `null` before the
+first run — an honest empty state, not an error.
+
+### 2.6 Running it locally (MinIO)
+
+```bash
+# 1. Start Postgres etc. plus the lakehouse profile (MinIO + bucket bootstrap):
+docker compose -f infra/docker-compose.yml \
+  --profile lakehouse up -d postgres redis keycloak meilisearch minio minio-bootstrap
+
+# 2. Run the API with:
+LAKEHOUSE_ENABLED=true \
+LAKEHOUSE_BUCKET=agric-lakehouse \
+LAKEHOUSE_S3_ENDPOINT=http://localhost:9000 \
+LAKEHOUSE_S3_ACCESS_KEY=lakehouse \
+LAKEHOUSE_S3_SECRET_KEY=local-lakehouse-secret   # LOCAL-ONLY dev credentials
+
+# 3. Project the marts, then export:
+curl -X POST .../api/v1/analytics/project   # admin
+curl -X POST .../api/v1/analytics/export    # admin → returns the manifest
+```
+
+The MinIO console is at http://localhost:9001 (same local-only credentials).
+
+### 2.7 Querying the export — OPTIONAL local convenience (Trino)
+
+`infra/docker-compose.yml` also carries a profile-gated `trino` service
+(`--profile lakehouse-query`) with `infra/trino/catalog/lakehouse.properties`
+(hive connector, file metastore on a local volume, native-S3 against MinIO).
+This is a **local ad-hoc SQL convenience, not a managed lakehouse**: there
+is no shared catalog, so each table must be registered by hand, e.g.:
+
+```sql
+CREATE TABLE lakehouse.fact_orders (
+  order_id varchar, listing_id varchar, buyer_id varchar, seller_id varchar,
+  channel varchar, variant_id varchar, quantity integer, total_kobo bigint,
+  status varchar, status_history_count integer, escrow_required boolean,
+  placed_at varchar, fulfilled_at varchar
+) WITH (
+  external_location = 's3://agric-lakehouse/lakehouse/fact_orders/',
+  format = 'PARQUET',
+  partitioned_by = ARRAY['dt']
+);
+-- then, per exported day:
+CALL lakehouse.system.register_partition('fact_orders', 'dt', '2026-08-06',
+  's3://agric-lakehouse/lakehouse/fact_orders/dt=2026-08-06/');
+```
+
+Zero-infra alternative: **DuckDB** reads the parquet prefix directly
+(`read_parquet('s3://agric-lakehouse/lakehouse/fact_orders/*/*.parquet',
+hive_partitioning=true)`). For **Athena**, point a Glue table at the same
+`s3://…/lakehouse/{table}/` prefix with `dt` as the partition key and run
+`MSCK REPAIR TABLE` after each export; for **BigQuery**, an external table
+over the GCS-equivalent prefix with hive partitioning. All of these consume
+the same layout — the exporter does not depend on any of them.
 
 ---
 
-## 3. Upgrade path (when infra budget exists)
+## 3. What still does NOT exist (organizational choices)
 
-The design is deliberately staged so each step is optional and reversible:
+Stated plainly, so nobody reads the §2 implementation as more than it is:
 
-1. **Now → CDC stream.** `events.outbox` is already the transactional-outbox
-   source. Point **Debezium** (Postgres logical decoding, `pgoutput` plugin)
-   at `events.outbox` to publish to Kafka/Redpanda with zero application
-   changes. The star marts stay authoritative until the stream is proven.
-2. **File handoff without Debezium (cheap alternative).** Schedule the
-   existing CSV exports (`/analytics/export/*.csv`) and drop them into
-   object storage. The CSV column contracts in §1.3 are the same columns a
-   Parquet writer would use, so this path is not throwaway work.
-3. **Object storage + Parquet.** Land CSV/CDC payloads as Parquet files
-   partitioned by Lagos date (`placed_at_date=YYYY-MM-DD/…`), e.g. via a
-   small loader or Spark/Flink job.
-4. **Iceberg tables + catalog.** Register the Parquet datasets as Apache
-   Iceberg tables (schema evolution, time travel, partition pruning). Table
-   names map 1:1: `fact_orders`, `fact_payments`, `fact_livestock`,
-   `dim_users`, `dim_listings`, `mart_daily_metrics`.
-5. **Query engine.** Attach **Trino** (ad-hoc SQL, BI connectors) and/or
-   **Spark** (heavy transforms, ML feature prep). Point them at the Iceberg
-   catalog; dashboards move off OLTP Postgres.
-6. **Geospatial (only when adopted).** If/when field-level geospatial
+- **No table-format catalog** (Apache Iceberg, Delta, Hudi). The manifest
+  JSON files are the integration contract; schema evolution, time travel
+  and partition pruning across engines would need a real catalog.
+- **No managed/shared query engine.** The compose Trino is local-only with
+  a private file metastore; Athena/BigQuery/DuckDB are point-it-yourself.
+- **No CDC stream** (Debezium/Kafka). The outbox table + projector remain
+  the only replication mechanism; exports are per-day snapshots, not a
+  streaming changelog.
+- **No retention tiers or lifecycle policies** on the export bucket —
+  partitions accumulate until an operator configures bucket lifecycle rules
+  (an infra-policy decision, not application code).
+- **No incremental/intraday export.** The unit is one full mart snapshot
+  per Lagos day; sub-day freshness means re-running the export.
+- **No geospatial analytics stack** (Sedona/GeoMesa etc.).
+
+Consequences, stated plainly: analytical queries still share the OLTP
+Postgres cluster (the export moves *copies* out; the marts remain the
+serving store); the object-storage copy is only as fresh as the last
+export run; there is no petabyte-scale path until a catalog + query engine
+are adopted.
+
+The older `analytics_marts.*` KPI tables (migration 009, Wave P5c: member
+KPIs, marketplace and learning dailies, snapshot-based) coexist with the
+star schema. They serve different consumers (segmentation/retention UI) and
+are NOT replaced by either wave.
+
+---
+
+## 4. Upgrade path (when infra budget exists)
+
+Each step is optional and reversible, and steps 1–2 now build on a real
+export instead of a sketch:
+
+1. **Adopt a table format on the existing prefix.** Register the exported
+   parquet datasets as Apache Iceberg tables (e.g. via the Iceberg REST
+   catalog + the same MinIO bucket). Table names map 1:1: `fact_orders`,
+   `fact_payments`, `fact_livestock`, `dim_users`, `dim_listings`,
+   `mart_daily_metrics`. The exporter's manifest SHA-256s are the
+   verification contract for the migration.
+2. **Shared catalog + query engine.** Attach **Trino** (ad-hoc SQL, BI
+   connectors) and/or **Spark** (heavy transforms, ML feature prep) to the
+   shared Iceberg catalog; dashboards move off OLTP Postgres.
+3. **CDC stream (only if snapshot latency hurts).** `events.outbox` is
+   already the transactional-outbox source. Point **Debezium** (Postgres
+   logical decoding, `pgoutput` plugin) at it to publish to Kafka/Redpanda
+   with zero application changes. The Postgres marts stay authoritative
+   until the stream is proven.
+4. **Retention/lifecycle policy.** Bucket lifecycle rules for partition
+   expiry once the org decides its retention tiers.
+5. **Geospatial (only when adopted).** If/when field-level geospatial
    analytics becomes a requirement, evaluate **Apache Sedona** (Spark) or
-   the GeoLibre stack for geometry-aware queries over listing/farm
-   locations. Not needed today: location analytics is state/LGA-level.
+   the GeoLibre stack. Not needed today: location analytics is
+   state/LGA-level.
 
 At every step the Postgres marts remain the fallback and the correctness
 reference: mart contents are reproducible from `events.outbox`, so the
 lakehouse can be rebuilt from source at any time.
-
----
-
-## 4. Reference docker-compose overlay — **REFERENCE ONLY, NOT DEPLOYED**
-
-> ⚠️ **This compose file is a sketch for the future lakehouse environment.
-> It is NOT part of the deployed platform, is NOT started by any runbook or
-> CI job, and no equivalent infrastructure exists today.** Do not read
-> anything in this section as "running".
-
-```yaml
-# infra/lakehouse/docker-compose.lakehouse.yml  (REFERENCE ONLY — NOT DEPLOYED)
-# Bring-up sketch for the §3 upgrade path, step 4–5. Requires: Kafka/Redpanda
-# with Debezium already streaming events.outbox (step 1).
-services:
-  minio:                                   # S3-compatible object storage
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: lakehouse
-      MINIO_ROOT_PASSWORD: change-me       # placeholder — secret manager in real envs
-    ports: ["9000:9000", "9001:9001"]
-
-  iceberg-rest:                            # Iceberg REST catalog over MinIO
-    image: apache/iceberg-rest-fixture:latest
-    environment:
-      AWS_ACCESS_KEY_ID: lakehouse
-      AWS_SECRET_ACCESS_KEY: change-me
-      AWS_REGION: us-east-1
-      CATALOG_WAREHOUSE: s3://warehouse/
-      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
-      CATALOG_S3_ENDPOINT: http://minio:9000
-    ports: ["8181:8181"]
-    depends_on: [minio]
-
-  trino:                                   # ad-hoc SQL over the Iceberg catalog
-    image: trinodb/trino:latest
-    volumes:
-      - ./trino/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties:ro
-    ports: ["8080:8080"]
-    depends_on: [iceberg-rest]
-
-  spark:                                   # batch transforms / Sedona later
-    image: apache/spark:latest
-    environment:
-      SPARK_NO_DAEMONIZE: "true"
-    depends_on: [iceberg-rest]
-```
-
-Loaders would map the §1.3 CSV contract (or Debezium payloads) onto Iceberg
-tables named exactly like the Postgres marts, so queries written against
-today's star schema keep working.
