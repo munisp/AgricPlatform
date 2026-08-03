@@ -162,7 +162,8 @@ describe('previewPremiumKobo (client rate-card mirror)', () => {
     expect(previewPremiumKobo(1_000_000, 800, 'none')).toBe(80_000);
     expect(previewPremiumKobo(1_000_000, 800, 'high')).toBe(100_000);
     expect(previewPremiumKobo(1_000_000, 800, 'severe')).toBe(120_000);
-    expect(previewPremiumKobo(100_000, 600, 'moderate')).toBe(68);
+    expect(previewPremiumKobo(100_000, 600, 'moderate')).toBe(6_750);
+    expect(previewPremiumKobo(1_250, 800, 'moderate')).toBe(113);
   });
 });
 

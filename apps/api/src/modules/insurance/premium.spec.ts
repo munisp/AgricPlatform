@@ -51,13 +51,13 @@ describe('parametric premium rate card', () => {
   });
 
   it('rounds half away from zero', () => {
-    // 100_000 × 600 × 11_250 / 10^8 = 67.5 → 68
+    // 1_250 × 800 × 11_250 / 10^8 = 112.5 → 113
     const { premiumKobo } = computePremiumKobo({
-      sumInsuredKobo: 100_000,
-      premiumRateBps: 600,
+      sumInsuredKobo: 1_250,
+      premiumRateBps: 800,
       floodBand: 'moderate'
     });
-    expect(premiumKobo).toBe(68);
+    expect(premiumKobo).toBe(113);
   });
 
   it('rounds down below the half boundary', () => {
