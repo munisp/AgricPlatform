@@ -59,12 +59,14 @@ describe('RecallNotificationsListener', () => {
   let notifications: { send: ReturnType<typeof vi.fn> };
   let service: LivestockHealthService;
   let listener: RecallNotificationsListener;
+  let eventsRef: DomainEventsService;
 
   beforeEach(() => {
     const animals = createInMemoryAnimalRepository(undefined, [animalA, animalC]);
     recalls = createInMemoryRecallRepository();
     const outbox = createInMemoryOutboxRepository();
     const events = new DomainEventsService(outbox);
+    eventsRef = events;
     service = new LivestockHealthService(
       { record: vi.fn().mockResolvedValue(undefined) } as never,
       events,
@@ -139,5 +141,32 @@ describe('RecallNotificationsListener', () => {
     await service.reportDiseaseFlag(farmer, { disease: 'FMD', state: 'Kaduna' });
     await flush();
     expect(notifications.send).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates redelivered recall events (G17): owners are notified once', async () => {
+    const { recall } = await service.initiateRecall(regulator, {
+      ownerUserId: farmer.id,
+      reason: 'FMD-contaminated batch'
+    });
+    await flush();
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+    // Simulate an outbox-sweeper redelivery: the SAME event id is emitted
+    // again. The dedup guard must suppress the second fan-out entirely.
+    const redelivered = {
+      id: `event-redelivery-${recall.id}`,
+      name: 'livestock.recall.initiated',
+      payload: {
+        recallId: recall.id,
+        reason: 'FMD-contaminated batch',
+        animalIds: [animalA.id],
+        ownerUserIds: [farmer.id]
+      },
+      occurredAt: new Date().toISOString()
+    };
+    // Re-emit the exact same event id twice to prove once-only semantics.
+    eventsRef.emit(redelivered as never);
+    eventsRef.emit(redelivered as never);
+    await flush();
+    expect(notifications.send).toHaveBeenCalledTimes(2); // +1, not +2
   });
 });

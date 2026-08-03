@@ -1,6 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { LivestockHealthService } from './livestock-health.service.js';
 
@@ -19,7 +21,15 @@ export class RecallNotificationsListener implements OnModuleInit {
   constructor(
     private readonly events: DomainEventsService,
     private readonly notifications: NotificationsService,
-    private readonly health: LivestockHealthService
+    private readonly health: LivestockHealthService,
+    // @Optional: unit specs construct the listener directly; Nest injects the
+    // shared EventDedupService (events.processed_events) at runtime so
+    // outbox-sweeper redeliveries of livestock.recall.initiated do not
+    // re-notify owners (G17, same wiring as webhook-dispatch).
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   onModuleInit(): void {
@@ -31,6 +41,11 @@ export class RecallNotificationsListener implements OnModuleInit {
   }
 
   private async handleRecallInitiated(event: DomainEvent): Promise<void> {
+    // Consumer-side dedup: a redelivered event (outbox sweep / replay) must
+    // not re-notify owners or re-flip the recall lifecycle.
+    if (!(await this.dedup.once('livestock-recall-notifications', event.id))) {
+      return;
+    }
     const payload = event.payload as {
       recallId: string;
       reason: string;
