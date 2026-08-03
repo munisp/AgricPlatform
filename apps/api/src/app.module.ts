@@ -60,6 +60,7 @@ import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js
 import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
+import { VoiceModule } from './modules/voice/voice.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
@@ -139,7 +140,9 @@ import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js
     // Wave CREDIT microfinance suite — appended to minimise merge conflicts.
     CreditModule,
     // Wave FABRIC workflow registrations (loan disbursement port proof) — appended to minimise merge conflicts.
-    WorkflowsModule
+    WorkflowsModule,
+    // Wave VOICE voice agronomist (IVR/USSD RAG advisory + agent escalation) — appended to minimise merge conflicts.
+    VoiceModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

@@ -304,6 +304,22 @@ import {
 import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
 import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
+// Wave VOICE: voice agronomist persistence (additive).
+import {
+  AGENT_CASE_REPOSITORY,
+  VOICE_SESSION_REPOSITORY,
+  VOICE_TURN_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentCaseRepository,
+  createInMemoryVoiceSessionRepository,
+  createInMemoryVoiceTurnRepository
+} from './repositories/voice.repository.js';
+import {
+  createPgAgentCaseRepository,
+  createPgVoiceSessionRepository,
+  createPgVoiceTurnRepository
+} from './repositories/voice.pg-repository.js';
 // Wave L1a: ALTP livestock core persistence (additive).
 import {
   ANIMAL_REPOSITORY,
@@ -1416,6 +1432,25 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
             ),
       inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
     },
+    // Wave VOICE: voice agronomist repositories (appended).
+    {
+      provide: VOICE_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceSessionRepository(pool) : createInMemoryVoiceSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOICE_TURN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceTurnRepository(pool) : createInMemoryVoiceTurnRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
+      inject: [PG_POOL]
+    },
     // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
     {
       provide: GEO_CREDIT_SHADOW_REPOSITORY,
@@ -1560,6 +1595,9 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
     CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+    VOICE_SESSION_REPOSITORY,
+    VOICE_TURN_REPOSITORY,
+    AGENT_CASE_REPOSITORY,
     GEO_CREDIT_SHADOW_REPOSITORY
   ]
 })
