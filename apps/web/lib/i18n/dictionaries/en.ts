@@ -235,7 +235,17 @@ export const en = {
     panelLabel: 'Unread notifications',
     empty: 'No new alerts.',
     live: 'Live updates on',
-    polling: 'Checking every 30 seconds'
+    polling: 'Checking every 30 seconds',
+    offlineCache: 'Offline — showing your last synced alerts'
+  },
+  sync: {
+    synced: 'Synced',
+    notSyncedYet: 'Not synced yet',
+    syncing: 'Syncing…',
+    failed: 'Sync failed — will retry',
+    pending: 'Pending {count}',
+    conflictsResolved: 'Conflicts resolved {count}',
+    syncNow: 'Sync now'
   },
   adminStatus: {
     title: 'Module status',
