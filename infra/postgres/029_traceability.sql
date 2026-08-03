@@ -8,9 +8,9 @@
 -- platform intentionally avoids (portable plain-SQL migrations, no hidden
 -- server-side behaviour — see docs/sync-protocol.md and prior waves). The
 -- integrity mechanism is therefore app-level append-only + the sha256 hash
--- chain over canonical event JSON: any tampering with a stored event breaks
--- recomputation and every descendant link, which GET
--- /traceability/.../dds/verify surfaces per event. All statements are
+-- chain over canonical event JSON: editing a stored event breaks its
+-- recomputed hash, and re-forging the hash breaks every descendant link —
+-- either way GET /traceability/.../dds/verify surfaces it per event. All statements are
 -- idempotent (IF NOT EXISTS) so the migration is safe to re-apply.
 
 BEGIN;

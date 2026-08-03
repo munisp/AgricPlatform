@@ -552,6 +552,25 @@ import {
   createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
 } from './repositories/credit-suite.pg-repository.js';
+// Wave EUDR: traceability passport persistence (additive).
+import {
+  COMMODITY_LOT_REPOSITORY,
+  CUSTODY_EVENT_REPOSITORY,
+  LOT_PLOT_LINK_REPOSITORY,
+  TRACEABILITY_SHIPMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCommodityLotRepository,
+  createInMemoryCustodyEventRepository,
+  createInMemoryLotPlotLinkRepository,
+  createInMemoryTraceabilityShipmentRepository
+} from './repositories/traceability.repository.js';
+import {
+  createPgCommodityLotRepository,
+  createPgCustodyEventRepository,
+  createPgLotPlotLinkRepository,
+  createPgTraceabilityShipmentRepository
+} from './repositories/traceability.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg

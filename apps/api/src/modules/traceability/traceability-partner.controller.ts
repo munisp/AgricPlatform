@@ -20,6 +20,7 @@ class PartnerCreateShipmentDto {
 }
 
 interface PartnerScopedRequest {
+  headers: Record<string, string | string[] | undefined>;
   partner?: PartnerRequestIdentity;
 }
 

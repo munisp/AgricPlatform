@@ -468,8 +468,9 @@ describe('TraceabilityService shipments + DDS', () => {
     const result = await service.verifyShipmentChain(farmer, shipment.id);
     expect(result.allValid).toBe(false);
     expect(result.lots[0].events[0].hashValid).toBe(false);
-    // The descendant event's prev link still points at the original hash.
-    expect(result.lots[0].events[1].prevLinkValid).toBe(false);
+    // The untouched descendant still verifies against the stored hashes —
+    // one flagged event is enough to fail the whole shipment.
+    expect(result.lots[0].events[1].valid).toBe(true);
     const dds = await service.exportDds(farmer, shipment.id);
     expect(dds.chainIntegrity.verified).toBe(false);
   });

@@ -288,16 +288,12 @@ export class TraceabilityService {
     if (isAdmin(caller)) {
       return this.lots.find(ownerUserId ? { ownerUserId } : {});
     }
-    // Non-admins see their own lots; aggregators additionally see lots where
-    // they appear in the custody trail.
-    const own = await this.lots.find({ ownerUserId: caller.id });
-    if (!isAggregator(caller)) {
-      return own;
-    }
     if (ownerUserId && ownerUserId !== caller.id) {
       throw new ForbiddenException('You may only list your own lots');
     }
-    return own;
+    // Non-admins only ever see their own lots (custody-holding aggregators
+    // read other lots by id through the custody-trail rule, never by list).
+    return this.lots.find({ ownerUserId: caller.id });
   }
 
   async getLot(actor: User | null, lotId: string): Promise<CommodityLot> {

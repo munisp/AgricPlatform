@@ -88,10 +88,10 @@ export function LotForm({ onCreated }: { onCreated: (lot: CommodityLot) => void 
           {error}
         </p>
       ) : null}
-      <Field label={t('traceability.cropLabel')} htmlFor="lot-crop">
+      <Field id="lot-crop" label={t('traceability.cropLabel')}>
         <TextInput id="lot-crop" value={crop} onChange={(e) => setCrop(e.target.value)} required />
       </Field>
-      <Field label={t('traceability.quantityLabel')} htmlFor="lot-quantity">
+      <Field id="lot-quantity" label={t('traceability.quantityLabel')}>
         <TextInput
           id="lot-quantity"
           type="number"
@@ -102,13 +102,13 @@ export function LotForm({ onCreated }: { onCreated: (lot: CommodityLot) => void 
           required
         />
       </Field>
-      <Field label={t('traceability.unitLabel')} htmlFor="lot-unit">
+      <Field id="lot-unit" label={t('traceability.unitLabel')}>
         <TextInput id="lot-unit" value={unit} onChange={(e) => setUnit(e.target.value)} required />
       </Field>
-      <Field label={t('traceability.harvestStartLabel')} htmlFor="lot-start">
+      <Field id="lot-start" label={t('traceability.harvestStartLabel')}>
         <TextInput id="lot-start" type="date" value={start} onChange={(e) => setStart(e.target.value)} required />
       </Field>
-      <Field label={t('traceability.harvestEndLabel')} htmlFor="lot-end">
+      <Field id="lot-end" label={t('traceability.harvestEndLabel')}>
         <TextInput id="lot-end" type="date" value={end} onChange={(e) => setEnd(e.target.value)} required />
       </Field>
       <button className="btn btn-primary" type="submit" disabled={pending}>
@@ -207,7 +207,7 @@ export function CustodyTimeline({ lotId }: { lotId: string }) {
         {t('traceability.verifyChain')}
       </button>
       <form aria-label={t('traceability.recordEvent')} onSubmit={recordEvent}>
-        <Field label={t('traceability.eventTypeLabel')} htmlFor={`event-type-${lotId}`}>
+        <Field id={`event-type-${lotId}`} label={t('traceability.eventTypeLabel')}>
           <Select
             id={`event-type-${lotId}`}
             value={eventType}
@@ -220,7 +220,7 @@ export function CustodyTimeline({ lotId }: { lotId: string }) {
             ))}
           </Select>
         </Field>
-        <Field label={t('traceability.noteLabel')} htmlFor={`event-note-${lotId}`}>
+        <Field id={`event-note-${lotId}`} label={t('traceability.noteLabel')}>
           <TextInput
             id={`event-note-${lotId}`}
             value={note}

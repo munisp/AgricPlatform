@@ -21,6 +21,7 @@ function makeController() {
 }
 
 const request = (clientId: string) => ({
+  headers: {},
   partner: { clientId, scopes: ['traceability:read', 'traceability:write'], sandbox: false }
 });
 

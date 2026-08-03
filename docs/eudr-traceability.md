@@ -87,6 +87,9 @@ sha256:    78ed49017f82cc6cd21d12dc0aa22d477a1a5f79bf4425615851ee316235fb2f
 Verification (`GET /traceability/shipments/:id/dds/verify`, or the per-lot
 timeline) recomputes every hash and prev link and returns per-event validity:
 `hashValid` (payload untouched) and `prevLinkValid` (chain intact, no gap).
+Editing an event without touching its hash breaks `hashValid`; re-forging the
+hash to match breaks the descendants' `prevLinkValid`. Either way the chain
+verdict (`valid`, `allValid`, `chainIntegrity.verified`) goes false.
 
 ## DDS field mapping → EUDR Annex II information requirements
 

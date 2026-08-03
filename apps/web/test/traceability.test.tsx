@@ -212,8 +212,9 @@ describe('TraceabilityHub (wave-eudr)', () => {
     renderWithProviders(<TraceabilityHub />);
     await waitFor(() => expect(screen.getByText('Cocoa')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Custody timeline' }));
-    await waitFor(() => expect(screen.getByText('CREATED')).toBeTruthy());
-    expect(screen.getByText('SHIPPED')).toBeTruthy();
+    // 'CREATED'/'SHIPPED' also appear as <option>s in the event-type select.
+    await waitFor(() => expect(screen.getAllByText('CREATED').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('SHIPPED').length).toBeGreaterThan(0);
     expect(screen.getAllByText('✓')).toHaveLength(2);
     expect(screen.getByText('aaaaaaaaaaaa…')).toBeTruthy();
     expect(screen.getByText(/Chain verified/)).toBeTruthy();
@@ -232,7 +233,7 @@ describe('TraceabilityHub (wave-eudr)', () => {
     renderWithProviders(<TraceabilityHub />);
     await waitFor(() => expect(screen.getByText('Cocoa')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Custody timeline' }));
-    await waitFor(() => expect(screen.getByText('CREATED')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('CREATED').length).toBeGreaterThan(0));
     fireEvent.change(screen.getByLabelText(/Note/), { target: { value: 'bagged' } });
     fireEvent.click(screen.getByRole('button', { name: 'Record event' }));
     await waitFor(() => expect(screen.getByText(/bagged/)).toBeTruthy());

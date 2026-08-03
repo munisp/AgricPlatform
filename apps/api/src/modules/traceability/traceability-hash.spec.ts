@@ -94,8 +94,11 @@ describe('computeEventHash (known-answer)', () => {
       occurredAt: '2026-01-01T00:00:00.000Z',
       latitude: 11.0855,
       longitude: 7.7199,
+      quantity: 100,
+      unit: 'kg',
       parentLotIds: [],
       prevEventHash: GENESIS_PREV_HASH
+      // h3Cell and note absent → hashed as explicit null, matching the vector
     });
     expect(computeEventHash(withUndef)).toBe(VECTOR_HASH);
   });
@@ -165,14 +168,20 @@ describe('verifyLotChain', () => {
     expect(result.events[0].prevLinkValid).toBe(false);
   });
 
-  it('detects a rewritten descendant after the first event is tampered', () => {
+  it('detects a rewritten head even when the attacker recomputes its hash', () => {
     const first = makeEvent();
     const second = makeEvent({ id: 'evt-2', seq: 1, type: 'SHIPPED', prevEventHash: first.eventHash });
-    const tamperedFirst: CustodyEvent = { ...first, note: 'rewritten history' };
-    // second still points at the ORIGINAL first hash — both events must fail.
+    // Attacker edits the note AND recomputes the event hash: the tampered
+    // event is self-consistent, but the descendant's prev link still points
+    // at the original head — the chain catches it.
+    const tamperedPayload = { ...first, note: 'rewritten history' };
+    const tamperedFirst: CustodyEvent = {
+      ...tamperedPayload,
+      eventHash: computeEventHash(hashPayloadOf(tamperedPayload))
+    };
     const result = verifyLotChain('lot-1', [tamperedFirst, second]);
     expect(result.valid).toBe(false);
-    expect(result.events[0].hashValid).toBe(false);
+    expect(result.events[0].hashValid).toBe(true); // forged but self-consistent
     expect(result.events[1].prevLinkValid).toBe(false);
   });
 
