@@ -23,6 +23,7 @@ export function Footer() {
             <T k="footer.platform" />
           </div>
           <ul className="footer-links">
+            <li><Link href="/products"><T k="nav.products" /></Link></li>
             <li><Link href="/dashboard"><T k="footer.dashboard" /></Link></li>
             <li><Link href="/learning"><T k="footer.learningAcademy" /></Link></li>
             <li><Link href="/opportunities"><T k="footer.opportunities" /></Link></li>

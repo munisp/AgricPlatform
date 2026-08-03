@@ -24,7 +24,9 @@ export function PageHeader({
   return (
     <header className="page-header">
       <span className="kicker">{kicker}</span>
-      <h1>{title}</h1>
+      {/* tabIndex -1 makes the heading a programmatic focus target (route
+          changes / skip flows) without adding it to the tab order. */}
+      <h1 tabIndex={-1}>{title}</h1>
       {description ? <p className="muted">{description}</p> : null}
       {children}
     </header>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { USER_ROLES } from '@agric-platform/shared';
@@ -8,25 +9,9 @@ import { useAppState } from '@/lib/app-state';
 import { useT } from '@/lib/i18n';
 import type { TranslationKey } from '@/lib/i18n';
 import { ROLE_LABELS } from '@/lib/content';
+import { PRIMARY_LINKS, MORE_LINKS } from '@/lib/products';
 import { LocaleSwitcher } from '@/components/locale-switcher';
 import { NotificationBell } from '@/components/notification-bell';
-
-const TOP_LINKS: { href: string; labelKey: TranslationKey }[] = [
-  { href: '/dashboard', labelKey: 'nav.dashboard' },
-  { href: '/learning', labelKey: 'nav.learning' },
-  { href: '/community', labelKey: 'nav.community' },
-  { href: '/opportunities', labelKey: 'nav.opportunities' },
-  { href: '/chapters', labelKey: 'nav.chapters' },
-  { href: '/marketplace', labelKey: 'nav.marketplace' },
-  { href: '/livestock', labelKey: 'nav.livestock' },
-  { href: '/farms', labelKey: 'nav.farms' },
-  { href: '/agents', labelKey: 'nav.agents' },
-  { href: '/finance', labelKey: 'nav.finance' },
-  { href: '/credit', labelKey: 'nav.credit' },
-  { href: '/advisory', labelKey: 'nav.advisory' },
-  { href: '/partner', labelKey: 'nav.partner' },
-  { href: '/admin', labelKey: 'nav.admin' }
-];
 
 const TAB_LINKS: { href: string; labelKey: TranslationKey }[] = [
   { href: '/', labelKey: 'nav.tabHome' },
@@ -39,6 +24,90 @@ const TAB_LINKS: { href: string; labelKey: TranslationKey }[] = [
 function isActive(pathname: string, href: string): boolean {
   if (href === '/') return pathname === '/';
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/**
+ * Overflow ("More") menu for destinations that no longer fit the primary
+ * row. Keyboard contract: button toggles, Escape closes and returns focus
+ * to the button, tabbing out of the last link closes the menu.
+ */
+function OverflowMenu({ pathname }: { pathname: string }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on route change.
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    }
+    function onPointerDown(event: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="nav-overflow" ref={rootRef}>
+      <button
+        type="button"
+        className="nav-more"
+        ref={buttonRef}
+        aria-expanded={open}
+        aria-controls="nav-more-menu"
+        aria-haspopup="true"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {t('nav.more')}
+      </button>
+      {open ? (
+        <div
+          className="nav-menu"
+          id="nav-more-menu"
+          role="menu"
+          aria-label={t('nav.moreMenuLabel')}
+          onBlur={(event) => {
+            if (!rootRef.current?.contains(event.relatedTarget as Node)) setOpen(false);
+          }}
+        >
+          {MORE_LINKS.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              role="menuitem"
+              aria-current={isActive(pathname, link.href) ? 'page' : undefined}
+            >
+              {t(link.labelKey)}
+            </Link>
+          ))}
+          <Link
+            href="/products"
+            role="menuitem"
+            className="nav-menu-hub"
+            aria-current={isActive(pathname, '/products') ? 'page' : undefined}
+          >
+            {t('nav.products')}
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function Nav() {
@@ -55,7 +124,7 @@ export function Nav() {
             AgricPlatform
           </Link>
           <nav className="nav-links" aria-label={t('nav.primaryNav')}>
-            {TOP_LINKS.map((link) => (
+            {PRIMARY_LINKS.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
@@ -64,6 +133,14 @@ export function Nav() {
                 {t(link.labelKey)}
               </Link>
             ))}
+            <Link
+              href="/products"
+              className="nav-products"
+              aria-current={isActive(pathname, '/products') ? 'page' : undefined}
+            >
+              {t('nav.products')}
+            </Link>
+            <OverflowMenu pathname={pathname} />
           </nav>
           <div className="nav-actions">
             {/* Wave P: live notification bell (SSE with polling fallback). */}

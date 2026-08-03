@@ -8,6 +8,8 @@ import { fetchDashboard } from '@/lib/api/endpoints';
 import type { DashboardWidget } from '@/lib/api/endpoints';
 import { usePersistentState } from '@/lib/use-persistent-state';
 import { MODULES, ROLE_LABELS, ROLE_SUMMARIES } from '@/lib/content';
+import { QUICK_ACTIONS } from '@/lib/products';
+import { useT } from '@/lib/i18n';
 import { calculateProfileCompletion, profileBadge } from '@agric-platform/shared';
 import { ModuleCard, ProgressBar, StatusBadge } from '@/components/ui';
 import { OfflineDataNotice } from '@/components/api-state';
@@ -80,6 +82,7 @@ function DashboardWidgetCard({ widget }: { widget: DashboardWidget }) {
 export function RoleDashboard() {
   const { role, hydrated, userId } = useAppState();
   const { displayName } = useSession();
+  const { t } = useT();
   const [profile] = usePersistentState<OnboardingDraft>('agric.onboarding-draft', {});
 
   const dashboardQuery = useApiQuery(
@@ -98,6 +101,7 @@ export function RoleDashboard() {
   });
 
   const modules = MODULES.filter((mod) => mod.roles.includes(role));
+  const quickActions = QUICK_ACTIONS[role] ?? QUICK_ACTIONS.farmer;
   const firstName = displayName?.trim().split(' ')[0] || profile.fullName?.trim().split(' ')[0];
   const liveWidgets = dashboardQuery.source === 'api' ? (dashboardQuery.data?.widgets ?? []) : [];
 
@@ -130,6 +134,18 @@ export function RoleDashboard() {
             readiness.
           </p>
         ) : null}
+        {/* Role-aware quick actions (Wave UIUX): the 2–3 most frequent
+            destinations for the active role, as large touch targets. */}
+        <nav className="quick-actions" aria-label={t('dashboard.quickActionsTitle')}>
+          <span className="kicker" style={{ width: '100%' }}>
+            {t('dashboard.quickActionsTitle')}
+          </span>
+          {quickActions.map((action) => (
+            <Link key={action.href} href={action.href} className="chip">
+              {t(action.labelKey)}
+            </Link>
+          ))}
+        </nav>
       </div>
 
       {liveWidgets.length > 0 ? (
