@@ -107,6 +107,7 @@ import type {
   TrendingQuery,
   User,
   UserRole,
+  VaccinationDueItem,
   VaultDocument,
   Webinar,
   WebinarRegistration,
@@ -1486,6 +1487,18 @@ export function listAnimalHealthRecords(
   return apiFetch(`/livestock-health/animals/${encodeURIComponent(animalId)}/records`);
 }
 
+/**
+ * Computed due-vaccination schedule (wave MOB). Farmers see their own
+ * animals; admin/vet/regulator see all or filter by ownerUserId. `days` is
+ * the lookahead window separating 'due' from 'upcoming' (default 30).
+ * Plain `{ data: T[] }` envelope.
+ */
+export function listDueVaccinations(
+  params: { days?: number; ownerUserId?: string } = {}
+): Promise<{ data: VaccinationDueItem[] }> {
+  return apiFetch('/livestock-health/vaccinations/due', { query: { ...params } });
+}
+
 export interface StartMovementInput {
   animalId?: string;
   lotId?: string;
@@ -2425,6 +2438,59 @@ export function fetchAnalyticsSummary(): Promise<{ data: AnalyticsSummary }> {
  */
 export function runProjection(): Promise<{ data: ProjectionRun }> {
   return apiFetch('/analytics/project', { method: 'POST' });
+}
+
+/* ------------- Wave lakehouse-export: marts → object storage ------------- */
+
+/** One exported parquet part-file (as listed in the run manifest). */
+export interface LakehousePartFile {
+  key: string;
+  bytes: number;
+  sha256: string;
+}
+
+/** Per-table export summary inside the run manifest. */
+export interface LakehouseTableExport {
+  table: string;
+  rows: number;
+  files: LakehousePartFile[];
+}
+
+/**
+ * _manifest.json of one lakehouse export run — the real contract written to
+ * object storage by POST /analytics/export.
+ */
+export interface LakehouseManifest {
+  runId: string;
+  runDate: string;
+  bucket: string;
+  prefix: string;
+  format: 'parquet';
+  startedAt: string;
+  finishedAt: string;
+  tables: LakehouseTableExport[];
+  totalRows: number;
+  totalBytes: number;
+}
+
+/** GET /analytics/export/last response payload. */
+export interface LakehouseExportStatus {
+  enabled: boolean;
+  /** Present when enabled=false: why the exporter is off. */
+  reason?: string;
+  bucket?: string;
+  prefix: string;
+  manifest: LakehouseManifest | null;
+}
+
+/** Admin only. Honest disabled state when LAKEHOUSE_ENABLED=false. */
+export function fetchLakehouseExportStatus(): Promise<{ data: LakehouseExportStatus }> {
+  return apiFetch('/analytics/export/last');
+}
+
+/** Admin only. Triggers one export run; 503 when the exporter is disabled. */
+export function runLakehouseExport(): Promise<{ data: LakehouseManifest }> {
+  return apiFetch('/analytics/export', { method: 'POST' });
 }
 
 /* --------------------- compliance (Wave COMP, NDPA 2023) --------------------- */
