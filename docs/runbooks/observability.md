@@ -8,7 +8,7 @@ health/readiness, and the tamper-evident audit trail (implementation plan:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/v1/metrics` | Prometheus scrape endpoint (default metrics + app series). No app auth — restrict at the edge/ingress (`NetworkPolicy`, internal scrape only). |
+| `GET /api/v1/metrics` | Prometheus scrape endpoint (default metrics + app series). Access-controlled in-app (Wave OPS): `Authorization: Bearer $METRICS_TOKEN` scrape credential OR an admin identity (OIDC bearer; `x-user-id` only where dev auth is allowed). Anonymous scrapes are 401 in production, allowed outside production for local Prometheus parity. Defense in depth: still restrict at the edge/ingress (`NetworkPolicy`, internal scrape only). |
 | `GET /api/v1/health` | Overall health banner. |
 | `GET /api/v1/health/live` | Liveness probe. |
 | `GET /api/v1/health/ready` | Readiness: integrations + dependency registry. `degraded` when a **configured** dependency is down; `skipped` (unconfigured) never degrades. |
@@ -29,6 +29,18 @@ Default Node.js/process metrics are collected with the label
 | `agric_payments_total` | `event` | `initiated` (order → `deposit_paid`), `confirmed` (→ `completed`), `webhook_received`, `webhook_duplicate`. |
 | `agric_idempotent_replays_total` | — | Idempotency-key replays served from cache. |
 | `agric_errors_5xx_total` | — | 5xx responses from the exception filter. |
+| `agric_outbox_backlog_records` | `state` | Outbox rows pending vs dead-lettered (scrape-time gauge, Wave OPS). |
+| `agric_outbox_oldest_pending_age_seconds` | — | Age of the oldest unpublished outbox row. |
+| `agric_notifications_queued` | — | Notifications waiting for delivery. |
+| `agric_notification_dlq_depth` | — | Delivery-log entries dead-lettered after retries. |
+| `agric_escrow_locked_amount_kobo` | `status` | Escrow funds still locked (`held`/`disputed`/`releasing`/`refunding`). |
+
+The backlog/escrow gauges are computed at scrape time from the repositories;
+a failing collector logs a warning and leaves the previous reading rather
+than breaking the scrape. Scrape config, SLO alerts and the Grafana
+dashboard live in `infra/observability/` (`prometheus.yml`, `alerts.yml`,
+`grafana/dashboards/platform.json`); alert response steps are in
+[ops.md](ops.md).
 
 ## Logging
 
@@ -102,5 +114,8 @@ PostgreSQL deployments need migration `infra/postgres/002_audit_hash_chain.sql`
 
 ## External verification (not covered in this environment)
 
-- Prometheus scrape + alert rules + Kubernetes `ServiceMonitor` wiring.
+- Prometheus/Alertmanager/Grafana deployment itself (configs are provided
+  in `infra/observability/` but no live Prometheus has scraped this API
+  from this repository).
+- Kubernetes `ServiceMonitor` wiring (if using the prometheus-operator).
 - Sentry delivery with a real DSN; confirm `beforeSend` scrubbing on real events.
