@@ -8,3 +8,4 @@ export * from './livestock-health.js';
 export * from './livestock-trade.js';
 export * from './commerce.js';
 export * from './farms.js';
+export * from './credit.js';

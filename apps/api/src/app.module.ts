@@ -56,6 +56,8 @@ import { SyncModule } from './modules/sync/sync.module.js';
 import { FarmsModule } from './modules/farms/farms.module.js';
 // Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
 import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
+// Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
+import { CreditModule } from './modules/credit/credit.module.js';
 
 @Module({
   imports: [
@@ -124,7 +126,9 @@ import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js
     // Wave FARMS farms & crop-production — appended to minimise merge conflicts.
     FarmsModule,
     // Wave AGENTS field-agent (enumerator) capability — appended to minimise merge conflicts.
-    FieldAgentsModule
+    FieldAgentsModule,
+    // Wave CREDIT microfinance suite — appended to minimise merge conflicts.
+    CreditModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
