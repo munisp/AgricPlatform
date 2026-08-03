@@ -10,7 +10,18 @@
  * parquet REPEATED UTF8 fields.
  */
 import { Writable } from 'node:stream';
-import { ParquetSchema, ParquetWriter, type ParquetFieldDef } from 'parquetjs-lite';
+import { createRequire } from 'node:module';
+import type {
+  ParquetFieldDef,
+  ParquetSchema as ParquetSchemaType
+} from 'parquetjs-lite';
+
+// parquetjs-lite is CommonJS whose named exports are not statically analyzable
+// by cjs-module-lexer, so `import { ParquetSchema } from 'parquetjs-lite'`
+// crashes under real Node ESM (vitest's interop hides this). Load the values
+// through createRequire and keep the type surface from the declarations.
+const require = createRequire(import.meta.url);
+const { ParquetSchema, ParquetWriter } = require('parquetjs-lite') as typeof import('parquetjs-lite');
 import type {
   DailyMetricRow,
   DimListingRow,
@@ -38,7 +49,7 @@ const int64: ParquetFieldDef = { type: 'INT64' };
 const bool: ParquetFieldDef = { type: 'BOOLEAN' };
 const utf8List: ParquetFieldDef = { type: 'UTF8', repeated: true };
 
-const SCHEMAS: Record<LakehouseTable, ParquetSchema> = {
+const SCHEMAS: Record<LakehouseTable, ParquetSchemaType> = {
   dim_users: new ParquetSchema({
     user_id: utf8,
     roles: utf8List,
