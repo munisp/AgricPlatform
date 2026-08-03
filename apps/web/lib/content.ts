@@ -1294,3 +1294,22 @@ export const demoFarmSummary: FarmSummary = {
   harvestByCrop: [{ crop: 'Maize', totalQuantity: 42, harvestCount: 1 }],
   totalExpensesKobo: 1_070_000
 };
+
+/* ========================================================================
+ * Geospatial pack (Wave GEO) demo data — offline/fallback snapshot.
+ * Cells are the real res-5 H3 indexes of the demo farm plots above
+ * (h3-js 4.5.0): Zaria North (11.0855, 7.7199) → 85581b97fffffff,
+ * Samaru (11.1701, 7.6275) → 8558182ffffffff.
+ * ====================================================================== */
+
+import type { GeoClustersResult } from '@agric-platform/shared';
+
+export const demoGeoClusters: GeoClustersResult = {
+  entity: 'farm_plot',
+  resolution: 5,
+  cells: [
+    { cell: '85581b97fffffff', count: 3 },
+    { cell: '8558182ffffffff', count: 1 }
+  ],
+  total: 4
+};

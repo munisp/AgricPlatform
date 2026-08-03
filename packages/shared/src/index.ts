@@ -8,3 +8,5 @@ export * from './livestock-health.js';
 export * from './livestock-trade.js';
 export * from './commerce.js';
 export * from './farms.js';
+// Wave GEO (additive): geospatial pack — H3 indexing + boundaries.
+export * from './geo.js';

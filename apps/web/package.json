@@ -18,6 +18,7 @@
   "dependencies": {
     "@agric-platform/shared": "0.1.0",
     "dexie": "^4.4.4",
+    "h3-js": "^4.5.0",
     "jsqr": "^1.4.0",
     "next": "16.2.12",
     "qrcode": "^1.5.4",

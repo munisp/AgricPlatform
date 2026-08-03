@@ -452,6 +452,24 @@ export const en = {
     captureDone: 'Profile saved. Consent {consentId} recorded.',
     offlineNotice: 'Live data unavailable — showing saved reference data.'
   },
+  // Wave GEO (additive): geospatial pack — admin cluster map.
+  geo: {
+    kicker: 'Geospatial',
+    title: 'Farm cluster map',
+    description:
+      'Farm plots grouped into H3 grid cells. Darker cells hold more farms.',
+    mapKicker: 'Clusters',
+    mapTitle: 'Farms per grid cell',
+    resolution: 'Grid size (H3 resolution)',
+    reindex: 'Rebuild the index',
+    reindexing: 'Rebuilding…',
+    reindexDone: 'Index rebuilt. {indexed} records updated.',
+    totalLabel: '{total} farms indexed',
+    cellCount: '{count} farms',
+    empty: 'No farms indexed yet — rebuild the index above.',
+    legend: 'Darker means more farms',
+    offlineNotice: 'Live data unavailable — showing saved reference data.'
+  },
   // Wave ML (union-append): flood-risk card (optional flood-ml sidecar).
   floodRisk: {
     kicker: 'Flood risk',

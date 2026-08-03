@@ -35,6 +35,13 @@ export default function AdminPage() {
             description="Channel drivers, external account links, farm-record sync and beneficiary imports."
             tag="Federation"
           />
+          {/* Wave GEO (additive): geospatial cluster map. */}
+          <ModuleCard
+            href="/admin/geo"
+            title="Farm cluster map"
+            description="H3-indexed farm plots clustered per grid cell, with index rebuild controls."
+            tag="Geospatial"
+          />
         </div>
       </Section>
 

@@ -505,6 +505,19 @@ import {
   createPgAgentActivityLogRepository,
   createPgAgentAssignmentRepository
 } from './repositories/field-agents.pg-repository.js';
+// Wave GEO: geospatial pack persistence (additive).
+import {
+  GEO_BOUNDARY_REPOSITORY,
+  H3_INDEX_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryGeoBoundaryRepository,
+  createInMemoryH3IndexRepository
+} from './repositories/geo.repository.js';
+import {
+  createPgGeoBoundaryRepository,
+  createPgH3IndexRepository
+} from './repositories/geo.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1289,6 +1302,19 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAgentActivityLogRepository(pool) : createInMemoryAgentActivityLogRepository(),
       inject: [PG_POOL]
+    },
+    // Wave GEO: geospatial pack providers (additive).
+    {
+      provide: H3_INDEX_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgH3IndexRepository(pool) : createInMemoryH3IndexRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: GEO_BOUNDARY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGeoBoundaryRepository(pool) : createInMemoryGeoBoundaryRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1415,7 +1441,9 @@ import {
     HARVEST_RECORD_REPOSITORY,
     FARM_EXPENSE_REPOSITORY,
     AGENT_ASSIGNMENT_REPOSITORY,
-    AGENT_ACTIVITY_LOG_REPOSITORY
+    AGENT_ACTIVITY_LOG_REPOSITORY,
+    H3_INDEX_REPOSITORY,
+    GEO_BOUNDARY_REPOSITORY
   ]
 })
 export class DatabaseModule {}
