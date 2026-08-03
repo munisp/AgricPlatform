@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { NotificationChannel, NotificationMessage, NotificationPreference } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import {
@@ -14,6 +14,8 @@ import type { NotificationPreferenceRepository } from '../../database/repositori
 import type { NotificationRepository } from '../../database/repositories/notification.repository.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { IntegrationsService } from '../integrations/integrations.service.js';
+import { SYNC_ENTITY_NOTIFICATION } from '../sync/sync-proof-entities.js';
+import type { SyncVersioningService } from '../sync/sync-versioning.service.js';
 import { DELIVERY_RETRY_BASE_MS } from './delivery-retry.service.js';
 
 export type { DeliveryLogEntry };
@@ -33,7 +35,10 @@ export class NotificationsService {
     @Inject(NOTIFICATION_REPOSITORY) private readonly messages: NotificationRepository,
     @Inject(NOTIFICATION_PREFERENCE_REPOSITORY)
     private readonly preferences: NotificationPreferenceRepository,
-    @Inject(DELIVERY_LOG_REPOSITORY) private readonly deliveryLog: DeliveryLogRepository
+    @Inject(DELIVERY_LOG_REPOSITORY) private readonly deliveryLog: DeliveryLogRepository,
+    // Wave SYNCSRV: sync version bumps on message writes (optional so bare
+    // service constructions in tests keep working; additive + non-fatal).
+    @Optional() private readonly syncVersioning?: SyncVersioningService
   ) {}
 
   async list(filter: {
@@ -75,7 +80,7 @@ export class NotificationsService {
     // Delivery log + status flip commit as one unit. Failures schedule the
     // first retry (Wave P backoff); the sweeper picks them up when due.
     const at = new Date();
-    return this.messages.recordDelivery(
+    const recorded = await this.messages.recordDelivery(
       message.id,
       result.delivered ? 'sent' : 'failed',
       {
@@ -88,6 +93,13 @@ export class NotificationsService {
           : { nextRetryAt: new Date(at.getTime() + DELIVERY_RETRY_BASE_MS).toISOString() })
       }
     );
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_NOTIFICATION,
+      entityId: recorded.id,
+      ownerId: recorded.userId,
+      actorId: input.userId
+    });
+    return recorded;
   }
 
   /** Single message (used for ownership checks before state changes). */
@@ -96,7 +108,14 @@ export class NotificationsService {
   }
 
   async markRead(id: string): Promise<NotificationMessage> {
-    return this.messages.update(id, { status: 'read' });
+    const updated = await this.messages.update(id, { status: 'read' });
+    await this.syncVersioning?.recordChange({
+      entity: SYNC_ENTITY_NOTIFICATION,
+      entityId: updated.id,
+      ownerId: updated.userId,
+      actorId: updated.userId
+    });
+    return updated;
   }
 
   async preferencesFor(userId: string): Promise<NotificationPreference[]> {
