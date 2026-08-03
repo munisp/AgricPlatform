@@ -1,5 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException
+} from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { AUTH_SESSION_REPOSITORY } from '../../database/persistence.tokens.js';
 import type {
@@ -10,6 +16,13 @@ import { UsersService } from '../users/users.service.js';
 
 /** Refresh-token lifetime: 30 days (env-overridable for tests/ops). */
 export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Absolute session-family lifetime in days (SESSION_FAMILY_MAX_AGE_DAYS):
+ * even a diligently rotated family must re-authenticate once its oldest
+ * session passes this cap, so a stolen token cannot live forever.
+ */
+export const SESSION_FAMILY_MAX_AGE_DAYS = 90;
 
 export interface SessionClientMeta {
   userAgent?: string;
@@ -73,12 +86,66 @@ export class SessionService {
       await this.sessions.save({ ...session, revokedAt: new Date().toISOString() });
       throw new UnauthorizedException('Refresh token expired');
     }
-    // Rotate: revoke the presented generation, mint the next one.
+    // Suspended accounts must not extend their sessions: reject and kill the
+    // family so no generation minted before the suspension stays usable.
+    if ((await this.users.statusFor(session.userId)) === 'suspended') {
+      await this.sessions.revokeFamily(session.familyId, new Date().toISOString());
+      throw new UnauthorizedException('Account is suspended; the session family has been revoked.');
+    }
+    // Absolute family cap: rotation cannot extend a family past its maximum
+    // age (measured from the family's oldest session).
+    if (await this.familyExpired(session)) {
+      await this.sessions.revokeFamily(session.familyId, new Date().toISOString());
+      throw new UnauthorizedException(
+        'Session family has reached its maximum lifetime; sign in again.'
+      );
+    }
+    // Rotate with a guarded check-and-set (revoked_at IS NULL): two
+    // concurrent refreshes of the same token no longer both mint the next
+    // generation — exactly one wins the CAS, the loser is treated like
+    // token reuse and the whole family is revoked.
     const now = new Date().toISOString();
-    await this.sessions.save({ ...session, revokedAt: now, lastUsedAt: now });
+    try {
+      await this.sessions.updateExpected(
+        session.id,
+        { revokedAt: now, lastUsedAt: now },
+        { revokedAt: undefined }
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const revoked = await this.sessions.revokeFamily(session.familyId, now);
+        this.logger.warn(
+          `Concurrent refresh lost the rotation race (session ${session.id}); ` +
+            `revoked ${revoked} session(s) in family ${session.familyId}`
+        );
+        throw new UnauthorizedException(
+          'Refresh token was already rotated; the session family has been revoked. Sign in again.'
+        );
+      }
+      throw error;
+    }
     const next = await this.mint(session.userId, session.familyId, session.generation + 1, meta);
     const user = await this.users.getById(session.userId);
     return { user, ...next };
+  }
+
+  /** True when the session's family is older than the absolute cap. */
+  private async familyExpired(session: AuthSession): Promise<boolean> {
+    const family = (await this.sessions.listForUser(session.userId)).filter(
+      (member) => member.familyId === session.familyId
+    );
+    const oldest = family.reduce<string>(
+      (min, member) => (member.createdAt < min ? member.createdAt : min),
+      session.createdAt
+    );
+    return new Date(oldest).getTime() + this.familyMaxAgeMs() <= Date.now();
+  }
+
+  private familyMaxAgeMs(): number {
+    const configured = Number(process.env.SESSION_FAMILY_MAX_AGE_DAYS);
+    const days =
+      Number.isFinite(configured) && configured > 0 ? configured : SESSION_FAMILY_MAX_AGE_DAYS;
+    return days * 24 * 60 * 60 * 1000;
   }
 
   /** Idempotent logout: revokes the presented token's session. */

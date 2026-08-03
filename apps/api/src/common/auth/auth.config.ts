@@ -73,6 +73,16 @@ export function assertProductionAuthConfig(env: NodeJS.ProcessEnv = process.env)
         'Refusing to start with header-based identity in production.'
     );
   }
+  if (!config.audience) {
+    // Without an audience, jwtVerify skips the aud check (any client of the
+    // realm is accepted) and role extraction would aggregate client roles
+    // from every entry in resource_access — both unacceptable in production.
+    throw new Error(
+      'FATAL: NODE_ENV=production requires an OIDC audience. Set OIDC_AUDIENCE ' +
+        '(or KEYCLOAK_CLIENT_ID) so bearer tokens are verified against the intended ' +
+        'client and client-role extraction is scoped to it.'
+    );
+  }
   if (env.ALLOW_DEV_HEADER_AUTH === 'true') {
     // Loud but non-fatal: explicit operator opt-in (e.g. break-glass drills).
     console.warn(

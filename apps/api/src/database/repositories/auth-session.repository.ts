@@ -1,3 +1,5 @@
+import { ConflictException, NotFoundException } from '@nestjs/common';
+
 /**
  * Refresh-token auth sessions (identity.auth_sessions). Wave P activates the
  * table: sessions persist opaque refresh tokens (sha256 at rest), device
@@ -25,8 +27,21 @@ export interface AuthSessionRepository {
   findByTokenHash(refreshTokenHash: string): Promise<AuthSession | undefined>;
   /** Persists rotation/revocation state changes for an existing session. */
   save(session: AuthSession): Promise<AuthSession>;
+  /**
+   * Optimistic check-and-set (same contract as AsyncRepository.updateExpected
+   * from the funds-integrity wave): the patch applies only when every
+   * `expected` field still matches; otherwise ConflictException. Used to
+   * serialise concurrent refreshes of the same token — exactly one wins.
+   */
+  updateExpected(
+    id: string,
+    patch: Partial<AuthSession>,
+    expected: Partial<AuthSession>
+  ): Promise<AuthSession>;
   /** Revokes every session in the family; returns the number newly revoked. */
   revokeFamily(familyId: string, revokedAt: string): Promise<number>;
+  /** Revokes every session the user holds (all families); returns the number newly revoked. */
+  revokeAllForUser(userId: string, revokedAt: string): Promise<number>;
   listForUser(userId: string): Promise<AuthSession[]>;
 }
 
@@ -52,10 +67,48 @@ export class InMemoryAuthSessionRepository implements AuthSessionRepository {
     return session;
   }
 
+  /**
+   * Synchronous check-and-set mirroring the guarded pg UPDATE: the body
+   * deliberately contains NO await, so read, precondition check and write
+   * execute in one tick and concurrent rotations serialise exactly like the
+   * SQL guard (see InMemoryRepository.updateExpected, funds-integrity wave).
+   */
+  async updateExpected(
+    id: string,
+    patch: Partial<AuthSession>,
+    expected: Partial<AuthSession>
+  ): Promise<AuthSession> {
+    const current = this.sessions.get(id);
+    if (!current) {
+      throw new NotFoundException(`Auth session '${id}' not found`);
+    }
+    for (const [key, value] of Object.entries(expected)) {
+      if (current[key as keyof AuthSession] !== value) {
+        throw new ConflictException(
+          `Concurrent state change on auth session '${id}' (expected ${key}='${String(value)}'); retry the operation`
+        );
+      }
+    }
+    const next = { ...current, ...patch, id: current.id };
+    this.sessions.set(id, next);
+    return next;
+  }
+
   async revokeFamily(familyId: string, revokedAt: string): Promise<number> {
     let revoked = 0;
     for (const session of this.sessions.values()) {
       if (session.familyId === familyId && !session.revokedAt) {
+        session.revokedAt = revokedAt;
+        revoked += 1;
+      }
+    }
+    return revoked;
+  }
+
+  async revokeAllForUser(userId: string, revokedAt: string): Promise<number> {
+    let revoked = 0;
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && !session.revokedAt) {
         session.revokedAt = revokedAt;
         revoked += 1;
       }

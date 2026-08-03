@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { PlatformMetric, User, UserRole } from '@agric-platform/shared';
 import { platformMetrics } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { OutboxSweeperService, type OutboxSweepResult } from '../../core/outbox-sweeper.service.js';
+import { AUTH_SESSION_REPOSITORY } from '../../database/persistence.tokens.js';
+import type { AuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import type { OutboxRecord } from '../../database/repositories/outbox.repository.js';
 import type { AccountStatus } from '../../database/repositories/user.repository.js';
 import { CommunityService } from '../community/community.service.js';
@@ -38,7 +40,8 @@ export class AdminService {
     private readonly opportunities: OpportunitiesService,
     private readonly learning: LearningService,
     private readonly marketplace: MarketplaceService,
-    private readonly outboxSweeper: OutboxSweeperService
+    private readonly outboxSweeper: OutboxSweeperService,
+    @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository
   ) {}
 
   async listUsers(role?: UserRole): Promise<AdminUserView[]> {
@@ -66,6 +69,9 @@ export class AdminService {
     await this.users.setStatus(userId, status);
     if (status === 'suspended') {
       await this.users.setVerified(userId, false);
+      // A suspension must take effect immediately: revoke every refresh-token
+      // session family so no still-valid token can mint new access.
+      await this.sessions.revokeAllForUser(userId, new Date().toISOString());
     }
     await this.audit.record({
       actorId,
