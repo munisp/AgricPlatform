@@ -9,7 +9,9 @@
     "start": "expo start",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "icons:generate": "node scripts/generate-icons.mjs",
+    "e2e:mobile": "maestro test ../../maestro"
   },
   "dependencies": {
     "@react-navigation/native": "^7.3.14",

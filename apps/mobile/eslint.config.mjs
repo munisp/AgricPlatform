@@ -22,6 +22,17 @@ export default tseslint.config(
     }
   },
   {
+    // Node build tooling (icon generator) — not bundled into the app.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly'
+      }
+    }
+  },
+  {
     files: ['src/**/*.{ts,tsx}', 'test/**/*.{ts,tsx}', 'App.tsx', '*.{ts,mjs}'],
     languageOptions: {
       globals: {
