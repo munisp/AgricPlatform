@@ -12,6 +12,23 @@ import {
 } from '@/lib/api/endpoints';
 import { useSession } from '@/lib/session';
 import { useT } from '@/lib/i18n';
+import { getSharedSyncStore, useSyncStatus } from '@/lib/sync/react';
+import type { SyncStore } from '@/lib/sync/store';
+
+/** Unread notifications held in the record-level sync cache (payloads are
+ * server notification rows; malformed entries are ignored, never shown). */
+function readCachedNotifications(store: SyncStore): NotificationMessage[] {
+  return store
+    .getRecords('notification')
+    .map((record) => record.payload)
+    .filter(
+      (payload): payload is NotificationMessage =>
+        typeof payload === 'object' &&
+        payload !== null &&
+        typeof (payload as NotificationMessage).id === 'string' &&
+        (payload as NotificationMessage).status !== 'read'
+    );
+}
 
 /**
  * Live notification bell (Wave P). When the `notifications.sse` feature
@@ -76,11 +93,29 @@ export function NotificationBell() {
     };
   }, [hydrated, userId]);
 
+  // Record-level sync cache (Wave SYNCCLIENT): opening the panel is an
+  // explicit sync point, and when the API is unreachable the last synced
+  // cache serves the dropdown with an honest "offline" mode line.
+  const syncStore = getSharedSyncStore();
+  useSyncStatus(syncStore); // re-render when the cache changes
+  const syncCached = readCachedNotifications(syncStore);
+  const usingSyncCache = !live && Boolean(query.error) && syncCached.length > 0;
+
   const notifications: NotificationMessage[] =
-    live?.notifications ?? query.data?.filter((message) => message.status !== 'read') ?? [];
+    live?.notifications ??
+    (usingSyncCache ? syncCached : (query.data?.filter((message) => message.status !== 'read') ?? []));
   const unreadCount = live?.unreadCount ?? notifications.length;
 
-  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const toggle = useCallback(() => {
+    setOpen((value) => {
+      if (!value) {
+        // Explicit sync point: refresh the notification cache for offline
+        // reads. Fire-and-forget — failures only affect the cache copy.
+        void syncStore.syncNow(['notification']);
+      }
+      return !value;
+    });
+  }, [syncStore]);
 
   return (
     <div className="notification-bell">
@@ -114,7 +149,11 @@ export function NotificationBell() {
             </ul>
           )}
           <p className="small muted" data-testid="bell-mode">
-            {sseActive ? t('notifications.live') : t('notifications.polling')}
+            {sseActive
+              ? t('notifications.live')
+              : usingSyncCache
+                ? t('notifications.offlineCache')
+                : t('notifications.polling')}
           </p>
         </div>
       ) : null}
