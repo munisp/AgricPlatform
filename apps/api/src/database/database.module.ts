@@ -579,6 +579,25 @@ import {
   createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
 } from './repositories/credit-suite.pg-repository.js';
+// Wave EUDR: traceability passport persistence (additive).
+import {
+  COMMODITY_LOT_REPOSITORY,
+  CUSTODY_EVENT_REPOSITORY,
+  LOT_PLOT_LINK_REPOSITORY,
+  TRACEABILITY_SHIPMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCommodityLotRepository,
+  createInMemoryCustodyEventRepository,
+  createInMemoryLotPlotLinkRepository,
+  createInMemoryTraceabilityShipmentRepository
+} from './repositories/traceability.repository.js';
+import {
+  createPgCommodityLotRepository,
+  createPgCustodyEventRepository,
+  createPgLotPlotLinkRepository,
+  createPgTraceabilityShipmentRepository
+} from './repositories/traceability.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
 
@@ -1442,6 +1461,33 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
             ),
       inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
     },
+    // Wave EUDR: traceability passport providers (additive).
+    {
+      provide: COMMODITY_LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityLotRepository(pool) : createInMemoryCommodityLotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CUSTODY_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCustodyEventRepository(pool) : createInMemoryCustodyEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOT_PLOT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLotPlotLinkRepository(pool) : createInMemoryLotPlotLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: TRACEABILITY_SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgTraceabilityShipmentRepository(pool)
+          : createInMemoryTraceabilityShipmentRepository(),
+      inject: [PG_POOL]
+    },
     // Wave VOICE: voice agronomist repositories (appended).
     {
       provide: VOICE_SESSION_REPOSITORY,
@@ -1618,6 +1664,10 @@ import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-sha
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
     CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+    COMMODITY_LOT_REPOSITORY,
+    CUSTODY_EVENT_REPOSITORY,
+    LOT_PLOT_LINK_REPOSITORY,
+    TRACEABILITY_SHIPMENT_REPOSITORY,
     VOICE_SESSION_REPOSITORY,
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
