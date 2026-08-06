@@ -203,6 +203,14 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
 
+// Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
+// signed offline vouchers, agent transaction log) — schema `agent_banking`,
+// migration 032. Money movement stays in the finance ledger; these tables
+// hold operational records only.
+export const AGENT_BANKING_AGENT_REPOSITORY = Symbol('AGENT_BANKING_AGENT_REPOSITORY');
+export const AGENT_FLOAT_TOPUP_REPOSITORY = Symbol('AGENT_FLOAT_TOPUP_REPOSITORY');
+export const AGENT_VOUCHER_REPOSITORY = Symbol('AGENT_VOUCHER_REPOSITORY');
+export const AGENT_TRANSACTION_REPOSITORY = Symbol('AGENT_TRANSACTION_REPOSITORY');
 // Wave MECHANIZATION: equipment hire marketplace (mechanization schema,
 // migration 033) — listings with H3 service areas + the booking workflow.
 export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');

@@ -996,8 +996,73 @@ export const en = {
     percentOfSumInsured: '{percent}% of sum insured',
     stubNotice:
       'Demo rail: weather data and payout execution are simulated (STUB) until the insurer MOU and payment rail are activated.'
-  }
+  },
   // --- end parametric insurance (wave-insurance) ---
+
+  // --- agent banking (wave-agentbank) ---
+  agentBanking: {
+    kicker: 'Agent banking',
+    title: 'Agent float & vouchers',
+    description:
+      'Rural cash-in/cash-out through your ledger-backed float, signed offline vouchers and commissions.',
+    floatKicker: 'Float',
+    floatTitle: 'Float balance',
+    floatLimitLabel: 'Low-float threshold',
+    lowFloatAlert: 'Low float — request a top-up before farmers are turned away.',
+    topUpKicker: 'Top-ups',
+    topUpTitle: 'Request a float top-up',
+    topUpAmountLabel: 'Amount (₦)',
+    topUpAction: 'Request top-up',
+    topUpWorking: 'Requesting…',
+    topUpRequestedNotice: 'Top-up requested — a supervisor will review it.',
+    topUpEmpty: 'No top-ups yet.',
+    queueKicker: 'Supervisor',
+    queueTitle: 'Top-up approval queue',
+    queueEmpty: 'No top-ups waiting for review.',
+    approveAction: 'Approve',
+    rejectAction: 'Reject',
+    settleAction: 'Settle',
+    rejectReasonLabel: 'Rejection reason',
+    working: 'Working…',
+    transactionsKicker: 'Activity',
+    transactionsTitle: 'Transaction log',
+    transactionsEmpty: 'No transactions yet.',
+    filterAll: 'All types',
+    filterCashIn: 'Cash-in',
+    filterCashOut: 'Cash-out',
+    filterVoucher: 'Voucher redemption',
+    vouchersKicker: 'Vouchers',
+    vouchersTitle: 'Issue an offline voucher',
+    voucherFarmerLabel: 'Farmer ID',
+    voucherAmountLabel: 'Amount (₦)',
+    voucherIssueAction: 'Issue voucher',
+    voucherIssuedNotice: 'Voucher issued — share the code and signature with the farmer.',
+    voucherListEmpty: 'No vouchers yet.',
+    redeemKicker: 'Redeem',
+    redeemTitle: 'Redeem a voucher',
+    redeemCodeLabel: 'Voucher code',
+    redeemSignatureLabel: 'Signature (from the voucher)',
+    redeemAction: 'Redeem',
+    redeemedNotice: 'Voucher redeemed — the farmer wallet was credited.',
+    commissionsKicker: 'Commissions',
+    commissionsTitle: 'Monthly commission statement',
+    commissionsEmpty: 'No commissions accrued this month.',
+    commissionTotalLabel: 'Total accrued',
+    commissionPayableLabel: 'Payable (ledger)',
+    colType: 'Type',
+    colCount: 'Count',
+    colVolume: 'Volume',
+    colCommission: 'Commission',
+    colAmount: 'Amount',
+    colStatus: 'Status',
+    colDate: 'Date',
+    notAgentTitle: 'No agent registration',
+    notAgentBody:
+      'This account is not registered as a banking agent. Ask your cooperative or an administrator to enrol you.',
+    loadError: 'Could not load the agent-banking data.'
+  }
+  // --- end agent banking (wave-agentbank) ---
+
 };
 
 export type Dictionary = typeof en;

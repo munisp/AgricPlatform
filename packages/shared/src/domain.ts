@@ -19,7 +19,10 @@ export const USER_ROLES = [
   'enumerator',
   // Wave VOICE: agronomist — works the voice-agronomist escalation queue
   // (agent cases, agent-assist console, migration 027).
-  'agronomist'
+  'agronomist',
+  // Wave AGENTBANK: rural banking agent — runs a ledger-backed float for
+  // farmer cash-in/cash-out and signed offline vouchers (migration 032).
+  'agent'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];

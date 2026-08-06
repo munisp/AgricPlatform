@@ -65,6 +65,8 @@ import { VoiceModule } from './modules/voice/voice.module.js';
 import { CreditModule } from './modules/credit/credit.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
+// Wave AGENTBANK (additive): agent banking.
+import { AgentBankingModule } from './modules/agent-banking/agent-banking.module.js';
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
@@ -149,6 +151,8 @@ import { InsuranceModule } from './modules/insurance/insurance.module.js';
     TraceabilityModule,
     // Wave VOICE voice agronomist (IVR/USSD RAG advisory + agent escalation) — appended to minimise merge conflicts.
     VoiceModule,
+    // Wave AGENTBANK agent banking (float, cash-in/out, signed vouchers) — appended to minimise merge conflicts.
+    AgentBankingModule,
     // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
     MechanizationModule,
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.

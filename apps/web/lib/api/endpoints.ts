@@ -3728,3 +3728,196 @@ export function fetchOwnerUtilization(): Promise<{ data: OwnerUtilizationStats }
 }
 
 export type { EquipmentBooking, EquipmentListing, MechBookingStatus, OperatorVerificationStatus };
+
+/* --- agent banking (wave-agentbank) --- */
+
+export type AgentBankingStatus = 'PENDING' | 'ACTIVE' | 'SUSPENDED';
+export type AgentTopUpStatus = 'REQUESTED' | 'APPROVED' | 'SETTLED' | 'REJECTED';
+export type AgentVoucherStatus = 'ISSUED' | 'REDEEMED' | 'EXPIRED' | 'VOIDED';
+export type AgentTransactionType = 'cash_in' | 'cash_out' | 'voucher_redemption';
+
+export interface AgentBankingAgent {
+  id: string;
+  userId: string;
+  organisation: string;
+  status: AgentBankingStatus;
+  floatAccountCode: string;
+  commissionAccountCode: string;
+  dailyLimitKobo: number;
+  lowFloatThresholdKobo: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentFloatBalance {
+  agentId: string;
+  floatAccountCode: string;
+  balanceKobo: number;
+  lowFloatThresholdKobo: number;
+  lowFloat: boolean;
+}
+
+export interface AgentFloatTopUp {
+  id: string;
+  agentId: string;
+  amountKobo: number;
+  status: AgentTopUpStatus;
+  requestedBy: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  settledAt?: string;
+  ledgerEntryId?: string;
+  rejectionReason?: string;
+  createdAt: string;
+}
+
+export interface AgentTransaction {
+  id: string;
+  agentId: string;
+  farmerId: string;
+  type: AgentTransactionType;
+  amountKobo: number;
+  commissionKobo: number;
+  idempotencyKey: string;
+  ledgerEntryId: string;
+  voucherId?: string;
+  createdAt: string;
+}
+
+export interface AgentVoucher {
+  id: string;
+  agentId: string;
+  farmerId: string;
+  amountKobo: number;
+  expiresAt: string;
+  nonce: string;
+  signature: string;
+  status: AgentVoucherStatus;
+  redeemedAt?: string;
+  ledgerEntryId?: string;
+  createdAt: string;
+}
+
+export interface AgentCommissionStatement {
+  agentId: string;
+  month: string;
+  rows: Array<{
+    type: AgentTransactionType;
+    count: number;
+    volumeKobo: number;
+    commissionKobo: number;
+  }>;
+  totalCommissionKobo: number;
+  commissionPayableKobo: number;
+}
+
+export interface AgentReconciliation {
+  agentId: string;
+  date: string;
+  openingFloatKobo: number;
+  closingFloatKobo: number;
+  volumeByType: Record<'cash_in' | 'cash_out' | 'voucher_redemption' | 'float_topup', number>;
+  commissionAccruedKobo: number;
+  transactionCount: number;
+}
+
+/** Own agent profile (agent self-service). */
+export function fetchMyAgentProfile(): Promise<{ data: AgentBankingAgent }> {
+  return apiFetch('/agent-banking/agents/me');
+}
+
+export function fetchAgentFloat(agentId: string): Promise<{ data: AgentFloatBalance }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/float`);
+}
+
+export function requestAgentTopUp(
+  agentId: string,
+  amountKobo: number
+): Promise<{ data: AgentFloatTopUp }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/top-ups`, {
+    method: 'POST',
+    body: { amountKobo }
+  });
+}
+
+export function fetchAgentTopUps(agentId: string): Promise<{ data: AgentFloatTopUp[] }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/top-ups`);
+}
+
+/** Supervisor/admin approval queue. */
+export function fetchTopUpQueue(status?: AgentTopUpStatus): Promise<{ data: AgentFloatTopUp[] }> {
+  return apiFetch('/agent-banking/top-ups', { query: { status } });
+}
+
+export function approveTopUp(id: string): Promise<{ data: AgentFloatTopUp }> {
+  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export function rejectTopUp(id: string, reason: string): Promise<{ data: AgentFloatTopUp }> {
+  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+    body: { reason }
+  });
+}
+
+export function settleTopUp(id: string): Promise<{ data: AgentFloatTopUp }> {
+  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/settle`, { method: 'POST' });
+}
+
+export function fetchAgentTransactions(
+  agentId: string,
+  filter?: { type?: AgentTransactionType; from?: string; to?: string }
+): Promise<{ data: AgentTransaction[] }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/transactions`, {
+    query: { type: filter?.type, from: filter?.from, to: filter?.to }
+  });
+}
+
+export function issueAgentVoucher(
+  agentId: string,
+  input: { farmerId: string; amountKobo: number }
+): Promise<{ data: AgentVoucher }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/vouchers`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchAgentVouchers(
+  agentId: string,
+  status?: AgentVoucherStatus
+): Promise<{ data: AgentVoucher[] }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/vouchers`, {
+    query: { status }
+  });
+}
+
+export function redeemAgentVoucher(
+  id: string,
+  signature?: string
+): Promise<{ data: { voucher: AgentVoucher; transaction: AgentTransaction } }> {
+  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(id)}/redeem`, {
+    method: 'POST',
+    body: { signature }
+  });
+}
+
+export function fetchAgentCommissionStatement(
+  agentId: string,
+  month: string
+): Promise<{ data: AgentCommissionStatement }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/commissions`, {
+    query: { month }
+  });
+}
+
+export function fetchAgentReconciliation(
+  agentId: string,
+  date: string
+): Promise<{ data: AgentReconciliation }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/reconciliation`, {
+    query: { date }
+  });
+}
+
+/* --- end agent banking (wave-agentbank) --- */
