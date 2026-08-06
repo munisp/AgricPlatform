@@ -23,7 +23,7 @@ export const OTP_DRIVER_TOKEN = Symbol('AGENT_BANKING_OTP_DRIVER');
 export interface OtpDriver {
   readonly name: 'stub' | 'live';
   /** Deterministic challenge code for the stub; undefined for live. */
-  challengeCode(farmerId: string, reference: string): string | undefined;
+  challengeCode(farmerId?: string, reference?: string): string | undefined;
   /** Throws when the proof is invalid or the channel is unavailable. */
   verify(farmerId: string, reference: string, code: string): Promise<void>;
 }
@@ -45,10 +45,11 @@ export class StubOtpDriver implements OtpDriver {
   }
 
   verify(farmerId: string, reference: string, code: string): Promise<void> {
-    if (code !== stubOtpCode(farmerId, reference)) {
-      throw new OtpVerificationError();
-    }
-    return Promise.resolve();
+    // async boundary: invalid proofs reject (never throw synchronously) so
+    // callers can uniformly `await ... .rejects` the verification.
+    return code === stubOtpCode(farmerId, reference)
+      ? Promise.resolve()
+      : Promise.reject(new OtpVerificationError());
   }
 }
 
@@ -72,11 +73,11 @@ export class LiveOtpDriver implements OtpDriver {
     private readonly apiKey: string | undefined
   ) {}
 
-  challengeCode(): undefined {
+  challengeCode(_farmerId?: string, _reference?: string): undefined {
     return undefined;
   }
 
-  verify(): Promise<never> {
+  verify(_farmerId: string, _reference: string, _code: string): Promise<never> {
     if (!this.providerUrl || !this.apiKey) {
       return Promise.reject(
         new ServiceUnavailableException(

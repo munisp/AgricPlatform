@@ -106,6 +106,26 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
           "programmes:read"
         ],
         "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/traceability/shipments/{id}/dds",
+        "summary": "Fetch the EUDR due-diligence statement JSON for a shipment. Scope: traceability:read.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/traceability/shipments/{id}/dds/verify",
+        "summary": "Recompute the custody hash chain for a shipment. Scope: traceability:read.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:read"
+        ],
+        "response": "{ 200 }"
       }
     ]
   },
@@ -144,6 +164,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
           "farm_data:write"
         ],
         "response": "{ 202 }"
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/partner/traceability/shipments",
+        "summary": "Create a shipment from commodity lots (exporter). Scope: traceability:write.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:write"
+        ],
+        "response": "{ 201 }"
       }
     ]
   },

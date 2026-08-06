@@ -144,7 +144,7 @@ export function AgentTopUpSection() {
           void request.mutate(amountKobo);
         }}
       >
-        <Field label={t('agentBanking.topUpAmountLabel')} htmlFor="topup-amount">
+        <Field label={t('agentBanking.topUpAmountLabel')} id="topup-amount">
           <TextInput
             id="topup-amount"
             inputMode="decimal"
@@ -166,10 +166,13 @@ export function AgentTopUpSection() {
           </p>
         ) : null}
       </form>
-      <QueryState isLoading={topUps.isLoading} error={topUps.error} data={topUps.data} onRetry={topUps.refresh}>
-        {topUps.data && topUps.data.length === 0 ? (
-          <EmptyState title={t('agentBanking.topUpEmpty')} />
-        ) : null}
+      <QueryState
+        isLoading={topUps.isLoading}
+        error={topUps.error}
+        data={topUps.data}
+        onRetry={topUps.refresh}
+        empty={<EmptyState title={t('agentBanking.topUpEmpty')} />}
+      >
         {topUps.data && topUps.data.length > 0 ? (
           <ul >
             {topUps.data.map((topUp) => (
@@ -210,8 +213,13 @@ export function AgentTopUpQueueSection() {
   }
 
   return (
-    <QueryState isLoading={queue.isLoading} error={queue.error} data={queue.data} onRetry={queue.refresh}>
-      {queue.data && queue.data.length === 0 ? <EmptyState title={t('agentBanking.queueEmpty')} /> : null}
+    <QueryState
+      isLoading={queue.isLoading}
+      error={queue.error}
+      data={queue.data}
+      onRetry={queue.refresh}
+      empty={<EmptyState title={t('agentBanking.queueEmpty')} />}
+    >
       {queue.data && queue.data.length > 0 ? (
         <ul >
           {queue.data.map((topUp) => (
@@ -283,7 +291,7 @@ export function AgentTransactionLogSection() {
   }
   return (
     <div>
-      <Field label={t('agentBanking.transactionsTitle')} htmlFor="tx-filter">
+      <Field label={t('agentBanking.transactionsTitle')} id="tx-filter">
         <Select
           id="tx-filter"
           value={type}
@@ -301,10 +309,13 @@ export function AgentTransactionLogSection() {
           ))}
         </Select>
       </Field>
-      <QueryState isLoading={txs.isLoading} error={txs.error} data={txs.data} onRetry={txs.refresh}>
-        {txs.data && txs.data.length === 0 ? (
-          <EmptyState title={t('agentBanking.transactionsEmpty')} />
-        ) : null}
+      <QueryState
+        isLoading={txs.isLoading}
+        error={txs.error}
+        data={txs.data}
+        onRetry={txs.refresh}
+        empty={<EmptyState title={t('agentBanking.transactionsEmpty')} />}
+      >
         {txs.data && txs.data.length > 0 ? (
           <table className="table">
             <thead>
@@ -379,14 +390,14 @@ export function AgentVoucherSection() {
           void issue.mutate({ farmerId: farmerId.trim(), amountKobo });
         }}
       >
-        <Field label={t('agentBanking.voucherFarmerLabel')} htmlFor="voucher-farmer">
+        <Field label={t('agentBanking.voucherFarmerLabel')} id="voucher-farmer">
           <TextInput
             id="voucher-farmer"
             value={farmerId}
             onChange={(event) => setFarmerId(event.target.value)}
           />
         </Field>
-        <Field label={t('agentBanking.voucherAmountLabel')} htmlFor="voucher-amount">
+        <Field label={t('agentBanking.voucherAmountLabel')} id="voucher-amount">
           <TextInput
             id="voucher-amount"
             inputMode="decimal"
@@ -413,10 +424,8 @@ export function AgentVoucherSection() {
         error={vouchers.error}
         data={vouchers.data}
         onRetry={vouchers.refresh}
+        empty={<EmptyState title={t('agentBanking.voucherListEmpty')} />}
       >
-        {vouchers.data && vouchers.data.length === 0 ? (
-          <EmptyState title={t('agentBanking.voucherListEmpty')} />
-        ) : null}
         {vouchers.data && vouchers.data.length > 0 ? (
           <ul >
             {vouchers.data.map((voucher) => (
@@ -463,10 +472,10 @@ export function AgentVoucherRedeemSection() {
         void redeem.mutate({ id: code.trim(), signature: signature.trim() || undefined });
       }}
     >
-      <Field label={t('agentBanking.redeemCodeLabel')} htmlFor="redeem-code">
+      <Field label={t('agentBanking.redeemCodeLabel')} id="redeem-code">
         <TextInput id="redeem-code" value={code} onChange={(event) => setCode(event.target.value)} />
       </Field>
-      <Field label={t('agentBanking.redeemSignatureLabel')} htmlFor="redeem-signature">
+      <Field label={t('agentBanking.redeemSignatureLabel')} id="redeem-signature">
         <TextInput
           id="redeem-signature"
           value={signature}
@@ -506,7 +515,7 @@ export function AgentCommissionSection() {
   }
   return (
     <div>
-      <Field label={t('agentBanking.commissionsTitle')} htmlFor="commission-month">
+      <Field label={t('agentBanking.commissionsTitle')} id="commission-month">
         <TextInput
           id="commission-month"
           type="month"

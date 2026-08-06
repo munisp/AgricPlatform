@@ -63,9 +63,13 @@ import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 import { VoiceModule } from './modules/voice/voice.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
+import { TraceabilityModule } from './modules/traceability/traceability.module.js';
 import { WorkflowsModule } from './modules/finance/workflows/workflows.module.js';
 // Wave AGENTBANK (additive): agent banking.
 import { AgentBankingModule } from './modules/agent-banking/agent-banking.module.js';
+import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
+// Wave-INSURANCE (additive): parametric insurance rail.
+import { InsuranceModule } from './modules/insurance/insurance.module.js';
 
 @Module({
   imports: [
@@ -143,10 +147,16 @@ import { AgentBankingModule } from './modules/agent-banking/agent-banking.module
     CreditModule,
     // Wave FABRIC workflow registrations (loan disbursement port proof) — appended to minimise merge conflicts.
     WorkflowsModule,
+    // Wave EUDR traceability passport — appended to minimise merge conflicts.
+    TraceabilityModule,
     // Wave VOICE voice agronomist (IVR/USSD RAG advisory + agent escalation) — appended to minimise merge conflicts.
     VoiceModule,
     // Wave AGENTBANK agent banking (float, cash-in/out, signed vouchers) — appended to minimise merge conflicts.
-    AgentBankingModule
+    AgentBankingModule,
+    // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
+    MechanizationModule,
+    // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
+    InsuranceModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

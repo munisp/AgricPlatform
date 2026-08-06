@@ -270,7 +270,10 @@ describe('Transaction log, vouchers and commissions', () => {
       '/agent-banking/agents/agent-1/commissions': { data: STATEMENT }
     });
     renderWithProviders(<AgentCommissionSection />);
-    await waitFor(() => expect(screen.getByTestId('commission-total').textContent).toContain('50.00'));
+    // House format: whole naira (shared formatNaira, maximumFractionDigits: 0).
+    await waitFor(() =>
+      expect(screen.getByTestId('commission-total').textContent).toContain('Total accrued: ₦50')
+    );
     expect(screen.getByText('cash_in')).toBeTruthy();
   });
 });

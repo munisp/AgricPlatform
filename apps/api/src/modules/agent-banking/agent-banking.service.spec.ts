@@ -369,7 +369,10 @@ describe('AgentBankingService — cash-in / cash-out', () => {
         agentActor(ctx.agentUser)
       )
     ).rejects.toBeInstanceOf(UnauthorizedException);
-    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(0);
+    // Nothing posted: the farmer wallet account was never even created.
+    await expect(ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).rejects.toBeInstanceOf(
+      NotFoundException
+    );
   });
 
   it('enforces the agent daily limit', async () => {

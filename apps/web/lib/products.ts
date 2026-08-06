@@ -218,5 +218,8 @@ export const QUICK_ACTIONS: Record<UserRole, QuickAction[]> = {
   ],
   // wave-voice: role exists for the agent-assist console; hub links stay
   // unwired here (orchestrator wires them).
-  agronomist: []
+  agronomist: [],
+  // wave-agentbank: role exists for the agent console; hub links stay
+  // unwired here (orchestrator wires them).
+  agent: []
 };

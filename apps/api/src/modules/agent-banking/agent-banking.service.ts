@@ -573,7 +573,7 @@ export class AgentBankingService {
 
   // --------------------------------------------------------------- vouchers
 
-  async issueVoucher(agentId: string, input: IssueVoucherInput, actorId: string): Promise<AgentVoucherRecord> {
+  async issueVoucher(agentId: string, input: IssueVoucherInput, actor: ActorRef): Promise<AgentVoucherRecord> {
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
     assertPositiveKobo(input.amountKobo);
@@ -602,7 +602,7 @@ export class AgentBankingService {
     await this.events.publish(
       'agentbank.voucher.issued',
       { voucherId: id, agentId: agent.id, farmerId: input.farmerId, amountKobo: input.amountKobo },
-      actorId
+      actor.id
     );
     return record;
   }

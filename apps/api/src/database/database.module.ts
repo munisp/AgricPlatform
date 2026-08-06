@@ -226,6 +226,14 @@ import {
 } from './repositories/services-marketplace.pg-repository.js';
 import { createInMemorySupplierRepository } from './repositories/supplier.repository.js';
 import {
+  createInMemoryEquipmentBookingRepository,
+  createInMemoryEquipmentListingRepository
+} from './repositories/mechanization.repository.js';
+import {
+  createPgEquipmentBookingRepository,
+  createPgEquipmentListingRepository
+} from './repositories/mechanization.pg-repository.js';
+import {
   createInMemoryWebinarRegistrationRepository,
   createInMemoryWebinarRepository
 } from './repositories/webinar.repository.js';
@@ -545,7 +553,13 @@ import {
   CREDIT_REPAYMENT_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
-  GEO_CREDIT_SHADOW_REPOSITORY
+  GEO_CREDIT_SHADOW_REPOSITORY,
+  EQUIPMENT_LISTING_REPOSITORY,
+  EQUIPMENT_BOOKING_REPOSITORY,
+  PARAMETRIC_PRODUCT_REPOSITORY,
+  PARAMETRIC_POLICY_REPOSITORY,
+  PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+  PARAMETRIC_PAYOUT_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -569,6 +583,25 @@ import {
   createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
 } from './repositories/credit-suite.pg-repository.js';
+// Wave EUDR: traceability passport persistence (additive).
+import {
+  COMMODITY_LOT_REPOSITORY,
+  CUSTODY_EVENT_REPOSITORY,
+  LOT_PLOT_LINK_REPOSITORY,
+  TRACEABILITY_SHIPMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCommodityLotRepository,
+  createInMemoryCustodyEventRepository,
+  createInMemoryLotPlotLinkRepository,
+  createInMemoryTraceabilityShipmentRepository
+} from './repositories/traceability.repository.js';
+import {
+  createPgCommodityLotRepository,
+  createPgCustodyEventRepository,
+  createPgLotPlotLinkRepository,
+  createPgTraceabilityShipmentRepository
+} from './repositories/traceability.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
 // Wave AGENTBANK: agent banking persistence (additive).
@@ -590,6 +623,19 @@ import {
   createPgAgentTransactionRepository,
   createPgAgentVoucherRepository
 } from './repositories/agent-banking.pg-repository.js';
+// Wave-INSURANCE (additive): parametric insurance rail repositories.
+import {
+  createInMemoryParametricProductRepository,
+  createInMemoryParametricPolicyRepository,
+  createInMemoryParametricTriggerEventRepository,
+  createInMemoryParametricPayoutRepository
+} from './repositories/insurance.repository.js';
+import {
+  createPgParametricProductRepository,
+  createPgParametricPolicyRepository,
+  createPgParametricTriggerEventRepository,
+  createPgParametricPayoutRepository
+} from './repositories/insurance.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1451,6 +1497,33 @@ import {
             ),
       inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
     },
+    // Wave EUDR: traceability passport providers (additive).
+    {
+      provide: COMMODITY_LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityLotRepository(pool) : createInMemoryCommodityLotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CUSTODY_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCustodyEventRepository(pool) : createInMemoryCustodyEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOT_PLOT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLotPlotLinkRepository(pool) : createInMemoryLotPlotLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: TRACEABILITY_SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgTraceabilityShipmentRepository(pool)
+          : createInMemoryTraceabilityShipmentRepository(),
+      inject: [PG_POOL]
+    },
     // Wave VOICE: voice agronomist repositories (appended).
     {
       provide: VOICE_SESSION_REPOSITORY,
@@ -1500,6 +1573,46 @@ import {
       provide: AGENT_TRANSACTION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave MECHANIZATION (additive): equipment hire marketplace.
+    {
+      provide: EQUIPMENT_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentListingRepository(pool) : createInMemoryEquipmentListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EQUIPMENT_BOOKING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentBookingRepository(pool) : createInMemoryEquipmentBookingRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave-INSURANCE (additive): parametric insurance rail.
+    {
+      provide: PARAMETRIC_PRODUCT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricProductRepository(pool) : createInMemoryParametricProductRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPolicyRepository(pool) : createInMemoryParametricPolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgParametricTriggerEventRepository(pool)
+          : createInMemoryParametricTriggerEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_PAYOUT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
     }
   ],
@@ -1639,6 +1752,10 @@ import {
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
     CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+    COMMODITY_LOT_REPOSITORY,
+    CUSTODY_EVENT_REPOSITORY,
+    LOT_PLOT_LINK_REPOSITORY,
+    TRACEABILITY_SHIPMENT_REPOSITORY,
     VOICE_SESSION_REPOSITORY,
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
@@ -1646,7 +1763,13 @@ import {
     AGENT_BANKING_AGENT_REPOSITORY,
     AGENT_FLOAT_TOPUP_REPOSITORY,
     AGENT_VOUCHER_REPOSITORY,
-    AGENT_TRANSACTION_REPOSITORY
+    AGENT_TRANSACTION_REPOSITORY,
+    EQUIPMENT_LISTING_REPOSITORY,
+    EQUIPMENT_BOOKING_REPOSITORY,
+    PARAMETRIC_PRODUCT_REPOSITORY,
+    PARAMETRIC_POLICY_REPOSITORY,
+    PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+    PARAMETRIC_PAYOUT_REPOSITORY
   ]
 })
 export class DatabaseModule {}
