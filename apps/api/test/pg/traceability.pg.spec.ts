@@ -46,7 +46,7 @@ async function clean(): Promise<void> {
 describePg('pg traceability repositories (parity with in-memory)', () => {
   beforeAll(async () => {
     await pool!.query(
-      `INSERT INTO identity.users (id, phone, display_name) VALUES ($1, $2, $3)
+      `INSERT INTO identity.users (id, phone, full_name) VALUES ($1, $2, $3)
        ON CONFLICT (id) DO NOTHING`,
       [OWNER, '+2340000000000', 'pg traceability test']
     );
