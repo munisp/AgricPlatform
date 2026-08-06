@@ -197,10 +197,13 @@ describe('InsuranceQuoteSection', () => {
     vi.stubGlobal('fetch', baseRoutes());
     renderWithI18n(<InsuranceQuoteSection />);
     await waitFor(() => screen.getByLabelText('Product'));
+    // Wait until the products query has rendered the option before changing
+    // the controlled select (CI timing: the default 1s waitFor is too tight).
+    await waitFor(() => screen.getByRole('option', { name: /Wet-season rainfall deficit cover/ }));
     fireEvent.change(screen.getByLabelText('Product'), { target: { value: 'NG-RAIN-WET-26' } });
     fireEvent.change(screen.getByLabelText('Plot'), { target: { value: 'plot-1' } });
     fireEvent.change(screen.getByLabelText('Sum insured (₦)'), { target: { value: '10000' } });
-    await waitFor(() => screen.getByTestId('insurance-quote-preview'));
+    await waitFor(() => screen.getByTestId('insurance-quote-preview'), { timeout: 3000 });
     expect(screen.getByTestId('insurance-quote-preview').textContent).toContain('800');
 
     fireEvent.click(screen.getByRole('button', { name: 'Get binding quote' }));
