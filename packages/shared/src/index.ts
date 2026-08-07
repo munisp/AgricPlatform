@@ -15,3 +15,5 @@ export * from './credit.js';
 export * from './mechanization.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 export * from './insurance.js';
+// Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
+export * from './warehouse.js';
