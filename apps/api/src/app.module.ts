@@ -70,6 +70,8 @@ import { AgentBankingModule } from './modules/agent-banking/agent-banking.module
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
+// Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+import { LivestockPassportModule } from './modules/livestock-passport/livestock-passport.module.js';
 
 @Module({
   imports: [
@@ -156,7 +158,9 @@ import { InsuranceModule } from './modules/insurance/insurance.module.js';
     // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
     MechanizationModule,
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
-    InsuranceModule
+    InsuranceModule,
+    // Wave LIVESTOCK-PASSPORT digital livestock passport — appended to minimise merge conflicts.
+    LivestockPassportModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

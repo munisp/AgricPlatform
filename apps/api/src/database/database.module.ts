@@ -559,7 +559,11 @@ import {
   PARAMETRIC_PRODUCT_REPOSITORY,
   PARAMETRIC_POLICY_REPOSITORY,
   PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-  PARAMETRIC_PAYOUT_REPOSITORY
+  PARAMETRIC_PAYOUT_REPOSITORY,
+  // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+  LIVESTOCK_PASSPORT_REPOSITORY,
+  LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+  LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -636,6 +640,17 @@ import {
   createPgParametricTriggerEventRepository,
   createPgParametricPayoutRepository
 } from './repositories/insurance.pg-repository.js';
+// Wave LIVESTOCK-PASSPORT (additive): digital livestock passport repositories.
+import {
+  createInMemoryLivestockPassportRepository,
+  createInMemoryPassportEventRepository,
+  createInMemoryPassportTransferRepository
+} from './repositories/livestock-passport.repository.js';
+import {
+  createPgLivestockPassportRepository,
+  createPgPassportEventRepository,
+  createPgPassportTransferRepository
+} from './repositories/livestock-passport.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1614,6 +1629,29 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
+    },
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+    {
+      provide: LIVESTOCK_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgLivestockPassportRepository(pool)
+          : createInMemoryLivestockPassportRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPassportEventRepository(pool) : createInMemoryPassportEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgPassportTransferRepository(pool)
+          : createInMemoryPassportTransferRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1769,7 +1807,11 @@ import {
     PARAMETRIC_PRODUCT_REPOSITORY,
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-    PARAMETRIC_PAYOUT_REPOSITORY
+    PARAMETRIC_PAYOUT_REPOSITORY,
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+    LIVESTOCK_PASSPORT_REPOSITORY,
+    LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+    LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY
   ]
 })
 export class DatabaseModule {}

@@ -223,3 +223,12 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+
+// Wave LIVESTOCK-PASSPORT (additive, innovation #9): digital livestock
+// passport — per-animal verifiable identity document aggregating the
+// livestock core/health/trade domains, append-only hash-chained passport
+// event log and the two-party ownership-transfer handshake (schema
+// `livestock_passport`, migration 036).
+export const LIVESTOCK_PASSPORT_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_REPOSITORY');
+export const LIVESTOCK_PASSPORT_EVENT_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_EVENT_REPOSITORY');
+export const LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY');
