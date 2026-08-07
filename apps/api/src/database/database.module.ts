@@ -636,6 +636,25 @@ import {
   createPgParametricTriggerEventRepository,
   createPgParametricPayoutRepository
 } from './repositories/insurance.pg-repository.js';
+// Wave NINVOUCHER (additive): input subsidy e-voucher persistence.
+import {
+  BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+  INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+  INPUT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBeneficiaryRepository,
+  createInMemoryInputVoucherRepository,
+  createInMemoryRedemptionRepository,
+  createInMemorySubsidyProgrammeRepository
+} from './repositories/input-vouchers.repository.js';
+import {
+  createPgBeneficiaryRepository,
+  createPgInputVoucherRepository,
+  createPgRedemptionRepository,
+  createPgSubsidyProgrammeRepository
+} from './repositories/input-vouchers.pg-repository.js';
 // Wave WAREHOUSE (additive): electronic warehouse receipts persistence.
 import {
   CERTIFIED_WAREHOUSE_REPOSITORY,
@@ -1637,6 +1656,31 @@ import {
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
     },
+    // Wave NINVOUCHER (additive): input subsidy e-vouchers.
+    {
+      provide: INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSubsidyProgrammeRepository(pool) : createInMemorySubsidyProgrammeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BENEFICIARY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBeneficiaryRepository(pool) : createInMemoryBeneficiaryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInputVoucherRepository(pool) : createInMemoryInputVoucherRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRedemptionRepository(pool) : createInMemoryRedemptionRepository(),
+      inject: [PG_POOL]
+    },
     // Wave WAREHOUSE (additive): electronic warehouse receipts.
     {
       provide: CERTIFIED_WAREHOUSE_REPOSITORY,
@@ -1823,6 +1867,11 @@ import {
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
     PARAMETRIC_PAYOUT_REPOSITORY,
+    // Wave NINVOUCHER (additive).
+    INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+    BENEFICIARY_REPOSITORY,
+    INPUT_VOUCHER_REPOSITORY,
+    INPUT_VOUCHER_REDEMPTION_REPOSITORY,
     CERTIFIED_WAREHOUSE_REPOSITORY,
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
