@@ -636,6 +636,28 @@ import {
   createPgParametricTriggerEventRepository,
   createPgParametricPayoutRepository
 } from './repositories/insurance.pg-repository.js';
+// Wave WAREHOUSE (additive): electronic warehouse receipts persistence.
+import {
+  CERTIFIED_WAREHOUSE_REPOSITORY,
+  WAREHOUSE_DEPOSIT_REPOSITORY,
+  WAREHOUSE_RECEIPT_REPOSITORY,
+  WAREHOUSE_PLEDGE_REPOSITORY,
+  WAREHOUSE_TRANSFER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCertifiedWarehouseRepository,
+  createInMemoryWarehouseDepositRepository,
+  createInMemoryWarehouseReceiptRepository,
+  createInMemoryWarehousePledgeRepository,
+  createInMemoryWarehouseTransferRepository
+} from './repositories/warehouse.repository.js';
+import {
+  createPgCertifiedWarehouseRepository,
+  createPgWarehouseDepositRepository,
+  createPgWarehouseReceiptRepository,
+  createPgWarehousePledgeRepository,
+  createPgWarehouseTransferRepository
+} from './repositories/warehouse.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1614,6 +1636,37 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
+    },
+    // Wave WAREHOUSE (additive): electronic warehouse receipts.
+    {
+      provide: CERTIFIED_WAREHOUSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedWarehouseRepository(pool) : createInMemoryCertifiedWarehouseRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_DEPOSIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseDepositRepository(pool) : createInMemoryWarehouseDepositRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_RECEIPT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseReceiptRepository(pool) : createInMemoryWarehouseReceiptRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_PLEDGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehousePledgeRepository(pool) : createInMemoryWarehousePledgeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1769,7 +1822,12 @@ import {
     PARAMETRIC_PRODUCT_REPOSITORY,
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-    PARAMETRIC_PAYOUT_REPOSITORY
+    PARAMETRIC_PAYOUT_REPOSITORY,
+    CERTIFIED_WAREHOUSE_REPOSITORY,
+    WAREHOUSE_DEPOSIT_REPOSITORY,
+    WAREHOUSE_RECEIPT_REPOSITORY,
+    WAREHOUSE_PLEDGE_REPOSITORY,
+    WAREHOUSE_TRANSFER_REPOSITORY
   ]
 })
 export class DatabaseModule {}
