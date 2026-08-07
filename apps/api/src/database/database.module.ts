@@ -559,7 +559,18 @@ import {
   PARAMETRIC_PRODUCT_REPOSITORY,
   PARAMETRIC_POLICY_REPOSITORY,
   PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-  PARAMETRIC_PAYOUT_REPOSITORY
+  PARAMETRIC_PAYOUT_REPOSITORY,
+  // Wave VSLACARBON (additive).
+  VSLA_GROUP_REPOSITORY,
+  VSLA_MEMBER_REPOSITORY,
+  VSLA_CYCLE_REPOSITORY,
+  VSLA_CONTRIBUTION_REPOSITORY,
+  VSLA_SHARE_OUT_REPOSITORY,
+  VSLA_LOAN_REPOSITORY,
+  VSLA_LOAN_REPAYMENT_REPOSITORY,
+  CARBON_PLOT_REPOSITORY,
+  CARBON_EVIDENCE_REPOSITORY,
+  CARBON_ESTIMATE_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCreditCollateralRepository,
@@ -636,6 +647,31 @@ import {
   createPgParametricTriggerEventRepository,
   createPgParametricPayoutRepository
 } from './repositories/insurance.pg-repository.js';
+// Wave VSLACARBON (additive): VSLA groups + carbon MRV repositories.
+import {
+  createInMemoryVslaGroupRepository,
+  createInMemoryVslaMemberRepository,
+  createInMemoryVslaCycleRepository,
+  createInMemoryVslaContributionRepository,
+  createInMemoryVslaShareOutRepository,
+  createInMemoryVslaLoanRepository,
+  createInMemoryVslaLoanRepaymentRepository,
+  createInMemoryCarbonPlotRepository,
+  createInMemoryCarbonEvidenceRepository,
+  createInMemoryCarbonEstimateRepository
+} from './repositories/vsla-carbon.repository.js';
+import {
+  createPgVslaGroupRepository,
+  createPgVslaMemberRepository,
+  createPgVslaCycleRepository,
+  createPgVslaContributionRepository,
+  createPgVslaShareOutRepository,
+  createPgVslaLoanRepository,
+  createPgVslaLoanRepaymentRepository,
+  createPgCarbonPlotRepository,
+  createPgCarbonEvidenceRepository,
+  createPgCarbonEstimateRepository
+} from './repositories/vsla-carbon.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1614,6 +1650,67 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
+    },
+    // Wave VSLACARBON (additive): VSLA groups + carbon MRV.
+    {
+      provide: VSLA_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaGroupRepository(pool) : createInMemoryVslaGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaMemberRepository(pool) : createInMemoryVslaMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CYCLE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaCycleRepository(pool) : createInMemoryVslaCycleRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CONTRIBUTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaContributionRepository(pool) : createInMemoryVslaContributionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_SHARE_OUT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaShareOutRepository(pool) : createInMemoryVslaShareOutRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_LOAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaLoanRepository(pool) : createInMemoryVslaLoanRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_LOAN_REPAYMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaLoanRepaymentRepository(pool) : createInMemoryVslaLoanRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_PLOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonPlotRepository(pool) : createInMemoryCarbonPlotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_EVIDENCE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonEvidenceRepository(pool) : createInMemoryCarbonEvidenceRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_ESTIMATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonEstimateRepository(pool) : createInMemoryCarbonEstimateRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1769,7 +1866,18 @@ import {
     PARAMETRIC_PRODUCT_REPOSITORY,
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-    PARAMETRIC_PAYOUT_REPOSITORY
+    PARAMETRIC_PAYOUT_REPOSITORY,
+    // Wave VSLACARBON (additive).
+    VSLA_GROUP_REPOSITORY,
+    VSLA_MEMBER_REPOSITORY,
+    VSLA_CYCLE_REPOSITORY,
+    VSLA_CONTRIBUTION_REPOSITORY,
+    VSLA_SHARE_OUT_REPOSITORY,
+    VSLA_LOAN_REPOSITORY,
+    VSLA_LOAN_REPAYMENT_REPOSITORY,
+    CARBON_PLOT_REPOSITORY,
+    CARBON_EVIDENCE_REPOSITORY,
+    CARBON_ESTIMATE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

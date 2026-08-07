@@ -135,3 +135,13 @@ export async function downloadFactExport(
     `${fact}.csv`
   );
 }
+
+/* --- vsla carbon mrv (wave-vsla-carbon) --- */
+/**
+ * Downloads `GET /vsla-carbon/reports/export?format=csv` (donor/regulator/
+ * admin MRV export — every figure basis-flagged, ESTIMATE only).
+ */
+export async function downloadVslaCarbonMrvExport(): Promise<string> {
+  return downloadAttachment('/vsla-carbon/reports/export', { format: 'csv' }, 'vsla-carbon-mrv.csv');
+}
+/* --- end vsla carbon mrv (wave-vsla-carbon) --- */

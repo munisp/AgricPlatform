@@ -223,3 +223,19 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+
+// Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
+// cycles, contributions, share-outs, internal loans) + carbon MRV (plots,
+// seasonal evidence, estimates) — schema `vsla_carbon`, migration 037.
+// Money movement stays in the finance ledger; these tables hold operational
+// records only. Carbon figures are ESTIMATES, never verification-grade.
+export const VSLA_GROUP_REPOSITORY = Symbol('VSLA_GROUP_REPOSITORY');
+export const VSLA_MEMBER_REPOSITORY = Symbol('VSLA_MEMBER_REPOSITORY');
+export const VSLA_CYCLE_REPOSITORY = Symbol('VSLA_CYCLE_REPOSITORY');
+export const VSLA_CONTRIBUTION_REPOSITORY = Symbol('VSLA_CONTRIBUTION_REPOSITORY');
+export const VSLA_SHARE_OUT_REPOSITORY = Symbol('VSLA_SHARE_OUT_REPOSITORY');
+export const VSLA_LOAN_REPOSITORY = Symbol('VSLA_LOAN_REPOSITORY');
+export const VSLA_LOAN_REPAYMENT_REPOSITORY = Symbol('VSLA_LOAN_REPAYMENT_REPOSITORY');
+export const CARBON_PLOT_REPOSITORY = Symbol('CARBON_PLOT_REPOSITORY');
+export const CARBON_EVIDENCE_REPOSITORY = Symbol('CARBON_EVIDENCE_REPOSITORY');
+export const CARBON_ESTIMATE_REPOSITORY = Symbol('CARBON_ESTIMATE_REPOSITORY');

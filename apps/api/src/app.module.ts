@@ -70,6 +70,8 @@ import { AgentBankingModule } from './modules/agent-banking/agent-banking.module
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
+// Wave VSLACARBON (additive): VSLA groups + carbon MRV.
+import { VslaCarbonModule } from './modules/vsla-carbon/vsla-carbon.module.js';
 
 @Module({
   imports: [
@@ -156,7 +158,9 @@ import { InsuranceModule } from './modules/insurance/insurance.module.js';
     // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
     MechanizationModule,
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
-    InsuranceModule
+    InsuranceModule,
+    // Wave VSLACARBON VSLA groups + carbon MRV — appended to minimise merge conflicts.
+    VslaCarbonModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
