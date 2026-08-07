@@ -4263,3 +4263,217 @@ export function fetchWarehouseIntegrationStatus(): Promise<{ data: WarehouseInte
 }
 
 /* --- end warehouse receipts (wave-warehouse) --- */
+
+/* --- livestock passport (wave-livestock-passport) --- */
+
+export type LivestockPassportStatus = 'active' | 'suspended' | 'revoked';
+export type LivestockPassportEventType =
+  | 'ISSUED'
+  | 'TRANSFER_INITIATED'
+  | 'TRANSFER_CONFIRMED'
+  | 'TRANSFER_CANCELLED'
+  | 'SUSPENDED'
+  | 'REINSTATED'
+  | 'REVOKED';
+export type LivestockPassportTransferStatus = 'pending' | 'confirmed' | 'cancelled';
+export type TagCheckBasis = 'stub' | 'live' | 'unavailable' | 'none';
+
+export interface LivestockPassport {
+  id: string;
+  animalId: string;
+  passportCode: string;
+  codeNonce: string;
+  codeSignature: string;
+  ownerUserId: string;
+  status: LivestockPassportStatus;
+  tagCheckBasis: TagCheckBasis;
+  tagCheckDetail?: string;
+  issuedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PassportEvent {
+  id: string;
+  passportId: string;
+  seq: number;
+  type: LivestockPassportEventType;
+  actorId: string;
+  payload: Record<string, unknown>;
+  prevEventHash: string;
+  eventHash: string;
+  createdAt: string;
+}
+
+export interface PassportEventVerification {
+  eventId: string;
+  passportId: string;
+  seq: number;
+  type: LivestockPassportEventType;
+  hashValid: boolean;
+  prevLinkValid: boolean;
+  valid: boolean;
+  expectedHash: string;
+  storedHash: string;
+}
+
+export interface PassportChainVerification {
+  passportId: string;
+  eventCount: number;
+  valid: boolean;
+  headHash?: string;
+  events: PassportEventVerification[];
+}
+
+export interface PassportTransfer {
+  id: string;
+  passportId: string;
+  animalId: string;
+  fromUserId: string;
+  toUserId: string;
+  status: LivestockPassportTransferStatus;
+  note?: string;
+  executedTransferId?: string;
+  initiatedAt: string;
+  confirmedAt?: string;
+  cancelledAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PassportVaccinationSummary {
+  requiredVaccinations: readonly string[];
+  completedVaccinations: string[];
+  coverage: number;
+  vaccinationCount: number;
+  treatmentCount: number;
+  activeWithdrawal: boolean;
+  lastVaccinationAt?: string;
+}
+
+export interface PassportMovementSummary {
+  totalMovements: number;
+  movementsWithPermit: number;
+  openMovements: number;
+  revokedPermits: number;
+  legal: boolean;
+}
+
+export interface PassportDocument {
+  passport: LivestockPassport;
+  animal: {
+    id: string;
+    species: string;
+    breed: string;
+    sex: string;
+    birthDate?: string;
+    state: string;
+    status: string;
+    ownerUserId: string;
+  };
+  owner: { userId: string; fullName: string };
+  vaccinationSummary: PassportVaccinationSummary;
+  movementSummary: PassportMovementSummary;
+  activeLien?: { id: string; status: string };
+  insurancePolicies: Array<{ id: string; status: string }>;
+  passportTransfers: PassportTransfer[];
+  chain: PassportChainVerification;
+}
+
+export interface PublicPassportVerification {
+  verified: true;
+  passportCode: string;
+  passportStatus: LivestockPassportStatus;
+  animal: {
+    id: string;
+    species: string;
+    breed: string;
+    sex: string;
+    birthDate?: string;
+    state: string;
+    status: string;
+  };
+  /** Owner identity redacted to initials only (e.g. "A.B."). */
+  ownerInitials: string;
+  vaccinationSummary: {
+    requiredVaccinations: readonly string[];
+    completedVaccinations: string[];
+    coverage: number;
+    activeWithdrawal: boolean;
+  };
+  movementLegality: {
+    totalMovements: number;
+    movementsWithPermit: number;
+    legal: boolean;
+  };
+  encumbrance: { activeLien: boolean; insured: boolean };
+  tagCheck: { basis: TagCheckBasis; stub: boolean };
+  chain: { eventCount: number; valid: boolean; headHash?: string };
+  qr: { code: string; verifyPath: string };
+  disclaimers: string[];
+}
+
+export function issueLivestockPassport(
+  animalId: string
+): Promise<{ data: PassportDocument }> {
+  return apiFetch(`/livestock-passport/animals/${encodeURIComponent(animalId)}`, {
+    method: 'POST'
+  });
+}
+
+export function fetchMyLivestockPassports(): Promise<{ data: PassportDocument[] }> {
+  return apiFetch('/livestock-passport/mine');
+}
+
+export function fetchLivestockPassport(id: string): Promise<{ data: PassportDocument }> {
+  return apiFetch(`/livestock-passport/${encodeURIComponent(id)}`);
+}
+
+export function fetchLivestockPassportEvents(
+  id: string
+): Promise<{
+  data: { passport: LivestockPassport; events: PassportEvent[]; verification: PassportChainVerification };
+}> {
+  return apiFetch(`/livestock-passport/${encodeURIComponent(id)}/events`);
+}
+
+/** PUBLIC QR verification — no session required (HMAC-signed code). */
+export function verifyLivestockPassport(
+  code: string
+): Promise<{ data: PublicPassportVerification }> {
+  return apiFetch(`/livestock-passport/verify/${encodeURIComponent(code)}`);
+}
+
+export function fetchPassportTransfers(
+  direction: 'incoming' | 'outgoing'
+): Promise<{ data: PassportTransfer[] }> {
+  return apiFetch('/livestock-passport/transfers', { query: { direction } });
+}
+
+export function initiatePassportTransfer(
+  passportId: string,
+  input: { toUserId: string; note?: string }
+): Promise<{ data: PassportTransfer }> {
+  return apiFetch(`/livestock-passport/${encodeURIComponent(passportId)}/transfers`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function confirmPassportTransfer(
+  transferId: string
+): Promise<{ data: PassportTransfer }> {
+  return apiFetch(`/livestock-passport/transfers/${encodeURIComponent(transferId)}/confirm`, {
+    method: 'POST'
+  });
+}
+
+export function cancelPassportTransfer(
+  transferId: string
+): Promise<{ data: PassportTransfer }> {
+  return apiFetch(`/livestock-passport/transfers/${encodeURIComponent(transferId)}/cancel`, {
+    method: 'POST'
+  });
+}
+
+/* --- end livestock passport (wave-livestock-passport) --- */

@@ -70,6 +70,8 @@ import { AgentBankingModule } from './modules/agent-banking/agent-banking.module
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
+// Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+import { LivestockPassportModule } from './modules/livestock-passport/livestock-passport.module.js';
 // Wave NINVOUCHER (additive): NIN-linked input subsidy e-vouchers.
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
@@ -161,6 +163,8 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     MechanizationModule,
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
     InsuranceModule,
+    // Wave LIVESTOCK-PASSPORT digital livestock passport — appended to minimise merge conflicts.
+    LivestockPassportModule,
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.

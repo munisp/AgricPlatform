@@ -279,6 +279,7 @@ jobs:
             VET_SIGNING_SECRET=ci-smoke-vet-signing-key \
             AGENT_VOUCHER_SECRET=ci-smoke-agent-voucher-signing-key \
             NIN_HASH_SALT=ci-smoke-nin-hash-salt \
+            LIVESTOCK_PASSPORT_SECRET=ci-smoke-livestock-passport-key \
             npm run start --workspace=apps/api &
           API_PID=$!
           NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
