@@ -4477,3 +4477,303 @@ export function cancelPassportTransfer(
 }
 
 /* --- end livestock passport (wave-livestock-passport) --- */
+
+/* --- vsla carbon mrv (wave-vsla-carbon) --- */
+
+export type VslaGroupStatus = 'ACTIVE' | 'DISSOLVED';
+export type VslaCycleStatus = 'OPEN' | 'CLOSED';
+export type VslaLoanStatus = 'ACTIVE' | 'REPAID';
+export type CarbonPracticeType = 'agroforestry' | 'fmnr' | 'woodlot' | 'conservation_agriculture';
+export type CarbonBasisFlag = 'stub' | 'estimate' | 'live';
+
+export interface VslaGroup {
+  id: string;
+  name: string;
+  chapterId?: string;
+  leadUserId: string;
+  status: VslaGroupStatus;
+  savingsAccountCode: string;
+  loansReceivableAccountCode: string;
+  interestIncomeAccountCode: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VslaMember {
+  id: string;
+  groupId: string;
+  userId: string;
+  role: 'member' | 'lead';
+  status: 'ACTIVE' | 'EXITED';
+  joinedAt: string;
+  exitedAt?: string;
+}
+
+export interface VslaCycle {
+  id: string;
+  groupId: string;
+  label: string;
+  status: VslaCycleStatus;
+  openedAt: string;
+  closedAt?: string;
+  createdAt: string;
+}
+
+export interface VslaContribution {
+  id: string;
+  cycleId: string;
+  groupId: string;
+  memberId: string;
+  amountKobo: number;
+  idempotencyKey: string;
+  ledgerEntryId: string;
+  createdAt: string;
+}
+
+export interface VslaShareOut {
+  id: string;
+  cycleId: string;
+  memberId: string;
+  shareKobo: number;
+  contributedKobo: number;
+  residualKobo: number;
+  ledgerEntryId: string;
+  createdAt: string;
+}
+
+export interface VslaShareOutReport {
+  cycleId: string;
+  groupId: string;
+  distributableKobo: number;
+  payouts: VslaShareOut[];
+  closedAt: string;
+  replayed: boolean;
+}
+
+export interface VslaLoan {
+  id: string;
+  groupId: string;
+  cycleId: string;
+  memberId: string;
+  principalKobo: number;
+  interestRateBps: number;
+  totalDueKobo: number;
+  repaidKobo: number;
+  status: VslaLoanStatus;
+  issuedAt: string;
+  repaidAt?: string;
+  ledgerEntryId: string;
+  createdAt: string;
+}
+
+export interface CarbonPlot {
+  id: string;
+  groupId: string;
+  ownerUserId: string;
+  name: string;
+  practiceType: CarbonPracticeType;
+  hectaresCenti: number;
+  centroidLat: number;
+  centroidLong: number;
+  h3Res9: string;
+  status: 'ACTIVE' | 'RETIRED';
+  createdAt: string;
+}
+
+export interface CarbonEvidence {
+  id: string;
+  plotId: string;
+  groupId: string;
+  season: string;
+  submittedBy: string;
+  submitterRole: 'farmer' | 'enumerator';
+  survivalRatePct?: number;
+  notes?: string;
+  ndviHealthScore?: number;
+  ndviClassification?: string;
+  ndviBasis?: 'stub' | 'live';
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export interface CarbonEstimate {
+  id: string;
+  plotId: string;
+  groupId: string;
+  season: string;
+  coefficientVersion: string;
+  hectaresCenti: number;
+  practiceType: CarbonPracticeType;
+  survivalRatePct: number;
+  seasonCount: number;
+  co2eMilliTonnes: number;
+  basis: 'estimate';
+  createdAt: string;
+}
+
+export interface GroupMrvReport {
+  groupId: string;
+  groupName: string;
+  plotCount: number;
+  hectaresUnderPractice: number;
+  meanSurvivalRatePct: number | null;
+  estimatedCo2eTonnes: number;
+  estimateCount: number;
+  evidenceCount: number;
+  ndviLinkedEvidenceCount: number;
+  basisFlags: CarbonBasisFlag[];
+  disclaimer: string;
+}
+
+export interface ProgrammeMrvReport {
+  groupCount: number;
+  plotCount: number;
+  hectaresUnderPractice: number;
+  meanSurvivalRatePct: number | null;
+  estimatedCo2eTonnes: number;
+  estimateCount: number;
+  evidenceCount: number;
+  ndviLinkedEvidenceCount: number;
+  basisFlags: CarbonBasisFlag[];
+  disclaimer: string;
+  groups: GroupMrvReport[];
+  generatedAt: string;
+}
+
+export function fetchVslaGroups(): Promise<{ data: VslaGroup[] }> {
+  return apiFetch('/vsla-carbon/groups');
+}
+
+export function createVslaGroup(input: {
+  name: string;
+  chapterId?: string;
+}): Promise<{ data: VslaGroup }> {
+  return apiFetch('/vsla-carbon/groups', { method: 'POST', body: input });
+}
+
+export function fetchVslaMembers(groupId: string): Promise<{ data: VslaMember[] }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/members`);
+}
+
+export function addVslaMember(
+  groupId: string,
+  input: { userId: string; role?: 'member' | 'lead' }
+): Promise<{ data: VslaMember }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/members`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchVslaCycles(groupId: string): Promise<{ data: VslaCycle[] }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/cycles`);
+}
+
+export function openVslaCycle(groupId: string, label: string): Promise<{ data: VslaCycle }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/cycles`, {
+    method: 'POST',
+    body: { label }
+  });
+}
+
+export function fetchVslaContributions(cycleId: string): Promise<{ data: VslaContribution[] }> {
+  return apiFetch(`/vsla-carbon/cycles/${encodeURIComponent(cycleId)}/contributions`);
+}
+
+export function recordVslaContribution(
+  cycleId: string,
+  input: { memberId: string; amountKobo: number; idempotencyKey: string }
+): Promise<{ data: VslaContribution }> {
+  return apiFetch(`/vsla-carbon/cycles/${encodeURIComponent(cycleId)}/contributions`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function closeVslaCycle(cycleId: string): Promise<{ data: VslaShareOutReport }> {
+  return apiFetch(`/vsla-carbon/cycles/${encodeURIComponent(cycleId)}/close`, { method: 'POST' });
+}
+
+export function fetchVslaLoans(groupId: string): Promise<{ data: VslaLoan[] }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/loans`);
+}
+
+export function issueVslaLoan(
+  groupId: string,
+  input: { memberId: string; principalKobo: number; interestRateBps: number }
+): Promise<{ data: VslaLoan }> {
+  return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/loans`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function repayVslaLoan(
+  loanId: string,
+  input: { amountKobo: number; idempotencyKey: string }
+): Promise<{ data: { loan: VslaLoan; repayment: { id: string; amountKobo: number } } }> {
+  return apiFetch(`/vsla-carbon/loans/${encodeURIComponent(loanId)}/repayments`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchCarbonPlots(groupId?: string): Promise<{ data: CarbonPlot[] }> {
+  return apiFetch('/vsla-carbon/plots', { query: { groupId } });
+}
+
+export function registerCarbonPlot(input: {
+  groupId: string;
+  ownerUserId?: string;
+  name: string;
+  practiceType: CarbonPracticeType;
+  hectares: number;
+  centroidLat: number;
+  centroidLong: number;
+}): Promise<{ data: CarbonPlot }> {
+  return apiFetch('/vsla-carbon/plots', { method: 'POST', body: input });
+}
+
+export function fetchCarbonEvidence(plotId: string): Promise<{ data: CarbonEvidence[] }> {
+  return apiFetch(`/vsla-carbon/plots/${encodeURIComponent(plotId)}/evidence`);
+}
+
+export function submitCarbonEvidence(
+  plotId: string,
+  input: {
+    season: string;
+    survivalRatePct?: number;
+    notes?: string;
+    idempotencyKey: string;
+    linkNdvi?: boolean;
+  }
+): Promise<{ data: CarbonEvidence }> {
+  return apiFetch(`/vsla-carbon/plots/${encodeURIComponent(plotId)}/evidence`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function estimateCarbonPlot(
+  plotId: string,
+  season: string
+): Promise<{ data: CarbonEstimate }> {
+  return apiFetch(`/vsla-carbon/plots/${encodeURIComponent(plotId)}/estimate`, {
+    method: 'POST',
+    body: { season }
+  });
+}
+
+export function fetchCarbonEstimates(plotId: string): Promise<{ data: CarbonEstimate[] }> {
+  return apiFetch(`/vsla-carbon/plots/${encodeURIComponent(plotId)}/estimates`);
+}
+
+export function fetchGroupMrvReport(groupId: string): Promise<{ data: GroupMrvReport }> {
+  return apiFetch(`/vsla-carbon/reports/group/${encodeURIComponent(groupId)}`);
+}
+
+export function fetchProgrammeMrvReport(): Promise<{ data: ProgrammeMrvReport }> {
+  return apiFetch('/vsla-carbon/reports/programme');
+}
+
+/* --- end vsla carbon mrv (wave-vsla-carbon) --- */
