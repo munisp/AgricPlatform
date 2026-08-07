@@ -260,24 +260,29 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async create(record: AgentVoucherRecord): Promise<AgentVoucherRecord> {
-    await this.pool.query(
-      'INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, ' +
-        'signature, status, redeemed_at, ledger_entry_id, created_at) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-      [
-        record.id,
-        record.agentId,
-        record.farmerId,
-        record.amountKobo,
-        record.expiresAt,
-        record.nonce,
-        record.signature,
-        record.status,
-        record.redeemedAt ?? null,
-        record.ledgerEntryId ?? null,
-        record.createdAt
-      ]
-    );
+    try {
+      await this.pool.query(
+        'INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, ' +
+          'signature, status, redeemed_at, ledger_entry_id, idempotency_key, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        [
+          record.id,
+          record.agentId,
+          record.farmerId,
+          record.amountKobo,
+          record.expiresAt,
+          record.nonce,
+          record.signature,
+          record.status,
+          record.redeemedAt ?? null,
+          record.ledgerEntryId ?? null,
+          record.idempotencyKey ?? null,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'A record with these unique values already exists');
+    }
     return record;
   }
 
@@ -285,6 +290,14 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
     const result = await this.pool.query('SELECT * FROM agent_banking.vouchers WHERE id = $1', [
       id
     ]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentVoucherRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM agent_banking.vouchers WHERE idempotency_key = $1',
+      [key]
+    );
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -358,6 +371,7 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
       status: row.status as AgentVoucherRecord['status'],
       redeemedAt: toIso(row.redeemed_at),
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
+      idempotencyKey: (row.idempotency_key as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }

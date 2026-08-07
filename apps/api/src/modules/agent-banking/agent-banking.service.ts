@@ -97,6 +97,8 @@ export interface IssueVoucherInput {
   amountKobo: number;
   /** Optional ISO expiry; defaults to now + 72h. */
   expiresAt?: string;
+  /** Optional client idempotency key; replays return the original voucher. */
+  idempotencyKey?: string;
 }
 
 export interface CommissionStatementRow {
@@ -574,6 +576,12 @@ export class AgentBankingService {
   // --------------------------------------------------------------- vouchers
 
   async issueVoucher(agentId: string, input: IssueVoucherInput, actor: ActorRef): Promise<AgentVoucherRecord> {
+    if (input.idempotencyKey) {
+      const replay = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+      if (replay) {
+        return replay; // idempotent replay of a transport retry
+      }
+    }
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
     assertPositiveKobo(input.amountKobo);
@@ -588,23 +596,36 @@ export class AgentBankingService {
       { voucherId: id, agentId: agent.id, farmerId: input.farmerId, amountKobo: input.amountKobo, expiry: expiresAt, nonce },
       this.voucherSecret
     );
-    const record = await this.vouchers.create({
-      id,
-      agentId: agent.id,
-      farmerId: input.farmerId,
-      amountKobo: input.amountKobo,
-      expiresAt,
-      nonce,
-      signature,
-      status: 'ISSUED',
-      createdAt: new Date().toISOString()
-    });
-    await this.events.publish(
-      'agentbank.voucher.issued',
-      { voucherId: id, agentId: agent.id, farmerId: input.farmerId, amountKobo: input.amountKobo },
-      actor.id
-    );
-    return record;
+    try {
+      const record = await this.vouchers.create({
+        id,
+        agentId: agent.id,
+        farmerId: input.farmerId,
+        amountKobo: input.amountKobo,
+        expiresAt,
+        nonce,
+        signature,
+        status: 'ISSUED',
+        idempotencyKey: input.idempotencyKey,
+        createdAt: new Date().toISOString()
+      });
+      await this.events.publish(
+        'agentbank.voucher.issued',
+        { voucherId: id, agentId: agent.id, farmerId: input.farmerId, amountKobo: input.amountKobo },
+        actor.id
+      );
+      return record;
+    } catch (error) {
+      if (error instanceof ConflictException && input.idempotencyKey) {
+        // Lost a retry race — the original voucher is authoritative; return
+        // it instead of issuing a duplicate.
+        const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
   }
 
   async getVoucher(id: string): Promise<AgentVoucherRecord> {
