@@ -107,6 +107,11 @@ class IssueVoucherDto {
   @IsOptional()
   @IsString()
   expiresAt?: string;
+
+  /** Optional client idempotency key — USSD/API retries replay the original voucher. */
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
 
 class RedeemVoucherDto {

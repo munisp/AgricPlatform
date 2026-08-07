@@ -570,6 +570,50 @@ describe('AgentBankingService — offline vouchers', () => {
   });
 });
 
+describe('AgentBankingService — voucher issuance idempotency', () => {
+  it('replays the same idempotencyKey: one voucher, one issued event', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    const published: string[] = [];
+    ctx.events.on('*', (event: { name: string }) => published.push(event.name));
+    const input = { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-1' };
+    const first = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
+    const replay = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
+    expect(replay.id).toBe(first.id);
+    expect(replay.idempotencyKey).toBe('v-1');
+    expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(1);
+    expect(published.filter((name) => name === 'agentbank.voucher.issued')).toHaveLength(1);
+  });
+
+  it('different idempotencyKeys issue distinct vouchers', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    const first = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-a' },
+      agentActor(ctx.agentUser)
+    );
+    const second = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-b' },
+      agentActor(ctx.agentUser)
+    );
+    expect(second.id).not.toBe(first.id);
+    expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(2);
+  });
+
+  it('omitting the key always issues a new voucher (backward compatible)', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    const input = { farmerId: ctx.farmer.id, amountKobo: 100_000 };
+    const first = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
+    const second = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
+    expect(second.id).not.toBe(first.id);
+    expect(first.idempotencyKey).toBeUndefined();
+    expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(2);
+  });
+});
+
 describe('AgentBankingService — statements & reconciliation', () => {
   it('builds the monthly commission statement by transaction type', async () => {
     const ctx = await makeService();

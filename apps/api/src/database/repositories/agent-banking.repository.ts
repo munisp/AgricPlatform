@@ -74,6 +74,8 @@ export interface AgentVoucherRecord {
   status: AgentVoucherStatus;
   redeemedAt?: string;
   ledgerEntryId?: string;
+  /** Optional client idempotency key — transport retries replay, never duplicate. */
+  idempotencyKey?: string;
   createdAt: string;
 }
 
@@ -130,8 +132,10 @@ export interface AgentFloatTopUpRepository {
 }
 
 export interface AgentVoucherRepository {
+  /** Throws ConflictException when idempotencyKey already exists. */
   create(record: AgentVoucherRecord): Promise<AgentVoucherRecord>;
   findById(id: string): Promise<AgentVoucherRecord | undefined>;
+  findByIdempotencyKey(key: string): Promise<AgentVoucherRecord | undefined>;
   find(criteria: AgentVoucherCriteria): Promise<AgentVoucherRecord[]>;
   /** Compare-and-set on status; throws ConflictException when it moved on. */
   updateExpected(
@@ -248,12 +252,26 @@ export class InMemoryAgentVoucherRepository implements AgentVoucherRepository {
   private readonly items = new Map<string, AgentVoucherRecord>();
 
   async create(record: AgentVoucherRecord): Promise<AgentVoucherRecord> {
+    // Mirror the pg partial UNIQUE index on idempotency_key: a retry that
+    // raced the original write surfaces as 409 instead of duplicating.
+    if (record.idempotencyKey) {
+      for (const existing of this.items.values()) {
+        if (existing.idempotencyKey === record.idempotencyKey) {
+          throw new ConflictException('A record with these unique values already exists');
+        }
+      }
+    }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
   }
 
   async findById(id: string): Promise<AgentVoucherRecord | undefined> {
     const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentVoucherRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.idempotencyKey === key);
     return record ? structuredClone(record) : undefined;
   }
 
