@@ -72,6 +72,8 @@ import { MechanizationModule } from './modules/mechanization/mechanization.modul
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
 // Wave NINVOUCHER (additive): NIN-linked input subsidy e-vouchers.
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
+// Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
+import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
 
 @Module({
   imports: [
@@ -160,7 +162,9 @@ import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.mod
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
     InsuranceModule,
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
-    InputVouchersModule
+    InputVouchersModule,
+    // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
+    WarehouseModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

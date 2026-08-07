@@ -232,3 +232,12 @@ export const INPUT_VOUCHER_PROGRAMME_REPOSITORY = Symbol('INPUT_VOUCHER_PROGRAMM
 export const BENEFICIARY_REPOSITORY = Symbol('BENEFICIARY_REPOSITORY');
 export const INPUT_VOUCHER_REPOSITORY = Symbol('INPUT_VOUCHER_REPOSITORY');
 export const INPUT_VOUCHER_REDEMPTION_REPOSITORY = Symbol('INPUT_VOUCHER_REDEMPTION_REPOSITORY');
+// Wave WAREHOUSE: electronic warehouse receipts (warehouse schema, migration
+// 034) — certified warehouse registry, deposits/grading, signed receipts,
+// pledge liens, ownership-transfer audit trail. Money stays in the finance
+// ledger; these are operational records only.
+export const CERTIFIED_WAREHOUSE_REPOSITORY = Symbol('CERTIFIED_WAREHOUSE_REPOSITORY');
+export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY');
+export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
+export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
+export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');

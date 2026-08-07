@@ -2800,3 +2800,233 @@ export const equipmentBookingMapper: RowMapper<EquipmentBooking> = {
     return row;
   }
 };
+
+// ---------------------------------------------------------------------------
+// Wave WAREHOUSE: electronic warehouse receipts (warehouse schema, 034).
+// ---------------------------------------------------------------------------
+import type {
+  CertifiedWarehouse,
+  WarehouseDeposit,
+  WarehousePledge,
+  WarehouseReceipt,
+  WarehouseReceiptTransfer
+} from '@agric-platform/shared';
+
+export const certifiedWarehouseMapper: RowMapper<CertifiedWarehouse> = {
+  columns: [
+    'id',
+    'name',
+    'state',
+    'lga',
+    'latitude',
+    'longitude',
+    'h3_cell',
+    'capacity_tonnes',
+    'certification_status',
+    'operator_license_ref',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    state: row.state as string,
+    lga: row.lga as string,
+    latitude: num(row.latitude),
+    longitude: num(row.longitude),
+    h3Cell: row.h3_cell as string,
+    capacityTonnes: num(row.capacity_tonnes),
+    certificationStatus: row.certification_status as CertifiedWarehouse['certificationStatus'],
+    operatorLicenseRef: (row.operator_license_ref as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      name: 'name',
+      state: 'state',
+      lga: 'lga',
+      latitude: 'latitude',
+      longitude: 'longitude',
+      h3_cell: 'h3Cell',
+      capacity_tonnes: 'capacityTonnes',
+      certification_status: 'certificationStatus',
+      operator_license_ref: 'operatorLicenseRef',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const warehouseDepositMapper: RowMapper<WarehouseDeposit> = {
+  columns: [
+    'id',
+    'warehouse_id',
+    'farmer_id',
+    'lot_id',
+    'crop',
+    'status',
+    'grading',
+    'receipt_id',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    warehouseId: row.warehouse_id as string,
+    farmerId: row.farmer_id as string,
+    lotId: (row.lot_id as string) ?? undefined,
+    crop: row.crop as string,
+    status: row.status as WarehouseDeposit['status'],
+    grading: (row.grading as WarehouseDeposit['grading']) ?? undefined,
+    receiptId: (row.receipt_id as string) ?? undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) => {
+    const row = present(item, {
+      id: 'id',
+      warehouse_id: 'warehouseId',
+      farmer_id: 'farmerId',
+      lot_id: 'lotId',
+      crop: 'crop',
+      status: 'status',
+      grading: 'grading',
+      receipt_id: 'receiptId',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    });
+    // jsonb column: serialise explicitly (node-pg would array-literal it).
+    if ('grading' in row) {
+      row.grading = row.grading === null ? null : JSON.stringify(row.grading);
+    }
+    return row;
+  }
+};
+
+export const warehouseReceiptMapper: RowMapper<WarehouseReceipt> = {
+  columns: [
+    'id',
+    'receipt_number',
+    'deposit_id',
+    'warehouse_id',
+    'owner_id',
+    'crop',
+    'grade',
+    'bag_count',
+    'weight_kg',
+    'status',
+    'nonce',
+    'signature',
+    'issued_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    receiptNumber: row.receipt_number as string,
+    depositId: row.deposit_id as string,
+    warehouseId: row.warehouse_id as string,
+    ownerId: row.owner_id as string,
+    crop: row.crop as string,
+    grade: row.grade as WarehouseReceipt['grade'],
+    bagCount: num(row.bag_count),
+    weightKg: num(row.weight_kg),
+    status: row.status as WarehouseReceipt['status'],
+    nonce: row.nonce as string,
+    signature: row.signature as string,
+    issuedAt: ts(row.issued_at),
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      receipt_number: 'receiptNumber',
+      deposit_id: 'depositId',
+      warehouse_id: 'warehouseId',
+      owner_id: 'ownerId',
+      crop: 'crop',
+      grade: 'grade',
+      bag_count: 'bagCount',
+      weight_kg: 'weightKg',
+      status: 'status',
+      nonce: 'nonce',
+      signature: 'signature',
+      issued_at: 'issuedAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const warehousePledgeMapper: RowMapper<WarehousePledge> = {
+  columns: [
+    'id',
+    'receipt_id',
+    'lender_id',
+    'borrower_id',
+    'principal_kobo',
+    'terms',
+    'status',
+    'registry_ref',
+    'registry_basis',
+    'registered_at',
+    'released_at',
+    'created_at',
+    'updated_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    receiptId: row.receipt_id as string,
+    lenderId: row.lender_id as string,
+    borrowerId: row.borrower_id as string,
+    principalKobo: num(row.principal_kobo),
+    terms: (row.terms as string) ?? '',
+    status: row.status as WarehousePledge['status'],
+    registryRef: (row.registry_ref as string) ?? undefined,
+    registryBasis: row.registry_basis as WarehousePledge['registryBasis'],
+    registeredAt: ts(row.registered_at),
+    releasedAt: row.released_at != null ? ts(row.released_at) : undefined,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      receipt_id: 'receiptId',
+      lender_id: 'lenderId',
+      borrower_id: 'borrowerId',
+      principal_kobo: 'principalKobo',
+      terms: 'terms',
+      status: 'status',
+      registry_ref: 'registryRef',
+      registry_basis: 'registryBasis',
+      registered_at: 'registeredAt',
+      released_at: 'releasedAt',
+      created_at: 'createdAt',
+      updated_at: 'updatedAt'
+    })
+};
+
+export const warehouseTransferMapper: RowMapper<WarehouseReceiptTransfer> = {
+  columns: ['id', 'receipt_id', 'from_owner_id', 'to_owner_id', 'transferred_by', 'note', 'created_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    receiptId: row.receipt_id as string,
+    fromOwnerId: row.from_owner_id as string,
+    toOwnerId: row.to_owner_id as string,
+    transferredBy: row.transferred_by as string,
+    note: (row.note as string) ?? undefined,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      receipt_id: 'receiptId',
+      from_owner_id: 'fromOwnerId',
+      to_owner_id: 'toOwnerId',
+      transferred_by: 'transferredBy',
+      note: 'note',
+      created_at: 'createdAt'
+    })
+};
