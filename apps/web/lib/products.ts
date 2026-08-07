@@ -58,8 +58,8 @@ export const PRODUCT_GROUPS: ProductGroup[] = [
     products: [
       { id: 'marketplace', href: '/marketplace', glyph: 'earth', titleKey: 'products.items.marketplace.title', descKey: 'products.items.marketplace.desc', status: 'live' },
       { id: 'services', href: '/services', glyph: 'clay', titleKey: 'products.items.services.title', descKey: 'products.items.services.desc', status: 'live' },
-      { id: 'mechanization', glyph: 'clay', titleKey: 'products.items.mechanization.title', descKey: 'products.items.mechanization.desc', status: 'planned' },
-      { id: 'warehouseReceipts', glyph: 'clay', titleKey: 'products.items.warehouseReceipts.title', descKey: 'products.items.warehouseReceipts.desc', status: 'planned' }
+      { id: 'mechanization', href: '/mechanization', glyph: 'clay', titleKey: 'products.items.mechanization.title', descKey: 'products.items.mechanization.desc', status: 'live' },
+      { id: 'warehouseReceipts', href: '/warehouse', glyph: 'clay', titleKey: 'products.items.warehouseReceipts.title', descKey: 'products.items.warehouseReceipts.desc', status: 'live' }
     ]
   },
   {
@@ -68,10 +68,10 @@ export const PRODUCT_GROUPS: ProductGroup[] = [
     products: [
       { id: 'finance', href: '/finance', glyph: 'earth', titleKey: 'products.items.finance.title', descKey: 'products.items.finance.desc', status: 'live' },
       { id: 'credit', href: '/credit', glyph: 'earth', titleKey: 'products.items.credit.title', descKey: 'products.items.credit.desc', status: 'live' },
-      { id: 'geoCredit', glyph: 'earth', titleKey: 'products.items.geoCredit.title', descKey: 'products.items.geoCredit.desc', status: 'planned' },
-      { id: 'insurance', glyph: 'amber', titleKey: 'products.items.insurance.title', descKey: 'products.items.insurance.desc', status: 'planned' },
-      { id: 'agentBanking', glyph: 'earth', titleKey: 'products.items.agentBanking.title', descKey: 'products.items.agentBanking.desc', status: 'planned' },
-      { id: 'vouchers', glyph: 'earth', titleKey: 'products.items.vouchers.title', descKey: 'products.items.vouchers.desc', status: 'planned' }
+      { id: 'geoCredit', href: '/credit', glyph: 'earth', titleKey: 'products.items.geoCredit.title', descKey: 'products.items.geoCredit.desc', status: 'beta' },
+      { id: 'insurance', href: '/insurance', glyph: 'amber', titleKey: 'products.items.insurance.title', descKey: 'products.items.insurance.desc', status: 'beta' },
+      { id: 'agentBanking', href: '/agent-banking', glyph: 'earth', titleKey: 'products.items.agentBanking.title', descKey: 'products.items.agentBanking.desc', status: 'beta' },
+      { id: 'vouchers', href: '/input-vouchers', glyph: 'earth', titleKey: 'products.items.vouchers.title', descKey: 'products.items.vouchers.desc', status: 'beta' }
     ]
   },
   {
@@ -79,9 +79,9 @@ export const PRODUCT_GROUPS: ProductGroup[] = [
     titleKey: 'products.groups.livestock',
     products: [
       { id: 'livestock', href: '/livestock', glyph: 'leaf', titleKey: 'products.items.livestock.title', descKey: 'products.items.livestock.desc', status: 'live' },
-      { id: 'traceability', href: '/livestock/health', glyph: 'amber', titleKey: 'products.items.traceability.title', descKey: 'products.items.traceability.desc', status: 'live' },
+      { id: 'traceability', href: '/traceability', glyph: 'amber', titleKey: 'products.items.traceability.title', descKey: 'products.items.traceability.desc', status: 'live' },
       { id: 'livestockTrade', href: '/livestock/trade', glyph: 'earth', titleKey: 'products.items.livestockTrade.title', descKey: 'products.items.livestockTrade.desc', status: 'live' },
-      { id: 'livestockPassport', glyph: 'amber', titleKey: 'products.items.livestockPassport.title', descKey: 'products.items.livestockPassport.desc', status: 'planned' }
+      { id: 'livestockPassport', href: '/livestock/passport', glyph: 'amber', titleKey: 'products.items.livestockPassport.title', descKey: 'products.items.livestockPassport.desc', status: 'beta' }
     ]
   },
   {
@@ -101,8 +101,8 @@ export const PRODUCT_GROUPS: ProductGroup[] = [
     titleKey: 'products.groups.climate',
     products: [
       { id: 'floodRisk', href: '/advisory', glyph: 'amber', titleKey: 'products.items.floodRisk.title', descKey: 'products.items.floodRisk.desc', status: 'beta' },
-      { id: 'voiceAgronomist', glyph: 'amber', titleKey: 'products.items.voiceAgronomist.title', descKey: 'products.items.voiceAgronomist.desc', status: 'planned' },
-      { id: 'carbon', glyph: 'leaf', titleKey: 'products.items.carbon.title', descKey: 'products.items.carbon.desc', status: 'planned' }
+      { id: 'voiceAgronomist', href: '/agent-assist', glyph: 'amber', titleKey: 'products.items.voiceAgronomist.title', descKey: 'products.items.voiceAgronomist.desc', status: 'beta' },
+      { id: 'carbon', href: '/vsla-carbon', glyph: 'leaf', titleKey: 'products.items.carbon.title', descKey: 'products.items.carbon.desc', status: 'beta' }
     ]
   },
   {
@@ -216,10 +216,6 @@ export const QUICK_ACTIONS: Record<UserRole, QuickAction[]> = {
     { href: '/agents/my-queue', labelKey: 'dashboard.quick.fieldQueue' },
     { href: '/agents', labelKey: 'nav.agents' }
   ],
-  // wave-voice: role exists for the agent-assist console; hub links stay
-  // unwired here (orchestrator wires them).
-  agronomist: [],
-  // wave-agentbank: role exists for the agent console; hub links stay
-  // unwired here (orchestrator wires them).
-  agent: []
+  agronomist: [{ href: '/agent-assist', labelKey: 'products.items.voiceAgronomist.title' }],
+  agent: [{ href: '/agent-banking', labelKey: 'products.items.agentBanking.title' }]
 };
