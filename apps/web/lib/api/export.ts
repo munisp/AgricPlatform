@@ -77,8 +77,14 @@ async function downloadAttachment(
     anchor.click();
     anchor.remove();
   } finally {
-    // Delay revocation so the click navigation has started.
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Delay revocation so the click navigation has started. Guarded:
+    // revokeObjectURL is absent in some embedders/test environments and must
+    // never surface as an uncaught async error (the download already fired).
+    setTimeout(() => {
+      if (typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(url);
+      }
+    }, 1000);
   }
   return fileName;
 }
