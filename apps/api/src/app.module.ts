@@ -70,6 +70,8 @@ import { AgentBankingModule } from './modules/agent-banking/agent-banking.module
 import { MechanizationModule } from './modules/mechanization/mechanization.module.js';
 // Wave-INSURANCE (additive): parametric insurance rail.
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
+// Wave NINVOUCHER (additive): NIN-linked input subsidy e-vouchers.
+import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 
 @Module({
   imports: [
@@ -156,7 +158,9 @@ import { InsuranceModule } from './modules/insurance/insurance.module.js';
     // Wave MECHANIZATION equipment hire marketplace — appended to minimise merge conflicts.
     MechanizationModule,
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
-    InsuranceModule
+    InsuranceModule,
+    // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
+    InputVouchersModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

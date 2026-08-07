@@ -223,3 +223,12 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+
+// Wave NINVOUCHER: NIN-linked input subsidy e-vouchers (input_vouchers
+// schema, migration 035) — programmes, NIN-verified beneficiaries (hash +
+// mask only, never plaintext), vouchers, redemptions. Money movement stays
+// in the finance ledger; these tables hold operational records only.
+export const INPUT_VOUCHER_PROGRAMME_REPOSITORY = Symbol('INPUT_VOUCHER_PROGRAMME_REPOSITORY');
+export const BENEFICIARY_REPOSITORY = Symbol('BENEFICIARY_REPOSITORY');
+export const INPUT_VOUCHER_REPOSITORY = Symbol('INPUT_VOUCHER_REPOSITORY');
+export const INPUT_VOUCHER_REDEMPTION_REPOSITORY = Symbol('INPUT_VOUCHER_REDEMPTION_REPOSITORY');
