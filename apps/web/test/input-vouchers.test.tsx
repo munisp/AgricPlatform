@@ -214,6 +214,12 @@ describe('Beneficiary enrolment', () => {
     });
     renderWithProviders(<BeneficiaryEnrolSection />);
     await waitFor(() => expect(screen.getByLabelText('Programme')).toBeTruthy());
+    // Wait for the programmes query to render the option: firing change on a
+    // controlled <select> before the option exists resets the value to ''
+    // (jsdom mirrors the browser), which intermittently blocked the flow.
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: /2026 wet-season fertiliser/ })).toBeTruthy()
+    );
     fireEvent.change(screen.getByLabelText('Programme'), { target: { value: 'prog-1' } });
     fireEvent.change(screen.getByLabelText('Farmer ID'), { target: { value: 'user-farmer' } });
     fireEvent.change(screen.getByLabelText('NIN (11 digits)'), { target: { value: '12345678901' } });
@@ -248,6 +254,12 @@ describe('Allocation + farmer vouchers', () => {
     });
     renderWithProviders(<VoucherAllocateSection />);
     await waitFor(() => expect(screen.getByLabelText('Programme')).toBeTruthy());
+    // Wait for the programmes query to render the option: firing change on a
+    // controlled <select> before the option exists resets the value to ''
+    // (jsdom mirrors the browser), which intermittently blocked the flow.
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: /2026 wet-season fertiliser/ })).toBeTruthy()
+    );
     fireEvent.change(screen.getByLabelText('Programme'), { target: { value: 'prog-1' } });
     await waitFor(() => expect(screen.getByTestId('voucher-ivc-1')).toBeTruthy());
     expect(screen.getByTestId('voucher-ivc-1').textContent).toContain('₦2,000');
@@ -311,6 +323,12 @@ describe('Supplier redemption + reconciliation', () => {
     });
     renderWithProviders(<SubsidyReconciliationSection />);
     await waitFor(() => expect(screen.getByLabelText('Programme')).toBeTruthy());
+    // Wait for the programmes query to render the option: firing change on a
+    // controlled <select> before the option exists resets the value to ''
+    // (jsdom mirrors the browser), which intermittently blocked the flow.
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: /2026 wet-season fertiliser/ })).toBeTruthy()
+    );
     fireEvent.change(screen.getByLabelText('Programme'), { target: { value: 'prog-1' } });
     await waitFor(() => expect(screen.getByTestId('reconciliation-report')).toBeTruthy());
     expect(screen.getByTestId('report-budget').textContent).toBe('₦20,000');

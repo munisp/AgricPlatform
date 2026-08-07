@@ -333,6 +333,88 @@ services:
       - "8001:8001"
     networks: [agric]
 
+  # ---- OPTIONAL polyglot sidecars (Stage 18, profiles: event-gw / crop-ml /
+  # geo-compute) — none start by default; the platform boots without them.
+  # Each pairs with a fail-closed provider port in the API (stub drivers by
+  # default). Contracts: services/<name>/README.md. ----
+
+  # Go stdlib-only webhook edge: verifies external provider webhooks
+  # (fail-closed) and fans out to the API internal event ingress with
+  # retries, circuit breaker and a disk dead-letter spool.
+  event-gw:
+    profiles: ["event-gw"]
+    build:
+      context: ../services/event-gw
+    container_name: agric-event-gw
+    environment:
+      # stub (default, dev only) or live (verifies HMAC per provider).
+      EVENTGW_MODE: ${EVENTGW_MODE:-stub}
+      EVENTGW_PROVIDERS: ${EVENTGW_PROVIDERS:-weather,payments,imagery}
+      # REQUIRED per provider in live mode, else that route answers 503:
+      EVENTGW_SECRET_WEATHER: ${EVENTGW_SECRET_WEATHER:-}
+      EVENTGW_SECRET_PAYMENTS: ${EVENTGW_SECRET_PAYMENTS:-}
+      EVENTGW_SECRET_IMAGERY: ${EVENTGW_SECRET_IMAGERY:-}
+      EVENTGW_API_INGRESS_URL: ${EVENTGW_API_INGRESS_URL:-http://api:3001/api/v1/internal/events}
+      EVENTGW_INTERNAL_TOKEN: ${EVENTGW_INTERNAL_TOKEN:-}
+      EVENTGW_SPOOL_PATH: /var/spool/event-gw/deadletter.jsonl
+    ports:
+      - "8090:8090"
+    volumes:
+      - event-gw-spool:/var/spool/event-gw
+    healthcheck:
+      # distroless has no shell/wget; the binary self-probes /healthz.
+      test: ["CMD", "/event-gw", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks: [agric]
+
+  # Python FastAPI crop-intelligence sidecar: NDVI/phenology/health-score
+  # per plot+season. STUB imagery provider by default (deterministic,
+  # labelled); live provider fails closed without config.
+  crop-ml:
+    profiles: ["crop-ml"]
+    build:
+      context: ../services/crop-ml
+    container_name: agric-crop-ml
+    image: agricplatform/crop-ml:local
+    restart: unless-stopped
+    environment:
+      IMAGERY_PROVIDER: ${IMAGERY_PROVIDER:-stub}
+      SENTINEL_STATS_URL: ${SENTINEL_STATS_URL:-}
+      SENTINEL_STATS_TOKEN: ${SENTINEL_STATS_TOKEN:-}
+      SENTINEL_STATS_TIMEOUT_SECONDS: ${SENTINEL_STATS_TIMEOUT_SECONDS:-5}
+      SENTINEL_STATS_RETRIES: ${SENTINEL_STATS_RETRIES:-2}
+    ports:
+      - "8100:8100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [agric]
+
+  # Rust axum geospatial batch-compute sidecar: H3 index/compact, polygon
+  # metrics, geofence batch. stub/live modes; contract in README.
+  geo-compute:
+    profiles: ["geo-compute"]
+    build:
+      context: ../services/geo-compute
+    container_name: agric-geo-compute
+    image: agricplatform/geo-compute:local
+    restart: unless-stopped
+    environment:
+      GEOCOMPUTE_MODE: ${GEOCOMPUTE_MODE:-stub}
+      GEOCOMPUTE_PORT: 8200
+      GEOCOMPUTE_MAX_CELLS: ${GEOCOMPUTE_MAX_CELLS:-100000}
+      GEOCOMPUTE_MAX_POINTS: ${GEOCOMPUTE_MAX_POINTS:-100000}
+      GEOCOMPUTE_MAX_COMPACT_INPUT: ${GEOCOMPUTE_MAX_COMPACT_INPUT:-1000000}
+    ports:
+      - "8200:8200"
+    networks: [agric]
+
   # ==========================================================================
   # Wave FABRIC optional middleware profiles — NONE start by default. Each
   # pairs with a fail-closed API driver (docs/integration-fabric.md); the API
@@ -574,6 +656,7 @@ services:
 
 volumes:
   postgres-data:
+  event-gw-spool:
   redis-data:
   meili-data:
   moodle-db-data:

@@ -68,11 +68,13 @@ describe('/products hub', () => {
     }
   });
 
-  it('shows honest status badges (Available / Beta / Coming soon)', () => {
+  it('shows honest status badges (Available / Beta — nothing stays Coming soon once built)', () => {
     renderHub();
     expect(screen.getAllByText('Available').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Beta').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Coming soon').length).toBe(INNOVATION_IDS.filter(
+    // queryAllByText: zero 'Coming soon' cards is the honest state once all
+    // ten innovation areas have shipped (getAllByText would throw on zero).
+    expect(screen.queryAllByText('Coming soon').length).toBe(INNOVATION_IDS.filter(
       (id) => ALL_PRODUCTS.find((p) => p.id === id)?.status === 'planned'
     ).length);
   });

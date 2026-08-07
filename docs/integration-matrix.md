@@ -106,6 +106,35 @@ Wave P5a implements the federated model for these systems: identity resolution v
 | OpenSearch (analytics/lakehouse role) | P3 (search role may arrive P2) | Log/metric/security analytics and large-scale search beyond Meilisearch (Appendix A) | `infra/opensearch/`; search adapter interface already abstracts engine | Meilisearch/stub covers local needs | Self-hosted; no third-party credentials | Sandbox: container reindex + query-parity tests against Meilisearch contract when adopted |
 | APISIX (+ open-appsec WAF) | P1 target / P2–P3 adopt | Unified API gateway: TLS termination, JWT validation, rate limiting, routing; ML WAF/WAAP edge (Appendix A.7) | `infra/apisix/` gateway config (deferred); Phase 1 edge is Cloudflare + NestJS Throttler | Not in Phase 1 local stack; throttler tests cover rate-limit behaviour | Self-hosted; no third-party credentials | Code: throttler/header tests now. Sandbox: containerised APISIX route/JWT plugin tests in staging when adopted |
 
+## Stage 18 polyglot sidecars (compose profiles, none start by default)
+
+Three single-purpose sidecars ship as compose service fragments merged into `infra/docker-compose.yml`. Each is **stub-mode by default** and pairs with a fail-closed provider port in the API; the platform boots and passes all tests without them. **Verification = unit/contract tests + YAML validity; no live cluster was run.**
+
+| Sidecar | Profile / port | Stack | Contract | Live mode |
+| --- | --- | --- | --- | --- |
+| `services/event-gw` | `event-gw` / 8090 | Go 1.22 stdlib-only | Webhook edge: HMAC-SHA256 verify (+/-300s skew, replay cache), fanout to API internal ingress, circuit breaker, JSONL dead-letter spool, `/metrics` | `EVENTGW_MODE=live` + per-provider `EVENTGW_SECRET_<NAME>`; unconfigured routes answer 503 |
+| `services/crop-ml` | `crop-ml` / 8100 | Python 3.12 FastAPI | `POST /v1/crop/assess-plot` → NDVI/phenology/health-score with `basis` flag; consumed by credit geo-verification + VSLA carbon evidence | `IMAGERY_PROVIDER=live` + `SENTINEL_STATS_URL`/`_TOKEN`; 503 when configured-but-unreachable |
+| `services/geo-compute` | `geo-compute` / 8200 | Rust axum + h3o | H3 index/compact, polygon metrics, geofence batch; validated against the repo's h3-js vectors | `GEOCOMPUTE_MODE=live` |
+
+## Stage 18 innovation rails (T1–T3) — adapter ports and external gates
+
+Ten innovation modules landed as append-style NestJS modules (migrations 027–037). Every external dependency is a port with a deterministic **stub default** and a **fail-closed** live driver (503 when configured-but-unreachable; production boot abort when a live flag lacks config). `basis` flags (`stub`/`live`/`estimate`/`unavailable`) are surfaced in API payloads and UI badges. **No live third-party integration was verified; each row's gate column states what activation requires.**
+
+| Module (migration) | Port / secret | Stub default | Production gate |
+| --- | --- | --- | --- |
+| Voice agronomist (027) | ASR/TTS provider (`ASR_DRIVER`…) | Deterministic transcript stubs; agronomist escalation queue fully functional | ASR provider contract |
+| EUDR traceability (029–030) | None external (hash-chained custody, DDS export) | n/a — fully functional on platform data | None for code; exporter onboarding is ops |
+| Geo-verified credit (028) | crop-ml imagery (above) | Seeded NDVI stub; **shadow mode** scoring only | Imagery provider + lender policy sign-off |
+| Parametric insurance (031) | Weather provider (`WEATHER_PROVIDER`…) | Labelled STUB rate card; payout execution simulated | Insurer MOU + payment rail ⚖ |
+| Agent banking (032) | OTP driver (`OTP_DRIVER`…) + `AGENT_VOUCHER_SECRET` (prod-required) | Deterministic OTP; HMAC-signed offline vouchers; ledger-backed float | CBN agent-banking partner + OTP vendor ⚖ |
+| Mechanization marketplace (033) | None external | n/a — fully functional | None for code |
+| Warehouse receipts (034) | Certification feed + collateral registry (`WAREHOUSE_*_DRIVER`) + `WAREHOUSE_RECEIPT_SECRET` | Deterministic stubs; HMAC-signed e-WHR | Licensed warehouse network + collateral registry ⚖ |
+| NIN input vouchers (035) | Identity adapter (`NIN_DRIVER`) + `NIN_HASH_SALT` (prod-required; plaintext NIN never stored) | Hash-derived deterministic verification | NIMC/licensed vendor + sponsor MOU ⚖ |
+| Livestock passport (036) | Animal-ID authority (`ANIMAL_ID_AUTHORITY_MODE`) + `LIVESTOCK_PASSPORT_SECRET` (prod-required) | `STUB-NAIS-*` codes; passport aggregates existing health/permit/lien data end-to-end | State veterinary authority + tag registry |
+| VSLA carbon MRV (037) | crop-ml NDVI (above, `CROP_ML_DRIVER`) | Versioned coefficient estimates `v1.2026.1`, labelled `basis:'estimate'` — never verification-grade | Carbon standard methodology + donor agreement ⚖ |
+
+⚖ = requires qualified Nigerian legal/regulatory review before activation.
+
 ## Notes on live-verification limits
 
 1. **Never live-verifiable from this repository alone:** Termii SMS delivery, WhatsApp template delivery, Paystack/Flutterwave live escrow and settlement, BVN/NIN checks (NIBSS/NIMC), NiMet feed, FMARD benchmarks, AFEX/NCX trading, Mojaloop switching, donor MIS imports. Each requires credentials, signed agreements, or regulatory review (⚖ items in `docs/security-compliance.md` §11).
