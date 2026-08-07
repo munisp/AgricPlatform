@@ -651,6 +651,47 @@ import {
   createPgPassportEventRepository,
   createPgPassportTransferRepository
 } from './repositories/livestock-passport.pg-repository.js';
+// Wave NINVOUCHER (additive): input subsidy e-voucher persistence.
+import {
+  BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+  INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+  INPUT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBeneficiaryRepository,
+  createInMemoryInputVoucherRepository,
+  createInMemoryRedemptionRepository,
+  createInMemorySubsidyProgrammeRepository
+} from './repositories/input-vouchers.repository.js';
+import {
+  createPgBeneficiaryRepository,
+  createPgInputVoucherRepository,
+  createPgRedemptionRepository,
+  createPgSubsidyProgrammeRepository
+} from './repositories/input-vouchers.pg-repository.js';
+// Wave WAREHOUSE (additive): electronic warehouse receipts persistence.
+import {
+  CERTIFIED_WAREHOUSE_REPOSITORY,
+  WAREHOUSE_DEPOSIT_REPOSITORY,
+  WAREHOUSE_RECEIPT_REPOSITORY,
+  WAREHOUSE_PLEDGE_REPOSITORY,
+  WAREHOUSE_TRANSFER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCertifiedWarehouseRepository,
+  createInMemoryWarehouseDepositRepository,
+  createInMemoryWarehouseReceiptRepository,
+  createInMemoryWarehousePledgeRepository,
+  createInMemoryWarehouseTransferRepository
+} from './repositories/warehouse.repository.js';
+import {
+  createPgCertifiedWarehouseRepository,
+  createPgWarehouseDepositRepository,
+  createPgWarehouseReceiptRepository,
+  createPgWarehousePledgeRepository,
+  createPgWarehouseTransferRepository
+} from './repositories/warehouse.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1652,6 +1693,62 @@ import {
           ? createPgPassportTransferRepository(pool)
           : createInMemoryPassportTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Wave NINVOUCHER (additive): input subsidy e-vouchers.
+    {
+      provide: INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSubsidyProgrammeRepository(pool) : createInMemorySubsidyProgrammeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BENEFICIARY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBeneficiaryRepository(pool) : createInMemoryBeneficiaryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInputVoucherRepository(pool) : createInMemoryInputVoucherRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRedemptionRepository(pool) : createInMemoryRedemptionRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave WAREHOUSE (additive): electronic warehouse receipts.
+    {
+      provide: CERTIFIED_WAREHOUSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedWarehouseRepository(pool) : createInMemoryCertifiedWarehouseRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_DEPOSIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseDepositRepository(pool) : createInMemoryWarehouseDepositRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_RECEIPT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseReceiptRepository(pool) : createInMemoryWarehouseReceiptRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_PLEDGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehousePledgeRepository(pool) : createInMemoryWarehousePledgeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1811,7 +1908,17 @@ import {
     // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
     LIVESTOCK_PASSPORT_REPOSITORY,
     LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
-    LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY
+    LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
+    // Wave NINVOUCHER (additive).
+    INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+    BENEFICIARY_REPOSITORY,
+    INPUT_VOUCHER_REPOSITORY,
+    INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+    CERTIFIED_WAREHOUSE_REPOSITORY,
+    WAREHOUSE_DEPOSIT_REPOSITORY,
+    WAREHOUSE_RECEIPT_REPOSITORY,
+    WAREHOUSE_PLEDGE_REPOSITORY,
+    WAREHOUSE_TRANSFER_REPOSITORY
   ]
 })
 export class DatabaseModule {}

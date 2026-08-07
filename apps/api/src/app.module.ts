@@ -72,6 +72,10 @@ import { MechanizationModule } from './modules/mechanization/mechanization.modul
 import { InsuranceModule } from './modules/insurance/insurance.module.js';
 // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
 import { LivestockPassportModule } from './modules/livestock-passport/livestock-passport.module.js';
+// Wave NINVOUCHER (additive): NIN-linked input subsidy e-vouchers.
+import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
+// Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
+import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
 
 @Module({
   imports: [
@@ -160,7 +164,11 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
     // Wave-INSURANCE parametric insurance rail — appended to minimise merge conflicts.
     InsuranceModule,
     // Wave LIVESTOCK-PASSPORT digital livestock passport — appended to minimise merge conflicts.
-    LivestockPassportModule
+    LivestockPassportModule,
+    // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
+    InputVouchersModule,
+    // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
+    WarehouseModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

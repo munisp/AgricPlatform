@@ -3922,6 +3922,348 @@ export function fetchAgentReconciliation(
 
 /* --- end agent banking (wave-agentbank) --- */
 
+/* --- input vouchers (wave-nin-vouchers) --- */
+
+export type SubsidyProgrammeStatus = 'DRAFT' | 'ACTIVE' | 'CLOSED';
+export type SubsidyVoucherStatus = 'ISSUED' | 'REDEEMED' | 'EXPIRED' | 'VOIDED';
+export type IdentityBasis = 'stub' | 'live';
+
+export interface SubsidyProgramme {
+  id: string;
+  name: string;
+  sponsor: string;
+  description?: string;
+  status: SubsidyProgrammeStatus;
+  perFarmerCapKobo: number;
+  budgetKobo: number;
+  eligibleStates: string[];
+  eligibleCrops: string[];
+  liabilityAccountCode: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubsidyBeneficiary {
+  id: string;
+  programmeId: string;
+  farmerId: string;
+  /** Salted HMAC hash — the plaintext NIN is never stored or returned. */
+  ninHash: string;
+  ninMask: string;
+  verificationBasis: IdentityBasis;
+  nameMatchScore?: number;
+  state?: string;
+  primaryCrop?: string;
+  verifiedAt: string;
+  createdAt: string;
+}
+
+export interface SubsidyVoucher {
+  id: string;
+  programmeId: string;
+  beneficiaryId: string;
+  farmerId: string;
+  amountKobo: number;
+  status: SubsidyVoucherStatus;
+  idempotencyKey: string;
+  expiresAt: string;
+  distributedAt?: string;
+  redeemedAt?: string;
+  voidedAt?: string;
+  ledgerEntryId?: string;
+  createdAt: string;
+}
+
+export interface SubsidyRedemption {
+  id: string;
+  voucherId: string;
+  programmeId: string;
+  supplierId: string;
+  invoiceRef: string;
+  amountKobo: number;
+  idempotencyKey: string;
+  ledgerEntryId: string;
+  createdAt: string;
+}
+
+export interface SubsidyReconciliation {
+  programmeId: string;
+  budgetKobo: number;
+  totals: {
+    vouchersIssued: number;
+    allocatedKobo: number;
+    outstandingCount: number;
+    outstandingKobo: number;
+    redeemedCount: number;
+    redeemedKobo: number;
+    expiredCount: number;
+    expiredKobo: number;
+    voidedCount: number;
+    voidedKobo: number;
+    beneficiariesVerified: number;
+  };
+  byState: Array<{
+    state: string;
+    vouchersIssued: number;
+    outstandingKobo: number;
+    redeemedKobo: number;
+  }>;
+  ledger: {
+    liabilityAccountCode: string;
+    liabilityKobo: number;
+    expectedLiabilityKobo: number;
+    discrepancyKobo: number;
+  };
+  generatedAt: string;
+}
+
+export interface SubsidyIdentityStatus {
+  driver: IdentityBasis;
+  configured: boolean;
+  detail: string;
+}
+
+/** Programmes (admin create; admin/regulator/donor read). */
+export function fetchSubsidyProgrammes(status?: SubsidyProgrammeStatus): Promise<{ data: SubsidyProgramme[] }> {
+  return apiFetch('/input-vouchers/programmes', { query: { status } });
+}
+
+export function createSubsidyProgramme(input: {
+  name: string;
+  sponsor: string;
+  description?: string;
+  perFarmerCapKobo: number;
+  budgetKobo: number;
+  eligibleStates?: string[];
+  eligibleCrops?: string[];
+}): Promise<{ data: SubsidyProgramme }> {
+  return apiFetch('/input-vouchers/programmes', { method: 'POST', body: input });
+}
+
+export function activateSubsidyProgramme(id: string): Promise<{ data: SubsidyProgramme }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+}
+
+export function closeSubsidyProgramme(id: string): Promise<{ data: SubsidyProgramme }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(id)}/close`, { method: 'POST' });
+}
+
+/** Beneficiary enrolment (admin; NIN verified then discarded — hash + mask only). */
+export function verifySubsidyBeneficiary(
+  programmeId: string,
+  input: { farmerId: string; nin: string; fullName: string; state?: string; primaryCrop?: string }
+): Promise<{ data: SubsidyBeneficiary }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/beneficiaries`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchSubsidyBeneficiaries(programmeId: string): Promise<{ data: SubsidyBeneficiary[] }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/beneficiaries`);
+}
+
+/** Voucher lifecycle. */
+export function allocateSubsidyVoucher(
+  programmeId: string,
+  input: { farmerId: string; amountKobo: number; idempotencyKey: string; expiresAt?: string }
+): Promise<{ data: SubsidyVoucher }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/vouchers`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchProgrammeVouchers(
+  programmeId: string,
+  status?: SubsidyVoucherStatus
+): Promise<{ data: SubsidyVoucher[] }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/vouchers`, {
+    query: { status }
+  });
+}
+
+export function fetchMySubsidyVouchers(status?: SubsidyVoucherStatus): Promise<{ data: SubsidyVoucher[] }> {
+  return apiFetch('/input-vouchers/farmers/me/vouchers', { query: { status } });
+}
+
+export function distributeSubsidyVoucher(id: string): Promise<{ data: SubsidyVoucher }> {
+  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/distribute`, { method: 'POST' });
+}
+
+export function redeemSubsidyVoucher(
+  id: string,
+  invoiceRef: string
+): Promise<{ data: { voucher: SubsidyVoucher; redemption: SubsidyRedemption } }> {
+  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/redeem`, {
+    method: 'POST',
+    body: { invoiceRef }
+  });
+}
+
+export function voidSubsidyVoucher(id: string): Promise<{ data: SubsidyVoucher }> {
+  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/void`, { method: 'POST' });
+}
+
+/** Reconciliation export (admin/regulator/donor) + identity adapter diagnostics (admin). */
+export function fetchSubsidyReconciliation(programmeId: string): Promise<{ data: SubsidyReconciliation }> {
+  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/reconciliation`);
+}
+
+export function fetchSubsidyIdentityStatus(): Promise<{ data: SubsidyIdentityStatus }> {
+  return apiFetch('/input-vouchers/identity/status');
+}
+
+/* --- end input vouchers (wave-nin-vouchers) --- */
+/* --- warehouse receipts (wave-warehouse) --- */
+
+import type {
+  CertifiedWarehouse,
+  WarehouseCertificationStatus,
+  WarehouseDeposit,
+  WarehouseGrade,
+  WarehousePledge,
+  WarehouseReceipt,
+  WarehouseReceiptTransfer,
+  WarehouseRegistryExport
+} from '@agric-platform/shared';
+
+export interface WarehouseIntegrationStatus {
+  certificationDriver: 'stub' | 'live';
+  collateralRegistryDriver: 'stub' | 'live';
+}
+
+export function listWarehouses(params: {
+  state?: string;
+  lga?: string;
+  certificationStatus?: WarehouseCertificationStatus;
+} = {}): Promise<{ data: CertifiedWarehouse[] }> {
+  return apiFetch('/warehouse/warehouses', { query: { ...params } });
+}
+
+export function fetchWarehouse(id: string): Promise<{ data: CertifiedWarehouse }> {
+  return apiFetch(`/warehouse/warehouses/${encodeURIComponent(id)}`);
+}
+
+export function registerWarehouse(input: {
+  name: string;
+  state: string;
+  lga: string;
+  latitude: number;
+  longitude: number;
+  capacityTonnes: number;
+  operatorLicenseRef?: string;
+}): Promise<{ data: CertifiedWarehouse }> {
+  return apiFetch('/warehouse/warehouses', { method: 'POST', body: input });
+}
+
+export function refreshWarehouseCertification(id: string): Promise<{ data: CertifiedWarehouse }> {
+  return apiFetch(`/warehouse/warehouses/${encodeURIComponent(id)}/certification`, {
+    method: 'POST'
+  });
+}
+
+export function createWarehouseDeposit(input: {
+  warehouseId: string;
+  lotId?: string;
+  crop: string;
+}): Promise<{ data: WarehouseDeposit }> {
+  return apiFetch('/warehouse/deposits', { method: 'POST', body: input });
+}
+
+export function listMyWarehouseDeposits(): Promise<{ data: WarehouseDeposit[] }> {
+  return apiFetch('/warehouse/deposits/mine');
+}
+
+export function fetchWarehouseDeposit(id: string): Promise<{ data: WarehouseDeposit }> {
+  return apiFetch(`/warehouse/deposits/${encodeURIComponent(id)}`);
+}
+
+export function gradeWarehouseDeposit(
+  id: string,
+  input: { grade: WarehouseGrade; moisturePercent: number; bagCount: number; weightKg: number }
+): Promise<{ data: WarehouseDeposit }> {
+  return apiFetch(`/warehouse/deposits/${encodeURIComponent(id)}/grading`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function issueWarehouseReceipt(id: string): Promise<{ data: WarehouseReceipt }> {
+  return apiFetch(`/warehouse/deposits/${encodeURIComponent(id)}/receipt`, { method: 'POST' });
+}
+
+export function listMyWarehouseReceipts(): Promise<{ data: WarehouseReceipt[] }> {
+  return apiFetch('/warehouse/receipts/mine');
+}
+
+export function fetchWarehouseReceipt(id: string): Promise<{ data: WarehouseReceipt }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}`);
+}
+
+export function verifyWarehouseReceipt(
+  id: string
+): Promise<{ data: { receiptNumber: string; valid: boolean } }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/verify`);
+}
+
+export function listReceiptPledges(id: string): Promise<{ data: WarehousePledge[] }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/pledges`);
+}
+
+export function listReceiptTransfers(id: string): Promise<{ data: WarehouseReceiptTransfer[] }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/transfers`);
+}
+
+export function pledgeWarehouseReceipt(
+  id: string,
+  input: { principalKobo: number; terms?: string },
+  idempotencyKey?: string
+): Promise<{ data: { receipt: WarehouseReceipt; pledge: WarehousePledge } }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/pledge`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function releaseWarehousePledge(
+  id: string
+): Promise<{ data: { receipt: WarehouseReceipt; pledge: WarehousePledge } }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/release`, { method: 'POST' });
+}
+
+export function transferWarehouseReceipt(
+  id: string,
+  input: { toOwnerId: string; note?: string },
+  idempotencyKey?: string
+): Promise<{ data: WarehouseReceipt }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/transfer`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function redeemWarehouseReceipt(id: string): Promise<{ data: WarehouseReceipt }> {
+  return apiFetch(`/warehouse/receipts/${encodeURIComponent(id)}/redeem`, { method: 'POST' });
+}
+
+export function listMyWarehousePledges(): Promise<{ data: WarehousePledge[] }> {
+  return apiFetch('/warehouse/pledges/mine');
+}
+
+export function fetchWarehouseRegistryExport(): Promise<{ data: WarehouseRegistryExport }> {
+  return apiFetch('/warehouse/registry/export');
+}
+
+export function fetchWarehouseIntegrationStatus(): Promise<{ data: WarehouseIntegrationStatus }> {
+  return apiFetch('/warehouse/integrations/status');
+}
+
+/* --- end warehouse receipts (wave-warehouse) --- */
+
 /* --- livestock passport (wave-livestock-passport) --- */
 
 export type LivestockPassportStatus = 'active' | 'suspended' | 'revoked';
