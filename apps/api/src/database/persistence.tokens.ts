@@ -239,3 +239,28 @@ export const VSLA_LOAN_REPAYMENT_REPOSITORY = Symbol('VSLA_LOAN_REPAYMENT_REPOSI
 export const CARBON_PLOT_REPOSITORY = Symbol('CARBON_PLOT_REPOSITORY');
 export const CARBON_EVIDENCE_REPOSITORY = Symbol('CARBON_EVIDENCE_REPOSITORY');
 export const CARBON_ESTIMATE_REPOSITORY = Symbol('CARBON_ESTIMATE_REPOSITORY');
+// Wave LIVESTOCK-PASSPORT (additive, innovation #9): digital livestock
+// passport — per-animal verifiable identity document aggregating the
+// livestock core/health/trade domains, append-only hash-chained passport
+// event log and the two-party ownership-transfer handshake (schema
+// `livestock_passport`, migration 036).
+export const LIVESTOCK_PASSPORT_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_REPOSITORY');
+export const LIVESTOCK_PASSPORT_EVENT_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_EVENT_REPOSITORY');
+export const LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY = Symbol('LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY');
+// Wave NINVOUCHER: NIN-linked input subsidy e-vouchers (input_vouchers
+// schema, migration 035) — programmes, NIN-verified beneficiaries (hash +
+// mask only, never plaintext), vouchers, redemptions. Money movement stays
+// in the finance ledger; these tables hold operational records only.
+export const INPUT_VOUCHER_PROGRAMME_REPOSITORY = Symbol('INPUT_VOUCHER_PROGRAMME_REPOSITORY');
+export const BENEFICIARY_REPOSITORY = Symbol('BENEFICIARY_REPOSITORY');
+export const INPUT_VOUCHER_REPOSITORY = Symbol('INPUT_VOUCHER_REPOSITORY');
+export const INPUT_VOUCHER_REDEMPTION_REPOSITORY = Symbol('INPUT_VOUCHER_REDEMPTION_REPOSITORY');
+// Wave WAREHOUSE: electronic warehouse receipts (warehouse schema, migration
+// 034) — certified warehouse registry, deposits/grading, signed receipts,
+// pledge liens, ownership-transfer audit trail. Money stays in the finance
+// ledger; these are operational records only.
+export const CERTIFIED_WAREHOUSE_REPOSITORY = Symbol('CERTIFIED_WAREHOUSE_REPOSITORY');
+export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY');
+export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
+export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
+export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
