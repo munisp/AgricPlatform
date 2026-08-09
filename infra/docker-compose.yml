@@ -513,7 +513,7 @@ services:
   #   OPENSEARCH_TLS_REJECT_UNAUTHORIZED=false   (demo certs only!)
   opensearch:
     profiles: ["opensearch"]
-    image: opensearchproject/opensearch:2
+    image: opensearchproject/opensearch:3
     container_name: agric-opensearch
     environment:
       discovery.type: single-node
