@@ -163,7 +163,7 @@ services:
 
   moodle:
     profiles: ["integrations"]
-    image: moodlehq/moodle-php-apache:8.3
+    image: moodlehq/moodle-php-apache:8.4
     container_name: agric-moodle
     environment:
       MOODLE_DB_TYPE: pgsql
