@@ -76,9 +76,15 @@ curl -s -H "x-user-id: <dev-user>" "localhost:3001/api/v1/geo-intel/flood-risk?l
 ```
 
 Without Sentinel Hub credentials the sidecar still starts, but `/predict`
-answers 503 and the status endpoint says so honestly. A seeded mock route
+answers 503 and the status endpoint says so honestly. The sidecar is
+fail-closed end to end: if the Hugging Face model weights cannot be
+loaded, inference answers `503 Flood detection model unavailable` and
+`/healthz` reports `degraded`/`unhealthy` instead of `healthy` — fabricated
+output is never substituted for a failed model. A seeded mock route
 (`GET /api/flood-detection/mock`) exists on the sidecar for plumbing tests
-only — the platform never calls it.
+only; it is explicitly labelled `basis: "mock"` (real inference returns
+`basis: "live"`), is refused when `FLOOD_ML_ENV=production`, and the
+platform never calls it.
 
 ## Production notes
 

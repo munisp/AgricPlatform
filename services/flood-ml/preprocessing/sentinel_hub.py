@@ -17,6 +17,15 @@ from sentinelhub import (
 )
 
 
+class NoImageryAvailableError(ValueError):
+    """Raised when the upstream provider has no imagery for the request.
+
+    Subclasses ValueError for backwards compatibility, but a missing
+    upstream observation is not a client error: the API layer maps this
+    to HTTP 503 (service unavailable), not 400.
+    """
+
+
 class SentinelHubClient:
     """Client for interacting with Sentinel Hub API"""
     
@@ -138,7 +147,7 @@ class SentinelHubClient:
         
         data = request.get_data()
         if not data:
-            raise ValueError("No Sentinel-2 data available for the specified time range")
+            raise NoImageryAvailableError("No Sentinel-2 data available for the specified time range")
         
         return data[0]
     
@@ -205,7 +214,7 @@ class SentinelHubClient:
         
         data = request.get_data()
         if not data:
-            raise ValueError("No Sentinel-1 data available for the specified time range")
+            raise NoImageryAvailableError("No Sentinel-1 data available for the specified time range")
         
         return data[0]
     
