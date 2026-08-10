@@ -87,7 +87,9 @@ export function ChannelStatusCards() {
     () => listIntegrations().then((res) => res.data),
     { fallbackData: fixtureIntegrations, staleTimeMs: 60_000 }
   );
-  const channels = mapChannels(query.data ?? fixtureIntegrations);
+  // No fixture coalescing during the load window — fixtures arrive via
+  // `query.data` only after an actual failure (source === 'fallback').
+  const channels = mapChannels(query.data ?? []);
 
   return (
     <>
@@ -98,8 +100,8 @@ export function ChannelStatusCards() {
       ) : null}
       <QueryState
         isLoading={query.isLoading}
-        error={undefined}
-        data={channels}
+        error={query.source === 'fallback' ? undefined : query.error}
+        data={query.data}
         onRetry={query.refresh}
       >
         <div className="grid grid-3">

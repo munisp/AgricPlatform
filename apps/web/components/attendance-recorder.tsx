@@ -38,7 +38,9 @@ export function AttendanceRecorder() {
     },
     { fallbackData: demoEvents }
   );
-  const events = eventsQuery.data ?? demoEvents;
+  // Demo events appear only via `eventsQuery.data` after an actual failure
+  // (source === 'fallback'), never during the load window.
+  const events = eventsQuery.data ?? [];
 
   const [eventId, setEventId] = useState('');
   const selectedEventId = eventId || events[0]?.id || '';
@@ -55,7 +57,9 @@ export function AttendanceRecorder() {
     () => listEventRoster(selectedEventId).then((res) => res.data),
     { fallbackData: FALLBACK_ROSTER, enabled: Boolean(selectedEventId) }
   );
-  const roster = rosterQuery.data ?? FALLBACK_ROSTER;
+  // The "(demo)" fallback roster arrives via `rosterQuery.data` on failure
+  // only — an empty roster during load, never fabricated names.
+  const roster = rosterQuery.data ?? [];
 
   const present = useMemo(() => records[selectedEventId] ?? [], [records, selectedEventId]);
   const event = events.find((item) => item.id === selectedEventId);

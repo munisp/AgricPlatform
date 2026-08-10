@@ -76,6 +76,9 @@ export function AttendanceCheckIn() {
         code here.
       </p>
       {eventsQuery.source === 'fallback' ? <OfflineDataNotice /> : null}
+      {eventsQuery.error && eventsQuery.source !== 'fallback' ? (
+        <ApiErrorNotice error={eventsQuery.error} onRetry={eventsQuery.refresh} />
+      ) : null}
       <div className="form-grid cols-2">
         <Field id="ci-event" label="Event">
           <Select id="ci-event" value={selectedEventId} onChange={(e) => setEventId(e.target.value)}>

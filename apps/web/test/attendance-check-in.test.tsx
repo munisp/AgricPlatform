@@ -77,8 +77,11 @@ describe('Attendance check-in', () => {
     setup(() => jsonResponse({ data: { eventId: EVENT.id, userId: 'user-adamu', status: 'attended' } }));
     renderWithProviders(<AttendanceCheckIn />);
 
+    // Wait for the real events to load — the select no longer defaults to a
+    // fixture event id during the load window, so the button stays disabled
+    // until the live list arrives.
     await waitFor(() => {
-      expect(screen.getByLabelText('Event')).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'Maize Field Day' })).toBeTruthy();
     });
     fireEvent.change(screen.getByLabelText('Attendance code'), {
       target: { value: 'v1.event-field-day.123456.abcd-signature' }
@@ -106,7 +109,7 @@ describe('Attendance check-in', () => {
     renderWithProviders(<AttendanceCheckIn />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Event')).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'Maize Field Day' })).toBeTruthy();
     });
     fireEvent.change(screen.getByLabelText('Attendance code'), {
       target: { value: 'v1.event-field-day.123456.abcd-signature' }
@@ -137,7 +140,7 @@ describe('Attendance check-in', () => {
     renderWithProviders(<AttendanceCheckIn />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Event')).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'Maize Field Day' })).toBeTruthy();
     });
     fireEvent.change(screen.getByLabelText('Attendance code'), {
       target: { value: 'v1.event-field-day.123456.abcd-signature' }
