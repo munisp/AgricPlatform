@@ -281,6 +281,7 @@ jobs:
             AGENT_VOUCHER_SECRET=ci-smoke-agent-voucher-signing-key \
             NIN_HASH_SALT=ci-smoke-nin-hash-salt \
             LIVESTOCK_PASSPORT_SECRET=ci-smoke-livestock-passport-key \
+            OTP_DRIVER=live OTP_PROVIDER_URL=http://127.0.0.1:9/unreachable OTP_PROVIDER_API_KEY=ci-smoke-otp-key \
             npm run start --workspace=apps/api &
           API_PID=$!
           NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
