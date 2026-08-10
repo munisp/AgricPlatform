@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import type { NotificationMessage } from '@agric-platform/shared';
 import {
   DELIVERY_LOG_REPOSITORY,
   NOTIFICATION_REPOSITORY
@@ -109,7 +110,7 @@ export class DeliveryRetryService {
       throw new NotFoundException(`No delivery attempts recorded for notification ${notificationId}`);
     }
     const message = await this.messages.getById(notificationId);
-    const result = this.integrations.deliver(message.channel);
+    const result = await this.deliverFor(message);
     const attempt = (latest.attempt ?? 1) + 1;
     const entry = this.buildEntry(notificationId, result, attempt);
     await this.messages.recordDelivery(
@@ -127,7 +128,7 @@ export class DeliveryRetryService {
     now: Date
   ): Promise<'delivered' | 'retry_scheduled' | 'dead_lettered'> {
     const message = await this.messages.getById(notificationId);
-    const result = this.integrations.deliver(message.channel);
+    const result = await this.deliverFor(message);
     const entry = this.buildEntry(notificationId, result, attempt, now);
     await this.messages.recordDelivery(notificationId, result.delivered ? 'sent' : 'failed', entry);
     if (result.delivered) {
@@ -138,6 +139,15 @@ export class DeliveryRetryService {
       return 'dead_lettered';
     }
     return 'retry_scheduled';
+  }
+
+  /** Routes one message through the live-driver switch (stub-honest). */
+  private async deliverFor(message: NotificationMessage): Promise<DeliveryLogEntry['result']> {
+    return this.integrations.deliver(message.channel, {
+      to: message.userId,
+      text: message.body,
+      subject: message.title
+    });
   }
 
   private buildEntry(

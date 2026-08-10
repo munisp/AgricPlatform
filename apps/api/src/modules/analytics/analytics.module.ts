@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { S3Client } from '@aws-sdk/client-s3';
+import { ChaptersModule } from '../chapters/chapters.module.js';
 import { LearningModule } from '../learning/learning.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
 import { OpportunitiesModule } from '../opportunities/opportunities.module.js';
@@ -45,7 +46,7 @@ function buildLakehouseS3(config: LakehouseConfig): LakehouseS3 | null {
 }
 
 @Module({
-  imports: [ProfilesModule, LearningModule, OpportunitiesModule, MarketplaceModule],
+  imports: [ProfilesModule, LearningModule, OpportunitiesModule, MarketplaceModule, ChaptersModule],
   controllers: [AnalyticsController],
   providers: [
     AnalyticsService,

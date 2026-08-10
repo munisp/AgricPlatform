@@ -10,8 +10,8 @@ import {
 const bundle: AnalyticsExportBundle = {
   generatedAt: '2026-08-02T09:00:00.000Z',
   metrics: [
-    { key: 'farmers_onboarded', label: 'Farmers onboarded', value: 4200, unit: 'farmers', trend: 12 },
-    { key: 'quotes,with,commas', label: 'Tricky "quoted" label', value: 3 }
+    { key: 'farmers_onboarded', label: 'Farmers onboarded', value: 4200, unit: 'farmers', trend: 12, basis: 'live' },
+    { key: 'quotes,with,commas', label: 'Tricky "quoted" label', value: 3, basis: 'live' }
   ],
   overview: { users: 9000, courses: 12 },
   byRole: [{ key: 'farmer', count: 8000 }],

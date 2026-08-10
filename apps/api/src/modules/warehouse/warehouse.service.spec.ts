@@ -5,7 +5,7 @@ import {
   NotFoundException,
   ServiceUnavailableException
 } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CertifiedWarehouse, User, WarehouseReceipt } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -35,6 +35,10 @@ const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-outsider', roles: ['sup
 
 const KANO = { latitude: 12.0022, longitude: 8.592 };
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 const LOT = {
   id: 'lot-1',
   ownerUserId: farmer.id,
@@ -56,10 +60,11 @@ function makeService(options: {
 } = {}) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
   const lots = createInMemoryCommodityLotRepository();
+  const warehouses = createInMemoryCertifiedWarehouseRepository();
   const service = new WarehouseService(
     events,
     new H3Service(),
-    createInMemoryCertifiedWarehouseRepository(),
+    warehouses,
     createInMemoryWarehouseDepositRepository(),
     createInMemoryWarehouseReceiptRepository(),
     createInMemoryWarehousePledgeRepository(),
@@ -69,7 +74,7 @@ function makeService(options: {
     options.collateralRegistry ?? new StubCollateralRegistry(),
     options.audit
   );
-  return { service, events, lots };
+  return { service, events, lots, warehouses };
 }
 
 /** Certified-feed fixture whose outcome the test controls. */
@@ -190,6 +195,54 @@ describe('warehouse registry', () => {
 });
 
 describe('deposits and grading', () => {
+  it('records the certification basis and round-trips it in warehouse payloads', async () => {
+    const { service } = makeService({ certificationFeed: fixedFeed('certified') });
+    const warehouse = await certifiedWarehouse(service);
+    expect(warehouse.certificationStatus).toBe('certified');
+    expect(warehouse.certificationBasis).toBe('stub');
+    const fetched = await service.getWarehouse(warehouse.id);
+    expect(fetched.certificationBasis).toBe('stub');
+    const listed = await service.browseWarehouses({ certificationStatus: 'certified' });
+    expect(listed.find((row) => row.id === warehouse.id)?.certificationBasis).toBe('stub');
+  });
+
+  it('refuses stub-derived certifications for deposits in production (fail closed)', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const { service } = makeService({ certificationFeed: fixedFeed('certified') });
+    const warehouse = await certifiedWarehouse(service);
+    expect(warehouse.certificationBasis).toBe('stub');
+    await expect(
+      service.createDeposit({ warehouseId: warehouse.id, crop: 'maize' }, farmer.id)
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('refuses legacy (basis-less) certifications for deposits in production', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const { service, warehouses } = makeService({ certificationFeed: fixedFeed('certified') });
+    const warehouse = await service.registerWarehouse(
+      { name: 'Legacy Depot', state: 'Kano', lga: 'Nassarawa', ...KANO, capacityTonnes: 100 },
+      admin.id
+    );
+    // Legacy row: certified status without a recorded basis.
+    await warehouses.update(warehouse.id, { certificationStatus: 'certified' });
+    await expect(
+      service.createDeposit({ warehouseId: warehouse.id, crop: 'maize' }, farmer.id)
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('allows live-certified deposits in production', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const liveFeed: WarehouseCertificationFeed = {
+      name: 'live',
+      check: () => Promise.resolve({ status: 'certified', basis: 'live', reference: 'LIVE-1' })
+    };
+    const { service } = makeService({ certificationFeed: liveFeed });
+    const warehouse = await certifiedWarehouse(service);
+    expect(warehouse.certificationBasis).toBe('live');
+    const deposit = await service.createDeposit({ warehouseId: warehouse.id, crop: 'maize' }, farmer.id);
+    expect(deposit.status).toBe('received');
+  });
+
   it('rejects deposits at non-certified warehouses', async () => {
     const { service } = makeService();
     const warehouse = await service.registerWarehouse(

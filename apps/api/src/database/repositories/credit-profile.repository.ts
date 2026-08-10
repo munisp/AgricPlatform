@@ -8,6 +8,8 @@ import { seedCreditProfiles } from '../seed-data.js';
 export interface CreditProfileRepository {
   findByUserId(userId: string): Promise<CreditProfile | undefined>;
   upsert(profile: CreditProfile): Promise<CreditProfile>;
+  /** Total stored profiles — backs the live credit_profiles platform KPI. */
+  count(): Promise<number>;
 }
 
 export class InMemoryCreditProfileRepository implements CreditProfileRepository {
@@ -26,6 +28,10 @@ export class InMemoryCreditProfileRepository implements CreditProfileRepository 
   async upsert(profile: CreditProfile): Promise<CreditProfile> {
     this.items.set(profile.userId, profile);
     return profile;
+  }
+
+  count(): Promise<number> {
+    return Promise.resolve(this.items.size);
   }
 }
 

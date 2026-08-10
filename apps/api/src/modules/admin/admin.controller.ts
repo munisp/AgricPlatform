@@ -66,7 +66,7 @@ export class AdminController {
   }
 
   @Get('kpis')
-  @ApiOperation({ summary: 'Platform KPIs (seed metrics + live counts)' })
+  @ApiOperation({ summary: 'Platform KPIs (repository-computed, live basis; seed refused in production)' })
   async kpis() {
     return { data: await this.admin.kpis() };
   }

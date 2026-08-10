@@ -47,6 +47,14 @@ const CHANNEL_PROVIDERS: Partial<Record<NotificationChannel, string>> = {
   push: 'onesignal'
 };
 
+/**
+ * Channels the synchronous notification pipeline (deliver → deliverMessage)
+ * can honour with a live driver. A non-stub adapter on any other channel
+ * would be silently unhonourable — the production boot guard below refuses
+ * that configuration instead of fabricating delivery.
+ */
+const LIVE_DELIVERABLE_CHANNELS: ReadonlySet<string> = new Set(['sms', 'whatsapp', 'email', 'push']);
+
 /** Provider-specific signature headers in priority order. */
 const SIGNATURE_HEADERS = ['x-webhook-signature', 'x-paystack-signature', 'x-flutterwave-signature'];
 
@@ -117,6 +125,20 @@ export class IntegrationsService {
     for (const adapter of this.adapters.values()) {
       if (adapter.driver !== 'stub') {
         this.liveDriver(adapter.provider);
+      }
+    }
+    // Fail closed when a notification channel's adapter is configured
+    // non-stub but the deliver path has no live case for it — never boot a
+    // production process whose notification pipeline cannot honour the
+    // configured driver.
+    for (const [channel, provider] of Object.entries(CHANNEL_PROVIDERS)) {
+      const adapter = this.adapters.get(provider);
+      if (adapter && adapter.driver !== 'stub' && !LIVE_DELIVERABLE_CHANNELS.has(channel)) {
+        throw new Error(
+          `FATAL: notification channel '${channel}' (provider '${provider}') is configured ` +
+            `${adapter.driver} but the delivery pipeline has no live driver for it. ` +
+            'Set the driver flag back to stub or wire the live driver. Refusing to start.'
+        );
       }
     }
   }
@@ -242,17 +264,22 @@ export class IntegrationsService {
     return this.status(provider);
   }
 
-  /** Route a notification channel to its provider adapter (stub-safe). */
-  deliver(channel: NotificationChannel): DeliveryResult {
-    const provider = CHANNEL_PROVIDERS[channel] ?? 'local';
-    const adapter = this.adapters.get(provider);
-    return stubDelivery(provider, adapter?.driver ?? 'stub', channel);
+  /**
+   * Route a notification channel to its provider adapter. This is the SAME
+   * live-driver switch as deliverMessage: a non-stub adapter invokes the
+   * real provider driver, and the stub driver returns an honest
+   * delivered:false result (never fabricated 'sent'). Channels without an
+   * external provider (in_app) stay on the local stub.
+   */
+  async deliver(channel: NotificationChannel, message: OutboundMessage): Promise<DeliveryResult> {
+    return this.deliverMessage(channel, message);
   }
 
   /**
    * Live delivery path (wave P1): routes the message through the real
-   * provider driver when the channel's adapter is non-stub, and returns
-   * the deterministic stub result otherwise. Drivers throw
+   * provider driver when the channel's adapter is non-stub, and returns an
+   * honest stub result otherwise (delivered:false — nothing was sent; the
+   * retry machinery keeps the message pending). Drivers throw
    * ProviderConfigError/ProviderHttpError/ProviderRequestError — callers
    * own retry policy.
    */
@@ -262,6 +289,17 @@ export class IntegrationsService {
   ): Promise<DeliveryResult> {
     const provider = CHANNEL_PROVIDERS[channel] ?? 'local';
     const adapter = this.adapters.get(provider);
+    if (provider === 'local') {
+      // In-app channel: the persisted notification record IS the delivery
+      // (no external provider exists), so delivered:true is honest here.
+      return {
+        delivered: true,
+        provider,
+        driver: 'stub',
+        providerRef: `local-inbox-${Date.now()}`,
+        note: 'In-app inbox delivery (notification record persisted locally)'
+      };
+    }
     if (!adapter || adapter.driver === 'stub') {
       return stubDelivery(provider, adapter?.driver ?? 'stub', channel);
     }

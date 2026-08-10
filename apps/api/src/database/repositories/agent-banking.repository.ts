@@ -96,6 +96,12 @@ export interface AgentTransactionRecord {
   idempotencyKey: string;
   ledgerEntryId: string;
   voucherId?: string;
+  /**
+   * Basis of the farmer presence proof (OTP) that authorised the cash
+   * transaction: 'stub' (deterministic dev driver, non-production only) or
+   * 'live'. Voucher redemptions carry no OTP and leave this unset.
+   */
+  otpBasis?: 'stub' | 'live';
   createdAt: string;
 }
 

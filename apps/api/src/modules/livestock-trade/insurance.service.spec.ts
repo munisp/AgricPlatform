@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Animal, InsurancePolicy, LivestockLot, User } from '@agric-platform/shared';
 import { LIVESTOCK_RECALL_INITIATED_EVENT } from '@agric-platform/shared';
@@ -262,6 +263,34 @@ describe('InsuranceService', () => {
       const recallClaims = await claims.find({ policyId: policy.id, recallId: 'recall-9' });
       expect(recallClaims).toHaveLength(1);
       expect(recallClaims[0].status).toBe('draft');
+    });
+
+    it('surfaces store failures from the lot overlap lookup (no silent "no overlap")', async () => {
+      const lotQuote = await service.quote(farmer, {
+        subjectType: 'lot',
+        subjectId: lot.id,
+        premiumKobo: 50_000_00,
+        coverageKobo: 1_000_000_00
+      });
+      await service.bind(insurer, lotQuote.id);
+      lots.listAnimalIds = vi.fn().mockRejectedValue(new Error('store connection lost'));
+      await expect(
+        service.handleRecallInitiated({ recallId: 'recall-err', animalIds: ['NG-AVI-KD-000777'] })
+      ).rejects.toThrow('store connection lost');
+    });
+
+    it('still treats the documented not-found case as no overlap', async () => {
+      const lotQuote = await service.quote(farmer, {
+        subjectType: 'lot',
+        subjectId: lot.id,
+        premiumKobo: 50_000_00,
+        coverageKobo: 1_000_000_00
+      });
+      await service.bind(insurer, lotQuote.id);
+      lots.listAnimalIds = vi.fn().mockRejectedValue(new NotFoundException('lot gone'));
+      await expect(
+        service.handleRecallInitiated({ recallId: 'recall-nf', animalIds: ['NG-AVI-KD-000777'] })
+      ).resolves.toEqual([]);
     });
   });
 });

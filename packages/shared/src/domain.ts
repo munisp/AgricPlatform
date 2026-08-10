@@ -310,6 +310,12 @@ export interface PlatformMetric {
   value: number;
   unit?: string;
   trend?: number;
+  /**
+   * Honesty flag: 'live' = computed from repositories at request time;
+   * 'seed' = deterministic fixture (allowed in non-production responses and
+   * client-side offline fallbacks only — refused in production responses).
+   */
+  basis: 'seed' | 'live';
 }
 
 export interface IntegrationStatus {

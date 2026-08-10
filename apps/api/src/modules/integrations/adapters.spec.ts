@@ -35,6 +35,21 @@ describe('Integration adapter driver resolution', () => {
     expect(resolveDriver(definition('termii'), env)).toEqual({ driver: 'sandbox', configured: true });
   });
 
+  it('reports the search backend the query path actually serves (Meilisearch)', () => {
+    // Split-brain guard: the status vocabulary must match the backend the
+    // search provider factory binds for the same live-mode flag.
+    const adapter = createAdapter(definition('search'), {
+      SEARCH_DRIVER: 'production',
+      MEILISEARCH_API_KEY: 'k'
+    });
+    const status = adapter.status();
+    expect(status.driver).toBe('production');
+    expect(status.healthy).toBe(true);
+    expect(status.notes).toContain('Meilisearch');
+    const sandbox = createAdapter(definition('search'), { MEILISEARCH_API_KEY: 'k' });
+    expect(sandbox.status().notes).toContain('Meilisearch');
+  });
+
   it('defaults to stub without flags or credentials, sandbox with credentials', () => {
     expect(resolveDriver(definition('termii'), {})).toEqual({ driver: 'stub', configured: false });
     expect(resolveDriver(definition('termii'), { TERMII_API_KEY: 'k' })).toEqual({

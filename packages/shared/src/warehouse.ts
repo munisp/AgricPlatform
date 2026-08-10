@@ -41,6 +41,12 @@ export interface CertifiedWarehouse {
    * travels with the check; see docs/warehouse-receipts.md).
    */
   certificationStatus: WarehouseCertificationStatus;
+  /**
+   * Basis of the last certification check: 'stub' (deterministic dev feed,
+   * non-production only) or 'live'. A stub-derived 'certified' must NEVER
+   * unblock deposits/pledges in production — the app layer fails closed.
+   */
+  certificationBasis?: 'stub' | 'live';
   /** External operator licence reference (never a URL to PII). */
   operatorLicenseRef?: string;
   createdAt: string;

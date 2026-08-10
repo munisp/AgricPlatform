@@ -166,7 +166,9 @@ describe('AgricPlatform API (e2e)', () => {
     );
     expect(ok.status).toBe(201);
     const body = await ok.json();
-    expect(body.data.status).toBe('sent');
+    // The stub SMS driver no longer fabricates delivery: the message stays
+    // failed/pending for the retry machinery instead of a false 'sent'.
+    expect(body.data.status).toBe('failed');
   });
 
   it('restricts notifications to the owning user or admin', async () => {

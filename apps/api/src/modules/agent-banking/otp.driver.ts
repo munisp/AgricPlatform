@@ -104,5 +104,13 @@ export function createOtpDriver(env: NodeJS.ProcessEnv = process.env): OtpDriver
     }
     return new LiveOtpDriver(env.OTP_PROVIDER_URL, env.OTP_PROVIDER_API_KEY);
   }
+  // Fail closed (mirrors assertProductionDriverConfig): the stub code is a
+  // PUBLICLY COMPUTABLE hash, so a stub OTP in production is a presence-proof
+  // bypass. Boot aborts; OTP_DRIVER=live is the only production mode.
+  if (isProduction()) {
+    throw new ProviderConfigError('agent-banking-otp', [
+      'OTP_DRIVER=live (the deterministic stub OTP is forbidden in production)'
+    ]);
+  }
   return new StubOtpDriver();
 }

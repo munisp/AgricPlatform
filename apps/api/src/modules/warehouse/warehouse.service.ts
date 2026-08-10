@@ -23,6 +23,7 @@ import type {
 } from '@agric-platform/shared';
 import { WAREHOUSE_GRADES } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -224,6 +225,10 @@ export class WarehouseService {
     }
     const updated = await this.warehouses.update(id, {
       certificationStatus: check.status,
+      // The basis travels with the status it produced: a stub-derived
+      // 'certified' is labelled as such and must not unblock deposits in
+      // production (see createDeposit).
+      certificationBasis: check.basis,
       updatedAt: new Date().toISOString()
     });
     await this.audit?.record({
@@ -248,6 +253,16 @@ export class WarehouseService {
     if (warehouse.certificationStatus !== 'certified') {
       throw new ConflictException(
         `Warehouse is not accepting deposits (certification '${warehouse.certificationStatus}')`
+      );
+    }
+    // Fail closed (mirrors the commodity-price/weather production gates): a
+    // 'certified' status produced by the stub feed is a development fixture
+    // and must never unblock deposits (or downstream pledges) in production.
+    if (isProduction() && warehouse.certificationBasis !== 'live') {
+      throw new ServiceUnavailableException(
+        `Warehouse '${warehouse.id}' certification was not verified against the live operator ` +
+          'feed (basis is not live). Refusing the deposit in production — re-check certification ' +
+          'with the live certification feed configured.'
       );
     }
     if (!input.crop?.trim()) {

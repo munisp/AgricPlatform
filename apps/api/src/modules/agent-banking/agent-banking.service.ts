@@ -504,6 +504,9 @@ export class AgentBankingService {
         commissionKobo,
         idempotencyKey: input.idempotencyKey,
         ledgerEntryId: entry.id,
+        // Persist the presence-proof basis so a stub-OTP-backed cash movement
+        // is always identifiable as such (stub is non-production only).
+        otpBasis: this.otp.name,
         createdAt: new Date().toISOString()
       });
       await this.events.publish(

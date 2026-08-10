@@ -37,6 +37,11 @@ export class PgCreditProfileRepository implements CreditProfileRepository {
     );
     return profile;
   }
+
+  async count(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*)::int AS count FROM finance.credit_profiles');
+    return Number(result.rows[0]?.count ?? 0);
+  }
 }
 
 export function documentCriteriaSql(criteria: DocumentCriteria): WhereClause {

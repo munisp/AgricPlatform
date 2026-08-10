@@ -250,13 +250,18 @@ export function stubWeatherSnapshot(state: string, source: string): WeatherSnaps
   };
 }
 
-/** Stub message delivery used when no sandbox/production driver is configured. */
+/**
+ * Stub message delivery used when no sandbox/production driver is configured.
+ * Honest by construction: a stub NEVER reports delivered — nothing left the
+ * process, so callers keep the message pending and route it through the
+ * retry machinery instead of falsely marking it 'sent'.
+ */
 export function stubDelivery(provider: string, driver: IntegrationDriver, channel: NotificationChannel): DeliveryResult {
   return {
-    delivered: true,
+    delivered: false,
     provider,
     driver,
     providerRef: `${provider}-stub-${Date.now()}`,
-    note: `Delivered via ${driver} ${channel} driver (no external network call)`
+    note: `Simulated ${channel} delivery via ${driver} driver (no external network call; message NOT sent)`
   };
 }

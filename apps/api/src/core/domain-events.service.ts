@@ -82,16 +82,26 @@ export class DomainEventsService {
     // delivery here is best-effort — failures are logged, not thrown, and
     // the outbox row remains for the sweeper to retry.
     if (this.bus && this.bus.name !== 'stub') {
-      void this.bus.publish(event as DomainEvent).catch((error: unknown) => {
-        this.logger.warn(
-          `event-bus publish failed for ${event.name} (${event.id}): ${(error as Error)?.message ?? error}`
-        );
-      });
+      // The outbox row is marked published ONLY after the bus accepts the
+      // event: a broker outage must leave the row unpublished so the
+      // sweeper retries it instead of permanently losing the event while
+      // the outbox claims it was relayed.
+      void this.bus
+        .publish(event as DomainEvent)
+        .then(() => this.markPublished(event.id))
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `event-bus publish failed for ${event.name} (${event.id}): ${(error as Error)?.message ?? error}`
+          );
+        });
     }
     this.fanOut(event);
-    // Wave P: mark the outbox row published after successful fan-out so the
-    // sweeper only retries rows whose delivery actually stalled.
-    void this.markPublished(event.id);
+    if (!this.bus || this.bus.name === 'stub') {
+      // Wave P: mark the outbox row published after successful fan-out so
+      // the sweeper only retries rows whose delivery actually stalled. (A
+      // throwing listener skips this — the sweeper counts the attempt.)
+      void this.markPublished(event.id);
+    }
   }
 
   private fanOut<T>(event: DomainEvent<T>): void {
