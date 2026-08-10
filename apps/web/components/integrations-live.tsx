@@ -14,7 +14,10 @@ export function IntegrationsStatus() {
     () => listIntegrations().then((res) => res.data),
     { fallbackData: fixtureIntegrations, staleTimeMs: 60_000 }
   );
-  const integrations = query.data ?? fixtureIntegrations;
+  // Do not coalesce fixtures here: during the first load `query.data` is
+  // undefined and the UI must show skeletons. Fixture data arrives via
+  // `query.data` only after an actual fetch failure (source === 'fallback').
+  const integrations = query.data ?? [];
 
   const stubCount = integrations.filter((i) => i.driver === 'stub').length;
   const sandboxCount = integrations.filter((i) => i.driver === 'sandbox').length;

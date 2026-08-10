@@ -982,7 +982,13 @@ export function RecallConsole() {
             </li>
           ))}
         </ul>
-        {detailId && detail.data ? (
+        {detailId && detail.source === 'fallback' ? (
+          // The fixture detail describes recall-1 only — never show it as
+          // another recall's animal list.
+          <OfflineDataNotice>Recall detail unavailable offline.</OfflineDataNotice>
+        ) : detailId && detail.error && !detail.data ? (
+          <ApiErrorNotice error={detail.error} onRetry={detail.refresh} />
+        ) : detailId && detail.data ? (
           <div className="notice notice-info" role="status">
             Recall {detail.data.recall.id}: {detail.data.animals.length} materialised animal
             {detail.data.animals.length === 1 ? '' : 's'} —{' '}

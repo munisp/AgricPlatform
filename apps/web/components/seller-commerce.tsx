@@ -148,7 +148,7 @@ export function ReturnsQueuePanel() {
     fallbackData: demoReturnRequests,
     staleTimeMs: 30_000
   });
-  const returns = query.data ?? demoReturnRequests;
+  const returns = query.data ?? [];
   return (
     <div className="stack">
       {query.source === 'fallback' && query.error ? (
@@ -156,9 +156,13 @@ export function ReturnsQueuePanel() {
           <T k="commerce.offlineNotice" />
         </OfflineDataNotice>
       ) : null}
-      {returns.length === 0 ? (
-        <EmptyState title={t('commerce.noReturns')} />
-      ) : (
+      <QueryState
+        isLoading={query.isLoading}
+        error={query.source === 'fallback' ? undefined : query.error}
+        data={query.data}
+        onRetry={query.refresh}
+        empty={<EmptyState title={t('commerce.noReturns')} />}
+      >
         <ul className="stack" aria-label="Return requests">
           {returns.map((request) => (
             <li key={request.id} className="cluster" style={{ justifyContent: 'space-between' }}>
@@ -172,7 +176,8 @@ export function ReturnsQueuePanel() {
             </li>
           ))}
         </ul>
-      )}
+      </QueryState>
     </div>
   );
 }
+

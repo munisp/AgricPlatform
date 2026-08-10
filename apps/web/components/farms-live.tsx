@@ -747,8 +747,13 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'plantings' ? (
         <Card>
+          {plantings.source === 'fallback' ? (
+            <OfflineDataNotice>{t('farms.offlineNotice')}</OfflineDataNotice>
+          ) : null}
           {plantings.isLoading ? (
             <SkeletonBlock lines={3} />
+          ) : plantings.error && plantings.source !== 'fallback' ? (
+            <ApiErrorNotice error={plantings.error} onRetry={plantings.refresh} />
           ) : (plantings.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.plantingsEmpty')} />
           ) : (
@@ -812,8 +817,13 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'harvests' ? (
         <Card>
+          {harvests.source === 'fallback' ? (
+            <OfflineDataNotice>{t('farms.offlineNotice')}</OfflineDataNotice>
+          ) : null}
           {firstPlantingId && harvests.isLoading ? (
             <SkeletonBlock lines={3} />
+          ) : harvests.error && harvests.source !== 'fallback' ? (
+            <ApiErrorNotice error={harvests.error} onRetry={harvests.refresh} />
           ) : !firstPlantingId || (harvests.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.harvestsEmpty')} />
           ) : (
@@ -830,8 +840,13 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
 
       {tab === 'expenses' ? (
         <Card>
+          {expenses.source === 'fallback' ? (
+            <OfflineDataNotice>{t('farms.offlineNotice')}</OfflineDataNotice>
+          ) : null}
           {expenses.isLoading ? (
             <SkeletonBlock lines={3} />
+          ) : expenses.error && expenses.source !== 'fallback' ? (
+            <ApiErrorNotice error={expenses.error} onRetry={expenses.refresh} />
           ) : (expenses.data ?? []).length === 0 ? (
             <EmptyState title={t('farms.expensesEmpty')} />
           ) : (

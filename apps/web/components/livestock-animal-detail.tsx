@@ -36,6 +36,14 @@ export function AnimalGradeBadge({ animalId }: { animalId: string }) {
     { fallbackData: demoAnimalGrade }
   );
   const grade = query.data;
+  // Never present fixture grades as real: on fallback the grade is unknown.
+  if (query.source === 'fallback') {
+    return (
+      <StatusBadge tone="neutral" ariaLabel="Trust grade unavailable offline">
+        Grade unavailable offline
+      </StatusBadge>
+    );
+  }
   if (!grade) return null;
 
   const rubric =
@@ -95,7 +103,10 @@ export function TransferOwnershipForm({ animal }: { animal: Animal }) {
     () => listLiens({ subjectType: 'animal', subjectId: animal.id }).then((res) => res.data),
     { fallbackData: demoLiens }
   );
-  const hasActiveLien = (liensQuery.data ?? []).some((lien) => lien.status === 'active');
+  // Fixture liens are unverified — never gate a transfer on fabricated data.
+  const liensUnverified = liensQuery.source === 'fallback';
+  const hasActiveLien =
+    !liensUnverified && (liensQuery.data ?? []).some((lien) => lien.status === 'active');
 
   const transfer = useApiMutation<void, unknown>({
     mutationFn: () =>
@@ -127,6 +138,12 @@ export function TransferOwnershipForm({ animal }: { animal: Animal }) {
       {hasActiveLien ? (
         <p className="notice notice-warning" role="alert" data-testid="transfer-lien-block">
           Transfer disabled — this animal has an active lien. The lien must be discharged first.
+        </p>
+      ) : null}
+      {liensUnverified ? (
+        <p className="notice notice-warning" role="alert" data-testid="transfer-liens-unverified">
+          Transfer disabled — unable to verify liens offline. Reconnect and retry to confirm this
+          animal has no active lien.
         </p>
       ) : null}
       <div className="form-grid cols-2">
@@ -167,9 +184,18 @@ export function TransferOwnershipForm({ animal }: { animal: Animal }) {
           type="button"
           className="btn btn-primary"
           disabled={
-            hasActiveLien || toUserId.trim().length < 3 || transfer.status === 'pending'
+            hasActiveLien ||
+            liensUnverified ||
+            toUserId.trim().length < 3 ||
+            transfer.status === 'pending'
           }
-          title={hasActiveLien ? 'Active lien blocks transfer' : undefined}
+          title={
+            hasActiveLien
+              ? 'Active lien blocks transfer'
+              : liensUnverified
+                ? 'Lien status unverified offline'
+                : undefined
+          }
           onClick={() => void transfer.mutate()}
         >
           {transfer.status === 'pending' ? 'Transferring…' : 'Transfer ownership'}
