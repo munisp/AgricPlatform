@@ -42,7 +42,7 @@ jobs:
       web-image: ${{ steps.meta.outputs.web-image }}
       api-image: ${{ steps.meta.outputs.api-image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
@@ -88,7 +88,7 @@ jobs:
       KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
       API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Resolve image tags
         run: |
           echo "Deploying tag ${IMAGE_TAG}"
@@ -145,7 +145,7 @@ jobs:
       KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
       API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify promoted tag matches staging
         run: echo "Promoting ${IMAGE_TAG} from staging to production (same immutable artifact)"
       - name: Cluster credentials not configured — skipping apply
