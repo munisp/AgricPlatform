@@ -167,10 +167,11 @@ jobs:
         run: npm install -g npm@11
       - run: npm ci
       # Blocking gate: high/critical findings in production dependencies fail
-      # CI. Moderate/low findings are reported without blocking so advisories
-      # stay visible while the Phase 1 dependency set stabilises.
+      # CI, except advisories explicitly excepted (with justification + expiry)
+      # in scripts/audit-exceptions.json — the VEX-style pattern also used by
+      # .trivyignore. Moderate/low findings are reported without blocking.
       - name: Dependency audit (blocking, production deps)
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/npm-audit-gate.mjs
       - name: Dependency audit (advisory, all deps)
         run: npm audit --audit-level=moderate || true
 
