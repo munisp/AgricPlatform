@@ -1,0 +1,21 @@
+{
+  "$comment": "VEX-style exceptions for the blocking production dependency audit (scripts/npm-audit-gate.mjs). Every entry must carry a justification and an expiry; an entry whose advisory disappears from npm audit output is flagged stale and must be removed. This file is the ONLY place advisories may be excepted — never silence the audit globally.",
+  "exceptions": [
+    {
+      "id": "GHSA-w3rx-r6r6-pgpr",
+      "package": "image-size",
+      "severity": "high",
+      "added": "2026-08-10",
+      "expires": "2026-11-10",
+      "justification": "DoS via infinite loop in the ICNS parser. image-size is reachable ONLY through metro/@expo/metro image processing at app-bundle build time inside CI/EAS — it never runs in the shipped PWA/API/mobile runtime and never processes untrusted user input (bundled assets are committed to this repo). No fixed version has been published (advisory range is '*'); the npm-suggested 'fix' downgrades expo to v46, which is not a fix. Re-evaluate at expiry or when a patched image-size/metro releases."
+    },
+    {
+      "id": "GHSA-5p2g-fcmc-qvqq",
+      "package": "image-size",
+      "severity": "high",
+      "added": "2026-08-10",
+      "expires": "2026-11-10",
+      "justification": "DoS via infinite loops in the JXL and HEIF parsers. Same exposure analysis as GHSA-w3rx-r6r6-pgpr: build-time-only transitive dependency of the Expo/metro bundler, no runtime surface, inputs are repo-controlled assets, and no fixed version exists upstream yet. Re-evaluate at expiry."
+    }
+  ]
+}
