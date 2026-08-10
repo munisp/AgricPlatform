@@ -12,8 +12,23 @@ AgricPlatform wave ML. Changes made during the port:
 - Removed the upstream `/predict/yield` and `/predict/price` endpoints: they
   returned **random** numbers, not model output. Nothing in AgricPlatform may
   present fabricated inference as real.
+- Made model loading **fail-closed**: if the Hugging Face weights cannot be
+  loaded, construction raises and inference requests get `503` — the upstream
+  "print a warning, then serve a deterministic RNG mask" fallback
+  (`_mock_prediction`) is deleted from the request path entirely.
+- Labelled every response with provenance: real inference returns
+  `basis: "live"`, the mock endpoint returns `basis: "mock"`, and the mock
+  endpoint is refused (`404`) when `FLOOD_ML_ENV=production`.
+- Fixed error mapping: deliberate 503/400 responses are no longer re-raised
+  as 500, 500 bodies no longer leak internal exception text, and a missing
+  upstream Sentinel observation maps to 503 (not 400).
+- `/health`/`/healthz` now derive `status` from the actual capability flags
+  (including whether model weights really loaded) instead of always
+  reporting `"healthy"`.
 - Fixed the Docker `HEALTHCHECK` (used the `requests` package, which is not
   in `requirements.txt`; now uses stdlib `urllib`).
+- Replaced global `np.random.seed(...)` in the mock endpoint with a local
+  `np.random.default_rng(seed)` so it cannot corrupt other RNG consumers.
 
 Everything else — model wrapper, Sentinel Hub preprocessing, Redis result
 caching, the seeded `/api/flood-detection/mock` endpoint — is upstream code.
@@ -39,21 +54,25 @@ pre-warmed image/host cache).
 | `SENTINEL_HUB_CLIENT_SECRET` | **yes, for real inference** | Sentinel Hub OAuth client secret |
 | `SENTINEL_HUB_INSTANCE_ID` | optional | Sentinel Hub configuration instance |
 | `REDIS_HOST` / `REDIS_PORT` | optional | result cache (1 h TTL); runs fine without Redis |
+| `FLOOD_ML_ENV` | optional | set to `production` to disable the mock endpoint (404) |
 
 Without Sentinel Hub credentials every real-inference call returns
-`503 Sentinel Hub credentials not configured`. The seeded
-`GET /api/flood-detection/mock` endpoint works without credentials and is
-clearly labelled mock data — use it only for plumbing tests, never in
-product UI.
+`503 Sentinel Hub credentials not configured`; if the model weights cannot
+be downloaded from Hugging Face, inference returns
+`503 Flood detection model unavailable` — the service never substitutes
+fabricated output for a failed model. The seeded
+`GET /api/flood-detection/mock` endpoint works without credentials and
+returns `basis: "mock"` (real inference returns `basis: "live"`) — use it
+only for plumbing tests, never in product UI.
 
 ## Endpoints
 
 | Route | Purpose |
 | --- | --- |
-| `GET /healthz` | liveness: models loaded, Sentinel Hub configured, Redis available |
-| `POST /predict` | flood inference for `{latitude, longitude, bbox_size_km?, date?, days_back?}` |
+| `GET /healthz` | liveness: `status` derived from model weights loaded, Sentinel Hub configured, Redis available |
+| `POST /predict` | flood inference for `{latitude, longitude, bbox_size_km?, date?, days_back?}` (`basis: "live"`) |
 | `POST /api/flood-detection` | upstream route, same behaviour as `/predict` |
-| `GET /api/flood-detection/mock` | seeded mock response for plumbing tests (labelled mock) |
+| `GET /api/flood-detection/mock` | seeded mock response for plumbing tests (`basis: "mock"`; 404 when `FLOOD_ML_ENV=production`) |
 | `GET /health`, `GET /` | upstream health/root |
 
 ## Run it
@@ -75,14 +94,26 @@ pip install -r requirements.txt   # needs system GDAL (see Dockerfile)
 uvicorn app:app --host 0.0.0.0 --port 8001
 ```
 
-## Verification (no automated suite)
+## Verification
 
-The upstream repo shipped **no pytest suite** for this service, so none is
-fabricated here. Manual verification:
+The upstream repo shipped no test suite; AgricPlatform adds a stdlib
+`unittest` suite (`tests/`) covering the fail-closed contract — model-load
+failure → 503 with no mask, mock labelling and the production guard, 503
+vs 500 mapping, and health-status derivation. It runs without the heavy ML
+stack (torch/transformers/redis are not required):
+
+```bash
+cd services/flood-ml
+python3 -m unittest discover -s tests -v
+```
+
+Manual verification:
 
 ```bash
 curl -s localhost:8001/healthz
-# {"status":"healthy","models_loaded":false,"sentinel_hub_configured":true|false,...}
+# {"status":"degraded","models_loaded":false,"model_weights_loaded":false,"sentinel_hub_configured":true|false,...}
+# ("healthy" only once model weights are loaded, Sentinel Hub is configured
+#  and Redis is reachable; "unhealthy" if the model code cannot even load)
 
 # Plumbing check without credentials (mock, seeded by coordinates):
 curl -s "localhost:8001/api/flood-detection/mock?latitude=9.08&longitude=8.68"

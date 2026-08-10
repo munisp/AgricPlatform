@@ -1,46 +1,77 @@
 """
 IBM Granite Geospatial Flood Detection Model
 Wrapper for the granite-geospatial-uki-flooddetection model
+
+Fail-closed: if the model weights cannot be loaded, construction raises
+ModelLoadError. There is deliberately no mock/RNG fallback — a request that
+cannot be served by the real model must surface as an error (HTTP 503),
+never as fabricated inference.
 """
-import torch
+from __future__ import annotations
+
 import numpy as np
 from typing import Tuple, Dict, Optional
-from transformers import AutoModelForImageSegmentation, AutoImageProcessor
+
+
+class ModelLoadError(RuntimeError):
+    """Raised when the flood detection model weights cannot be loaded.
+
+    The API layer maps this to HTTP 503 (service unavailable). It exists so
+    a missing/failed model can never be mistaken for a loaded one.
+    """
 
 
 class FloodDetectionModel:
     """Wrapper for IBM Granite flood detection model"""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  model_name: str = "ibm-granite/granite-geospatial-uki-flooddetection",
                  device: Optional[str] = None):
         """
-        Initialize flood detection model
-        
+        Initialize flood detection model. Fails closed: raises ModelLoadError
+        if the ML dependencies or the model weights cannot be loaded.
+
         Args:
             model_name: Hugging Face model identifier
             device: Device to run model on ('cuda' or 'cpu')
         """
         self.model_name = model_name
+        self.weights_loaded = False
+
+        # Imported lazily so this module (and the pure severity/alert helpers
+        # below) stays importable in environments without the heavy ML stack.
+        # Construction still fails closed when the stack is missing.
+        try:
+            import torch
+            from transformers import (
+                AutoModelForImageSegmentation,
+                AutoImageProcessor,
+            )
+        except ImportError as e:
+            raise ModelLoadError(
+                "ML dependencies (torch/transformers) are not installed; "
+                f"cannot load flood detection model: {e}"
+            ) from e
+
+        self._torch = torch
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        
+
         print(f"Loading flood detection model on {self.device}...")
-        
-        # Load model and processor
+
+        # Load model and processor. No fallback: any failure is fatal so the
+        # caller can return 503 instead of fabricated predictions.
         try:
             self.model = AutoModelForImageSegmentation.from_pretrained(model_name)
             self.processor = AutoImageProcessor.from_pretrained(model_name)
         except Exception as e:
-            print(f"Warning: Could not load from transformers: {e}")
-            print("Attempting manual model loading...")
-            # Fallback to manual loading if needed
-            self.model = None
-            self.processor = None
-        
-        if self.model is not None:
-            self.model.eval()
-            self.model.to(self.device)
-        
+            raise ModelLoadError(
+                f"Could not load flood detection model '{model_name}': {e}"
+            ) from e
+
+        self.model.eval()
+        self.model.to(self.device)
+        self.weights_loaded = True
+
         print("Flood detection model loaded successfully")
     
     def predict(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
@@ -56,10 +87,14 @@ class FloodDetectionModel:
             - prediction_mask: Binary mask (0 = no water, 1 = water/flood)
             - probabilities: Confidence probabilities for each class
         """
-        if self.model is None:
-            # Return mock prediction for testing
-            return self._mock_prediction(input_tensor)
-        
+        if not self.weights_loaded or getattr(self, "model", None) is None:
+            # Fail closed: never fabricate a prediction.
+            raise ModelLoadError(
+                "Flood detection model weights are not loaded; "
+                "refusing to produce a prediction"
+            )
+
+        torch = self._torch
         with torch.no_grad():
             # Move input to device
             input_tensor = input_tensor.to(self.device)
@@ -81,30 +116,6 @@ class FloodDetectionModel:
             probabilities = probs.cpu().numpy()[0]
             
             return prediction_mask, probabilities
-    
-    def _mock_prediction(self, input_tensor: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Generate mock prediction for testing when model is not available
-        
-        Args:
-            input_tensor: Input tensor
-            
-        Returns:
-            Mock prediction mask and probabilities
-        """
-        # Get spatial dimensions
-        _, _, h, w = input_tensor.shape
-        
-        # Create mock prediction (random flood areas)
-        np.random.seed(42)
-        prediction_mask = (np.random.rand(h, w) > 0.9).astype(np.int32)
-        
-        # Create mock probabilities
-        probabilities = np.zeros((2, h, w))
-        probabilities[0] = 1 - prediction_mask  # No water probability
-        probabilities[1] = prediction_mask      # Water probability
-        
-        return prediction_mask, probabilities
     
     def calculate_flood_percentage(self, prediction_mask: np.ndarray) -> float:
         """
@@ -184,13 +195,14 @@ class FloodDetectionModel:
             'flooded_pixels': int(np.sum(flooded_mask))
         }
     
-    def get_flood_severity(self, flood_percentage: float) -> str:
+    @staticmethod
+    def get_flood_severity(flood_percentage: float) -> str:
         """
         Classify flood severity based on percentage
-        
+
         Args:
             flood_percentage: Percentage of flooded area
-            
+
         Returns:
             Severity level: 'none', 'low', 'moderate', 'high', 'severe'
         """
@@ -205,35 +217,35 @@ class FloodDetectionModel:
         else:
             return 'severe'
     
-    def create_flood_alert(self,
-                          statistics: Dict[str, float],
-                          location: Dict[str, float]) -> Dict:
+    @staticmethod
+    def create_flood_alert(statistics: Dict[str, float],
+                           location: Dict[str, float]) -> Dict:
         """
         Create flood alert message
-        
+
         Args:
             statistics: Flood statistics from get_flood_statistics
             location: Location dict with 'latitude' and 'longitude'
-            
+
         Returns:
             Alert dictionary
         """
-        severity = self.get_flood_severity(statistics['flood_percentage'])
-        
+        severity = FloodDetectionModel.get_flood_severity(statistics['flood_percentage'])
+
         alert = {
             'alert_type': 'flood_detection',
             'severity': severity,
             'location': location,
             'statistics': statistics,
-            'message': self._generate_alert_message(severity, statistics),
-            'recommended_actions': self._get_recommended_actions(severity)
+            'message': FloodDetectionModel._generate_alert_message(severity, statistics),
+            'recommended_actions': FloodDetectionModel._get_recommended_actions(severity)
         }
-        
+
         return alert
-    
-    def _generate_alert_message(self,
-                               severity: str,
-                               statistics: Dict[str, float]) -> str:
+
+    @staticmethod
+    def _generate_alert_message(severity: str,
+                                statistics: Dict[str, float]) -> str:
         """Generate human-readable alert message"""
         if severity == 'none':
             return "No significant flooding detected in the area."
@@ -250,7 +262,8 @@ class FloodDetectionModel:
         
         return messages.get(severity, "Unknown flood severity")
     
-    def _get_recommended_actions(self, severity: str) -> list:
+    @staticmethod
+    def _get_recommended_actions(severity: str) -> list:
         """Get recommended actions based on severity"""
         actions = {
             'none': [

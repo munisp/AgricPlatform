@@ -1,6 +1,6 @@
 """
 IBM Granite Geospatial Models
 """
-from .flood_detection import FloodDetectionModel
+from .flood_detection import FloodDetectionModel, ModelLoadError
 
-__all__ = ['FloodDetectionModel']
+__all__ = ['FloodDetectionModel', 'ModelLoadError']
