@@ -384,8 +384,8 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.transactions (id, agent_id, farmer_id, type, amount_kobo, ' +
-          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, otp_basis, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
         [
           record.id,
           record.agentId,
@@ -396,6 +396,7 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
           record.idempotencyKey,
           record.ledgerEntryId,
           record.voucherId ?? null,
+          record.otpBasis ?? null,
           record.createdAt
         ]
       );
@@ -455,6 +456,7 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
       idempotencyKey: row.idempotency_key as string,
       ledgerEntryId: row.ledger_entry_id as string,
       voucherId: (row.voucher_id as string) ?? undefined,
+      otpBasis: (row.otp_basis as AgentTransactionRecord['otpBasis']) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }

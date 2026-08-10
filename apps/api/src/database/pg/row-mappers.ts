@@ -2823,6 +2823,7 @@ export const certifiedWarehouseMapper: RowMapper<CertifiedWarehouse> = {
     'h3_cell',
     'capacity_tonnes',
     'certification_status',
+    'certification_basis',
     'operator_license_ref',
     'created_at',
     'updated_at'
@@ -2837,6 +2838,8 @@ export const certifiedWarehouseMapper: RowMapper<CertifiedWarehouse> = {
     h3Cell: row.h3_cell as string,
     capacityTonnes: num(row.capacity_tonnes),
     certificationStatus: row.certification_status as CertifiedWarehouse['certificationStatus'],
+    certificationBasis:
+      (row.certification_basis as CertifiedWarehouse['certificationBasis']) ?? undefined,
     operatorLicenseRef: (row.operator_license_ref as string) ?? undefined,
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at)
@@ -2852,6 +2855,7 @@ export const certifiedWarehouseMapper: RowMapper<CertifiedWarehouse> = {
       h3_cell: 'h3Cell',
       capacity_tonnes: 'capacityTonnes',
       certification_status: 'certificationStatus',
+      certification_basis: 'certificationBasis',
       operator_license_ref: 'operatorLicenseRef',
       created_at: 'createdAt',
       updated_at: 'updatedAt'

@@ -181,11 +181,16 @@ export const seedListings: MarketplaceListing[] = [
   }
 ];
 
+/**
+ * Deterministic seed fixture (basis 'seed'): offline fallback for clients
+ * and non-production demos. The API serves repository-computed metrics
+ * (basis 'live') and refuses seed numbers in production responses.
+ */
 export const platformMetrics: PlatformMetric[] = [
-  { key: 'members', label: 'Registered members', value: 10482, trend: 18 },
-  { key: 'active_chapters', label: 'Active chapters', value: 24, trend: 6 },
-  { key: 'course_completions', label: 'Course completions', value: 531, trend: 22 },
-  { key: 'opportunities', label: 'Open opportunities', value: 37, trend: 9 },
-  { key: 'marketplace_listings', label: 'Marketplace listings', value: 126, trend: 14 },
-  { key: 'credit_profiles', label: 'Credit profiles', value: 618, trend: 12 }
+  { key: 'members', label: 'Registered members', value: 10482, trend: 18, basis: 'seed' },
+  { key: 'active_chapters', label: 'Active chapters', value: 24, trend: 6, basis: 'seed' },
+  { key: 'course_completions', label: 'Course completions', value: 531, trend: 22, basis: 'seed' },
+  { key: 'opportunities', label: 'Open opportunities', value: 37, trend: 9, basis: 'seed' },
+  { key: 'marketplace_listings', label: 'Marketplace listings', value: 126, trend: 14, basis: 'seed' },
+  { key: 'credit_profiles', label: 'Credit profiles', value: 618, trend: 12, basis: 'seed' }
 ];

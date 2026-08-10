@@ -26,7 +26,15 @@ export function toCsv(rows: ReadonlyArray<CsvRow>): string {
 /** Shape of the analytics export bundle produced by AnalyticsService.export(). */
 export interface AnalyticsExportBundle {
   generatedAt: string;
-  metrics: ReadonlyArray<{ key: string; label: string; value: number; unit?: string; trend?: number }>;
+  metrics: ReadonlyArray<{
+    key: string;
+    label: string;
+    value: number;
+    unit?: string;
+    trend?: number;
+    /** Honesty flag: 'live' = repository-computed; 'seed' = labelled fixture. */
+    basis: 'seed' | 'live';
+  }>;
   overview: Record<string, number>;
   byRole: ReadonlyArray<{ key: string; count: number }>;
   byState: ReadonlyArray<{ key: string; count: number }>;

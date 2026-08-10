@@ -23,6 +23,10 @@ import {
   ProviderRequestError,
   requireEnv
 } from './http.js';
+import {
+  createSearchProvider,
+  type SearchProvider as MeilisearchClient
+} from './search.drivers.js';
 
 /** Default OpenSearch index for cross-domain discovery documents. */
 export const OPENSEARCH_DEFAULT_INDEX = 'agric-platform';
@@ -209,18 +213,72 @@ export class OpenSearchSearchProvider implements SearchProvider {
 export { ProviderConfigError, ProviderHttpError, ProviderRequestError };
 
 /**
- * Selects the search provider for the module query path. Default (stub,
- * meilisearch flag, or unset) returns the existing in-process SearchService
- * unchanged. SEARCH_DRIVER=opensearch requires OPENSEARCH_NODE and fails
- * closed with ProviderConfigError otherwise — boot aborts rather than
- * silently running the in-process search when the operator asked for
- * OpenSearch.
+ * Adapts the Meilisearch integration driver (search.drivers.ts) to the
+ * search module's provider port. Trending and related delegate to the
+ * in-process fallback — they are repository-computed, not index-backed
+ * (same discipline as the OpenSearch provider).
+ */
+export class MeilisearchModuleProvider implements SearchProvider {
+  readonly name = 'meilisearch';
+
+  constructor(
+    private readonly client: MeilisearchClient,
+    private readonly fallbackProvider: SearchProvider
+  ) {}
+
+  async search(
+    query: string,
+    types?: SearchResultType[],
+    state?: string,
+    limit?: number
+  ): Promise<SearchResult[]> {
+    const hits = await this.client.search(query, { types, state, limit });
+    return hits
+      .filter((hit) => KNOWN_TYPES.includes(hit.type as SearchResultType))
+      .map((hit) => ({
+        type: hit.type as SearchResultType,
+        id: hit.id,
+        title: hit.title,
+        summary: hit.summary,
+        score: hit.score,
+        ...(hit.state ? { state: hit.state } : {})
+      }));
+  }
+
+  suggest(query: string, limit?: number): Promise<string[]> {
+    return this.client.suggest(query, limit);
+  }
+
+  /** Trending is repository-computed (query-log signals) — not index-backed. */
+  trending(options?: { now?: Date; limit?: number }): Promise<TrendingQuery[]> {
+    return this.fallbackProvider.trending(options);
+  }
+
+  /** Related lookups fan out over domain repositories — not index-backed. */
+  related(type: SearchResultType, id: string, limit?: number): Promise<SearchResult[]> {
+    return this.fallbackProvider.related(type, id, limit);
+  }
+}
+
+/**
+ * Selects the search provider for the module query path. Default (stub or
+ * unset) returns the existing in-process SearchService unchanged.
+ * SEARCH_DRIVER=opensearch requires OPENSEARCH_NODE; SEARCH_DRIVER=
+ * meilisearch (or the integration-matrix live modes sandbox/production,
+ * whose documented backend is Meilisearch — see adapters.ts) requires
+ * MEILISEARCH_HOST. Both fail closed with ProviderConfigError when their
+ * backend is unconfigured, and ANY OTHER flag value throws — the factory
+ * never silently downgrades a configured live search to the in-process
+ * fan-out (mirrors the animal-id-authority unknown-mode throw).
  */
 export function createOpenSearchProvider(
   env: NodeJS.ProcessEnv = process.env,
   fallback: SearchProvider
 ): SearchProvider {
-  const flag = (env.SEARCH_DRIVER ?? '').toLowerCase();
+  const flag = (env.SEARCH_DRIVER ?? '').trim().toLowerCase();
+  if (flag === '' || flag === 'stub') {
+    return fallback;
+  }
   if (flag === 'opensearch') {
     const node = requireEnv('opensearch', env, ['OPENSEARCH_NODE']);
     return new OpenSearchSearchProvider({
@@ -229,5 +287,9 @@ export function createOpenSearchProvider(
       index: env.OPENSEARCH_INDEX
     });
   }
-  return fallback;
+  if (flag === 'meilisearch' || flag === 'sandbox' || flag === 'production') {
+    // createSearchProvider fails closed without MEILISEARCH_HOST.
+    return new MeilisearchModuleProvider(createSearchProvider(env), fallback);
+  }
+  throw new ProviderConfigError('search', ['SEARCH_DRIVER']);
 }

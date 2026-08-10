@@ -1,5 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ProviderConfigError } from '../integrations/drivers/http.js';
 import {
   LiveOtpDriver,
   OtpVerificationError,
@@ -7,6 +8,10 @@ import {
   createOtpDriver,
   stubOtpCode
 } from './otp.driver.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('OTP driver port (fail-closed)', () => {
   it('stub driver is the default and clearly deterministic', () => {
@@ -47,8 +52,27 @@ describe('OTP driver port (fail-closed)', () => {
     expect(driver.challengeCode()).toBeUndefined();
   });
 
-  it('unknown driver flags fall back to the stub', () => {
+  it('unknown driver flags fall back to the stub (non-production only)', () => {
     expect(createOtpDriver({ OTP_DRIVER: 'sandbox' }).name).toBe('stub');
     expect(createOtpDriver({ OTP_DRIVER: 'LIVE-ish' }).name).toBe('stub');
+  });
+
+  it('aborts boot in production when the OTP driver is stub (publicly computable code)', () => {
+    // The stub code derives from a stable, publicly known hash — allowing it
+    // in production would make the farmer presence proof forgeable.
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(() => createOtpDriver({ OTP_DRIVER: 'stub' })).toThrow(ProviderConfigError);
+    expect(() => createOtpDriver({})).toThrow(/OTP_DRIVER=live/);
+    expect(() => createOtpDriver({ OTP_DRIVER: 'sandbox' })).toThrow(ProviderConfigError);
+  });
+
+  it('still boots in production with OTP_DRIVER=live (fail-closed 503 driver)', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const driver = createOtpDriver({
+      OTP_DRIVER: 'live',
+      OTP_PROVIDER_URL: 'https://otp.example',
+      OTP_PROVIDER_API_KEY: 'key'
+    });
+    expect(driver.name).toBe('live');
   });
 });

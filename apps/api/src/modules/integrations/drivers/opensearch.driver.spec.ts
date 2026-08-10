@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SearchProvider } from '../../search/search.provider.js';
 import { ProviderConfigError, ProviderHttpError, ProviderRequestError } from './http.js';
 import {
   createOpenSearchProvider,
+  MeilisearchModuleProvider,
   OpenSearchSearchProvider,
   type OpenSearchClientLike
 } from './opensearch.driver.js';
@@ -25,7 +26,6 @@ describe('createOpenSearchProvider selection', () => {
     const fallback = fakeFallback();
     expect(createOpenSearchProvider({}, fallback)).toBe(fallback);
     expect(createOpenSearchProvider({ SEARCH_DRIVER: 'stub' }, fallback)).toBe(fallback);
-    expect(createOpenSearchProvider({ SEARCH_DRIVER: 'production' }, fallback)).toBe(fallback);
   });
 
   it('fails closed when opensearch is selected without OPENSEARCH_NODE', () => {
@@ -41,6 +41,84 @@ describe('createOpenSearchProvider selection', () => {
     );
     expect(provider).toBeInstanceOf(OpenSearchSearchProvider);
     expect((provider as OpenSearchSearchProvider).name).toBe('opensearch');
+  });
+
+  it('throws on unknown SEARCH_DRIVER values (no silent in-process downgrade)', () => {
+    // A typo'd flag used to silently return the in-process fallback while
+    // the operator believed a live index served queries (split-brain).
+    expect(() =>
+      createOpenSearchProvider({ SEARCH_DRIVER: 'elasticsearch' }, fakeFallback())
+    ).toThrow(ProviderConfigError);
+    expect(() =>
+      createOpenSearchProvider({ SEARCH_DRIVER: 'opensesrch' }, fakeFallback())
+    ).toThrow(/SEARCH_DRIVER/);
+  });
+
+  it('honours the documented live modes with the Meilisearch backend', () => {
+    for (const flag of ['meilisearch', 'sandbox', 'production']) {
+      const provider = createOpenSearchProvider(
+        { SEARCH_DRIVER: flag, MEILISEARCH_HOST: 'http://localhost:7700' },
+        fakeFallback()
+      );
+      expect(provider).toBeInstanceOf(MeilisearchModuleProvider);
+      expect((provider as MeilisearchModuleProvider).name).toBe('meilisearch');
+    }
+  });
+
+  it('fails closed when a live mode is selected without MEILISEARCH_HOST', () => {
+    // SEARCH_DRIVER=production used to silently fall back to the in-process
+    // search; it now aborts like every other fail-closed driver.
+    expect(() =>
+      createOpenSearchProvider({ SEARCH_DRIVER: 'production' }, fakeFallback())
+    ).toThrow(ProviderConfigError);
+    expect(() =>
+      createOpenSearchProvider({ SEARCH_DRIVER: 'meilisearch' }, fakeFallback())
+    ).toThrow(/MEILISEARCH_HOST/);
+  });
+});
+
+describe('MeilisearchModuleProvider query path', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function meiliResponse(hits: unknown[]): Response {
+    return new Response(JSON.stringify({ hits }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  it('queries the Meilisearch index and maps known hit types', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      meiliResponse([
+        { id: 'c1', type: 'course', title: 'Maize agronomy', summary: 'Grow', _rankingScore: 0.9 },
+        { id: 'x1', type: 'unknown-type', title: 'Skip me' }
+      ])
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createOpenSearchProvider(
+      { SEARCH_DRIVER: 'meilisearch', MEILISEARCH_HOST: 'http://localhost:7700' },
+      fakeFallback()
+    );
+    const results = await provider.search('maize', ['course'], 'Kano', 5);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/indexes/agric-platform/search');
+    expect(results).toEqual([
+      { type: 'course', id: 'c1', title: 'Maize agronomy', summary: 'Grow', score: 0.9 }
+    ]);
+  });
+
+  it('delegates trending and related to the in-process fallback (not index-backed)', async () => {
+    const fallback = fakeFallback();
+    const provider = createOpenSearchProvider(
+      { SEARCH_DRIVER: 'meilisearch', MEILISEARCH_HOST: 'http://localhost:7700' },
+      fallback
+    );
+    expect(await provider.trending()).toEqual([{ query: 'maize' }]);
+    expect(await provider.related('course', 'c1')).toEqual([{ type: 'course', id: 'c1' }]);
+    expect(fallback.trending).toHaveBeenCalled();
+    expect(fallback.related).toHaveBeenCalled();
   });
 });
 

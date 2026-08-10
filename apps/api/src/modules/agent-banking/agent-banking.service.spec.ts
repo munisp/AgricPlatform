@@ -268,6 +268,21 @@ describe('AgentBankingService — float top-up workflow', () => {
 });
 
 describe('AgentBankingService — cash-in / cash-out', () => {
+  it('records the OTP basis on cash transactions (and round-trips it in listings)', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const tx = await ctx.service.cashIn(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 500_000, otp: otp(ctx.farmer.id, 'basis-1'), idempotencyKey: 'basis-1' },
+      agentActor(ctx.agentUser)
+    );
+    expect(tx.otpBasis).toBe('stub');
+    const listed = await ctx.service.listTransactions({ agentId: agent.id });
+    expect(listed.find((row) => row.id === tx.id)?.otpBasis).toBe('stub');
+  });
+
   it('cash-in posts DR farmer wallet / CR agent float with commission', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
@@ -280,6 +295,8 @@ describe('AgentBankingService — cash-in / cash-out', () => {
     );
     expect(tx.type).toBe('cash_in');
     expect(tx.commissionKobo).toBe(2_500); // 50 bps
+    // The presence-proof basis is persisted with the cash movement.
+    expect(tx.otpBasis).toBe('stub');
     expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(500_000);
     expect((await ctx.service.floatBalance(agent.id)).balanceKobo).toBe(1_500_000);
     // Commission accrued into the payable account (liability: credits − debits).

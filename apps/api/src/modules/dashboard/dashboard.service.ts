@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { PlatformMetric } from '@agric-platform/shared';
-import { platformMetrics } from '@agric-platform/shared';
+import { CREDIT_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
+import type { CreditProfileRepository } from '../../database/repositories/credit-profile.repository.js';
+import { assertNoSeedPlatformMetrics, composePlatformMetrics } from '../analytics/platform-metrics.js';
+import { ChaptersService } from '../chapters/chapters.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { MarketplaceService } from '../marketplace/marketplace.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
@@ -31,12 +34,39 @@ export class DashboardService {
     private readonly learning: LearningService,
     private readonly opportunities: OpportunitiesService,
     private readonly marketplace: MarketplaceService,
-    private readonly notifications: NotificationsService
+    private readonly notifications: NotificationsService,
+    // Optional: a missing KPI source degrades to a labelled seed fixture
+    // (refused in production), never a fabricated live number.
+    @Optional() private readonly chapters?: ChaptersService,
+    @Optional() @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles?: CreditProfileRepository
   ) {}
+
+  /** Live platform KPIs (repository-computed; seed fixtures refused in production). */
+  private async platformMetrics(): Promise<PlatformMetric[]> {
+    const [members, chapters, courseCompletions, opportunities, marketplaceListings, creditProfiles] =
+      await Promise.all([
+        this.users.count(),
+        this.chapters?.all(),
+        this.learning.completionCount(),
+        this.opportunities.list({ active: true, page: 1, pageSize: 1 }),
+        this.marketplace.activeListingCount(),
+        this.creditProfiles?.count()
+      ]);
+    const metrics = composePlatformMetrics({
+      members,
+      activeChapters: chapters?.filter((chapter) => chapter.active).length,
+      courseCompletions,
+      openOpportunities: opportunities.total,
+      marketplaceListings,
+      creditProfiles
+    });
+    assertNoSeedPlatformMetrics(metrics);
+    return metrics;
+  }
 
   async dashboardFor(userId: string): Promise<DashboardView> {
     const user = await this.users.getById(userId);
-    const [profile, enrolments, applications, purchases, sales, unread, recommended] =
+    const [profile, enrolments, applications, purchases, sales, unread, recommended, metrics] =
       await Promise.all([
         this.profiles.get(userId),
         this.learning.enrolmentsForUser(userId),
@@ -46,7 +76,8 @@ export class DashboardService {
         this.notifications.unreadCount(userId),
         user.roles.includes('farmer') || user.roles.includes('student')
           ? this.opportunities.recommendedFor(userId)
-          : Promise.resolve([])
+          : Promise.resolve([]),
+        this.platformMetrics()
       ]);
 
     const widgets: DashboardWidget[] = [
@@ -111,10 +142,10 @@ export class DashboardService {
         key: 'platform_metrics',
         title: 'Platform metrics',
         kind: 'metric',
-        data: platformMetrics
+        data: metrics
       });
     }
 
-    return { userId, roles: user.roles, metrics: platformMetrics, widgets };
+    return { userId, roles: user.roles, metrics, widgets };
   }
 }

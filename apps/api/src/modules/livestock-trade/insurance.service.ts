@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  NotFoundException,
   type OnModuleInit
 } from '@nestjs/common';
 import type {
@@ -417,9 +418,21 @@ export class InsuranceService implements OnModuleInit {
     try {
       const members = await this.lots.listAnimalIds(policy.subjectId);
       return members.filter((animalId) => recalled.has(animalId));
-    } catch {
-      // Unknown/gone lot: guard so the subscriber never throws on bad data.
-      return [];
+    } catch (error) {
+      // Only the documented not-found case (unknown/gone lot) means "no
+      // overlap". Any other store failure must NOT be swallowed into a false
+      // "no overlap" on an auto-draft path with no retry: log and rethrow so
+      // the listener's catch records the failure instead of silently
+      // skipping claims.
+      if (error instanceof NotFoundException) {
+        return [];
+      }
+      this.logger.error(
+        `recall overlap lookup failed for lot '${policy.subjectId}': ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      throw error;
     }
   }
 

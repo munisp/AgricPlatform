@@ -201,4 +201,45 @@ describe('DomainEventsService event-bus integration', () => {
     expect(() => service.emit(event)).not.toThrow();
     await vi.waitFor(() => expect(bus.publish).toHaveBeenCalledWith(event));
   });
+
+  it('emit() marks the outbox row published only after the bus accepts the event', async () => {
+    const outbox = fakeOutbox();
+    const bus = { name: 'kafka' as const, publish: vi.fn().mockResolvedValue(undefined) };
+    const service = new DomainEventsService(outbox as never, bus as never);
+    const event = service.build('credit.loan.disbursed', { loanId: 'loan-1' });
+    service.emit(event);
+    await vi.waitFor(() => expect(outbox.markPublished).toHaveBeenCalledWith(event.id, expect.any(String)));
+  });
+
+  it('emit() leaves the outbox row unpublished when the bus fails (sweeper retries)', async () => {
+    const outbox = fakeOutbox();
+    const bus = {
+      name: 'kafka' as const,
+      publish: vi.fn().mockRejectedValue(new Error('broker down'))
+    };
+    const service = new DomainEventsService(outbox as never, bus as never);
+    const event = service.build('credit.loan.disbursed', { loanId: 'loan-1' });
+    service.emit(event);
+    // Let the rejected publish promise settle; the row must stay unpublished.
+    await vi.waitFor(() => expect(bus.publish).toHaveBeenCalledWith(event));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(outbox.markPublished).not.toHaveBeenCalled();
+  });
+
+  it('emit() still fans out in-process listeners when the bus fails', async () => {
+    const outbox = fakeOutbox();
+    const bus = {
+      name: 'kafka' as const,
+      publish: vi.fn().mockRejectedValue(new Error('broker down'))
+    };
+    const service = new DomainEventsService(outbox as never, bus as never);
+    const seen: DomainEvent[] = [];
+    service.on('credit.loan.disbursed', (event) => seen.push(event));
+    const event = service.build('credit.loan.disbursed', { loanId: 'loan-1' });
+    service.emit(event);
+    expect(seen).toEqual([event]);
+    await vi.waitFor(() => expect(bus.publish).toHaveBeenCalledWith(event));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(outbox.markPublished).not.toHaveBeenCalled();
+  });
 });

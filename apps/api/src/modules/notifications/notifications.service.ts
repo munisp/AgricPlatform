@@ -76,9 +76,14 @@ export class NotificationsService {
       input.userId
     );
 
-    const result = this.integrations.deliver(input.channel);
-    // Delivery log + status flip commit as one unit. Failures schedule the
-    // first retry (Wave P backoff); the sweeper picks them up when due.
+    const result = await this.integrations.deliver(input.channel, {
+      to: input.userId,
+      text: input.body,
+      subject: input.title
+    });
+    // Delivery log + status flip commit as one unit. Failures (including
+    // honest stub simulations, which are NOT deliveries) schedule the first
+    // retry (Wave P backoff); the sweeper picks them up when due.
     const at = new Date();
     const recorded = await this.messages.recordDelivery(
       message.id,

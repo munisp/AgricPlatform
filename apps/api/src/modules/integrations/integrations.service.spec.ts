@@ -33,11 +33,52 @@ describe('IntegrationsService live driver wiring (wave P1)', () => {
     expect(first.source).toContain('stub');
   });
 
-  it('deliverMessage stays on the stub result while drivers are stub', async () => {
+  it('deliverMessage returns an honest non-delivered stub result while drivers are stub', async () => {
+    // Updated expectation: the stub used to fabricate delivered:true, which
+    // flipped notifications to 'sent' without any network call. A stub now
+    // always reports delivered:false so the retry machinery keeps the
+    // message pending.
     const service = new IntegrationsService();
     const result = await service.deliverMessage('sms', { to: '+234', text: 'hi' });
+    expect(result.delivered).toBe(false);
+    expect(result.driver).toBe('stub');
+    expect(result.note).toContain('NOT sent');
+  });
+
+  it('deliver() routes through the same live-driver switch (stub → not delivered)', async () => {
+    const service = new IntegrationsService();
+    const result = await service.deliver('sms', { to: '+234', text: 'hi' });
+    expect(result.delivered).toBe(false);
+    expect(result.note).toContain('Simulated');
+  });
+
+  it('deliver() invokes the live driver when the channel adapter is non-stub', async () => {
+    vi.stubEnv('SMS_DRIVER', 'production');
+    vi.stubEnv('TERMII_API_KEY', 'key');
+    vi.stubEnv('TERMII_SENDER_ID', 'AgricNG');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message_id: 'live-2' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new IntegrationsService();
+    const result = await service.deliver('sms', { to: '+2348000000001', text: 'hello' });
+    expect(result).toMatchObject({ provider: 'termii', providerRef: 'live-2', delivered: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('deliver() propagates live-driver failures (never fabricates delivery)', async () => {
+    vi.stubEnv('SMS_DRIVER', 'production');
+    vi.stubEnv('TERMII_API_KEY', 'key');
+    vi.stubEnv('TERMII_SENDER_ID', 'AgricNG');
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new IntegrationsService();
+    await expect(service.deliver('sms', { to: '+2348000000001', text: 'hello' })).rejects.toThrow();
+  });
+
+  it('deliver() treats the in_app channel as an honest local inbox delivery', async () => {
+    const service = new IntegrationsService();
+    const result = await service.deliver('in_app', { to: 'user-1', text: 'hi' });
     expect(result.delivered).toBe(true);
-    expect(result.note).toContain('no external network call');
+    expect(result.note).toContain('In-app');
   });
 
   it('routes SMS through the live Termii driver when SMS_DRIVER=production', async () => {
