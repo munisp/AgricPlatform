@@ -152,7 +152,7 @@ jobs:
       # Also enable GitHub secret scanning + push protection per
       # scripts/github-bootstrap.md.
       - name: Gitleaks secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           # gitleaks-action v2 requires an explicit GITHUB_TOKEN to scan PRs
           # (notably Dependabot PRs, whose default token is not injected).
