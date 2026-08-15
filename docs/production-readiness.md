@@ -1,8 +1,8 @@
 # Production Readiness — AgricPlatform
 
-**Assessment date:** 2026-08-02  
+**Assessment date:** 2026-08-16 (stats refreshed during the Stage 21 mission-critical assurance audit; earlier Stage 9/10 closure summaries below are retained as historical record)  
 **Assessment scope:** Nigeria Farmer Platform PRD v3.3, Phase 1 reference implementation, GitHub handoff, and production launch gap analysis.  
-**Verdict:** **Ready for technical review, local demo, and staging hardening. Not ready for public production launch.**
+**Verdict:** **Ready for technical review, local demo, and staging hardening. Not ready for public production launch.** The Stage 21 assurance audit additionally confirmed critical (C1) application-security gaps that must close before any public launch — see §5a.
 
 ## 1. Executive readiness score
 
@@ -10,14 +10,14 @@
 | --- | ---: | --- | --- |
 | Phase 1 product-surface coverage | 98% | All Phase 1 domains wired end to end, plus Stage 8 completions: QR attendance check-in, analytics CSV/PDF export UI, IndexedDB form drafts (registration/enrolment/listing), data-usage indicator, offline-pack scaffold | Real OIDC sign-in flow in the web app |
 | Phase 2 module coverage | 90% | M7 escrow/invoicing/logistics, M8 services marketplace, M9 ledger/credit/lenders/loans, M11 programmes, M12 pathways, M14 knowledge base, M16 trending/related — all implemented API + web with migrations 003/004; Stage 10 closed the residual gaps (WhatsApp listing LGA capture, USSD HTTP e2e, trending-query cold-start blend, real ssh2 SFTP transport, Redis sliding-window partner rate bucket) | Live settlement, BVN/NIN verification, Directus/Moodle live sync (external) |
-| Build and test health | 100% | Typecheck, lint, `lint:sql` (11 migrations), 993 automated tests passing (787 API + 158 web + 18 shared + 17 SDK + 13 mobile; 51 pg-gated skips), API + web production builds, bundle budget gate (< 250KB, current 204.7KB) | Keep these checks required on `main` |
-| Persistence readiness | 90% (code-complete) | 63 repository providers (async ports, in-memory + pg) across 11 migrations; fail-closed production config; Redis stores | Run the pg/Redis-gated suites against real containers and soak in staging |
-| Identity and access readiness | 75% | Keycloak OIDC/JWKS bearer verification (`jose`), ownership-or-admin authorization across sensitive routes, hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config | Hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
-| Integration readiness | 85% | Real HTTP drivers, fail-closed, 111 mocked-fetch tests: Termii SMS + Twilio failover, 360dialog WhatsApp, Mailgun + SendGrid, OneSignal, Paystack + Flutterwave (init/verify/refund/escrow-release + webhook signatures), Meilisearch, OpenMeteo live weather (keyless), FEWS NET/NiMet ingestion scaffold, Moodle/Discourse/Directus bridge clients | Sandbox/live credentials; NiMet payload MoU; delivery-rate evidence |
+| Build and test health | 100% | Typecheck, lint, `lint:sql` (41 migrations), 3,101 automated tests passing (2,463 API + 440 web + 30 shared + 18 SDK + 150 mobile; 91 pg-gated skips in 4 spec files), API + web production builds, bundle budget gate (< 250KB enforced in CI) — all re-measured 2026-08-16, see §8 | Keep these checks required on `main` |
+| Persistence readiness | 90% (code-complete) | 171 repository provider registrations (async ports, in-memory + pg) across 41 migrations; fail-closed production config; Redis stores | Run the pg/Redis-gated suites against real containers and soak in staging |
+| Identity and access readiness | 45% (reduced by Stage 21 audit) | Keycloak OIDC/JWKS bearer verification (`jose`), hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config. **However, the Stage 21 audit confirmed the earlier "ownership-or-admin authorization across sensitive routes" claim does not hold:** multiple user/profile/finance/opportunity routes ship without any auth guard (§5a, C1-1…C1-3), and self-registration accepts privileged roles | Fix the guarded-route gaps in §5a; hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
+| Integration readiness | 85% | Real HTTP drivers, fail-closed, 188 mocked-fetch test cases across 20 spec files under `modules/integrations`: Termii SMS + Twilio failover, 360dialog WhatsApp, Mailgun + SendGrid, OneSignal, Paystack + Flutterwave (init/verify/refund/escrow-release + webhook signatures), Meilisearch, OpenMeteo live weather (keyless), FEWS NET/NiMet ingestion scaffold, Moodle/Discourse/Directus bridge clients. Stage 21 caveat: the generic webhook verifier computes HMAC-SHA256 while live Paystack signs HMAC-SHA512, so live payment webhooks currently 401 (fail-closed; §5a C3) | Fix provider-native webhook verification; sandbox/live credentials; NiMet payload MoU; delivery-rate evidence |
 | Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
 | Security and compliance readiness | 65% | RBAC + OIDC, webhook HMAC, idempotency with body-mismatch 409, tamper-evident audit hash chain, signed QR attendance secrets fail-closed, export audit logging, privacy export/delete, CSP/security headers, WCAG AA automated checks, secret hygiene | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
-| **Overall Phase 1+2+3 engineering readiness** | **97%** | All engineering-controllable scope code-complete through Stage 10 waves P1–P6c — every PRD feature area now has code, including the IVR voice channel; deterministic local gates green | Container verification of pg/Redis suites, hosted IdP, provider sandboxes, staging hardening |
-| **Public production readiness** | **50%** | Feature build-out complete; launch blockers are external and operational (legal, credentials, penetration test, uptime evidence, translations) | Close L1–L10 in `docs/security-compliance.md` |
+| **Overall Phase 1+2+3 engineering readiness** | **97% feature coverage; correctness under audit** | All engineering-controllable scope code-complete through Stage 20 — every PRD feature area has code, including the IVR voice channel; deterministic local gates green. The Stage 21 assurance audit (§5a) confirmed feature completeness but found C1/C2 defects in authorization coverage, fail-closed stub gating, and migration tooling that feature coverage metrics do not capture | Fix §5a findings; container verification of pg/Redis suites; hosted IdP; provider sandboxes; staging hardening |
+| **Public production readiness** | **35%** (reduced from 50% by Stage 21 audit) | Feature build-out complete, but launch blockers are no longer only external: the Stage 21 audit confirmed critical internally-fixable gaps (unguarded user/profile/finance routes, self-service admin role assignment, stub identity/insurance drivers reachable in production, non-idempotent migration tooling) alongside the external blockers (legal, credentials, penetration test, uptime evidence, translations) | Close §5a C1/C2 findings first, then L1–L10 in `docs/security-compliance.md` |
 
 The implementation should be treated as a **production-oriented reference platform**, not as a live production system. The most important next engineering milestone is a staging build that uses PostgreSQL, Redis, and Keycloak end to end.
 
@@ -31,7 +31,7 @@ The implementation should be treated as a **production-oriented reference platfo
 | **Tier B — whole document (P1+P2+P3)** | All 18 modules full scope, all appendices | **92%** | Weighted by phase effort (P1 45% × 95%, P2 35% × 90%, P3 20% × 90%). Stage 9 built the Phase 3 engineering scope: USSD channel (full menu engine), recommendation engine, KPI data marts + ETL (lakehouse handoff layer), public SDK + developer portal, embedded widgets, farmOS/OFN/NCX/AFEX/ODK/KoboToolbox/lender/e-Extension ACL adapters, Partner API, mobile app shell. Stage 10 added the IVR voice channel (the last unbuilt feature), closed all seven wave-reported residual gaps, and shipped the remaining frontend surfaces (recommendations rail, admin insights, federation admin, camera QR check-in, webinar registrations) |
 | Tier B, engineering-controllable items only | Same denominator minus pure external blockers | **≈97%** | Excludes items no code can close: live credentials, ⚖ legal/regulatory reviews, pen test, uptime evidence, partner agreements, professional translation, SDK registry publish, partner adoption, live IVR/USSD telephony provisioning |
 
-**What remains genuinely unbuilt (engineering-doable):** **Nothing.** Every PRD v3.3 feature area — all 18 modules, all Appendix F channels (USSD, IVR, WhatsApp, PIN swap), all Appendix G integration patterns — is implemented in code with tests. All remaining gaps are external evidence, provisioning, legal review, or adoption, not features.
+**What remains genuinely unbuilt (engineering-doable):** **No PRD feature area is absent from code.** Every PRD v3.3 feature area — all 18 modules, all Appendix F channels (USSD, IVR, WhatsApp, PIN swap), all Appendix G integration patterns — has an implementation with tests. Note the scope of this claim: it is a *feature-coverage* statement as of the Stage-9/10 build-out, not a correctness guarantee — the Stage 21 assurance audit (§5a) confirmed defects inside implemented areas, and external gaps (evidence, provisioning, legal review, adoption) remain.
 
 ### Stage 9 closure summary (waves P5a–P5e, merged through c4ebae2)
 - **P5a** — Phase 3 federated integrations: farmOS/LiteFarm sync (consent-gated links), OFN listing syndication + order webhooks, NCX/AFEX price feeds, ODK/KoboToolbox beneficiary import (staged → dedup → admin-confirm merge), input-finance bidirectional API (consented credit-readiness push), NAERLS/FMARD e-Extension pull. Migration 007. +96 tests.
@@ -62,7 +62,7 @@ The implementation should be treated as a **production-oriented reference platfo
 
 ### Frontend reference PWA
 
-`apps/web` implements a Next.js App Router PWA with 18 generated routes:
+`apps/web` implements a Next.js App Router PWA with 61 `page.tsx` routes (measured 2026-08-16; the list below shows the original core set):
 
 - `/` landing page
 - `/onboarding`
@@ -193,6 +193,28 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 | P2 | Analytics are fixture/reference level | Production KPI definitions need warehouse/event data | Data lead |
 | P2 | Advanced Appendix A architecture is intentionally deferred | Kafka, Temporal, TigerBeetle, Mojaloop, Dapr, APISIX, and SOC tooling are scale/phase triggers | Architecture lead |
 
+## 5a. Stage 21 mission-critical assurance audit (2026-08-16)
+
+A seven-dimension adversarial audit (money paths, authN/Z & channels, fail-closed stubs, idempotency/replay, test & CI integrity, migration safety, docs honesty) was run against `main` @ `324dea5`. Every finding below was reproduced against the source tree by the audit lead before inclusion; no finding is asserted on agent testimony alone. Full detail: Stage 21 audit report (audit working artifact; see PR description).
+
+**Confirmed critical (C1) — must close before any public launch:**
+
+| # | Finding | Location |
+| --- | --- | --- |
+| C1-1 | Unauthenticated user record mutation and directory read (`PATCH /users/:id`, `GET /users`, `GET /users/:id` have no auth guard; only a global throttler exists) | `apps/api/src/modules/users/users.controller.ts:42-60`; `apps/api/src/app.module.ts:178` |
+| C1-2 | Unauthenticated application-approval workflow — an attacker can self-approve grant/subsidy applications (`POST /opportunities/:id/apply` with attacker-chosen `userId`, then `PATCH /opportunities/applications/:id/status {status:'successful'}`) | `apps/api/src/modules/opportunities/opportunities.controller.ts:113-165` |
+| C1-3 | Self-service role assignment at registration — `POST /auth/register` accepts `roles:['admin']` verbatim, with no OTP proof preceding account creation | `apps/api/src/modules/auth/auth.controller.ts:41-43`; `apps/api/src/modules/users/users.service.ts:60` |
+| C1-4 | NIN stub identity driver verifies beneficiaries in production (no production stub ban on the factory; stub verdict is a publicly computable hash), gating real subsidy-voucher money | `apps/api/src/modules/input-vouchers/identity.driver.ts:114-125`; `input-vouchers.service.ts:330-365` |
+| C1-5 | Parametric-insurance triggers evaluate on fabricated stub weather/flood data in production and book real ledger payouts marked `paid` (no `isProduction` reference anywhere in the module) | `apps/api/src/modules/insurance/insurance.service.ts:239-250,477-538,623-755` |
+| C1-6 | Input-voucher redeem vs expire/void race double-debits the programme liability (ledger posting commits before the status CAS; the two operations use different idempotency keys, so both postings can commit) | `apps/api/src/modules/input-vouchers/input-vouchers.service.ts:558-577,649-685` |
+| C1-7 | Migration runner is not idempotent against Compose-bootstrapped databases — `015`'s unguarded `ADD CONSTRAINT` aborts re-application, so new migrations (including this audit's 041) cannot be delivered via the supported tooling on that path; and a mid-file failure of `001` is silently recorded as fully applied by the `identity.users` baseline probe | `infra/postgres/015_query_indexes.sql:73-75`; `apps/api/src/database/migrate.ts:31,54-62`; `infra/docker-compose.yml:18-21` |
+
+**Confirmed high (C2) — systemic classes:** missing auth guards as a *class* across profiles/dashboard/finance-reads/advisory/community/learning/analytics-mutation routes; `ALLOW_DEV_HEADER_AUTH=true` in production is warn-and-continue (every sibling guard throws); Africa's Talking USSD/IVR/agent-banking callbacks have no provider-authenticity check (caller-controlled `phoneNumber` authenticates voucher redemption sessions); Partner API defaults to the published sandbox signing secret in production when `PARTNER_API_DRIVER` is unset; PIN-swap attempt counter is non-atomic (TOCTOU defeats the 5-attempt lockout); inbound webhook/federation dedupe is recorded *before* processing with no reprocessor, so a transient failure permanently loses verified events; the outbox sweeper marks rows published before async bus delivery completes; marketplace payment/escrow lifecycle is fully declarative (no verify-before-credit — `deposit_paid` is buyer self-declared and order completion auto-releases escrow and marks invoices paid without payment evidence); float top-up requests and keyless voucher issuance lack idempotency keys (retry → duplicate settleable top-ups / duplicate signed money-bearing vouchers); input-voucher budget/cap enforcement is TOCTOU; the audit hash chain forks under concurrent/multi-replica writers and has no DB-level immutability or tail-truncation protection; `lint:sql` does not guard `DROP COLUMN`/`DROP CONSTRAINT`/unguarded `ADD CONSTRAINT`; VSLA (037), input-voucher (035), and core order/booking (001/004) money columns lack CHECK constraints of the class fixed for agent banking in migration 041.
+
+**Audit confirmations (verified sound):** ledger core invariants and atomic posting; webhook HMAC fail-closed posture; OTP driver boot-forbidden in production; OIDC boot assertions; transactional outbox on credit/savings/loan/warehouse flows; voucher HMAC + exactly-once redemption CAS; the CI gate suite (npm-audit-gate fail-closed on broken endpoint, bundle budget fail-closed, no `continue-on-error` on blocking gates, no secret echoes); zero real or real-looking secrets in the repo; zero fake-green patterns (no `.only`, no vacuous assertions, no swallowed failures).
+
+**Disposition:** this audit's in-scope fixes ship as migration `041_agent_banking_amount_checks.sql` (agent-banking amount/commission CHECK constraints) plus this documentation refresh. All C1/C2 findings above are documented tracked gaps for Stage 22+; none were silently fixed or silently ignored.
+
 ## 6. Release recommendation
 
 ### Ready now
@@ -245,30 +267,22 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 
 ## 8. Validation evidence from the current source tree
 
-The final merged-main validation completed successfully from a clean detached worktree after `npm ci`, using both:
+Re-measured 2026-08-16 during the Stage 21 assurance audit, on the audit branch (main @ `324dea5` + migration 041 and its structural spec), after `npm ci`:
 
-```bash
-npm run validate
-SKIP_INSTALL=1 bash scripts/validate-repo.sh
-```
+- Typecheck (all workspaces): passed
+- ESLint (all workspaces, incl. jsx-a11y gap rules): passed
+- Migration lint (`lint:sql`, pgsql-ast-parser): 41 migration files, all statements parsed, PK/DROP/TRUNCATE guards passed
+- API tests: **2,463 passed, 91 skipped** (2,554 cases in 214 spec files; the 91 skips are the pg-gated contract suites in 4 files — `test/pg/pg-repositories.spec.ts`, `sync.pg.spec.ts`, `traceability.pg.spec.ts`, `voice.pg.spec.ts` — gated by `describe.skipIf(!process.env.DATABASE_URL)`)
+- Web tests: **440 passed** (57 files)
+- Shared package tests: **30 passed** (5 files)
+- SDK tests: **18 passed** (1 file)
+- Mobile tests: **150 passed** (22 files)
+- **Total automated tests: 3,101 passed + 91 pg-gated skipped** (includes the 6 structural tests added with migration 041; main @ `324dea5` alone measures 3,095 + 91)
+- `npm run test --workspaces` aggregate exit code: 0
+- Next.js production build: passed; bundle budget gate (`scripts/check-bundle-budget.mjs`, < 250KB gzip shell): **passed at 224.5KB gzip-estimated** (route `/`, 13 JS files — measured locally 2026-08-16; the previously quoted 204.7KB dated from Stage 10)
+- Heuristic secret sweep (targeted grep for live-key patterns across tracked files, excluding scanner definitions and labelled test dummies): no real or real-looking secrets found; zero tracked `.env`/key files
 
-Results (final merged main, post-hardening waves):
-
-- API typecheck: passed
-- Web typecheck, including generated Next.js route types: passed
-- Shared package typecheck: passed
-- ESLint (incl. jsx-a11y gap rules): passed
-- Migration lint (`lint:sql`, pgsql-ast-parser): 2 migration files, all statements parsed, PK/DROP guards passed
-- API tests: 176 passed (+51 PostgreSQL-gated contract tests skipped without `DATABASE_URL`)
-- Web tests: 68 passed (API client, offline queue, security headers, a11y axe, contrast, i18n, PWA)
-- Shared package tests: 5 passed
-- Total automated tests: 249 passed
-- NestJS production build: passed
-- Next.js production build: passed
-- Static routes generated: 18
-- All-in-one production process smoke test: passed (`npm run start`, web page title, and `/api/v1/health`)
-- Heuristic tracked-file secret scan: passed
-- Tracked `.env` file check: passed
+Methodology notes: test counts are **runtime counts** from the vitest runs above (not static grep floors); migration count from `ls infra/postgres/*.sql`; web route count (61) from `find apps/web/app -name page.tsx`; repository-provider count (171) from `grep -rE "provide:\s*[A-Z_]+_REPOSITORY" apps/api/src` excluding spec files; mocked-fetch integration tests (188 cases in 20 files) from spec files under `apps/api/src/modules/integrations` that stub `fetch`.
 
 Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment because the container runtime is unavailable. Dockerfiles, Compose, and Kubernetes probes were statically aligned with the verified production start command and `/api/v1/health` endpoints. Those items remain staging-verification tasks rather than locally proven evidence.
 
