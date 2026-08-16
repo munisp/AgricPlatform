@@ -366,6 +366,15 @@ export interface EscrowRecord {
   status: EscrowStatus;
   /** Opaque reference returned by the payment provider adapter, when attached. */
   providerReference?: string;
+  /**
+   * Buyer-supplied payment reference declared at the deposit_paid transition
+   * (Stage 22, audit C2). Always recorded when a reference was supplied;
+   * `depositVerifiedAt` distinguishes a provider-verified deposit from a
+   * declarative (non-production convenience) one.
+   */
+  depositReference?: string;
+  /** Set only when a payment provider verified the deposit on-chain. */
+  depositVerifiedAt?: string;
   heldAt: string;
   /** Expiry deadline: a held escrow past this timestamp is auto-refunded. */
   heldUntil?: string;
@@ -373,9 +382,9 @@ export interface EscrowRecord {
 }
 
 /**
- * Payment provider port (Wave P2a defines the interface only; Paystack /
- * Flutterwave adapters land in a later wave). Implementations must never be
- * called with float amounts.
+ * Payment provider port. Wave P2a defined the interface; Stage 22 (audit C2)
+ * wired the Paystack/Flutterwave driver adapter and added verify-before-
+ * credit. Implementations must never be called with float amounts.
  */
 export interface PaymentHoldCommand {
   orderId: string;
@@ -386,14 +395,74 @@ export interface PaymentHoldCommand {
 }
 
 export interface PaymentProviderResult {
+  /**
+   * Opaque reference for later provider-backed release/refund calls. May be
+   * absent when the provider has no separate hold artefact (e.g. the deposit
+   * was already captured by a verified charge); releases/refunds then stay
+   * on the declarative local path.
+   */
+  providerReference?: string;
+}
+
+/**
+ * Result of verifying a buyer-supplied payment reference with the provider
+ * (Stage 22, audit C2: verify-before-credit). Amounts are integer kobo —
+ * adapters convert from provider units at the boundary.
+ */
+export interface PaymentVerificationResult {
+  reference: string;
+  status: 'success' | 'pending' | 'failed';
+  /** Verified amount in integer kobo. */
+  amountKobo: number;
   providerReference: string;
 }
 
 export interface PaymentProviderPort {
   readonly name: string;
+  /**
+   * Verifies a payment reference with the provider. Returns the provider-
+   * reported status and the verified amount in integer kobo; callers must
+   * require status === 'success' AND an exact amount match before crediting.
+   */
+  verify(reference: string): Promise<PaymentVerificationResult>;
   hold(command: PaymentHoldCommand): Promise<PaymentProviderResult>;
   release(providerReference: string): Promise<void>;
   refund(providerReference: string): Promise<void>;
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage 23: escrow payout rail (disbursement). Money out of escrow — a
+ * release to the seller or a refund to the buyer — must go through the
+ * ESCROW_PAYOUT_DRIVER port and every attempt is recorded (integer kobo,
+ * idempotency key, provider reference, status) before/after the call.
+ * ------------------------------------------------------------------------- */
+
+export const ESCROW_PAYOUT_KINDS = ['release', 'refund'] as const;
+export type EscrowPayoutKind = (typeof ESCROW_PAYOUT_KINDS)[number];
+
+export const ESCROW_PAYOUT_STATUSES = ['recorded', 'succeeded', 'failed'] as const;
+export type EscrowPayoutStatus = (typeof ESCROW_PAYOUT_STATUSES)[number];
+
+/** One recorded payout attempt against an escrow hold (audit-grade). */
+export interface EscrowPayout {
+  id: string;
+  escrowId: string;
+  orderId: string;
+  kind: EscrowPayoutKind;
+  /** Integer kobo; always the full held amount for this rail. */
+  amountKobo: number;
+  /** Deterministic per (escrow, kind); retries replay, mismatches 409. */
+  idempotencyKey: string;
+  /** Stable fingerprint of the payout payload the key was first used with. */
+  payloadHash: string;
+  /** Driver that owns the attempt ('stub' | 'live'). */
+  provider: string;
+  /** Opaque provider-side reference, set once the driver succeeds. */
+  providerReference?: string;
+  status: EscrowPayoutStatus;
+  failureReason?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const INVOICE_STATUSES = ['draft', 'issued', 'paid', 'cancelled'] as const;

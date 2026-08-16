@@ -5,22 +5,47 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  Optional
+  Optional,
+  ServiceUnavailableException
 } from '@nestjs/common';
-import type { EscrowRecord, EscrowStatus, PaymentProviderPort, User } from '@agric-platform/shared';
+import type { EscrowPayout, EscrowRecord, EscrowStatus, PaymentProviderPort, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { ESCROW_REPOSITORY, ORDER_REPOSITORY } from '../../database/persistence.tokens.js';
+import {
+  ESCROW_PAYOUT_REPOSITORY,
+  ESCROW_REPOSITORY,
+  ORDER_REPOSITORY
+} from '../../database/persistence.tokens.js';
 import type { EscrowRepository } from '../../database/repositories/escrow.repository.js';
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
+import {
+  hashPayoutPayload,
+  recordPayoutAttempt,
+  type EscrowPayoutRepository
+} from '../../database/repositories/payout.repository.js';
+import { ESCROW_PAYOUT_DRIVER, type EscrowPayoutDriverPort } from './payout.driver.js';
 
 /**
- * Payment provider port token (wave P2a defines the port only). Paystack /
- * Flutterwave adapters register against this token in a later wave; without
- * a provider the escrow record still tracks state with no network calls.
+ * Payment provider port token. Stage 22 (audit C2) registers the
+ * Paystack/Flutterwave driver adapter against this token from
+ * MarketplaceModule (see payment-provider.ts); without a provider the
+ * escrow record still tracks state with no network calls, but the
+ * deposit/release path then runs unverified — a non-production convenience
+ * only.
  */
 export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
+
+/**
+ * Deposit evidence captured at the deposit_paid transition (Stage 22,
+ * audit C2: verify-before-credit). `verified` is true only when a payment
+ * provider confirmed the reference (status success + exact kobo amount).
+ */
+export interface DepositEvidence {
+  reference: string;
+  verified: boolean;
+}
 
 /** Which order party may drive each escrow transition (admins may drive any). */
 type EscrowActor = 'buyer' | 'seller';
@@ -75,6 +100,8 @@ export class EscrowService {
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
     @Inject(ESCROW_REPOSITORY) private readonly escrows: EscrowRepository,
     @Optional() @Inject(PAYMENT_PROVIDER) private readonly provider?: PaymentProviderPort,
+    @Optional() @Inject(ESCROW_PAYOUT_DRIVER) private readonly payoutDriver?: EscrowPayoutDriverPort,
+    @Optional() @Inject(ESCROW_PAYOUT_REPOSITORY) private readonly payouts?: EscrowPayoutRepository,
     @Optional() private readonly audit?: AuditService
   ) {}
 
@@ -83,11 +110,162 @@ export class EscrowService {
   }
 
   /**
+   * True when deposits/releases must be backed by provider verification:
+   * a provider is wired, or the process runs in production (fail closed —
+   * declarative payment evidence is a non-production convenience only).
+   */
+  private verificationRequired(): boolean {
+    return Boolean(this.provider) || isProduction();
+  }
+
+  /**
+   * True when money-out transitions must go through the recorded payout
+   * rail (Stage 23): a payout driver is wired, or the process runs in
+   * production (fail closed — declarative release/refund is a non-production
+   * convenience only).
+   */
+  private payoutRequired(): boolean {
+    return Boolean(this.payoutDriver) || isProduction();
+  }
+
+  /**
+   * Stage 23 payout rail: drives one recorded, idempotent payout attempt for
+   * a release/refund BEFORE the escrow may reach its terminal state.
+   *
+   * Fail-closed ordering:
+   *   1. Production with a stub or unset driver → 503 immediately; NOTHING
+   *      is persisted (no pending state, no payout attempt, no ledger-visible
+   *      transition). This is the lazy use-time guard mirroring the Stage 22
+   *      deposit path — deliberately not boot-fatal.
+   *   2. The pending intent ('releasing'/'refunding') is persisted FIRST so a
+   *      crash mid-payout leaves a resumable record.
+   *   3. The attempt is recorded under a deterministic idempotency key:
+   *      retries with the same key + payload replay (an already-succeeded
+   *      attempt skips the driver call entirely); the same key with a
+   *      different payload is a 409 (the repo's idempotency contract).
+   *   4. The driver is called; failure leaves the escrow in the pending
+   *      state and the attempt marked 'failed' so a retry converges instead
+   *      of double-paying.
+   */
+  private async executePayoutRail(
+    record: EscrowRecord,
+    status: 'released' | 'refunded',
+    actorId: string
+  ): Promise<EscrowRecord> {
+    const kind: EscrowPayout['kind'] = status === 'released' ? 'release' : 'refund';
+    const pending: EscrowStatus = status === 'released' ? 'releasing' : 'refunding';
+    if (
+      !this.payoutDriver ||
+      !this.payouts ||
+      (isProduction() && this.payoutDriver.name === 'stub')
+    ) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.payout_unavailable',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: {
+          orderId: record.orderId,
+          kind,
+          driver: this.payoutDriver?.name ?? 'none',
+          production: isProduction()
+        }
+      });
+      throw new ServiceUnavailableException(
+        `Escrow payout rail is not available for ${kind} (driver: ${this.payoutDriver?.name ?? 'none'}). ` +
+          'Production requires ESCROW_PAYOUT_DRIVER=live with PAYOUT_PROVIDER_* configured; ' +
+          `refusing to ${kind} escrow ${record.id} — nothing was recorded or posted.`
+      );
+    }
+    let current = record;
+    if (record.status !== pending) {
+      // Persist the intent FIRST (guarded): after this write a crash can
+      // only leave a resumable pending record, never an unrecorded payout.
+      current = await this.persistTransition(record, pending, actorId);
+    }
+    const idempotencyKey = `escrow-payout:${kind}:${record.id}`;
+    const payload = {
+      escrowId: record.id,
+      orderId: record.orderId,
+      kind,
+      amountKobo: record.amountKobo
+    };
+    const now = new Date().toISOString();
+    const attempt = await recordPayoutAttempt(this.payouts, {
+      id: newId('payout'),
+      ...payload,
+      idempotencyKey,
+      payloadHash: hashPayoutPayload(payload),
+      provider: this.payoutDriver.name,
+      status: 'recorded',
+      createdAt: now,
+      updatedAt: now
+    });
+    if (attempt.status === 'succeeded') {
+      // Replay of a retry after the driver succeeded but the process crashed
+      // before the terminal write: never pay twice.
+      return current;
+    }
+    try {
+      const result = await this.payoutDriver.payout({
+        ...payload,
+        idempotencyKey,
+        depositProviderReference: record.providerReference
+      });
+      await this.payouts.update(attempt.id, {
+        status: 'succeeded',
+        providerReference: result.providerReference,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.payouts.update(attempt.id, {
+        status: 'failed',
+        failureReason: message,
+        updatedAt: new Date().toISOString()
+      });
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.payout_failed',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: {
+          orderId: record.orderId,
+          kind,
+          pendingStatus: pending,
+          driver: this.payoutDriver.name,
+          idempotencyKey,
+          error: message
+        }
+      });
+      // The record stays in the pending state: retrying the same transition
+      // resumes here and converges (the payout carries the same idempotency
+      // key, and a succeeded attempt short-circuits the driver call).
+      if (error instanceof ServiceUnavailableException) {
+        // Fail-closed driver answers (e.g. live driver: PSSP disbursement
+        // API not yet integrated) propagate as 503, never silently succeed.
+        throw error;
+      }
+      throw new BadGatewayException(
+        `Payout driver '${this.payoutDriver.name}' failed to ${kind} escrow ${record.id} ` +
+          `(${message}); the escrow is '${pending}' and the transition must be retried`
+      );
+    }
+    return current;
+  }
+
+  /**
    * Places the order total (integer kobo) into escrow. Idempotent per order:
    * an existing escrow record is returned unchanged so webhook/order retries
-   * never double-hold.
+   * never double-hold. Deposit evidence (the buyer's payment reference and
+   * whether a provider verified it) is persisted on the record so the
+   * auto-release path can refuse unverified holds.
    */
-  async holdForOrder(orderId: string, actorId: string): Promise<EscrowRecord> {
+  async holdForOrder(
+    orderId: string,
+    actorId: string,
+    deposit?: DepositEvidence
+  ): Promise<EscrowRecord> {
     const existing = await this.escrowForOrder(orderId);
     if (existing) {
       return existing;
@@ -117,6 +295,8 @@ export class EscrowService {
       amountKobo,
       status: 'held',
       providerReference,
+      depositReference: deposit?.reference,
+      depositVerifiedAt: deposit?.verified ? heldAt.toISOString() : undefined,
       heldAt: heldAt.toISOString(),
       heldUntil: new Date(heldAt.getTime() + ESCROW_HOLD_TTL_MS).toISOString()
     };
@@ -126,7 +306,13 @@ export class EscrowService {
       action: 'marketplace.escrow.held',
       entityType: 'escrow_record',
       entityId: created.id,
-      metadata: { orderId, amountKobo, provider: this.provider?.name ?? 'none' }
+      metadata: {
+        orderId,
+        amountKobo,
+        provider: this.provider?.name ?? 'none',
+        depositReference: deposit?.reference,
+        depositVerified: deposit?.verified === true
+      }
     });
     await this.events.publish(
       'marketplace.escrow.held',
@@ -174,7 +360,14 @@ export class EscrowService {
     return this.applyTransition(record, status, actor.id);
   }
 
-  /** System-path release (delivery confirmation, order completion). */
+  /**
+   * System-path release (delivery confirmation, order completion).
+   * Verify-before-credit (Stage 22, audit C2): when verification is
+   * required (a provider is wired, or production), an escrow whose deposit
+   * was never provider-verified is NOT auto-released — the hold predates
+   * the fix or was declared without evidence. Such holds need the
+   * admin-mediated path (dispute resolution / manual release).
+   */
   async releaseForOrder(orderId: string, actorId: string): Promise<EscrowRecord | undefined> {
     const record = await this.escrowForOrder(orderId);
     if (!record) {
@@ -185,6 +378,19 @@ export class EscrowService {
     }
     if (record.status !== 'held') {
       return record; // nothing held, or awaiting dispute resolution
+    }
+    if (this.verificationRequired() && !record.depositVerifiedAt) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.release_blocked_unverified',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId, depositReference: record.depositReference }
+      });
+      throw new ConflictException(
+        `Escrow ${record.id} for order ${orderId} has no provider-verified deposit; ` +
+          'refusing auto-release. Resolve through the admin-mediated path.'
+      );
     }
     return this.applyTransition(record, 'released', actorId);
   }
@@ -245,9 +451,13 @@ export class EscrowService {
     actorId: string
   ): Promise<EscrowRecord> {
     let current = record;
-    const providerBacked =
-      (status === 'released' || status === 'refunded') && record.providerReference && this.provider;
-    if (providerBacked) {
+    const moneyOut = status === 'released' || status === 'refunded';
+    const providerBacked = moneyOut && record.providerReference && this.provider;
+    if (moneyOut && this.payoutRequired()) {
+      // Stage 23: the disbursement rail owns money-out transitions whenever a
+      // payout driver is wired (and ALWAYS in production — fail closed).
+      current = await this.executePayoutRail(record, status, actorId);
+    } else if (providerBacked) {
       const pending: EscrowStatus = status === 'released' ? 'releasing' : 'refunding';
       if (record.status !== pending) {
         // Persist the intent FIRST (guarded): after this write a crash can

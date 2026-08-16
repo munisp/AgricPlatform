@@ -66,6 +66,8 @@ export const ANALYTICS_MART_REPOSITORY = Symbol('ANALYTICS_MART_REPOSITORY');
 
 // Wave P2a: marketplace depth (escrow/invoicing/logistics) + finance/credit.
 export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');
+// Stage 23: recorded escrow payout attempts (release/refund rail).
+export const ESCROW_PAYOUT_REPOSITORY = Symbol('ESCROW_PAYOUT_REPOSITORY');
 export const INVOICE_REPOSITORY = Symbol('INVOICE_REPOSITORY');
 export const SHIPMENT_REPOSITORY = Symbol('SHIPMENT_REPOSITORY');
 export const LEDGER_ACCOUNT_REPOSITORY = Symbol('LEDGER_ACCOUNT_REPOSITORY');

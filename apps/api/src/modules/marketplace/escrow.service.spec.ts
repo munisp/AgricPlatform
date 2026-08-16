@@ -1,11 +1,17 @@
-import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { createInMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
 import { EscrowService } from './escrow.service.js';
+import {
+  LiveEscrowPayoutDriver,
+  StubEscrowPayoutDriver,
+  type EscrowPayoutDriverPort
+} from './payout.driver.js';
 
 const buyer: Pick<User, 'id' | 'roles'> = { id: 'user-buyer', roles: ['buyer'] };
 const seller: Pick<User, 'id' | 'roles'> = { id: 'user-adamu', roles: ['farmer'] };
@@ -13,15 +19,21 @@ const admin: Pick<User, 'id' | 'roles'> = { id: 'user-admin', roles: ['admin'] }
 const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['student'] };
 
 // Seed order 'order-buyer-cassava': ₦370,000 total, escrowRequired, confirmed.
-function makeService(provider?: PaymentProviderPort) {
+function makeService(
+  provider?: PaymentProviderPort,
+  payoutDriver?: EscrowPayoutDriverPort,
+  payouts = payoutDriver ? createInMemoryEscrowPayoutRepository() : undefined
+) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
   const service = new EscrowService(
     events,
     createInMemoryOrderRepository(),
     createInMemoryEscrowRepository(),
-    provider
+    provider,
+    payoutDriver,
+    payouts
   );
-  return { service, events };
+  return { service, events, payouts };
 }
 
 describe('EscrowService', () => {
@@ -45,6 +57,12 @@ describe('EscrowService', () => {
     const calls: string[] = [];
     const provider: PaymentProviderPort = {
       name: 'stub-pay',
+      verify: async (reference) => ({
+        reference,
+        status: 'success',
+        amountKobo: 37_000_000,
+        providerReference: reference
+      }),
       hold: async (command) => {
         calls.push(`hold:${command.amountKobo}`);
         return { providerReference: 'ps_hold_123' };
@@ -147,6 +165,12 @@ function fakeProvider(failures: { release?: number; refund?: number } = {}) {
   let refundFailures = failures.refund ?? 0;
   const provider: PaymentProviderPort = {
     name: 'fake-pay',
+    verify: async (reference) => ({
+      reference,
+      status: 'success',
+      amountKobo: 37_000_000,
+      providerReference: reference
+    }),
     hold: async () => ({ providerReference: 'fake_hold_1' }),
     release: async (reference) => {
       calls.push(`release:${reference}`);
@@ -252,5 +276,251 @@ describe('EscrowService funds-integrity hardening', () => {
     const { service } = makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(Date.parse(record.heldUntil!)).toBeGreaterThan(Date.parse(record.heldAt));
+  });
+});
+
+// Stage 22 (audit C2): verify-before-credit evidence on the escrow record.
+describe('EscrowService deposit verification evidence (audit C2)', () => {
+  it('persists the verified deposit reference on the hold', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-001',
+      verified: true
+    });
+    expect(record.depositReference).toBe('paystack:dep-001');
+    expect(record.depositVerifiedAt).toBeDefined();
+    const stored = await service.escrowForOrder('order-buyer-cassava');
+    expect(stored?.depositReference).toBe('paystack:dep-001');
+    expect(stored?.depositVerifiedAt).toBe(record.depositVerifiedAt);
+  });
+
+  it('records declarative deposits as unverified', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    expect(record.depositReference).toBe('declared-ref');
+    expect(record.depositVerifiedAt).toBeUndefined();
+  });
+
+  it('auto-release proceeds for provider-verified holds when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-002',
+      verified: true
+    });
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
+  });
+
+  it('blocks auto-release of unverified holds when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    // Declarative hold (no provider verification) while a provider is wired.
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      ConflictException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+    // The admin-mediated path stays available for unverified holds.
+    const record = await service.escrowForOrder('order-buyer-cassava');
+    expect((await service.transition(record!.id, 'released', admin)).status).toBe('released');
+  });
+
+  it('still auto-releases unverified holds when no provider is wired outside production', async () => {
+    const { service } = makeService();
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
+  });
+});
+
+// Stage 23: escrow payout rails — release/refund go through the recorded,
+// idempotent ESCROW_PAYOUT_DRIVER port and fail closed in production.
+
+/** Records payout calls; can be told to fail the first N payout attempts. */
+function fakePayoutDriver(failures = 0) {
+  const calls: string[] = [];
+  let remaining = failures;
+  const driver: EscrowPayoutDriverPort = {
+    name: 'stub',
+    payout: async (command) => {
+      calls.push(`${command.kind}:${command.idempotencyKey}`);
+      if (remaining-- > 0) {
+        throw new Error('rail unreachable');
+      }
+      return { providerReference: `stub-payout:${command.idempotencyKey}`, basis: 'stub' };
+    }
+  };
+  return { driver, calls };
+}
+
+// Low-entropy, obviously-fake dummy credentials (never real secrets).
+const DUMMY_URL = 'https://payout-provider.example.invalid';
+const DUMMY_KEY = 'dummy-payout-api-key-0000';
+const DUMMY_SECRET = 'dummy-payout-signing-secret-0000';
+
+describe('EscrowService payout rails (Stage 23)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('records and succeeds release payouts through the stub driver outside production', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const released = await service.transition(record.id, 'released', buyer);
+    expect(released.status).toBe('released');
+    expect(calls).toEqual([`release:escrow-payout:release:${record.id}`]);
+
+    const attempts = await payouts!.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      escrowId: record.id,
+      orderId: 'order-buyer-cassava',
+      kind: 'release',
+      amountKobo: 37_000_000,
+      idempotencyKey: `escrow-payout:release:${record.id}`,
+      provider: 'stub',
+      status: 'succeeded'
+    });
+    expect(Number.isInteger(attempts[0].amountKobo)).toBe(true);
+    expect(attempts[0].providerReference).toContain(attempts[0].idempotencyKey);
+  });
+
+  it('records refund payouts the same way', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const refunded = await service.transition(record.id, 'refunded', seller);
+    expect(refunded.status).toBe('refunded');
+    expect(calls).toEqual([`refund:escrow-payout:refund:${record.id}`]);
+    expect((await payouts!.all())[0]).toMatchObject({ kind: 'refund', status: 'succeeded' });
+  });
+
+  it('fails closed 503 in production with a stub driver — nothing recorded, escrow untouched', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service, events, payouts } = makeService(undefined, new StubEscrowPayoutDriver());
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      ServiceUnavailableException
+    );
+    await expect(service.transition(record.id, 'refunded', seller)).rejects.toThrowError(
+      ServiceUnavailableException
+    );
+    // Fail-closed means NOTHING moved: escrow still held, no payout attempt,
+    // no state transition posted anywhere.
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+    expect(await payouts!.all()).toHaveLength(0);
+    expect(
+      (await events.listOutbox()).filter((e) => e.name === 'marketplace.escrow.status_changed')
+    ).toHaveLength(0);
+  });
+
+  it('fails closed 503 in production with no payout driver at all', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      ServiceUnavailableException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+  });
+
+  it('blocks order-completion auto-release in production while the rail is stubbed', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service } = makeService(undefined, new StubEscrowPayoutDriver());
+    // Provider-verified deposit evidence (Stage 22 gate passes) — the payout
+    // rail is the blocker now.
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-payout-1',
+      verified: true
+    });
+    await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      ServiceUnavailableException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+  });
+
+  it('live driver (configured) answers 503 not-integrated; the escrow stays resumable', async () => {
+    process.env.NODE_ENV = 'production';
+    const live = new LiveEscrowPayoutDriver(DUMMY_URL, DUMMY_KEY, DUMMY_SECRET);
+    const { service, payouts } = makeService(undefined, live);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-payout-2',
+      verified: true
+    });
+
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      ServiceUnavailableException
+    );
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      /not yet integrated/
+    );
+    // The intent persisted (resumable), the attempt is recorded as failed,
+    // and the escrow never reached a terminal state.
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('releasing');
+    const attempts = await payouts!.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ kind: 'release', provider: 'live', status: 'failed' });
+    expect(attempts[0].failureReason).toMatch(/not yet integrated/);
+  });
+
+  it('retry with the same idempotency key converges without a second payout record', async () => {
+    const { driver, calls } = fakePayoutDriver(1); // first payout attempt crashes
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      BadGatewayException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('releasing');
+    expect((await payouts!.all())[0].status).toBe('failed');
+
+    const released = await service.transition(record.id, 'released', buyer);
+    expect(released.status).toBe('released');
+    // One recorded attempt, updated in place; the driver saw the same key twice.
+    const attempts = await payouts!.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].status).toBe('succeeded');
+    expect(calls).toEqual([
+      `release:escrow-payout:release:${record.id}`,
+      `release:escrow-payout:release:${record.id}`
+    ]);
+
+    // Terminal replay: no further driver call, still one record.
+    await service.transition(record.id, 'released', buyer);
+    expect(calls).toHaveLength(2);
+    expect(await payouts!.all()).toHaveLength(1);
+  });
+
+  it('never double-pays: a concurrent release + refund race records exactly one payout', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const outcomes = await Promise.allSettled([
+      service.transition(record.id, 'released', buyer),
+      service.transition(record.id, 'refunded', seller)
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+
+    const final = await service.escrowForOrder('order-buyer-cassava');
+    expect(['released', 'refunded']).toContain(final?.status);
+    // Exactly one payout attempt reached the driver — never both.
+    expect(calls).toHaveLength(1);
+    const attempts = await payouts!.all();
+    expect(attempts.filter((a) => a.status === 'succeeded')).toHaveLength(1);
   });
 });
