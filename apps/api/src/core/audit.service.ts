@@ -3,6 +3,7 @@ import type { AuditEvent } from '@agric-platform/shared';
 import { newId } from '../common/async-repository.js';
 import { AUDIT_REPOSITORY } from '../database/persistence.tokens.js';
 import type { AuditCriteria, AuditRepository } from '../database/repositories/audit.repository.js';
+import type { AuditAnchorVerification } from './audit-anchor.service.js';
 import { GENESIS_HASH, hashAuditEvent } from './audit-chain.js';
 
 export { canonicalJSON, GENESIS_HASH, hashAuditEvent, linkAuditEvent } from './audit-chain.js';
@@ -23,6 +24,13 @@ export interface AuditVerification {
   brokenAt?: string;
   /** Number of events verified in this walk (Wave P). */
   checked?: number;
+  /**
+   * Anchoring checkpoint verification (Stage 23): anchor-chain integrity plus
+   * the truncation-gap check against the live tail. Present when an
+   * AuditAnchorService is wired (always in the deployed app); `valid` above
+   * is then the AND of the event-chain and anchor checks.
+   */
+  anchors?: AuditAnchorVerification;
 }
 
 /**
@@ -42,10 +50,13 @@ export interface AuditVerification {
  * hold an independent lastHash and fork the chain. Restarts and concurrent
  * writers now all extend the same persisted chain.
  *
- * Residual risk (documented, follow-up): deleting the last N rows still
- * leaves a valid shorter chain — the chain has no length checkpoint. Closing
- * that hole requires an external anchoring checkpoint (periodically
- * notarizing tail hash + length outside the database); see migration 043.
+ * Anchoring checkpoints (Stage 23, migration 047): AuditAnchorService
+ * periodically/on-demand notarizes the chain tip (event id + tip hash +
+ * count) into the audit.anchors chain, so a deleted/re-extended tail is
+ * detected by the combined verification (see AdminService.verifyAuditLog).
+ * Anchors in the same database only BOUND the truncation window — a
+ * DB-write attacker can delete anchors too; AUDIT_ANCHOR_SINK ships anchors
+ * off-box, and a fully external anchor is an ops follow-up.
  */
 @Injectable()
 export class AuditService {
