@@ -36,15 +36,52 @@ describe('partner API config', () => {
     ).toThrow(/PARTNER_API_SIGNING_SECRET/);
   });
 
-  it('allows production sandbox and non-production live-without-secret', () => {
+  it('fails closed in production when the sandbox driver is selected (published dev secret)', () => {
+    // PARTNER_API_DRIVER unset ⇒ sandbox ⇒ tokens signed with the PUBLISHED
+    // PARTNER_API_DEV_SECRET — anyone could mint valid partner tokens.
     expect(() =>
       assertProductionPartnerApiConfig({ NODE_ENV: 'production' } as NodeJS.ProcessEnv)
+    ).toThrow(/PARTNER_API_DRIVER=live/);
+    expect(() =>
+      assertProductionPartnerApiConfig({
+        NODE_ENV: 'production',
+        PARTNER_API_DRIVER: 'sandbox'
+      } as NodeJS.ProcessEnv)
+    ).toThrow(/PARTNER_API_DRIVER=live/);
+  });
+
+  it('fails closed in production when the live driver uses the published dev secret', () => {
+    expect(() =>
+      assertProductionPartnerApiConfig({
+        NODE_ENV: 'production',
+        PARTNER_API_DRIVER: 'live',
+        PARTNER_API_SIGNING_SECRET: PARTNER_API_DEV_SECRET
+      } as NodeJS.ProcessEnv)
+    ).toThrow(/PARTNER_API_SIGNING_SECRET/);
+  });
+
+  it('treats NODE_ENV casing variants as production (fail closed)', () => {
+    expect(() =>
+      assertProductionPartnerApiConfig({ NODE_ENV: 'Production' } as NodeJS.ProcessEnv)
+    ).toThrow(/PARTNER_API_DRIVER=live/);
+  });
+
+  it('allows production live with a private secret and non-production sandbox', () => {
+    expect(() =>
+      assertProductionPartnerApiConfig({
+        NODE_ENV: 'production',
+        PARTNER_API_DRIVER: 'live',
+        PARTNER_API_SIGNING_SECRET: 'ci-smoke-partner-api-signing-key'
+      } as NodeJS.ProcessEnv)
     ).not.toThrow();
     expect(() =>
       assertProductionPartnerApiConfig({
         NODE_ENV: 'test',
         PARTNER_API_DRIVER: 'live'
       } as NodeJS.ProcessEnv)
+    ).not.toThrow();
+    expect(() =>
+      assertProductionPartnerApiConfig({ NODE_ENV: 'test' } as NodeJS.ProcessEnv)
     ).not.toThrow();
   });
 });
