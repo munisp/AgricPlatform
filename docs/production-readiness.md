@@ -1,8 +1,8 @@
 # Production Readiness — AgricPlatform
 
-**Assessment date:** 2026-08-02  
+**Assessment date:** 2026-08-16 (stats refreshed during the Stage 21 mission-critical assurance audit; earlier Stage 9/10 closure summaries below are retained as historical record)  
 **Assessment scope:** Nigeria Farmer Platform PRD v3.3, Phase 1 reference implementation, GitHub handoff, and production launch gap analysis.  
-**Verdict:** **Ready for technical review, local demo, and staging hardening. Not ready for public production launch.**
+**Verdict:** **Ready for technical review, local demo, and staging hardening. Not ready for public production launch.** The Stage 21 assurance audit additionally confirmed critical (C1) application-security gaps that must close before any public launch — see §5a.
 
 ## 1. Executive readiness score
 
@@ -10,14 +10,36 @@
 | --- | ---: | --- | --- |
 | Phase 1 product-surface coverage | 98% | All Phase 1 domains wired end to end, plus Stage 8 completions: QR attendance check-in, analytics CSV/PDF export UI, IndexedDB form drafts (registration/enrolment/listing), data-usage indicator, offline-pack scaffold | Real OIDC sign-in flow in the web app |
 | Phase 2 module coverage | 90% | M7 escrow/invoicing/logistics, M8 services marketplace, M9 ledger/credit/lenders/loans, M11 programmes, M12 pathways, M14 knowledge base, M16 trending/related — all implemented API + web with migrations 003/004; Stage 10 closed the residual gaps (WhatsApp listing LGA capture, USSD HTTP e2e, trending-query cold-start blend, real ssh2 SFTP transport, Redis sliding-window partner rate bucket) | Live settlement, BVN/NIN verification, Directus/Moodle live sync (external) |
-| Build and test health | 100% | Typecheck, lint, `lint:sql` (11 migrations), 993 automated tests passing (787 API + 158 web + 18 shared + 17 SDK + 13 mobile; 51 pg-gated skips), API + web production builds, bundle budget gate (< 250KB, current 204.7KB) | Keep these checks required on `main` |
-| Persistence readiness | 90% (code-complete) | 63 repository providers (async ports, in-memory + pg) across 11 migrations; fail-closed production config; Redis stores | Run the pg/Redis-gated suites against real containers and soak in staging |
-| Identity and access readiness | 75% | Keycloak OIDC/JWKS bearer verification (`jose`), ownership-or-admin authorization across sensitive routes, hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config | Hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
-| Integration readiness | 85% | Real HTTP drivers, fail-closed, 111 mocked-fetch tests: Termii SMS + Twilio failover, 360dialog WhatsApp, Mailgun + SendGrid, OneSignal, Paystack + Flutterwave (init/verify/refund/escrow-release + webhook signatures), Meilisearch, OpenMeteo live weather (keyless), FEWS NET/NiMet ingestion scaffold, Moodle/Discourse/Directus bridge clients | Sandbox/live credentials; NiMet payload MoU; delivery-rate evidence |
+| Build and test health | 100% | Typecheck, lint, `lint:sql` (41 migrations), 3,101 automated tests passing (2,463 API + 440 web + 30 shared + 18 SDK + 150 mobile; 91 pg-gated skips in 4 spec files), API + web production builds, bundle budget gate (< 250KB enforced in CI) — all re-measured 2026-08-16, see §8 | Keep these checks required on `main` |
+| Persistence readiness | 90% (code-complete) | 171 repository provider registrations (async ports, in-memory + pg) across 41 migrations; fail-closed production config; Redis stores | Run the pg/Redis-gated suites against real containers and soak in staging |
+| Identity and access readiness | 45% on `main`; **70% on Stage 22 merge** | Keycloak OIDC/JWKS bearer verification (`jose`), hardened OTP (expiry/attempts/lockout, no dev code in production), throttling, fail-closed production auth config. The Stage 21 audit confirmed the guarded-route claim did not hold (§5a C1-1…C1-3). **Stage 22 update (CI-verified on open PRs, pending merge):** PR #38 closes the unguarded-route class across users/opportunities/profiles/dashboard/finance/credit/advisory/community/learning/analytics and restricts self-registration to `SELF_REGISTRATION_ROLES`; PR #42 authenticates the Africa's Talking USSD/IVR/agent callbacks and makes PIN/OTP flows race-safe; PR #40 turns the dev-header flag fatal in production | Merge PRs #38/#40/#42 (plus the ci.yml smoke-env maintainer step documented in #40); hosted Keycloak realm, OTP SPI + Termii SMS, web OIDC login flow |
+| Integration readiness | 85% | Real HTTP drivers, fail-closed, 188 mocked-fetch test cases across 20 spec files under `modules/integrations`: Termii SMS + Twilio failover, 360dialog WhatsApp, Mailgun + SendGrid, OneSignal, Paystack + Flutterwave (init/verify/refund/escrow-release + webhook signatures), Meilisearch, OpenMeteo live weather (keyless), FEWS NET/NiMet ingestion scaffold, Moodle/Discourse/Directus bridge clients. Stage 21 caveat — resolved on PR #39 (CI-verified, pending merge): the generic webhook verifier computed HMAC-SHA256 while live Paystack signs HMAC-SHA512; PR #39 dispatches provider-native verification (Paystack HMAC-SHA512, Flutterwave static verif-hash, generic SHA-256 otherwise), re-drives verified-but-unprocessed events instead of losing them, and makes the outbox sweeper await bus acceptance before marking rows published | Fix provider-native webhook verification; sandbox/live credentials; NiMet payload MoU; delivery-rate evidence |
 | Infrastructure readiness | 65% | Dockerfiles with documented digest-pinning policy, Compose, Kubernetes base + staging/production overlays (HPAs, PDBs, NetworkPolicies, production security contexts), hardened CI/CD (gitleaks, blocking audit, Trivy, smoke tests), backup/restore scripts and CronJob example, ops runbooks | Execute and harden in target cloud; provision clusters/secret stores; run backup/restore and DR drills |
 | Security and compliance readiness | 65% | RBAC + OIDC, webhook HMAC, idempotency with body-mismatch 409, tamper-evident audit hash chain, signed QR attendance secrets fail-closed, export audit logging, privacy export/delete, CSP/security headers, WCAG AA automated checks, secret hygiene | Pen test, DPO/legal review, residency, monitoring evidence, credentials |
-| **Overall Phase 1+2+3 engineering readiness** | **97%** | All engineering-controllable scope code-complete through Stage 10 waves P1–P6c — every PRD feature area now has code, including the IVR voice channel; deterministic local gates green | Container verification of pg/Redis suites, hosted IdP, provider sandboxes, staging hardening |
-| **Public production readiness** | **50%** | Feature build-out complete; launch blockers are external and operational (legal, credentials, penetration test, uptime evidence, translations) | Close L1–L10 in `docs/security-compliance.md` |
+| **Engineering-controllable readiness** | **95/100** (Stage 23; CI-verified on open PRs, applies on merge — see rubric below) | Basis: 100 = every engineering-controllable finding closed, CI-verified, and merged. Closed: the Stage 22 set (7 C1 + 13 C2 classes + C3/C4 items, PRs #36–#43) and the Stage 23 set (PRs #45–#48 — 001 index guards, voucher funding backing, audit-chain anchoring, escrow payout rails). Explicit −5 deduction table in the rubric below. Supersedes the former "97% feature coverage" framing, which measured feature completeness but not correctness under audit | Merge PRs #35–#48; maintainer applies the two ci.yml edits; off-box audit-anchor sink (ops); PSSP disbursement API (provider) |
+| **Public production readiness** | **35%** on `main`; **55% on full merge of #35–#48 plus the two ci.yml edits** (Stage 21 reduced 50%→35%; Stage 23 lifts the on-merge value 50%→55%) | Feature build-out complete. The Stage 21 audit confirmed critical internally-fixable gaps (unguarded user/profile/finance routes, self-service admin role assignment, stub identity/insurance drivers reachable in production, non-idempotent migration tooling); the Stage 22 PR set (#36–#43) closed those, and the Stage 23 set (#45–#48) closed the last internal engineering items (001 index guards, unbacked voucher issuance, audit-tail-truncation anchoring, escrow payout rails). The 50%→55% on-merge delta reflects exactly that: after merge, the entire residual to launch is external blockers L1–L10 (legal, credentials, penetration test, uptime evidence, translations, provider agreements). Boundary unchanged: there is no path to ≥95% public readiness without third-party evidence, and no 100% claims are made | Merge PRs #35–#48 (all CI-verified; #40 also needs the documented ci.yml smoke-env maintainer step), apply the two workflow-scope CI edits documented in #36/#40, then L1–L10 in `docs/security-compliance.md` |
+
+### Engineering-controllable readiness rubric (95/100, Stage 23 — 2026-08-16)
+
+**Basis.** 100 = every engineering-controllable finding closed, CI-verified, and merged. External launch blockers (L1–L10 in `docs/security-compliance.md`) are outside this score's denominator by definition — no amount of engineering closes them.
+
+**What closed.**
+
+- **Stage 22 (PRs #36–#43, all CI-green, unmerged):** the full Stage 21 set — 7 confirmed-critical (C1) findings, 13 confirmed-high (C2) classes, and the C3/C4 items. Per-finding dispositions in §5a.
+- **Stage 23 (PRs #45–#48, each stacked on its Stage 22 sibling, 13/13 checks green on each):**
+  - **#45 `stage23/index-guards`** (stacked on #36): all 15 `CREATE INDEX` statements in migration 001 guarded with `IF NOT EXISTS`; the other 40 migration files swept clean; new `lint:sql` rule rejecting unguarded `CREATE [UNIQUE] INDEX`, with +5 rule tests (rule spec 17/17).
+  - **#46 `stage23/voucher-backing`** (stacked on #37): the C3 unbacked-voucher-issuance finding closed — migration 046 `input_vouchers.programme_funding` (plus funding events and a CHECK that `reserved + settled <= funded`); atomic conditional reserve on issuance (422 with nothing persisted when unfunded); exactly-once settle/release via marker events; funding endpoints; +10 tests.
+  - **#47 `stage23/audit-anchoring`** (stacked on #41): the audit-chain tail-truncation residual closed at the engineering layer — migration 047 `audit.anchors` (own hash chain, hex CHECKs); AuditAnchorService (on-demand plus opt-in interval, never on the append path); POST/GET `/admin/audit-log/anchors`; verify extended to detect anchor-chain breaks and truncation gaps (`event_count_regression` / `anchor_tip_missing` / `anchor_tip_hash_mismatch`); `AUDIT_ANCHOR_SINK=file:` JSONL sink; +24 tests.
+  - **#48 `stage23/escrow-payout-rails`** (stacked on #43): the payout-side residual closed at the engineering layer — `ESCROW_PAYOUT_DRIVER=stub|live` port; production stub/unset ⇒ lazy use-time 503 with zero persistence (never boot-fatal); live validates config then 503s "PSSP disbursement API not yet integrated"; release/refund through the rail with idempotency (replay-safe, mismatch-409); migration 048 `marketplace.escrow_payouts`; +18 tests (6 driver + 8 service + 4 repository).
+
+**Deductions (−5 total):**
+
+| Deduction | Reason |
+| ---: | --- |
+| −2 | The full PR set (#35–#48) is CI-verified but **unmerged**; the 95/100 applies on merge, not before |
+| −1 | Two `.github/workflows/ci.yml` edits (db-contract migrate-twice step from #36; smoke-env additions from #40) are authored and documented but **maintainer-gated** — the automation token lacks `workflow` scope |
+| −1 | Same-DB audit anchors (#47) **bound but do not eliminate** the tail-truncation window; fully external (off-box) anchoring is an ops follow-up |
+| −1 | Escrow payout rails (#48) **fail closed** pending the PSSP disbursement API — a provider dependency, not additional code |
 
 The implementation should be treated as a **production-oriented reference platform**, not as a live production system. The most important next engineering milestone is a staging build that uses PostgreSQL, Redis, and Keycloak end to end.
 
@@ -31,7 +53,7 @@ The implementation should be treated as a **production-oriented reference platfo
 | **Tier B — whole document (P1+P2+P3)** | All 18 modules full scope, all appendices | **92%** | Weighted by phase effort (P1 45% × 95%, P2 35% × 90%, P3 20% × 90%). Stage 9 built the Phase 3 engineering scope: USSD channel (full menu engine), recommendation engine, KPI data marts + ETL (lakehouse handoff layer), public SDK + developer portal, embedded widgets, farmOS/OFN/NCX/AFEX/ODK/KoboToolbox/lender/e-Extension ACL adapters, Partner API, mobile app shell. Stage 10 added the IVR voice channel (the last unbuilt feature), closed all seven wave-reported residual gaps, and shipped the remaining frontend surfaces (recommendations rail, admin insights, federation admin, camera QR check-in, webinar registrations) |
 | Tier B, engineering-controllable items only | Same denominator minus pure external blockers | **≈97%** | Excludes items no code can close: live credentials, ⚖ legal/regulatory reviews, pen test, uptime evidence, partner agreements, professional translation, SDK registry publish, partner adoption, live IVR/USSD telephony provisioning |
 
-**What remains genuinely unbuilt (engineering-doable):** **Nothing.** Every PRD v3.3 feature area — all 18 modules, all Appendix F channels (USSD, IVR, WhatsApp, PIN swap), all Appendix G integration patterns — is implemented in code with tests. All remaining gaps are external evidence, provisioning, legal review, or adoption, not features.
+**What remains genuinely unbuilt (engineering-doable):** **No PRD feature area is absent from code.** Every PRD v3.3 feature area — all 18 modules, all Appendix F channels (USSD, IVR, WhatsApp, PIN swap), all Appendix G integration patterns — has an implementation with tests. Note the scope of this claim: it is a *feature-coverage* statement as of the Stage-9/10 build-out, not a correctness guarantee — the Stage 21 assurance audit (§5a) confirmed defects inside implemented areas, and external gaps (evidence, provisioning, legal review, adoption) remain.
 
 ### Stage 9 closure summary (waves P5a–P5e, merged through c4ebae2)
 - **P5a** — Phase 3 federated integrations: farmOS/LiteFarm sync (consent-gated links), OFN listing syndication + order webhooks, NCX/AFEX price feeds, ODK/KoboToolbox beneficiary import (staged → dedup → admin-confirm merge), input-finance bidirectional API (consented credit-readiness push), NAERLS/FMARD e-Extension pull. Migration 007. +96 tests.
@@ -62,7 +84,7 @@ The implementation should be treated as a **production-oriented reference platfo
 
 ### Frontend reference PWA
 
-`apps/web` implements a Next.js App Router PWA with 18 generated routes:
+`apps/web` implements a Next.js App Router PWA with 61 `page.tsx` routes (measured 2026-08-16; the list below shows the original core set):
 
 - `/` landing page
 - `/onboarding`
@@ -193,6 +215,56 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 | P2 | Analytics are fixture/reference level | Production KPI definitions need warehouse/event data | Data lead |
 | P2 | Advanced Appendix A architecture is intentionally deferred | Kafka, Temporal, TigerBeetle, Mojaloop, Dapr, APISIX, and SOC tooling are scale/phase triggers | Architecture lead |
 
+## 5a. Stage 21 mission-critical assurance audit (2026-08-16)
+
+A seven-dimension adversarial audit (money paths, authN/Z & channels, fail-closed stubs, idempotency/replay, test & CI integrity, migration safety, docs honesty) was run against `main` @ `324dea5`. Every finding below was reproduced against the source tree by the audit lead before inclusion; no finding is asserted on agent testimony alone. Full detail: Stage 21 audit report (audit working artifact; see PR description).
+
+**Confirmed critical (C1) — must close before any public launch:**
+
+| # | Finding | Location |
+| --- | --- | --- |
+| C1-1 | Unauthenticated user record mutation and directory read (`PATCH /users/:id`, `GET /users`, `GET /users/:id` have no auth guard; only a global throttler exists) | `apps/api/src/modules/users/users.controller.ts:42-60`; `apps/api/src/app.module.ts:178` |
+| C1-2 | Unauthenticated application-approval workflow — an attacker can self-approve grant/subsidy applications (`POST /opportunities/:id/apply` with attacker-chosen `userId`, then `PATCH /opportunities/applications/:id/status {status:'successful'}`) | `apps/api/src/modules/opportunities/opportunities.controller.ts:113-165` |
+| C1-3 | Self-service role assignment at registration — `POST /auth/register` accepts `roles:['admin']` verbatim, with no OTP proof preceding account creation | `apps/api/src/modules/auth/auth.controller.ts:41-43`; `apps/api/src/modules/users/users.service.ts:60` |
+| C1-4 | NIN stub identity driver verifies beneficiaries in production (no production stub ban on the factory; stub verdict is a publicly computable hash), gating real subsidy-voucher money | `apps/api/src/modules/input-vouchers/identity.driver.ts:114-125`; `input-vouchers.service.ts:330-365` |
+| C1-5 | Parametric-insurance triggers evaluate on fabricated stub weather/flood data in production and book real ledger payouts marked `paid` (no `isProduction` reference anywhere in the module) | `apps/api/src/modules/insurance/insurance.service.ts:239-250,477-538,623-755` |
+| C1-6 | Input-voucher redeem vs expire/void race double-debits the programme liability (ledger posting commits before the status CAS; the two operations use different idempotency keys, so both postings can commit) | `apps/api/src/modules/input-vouchers/input-vouchers.service.ts:558-577,649-685` |
+| C1-7 | Migration runner is not idempotent against Compose-bootstrapped databases — `015`'s unguarded `ADD CONSTRAINT` aborts re-application, so new migrations (including this audit's 041) cannot be delivered via the supported tooling on that path; and a mid-file failure of `001` is silently recorded as fully applied by the `identity.users` baseline probe | `infra/postgres/015_query_indexes.sql:73-75`; `apps/api/src/database/migrate.ts:31,54-62`; `infra/docker-compose.yml:18-21` |
+
+**Confirmed high (C2) — systemic classes:** missing auth guards as a *class* across profiles/dashboard/finance-reads/advisory/community/learning/analytics-mutation routes; `ALLOW_DEV_HEADER_AUTH=true` in production is warn-and-continue (every sibling guard throws); Africa's Talking USSD/IVR/agent-banking callbacks have no provider-authenticity check (caller-controlled `phoneNumber` authenticates voucher redemption sessions); Partner API defaults to the published sandbox signing secret in production when `PARTNER_API_DRIVER` is unset; PIN-swap attempt counter is non-atomic (TOCTOU defeats the 5-attempt lockout); inbound webhook/federation dedupe is recorded *before* processing with no reprocessor, so a transient failure permanently loses verified events; the outbox sweeper marks rows published before async bus delivery completes; marketplace payment/escrow lifecycle is fully declarative (no verify-before-credit — `deposit_paid` is buyer self-declared and order completion auto-releases escrow and marks invoices paid without payment evidence); float top-up requests and keyless voucher issuance lack idempotency keys (retry → duplicate settleable top-ups / duplicate signed money-bearing vouchers); input-voucher budget/cap enforcement is TOCTOU; the audit hash chain forks under concurrent/multi-replica writers and has no DB-level immutability or tail-truncation protection; `lint:sql` does not guard `DROP COLUMN`/`DROP CONSTRAINT`/unguarded `ADD CONSTRAINT`; VSLA (037), input-voucher (035), and core order/booking (001/004) money columns lack CHECK constraints of the class fixed for agent banking in migration 041.
+
+**Audit confirmations (verified sound):** ledger core invariants and atomic posting; webhook HMAC fail-closed posture; OTP driver boot-forbidden in production; OIDC boot assertions; transactional outbox on credit/savings/loan/warehouse flows; voucher HMAC + exactly-once redemption CAS; the CI gate suite (npm-audit-gate fail-closed on broken endpoint, bundle budget fail-closed, no `continue-on-error` on blocking gates, no secret echoes); zero real or real-looking secrets in the repo; zero fake-green patterns (no `.only`, no vacuous assertions, no swallowed failures).
+
+**Disposition:** this audit's in-scope fixes shipped as migration `041_agent_banking_amount_checks.sql` (agent-banking amount/commission CHECK constraints) plus the documentation refresh above.
+
+### Stage 22 fix dispositions (2026-08-16)
+
+Every C1/C2/C3 finding above received a fix across eight workstream PRs. Verification standard: the full CI gate on each PR (unit tests incl. new regression suites, lint/typecheck, `lint:sql` + pg contract suite against real Postgres, gitleaks, Trivy, built-process smoke) is green unless a cell says otherwise. **Until these PRs merge, `main` remains in the §5a state above and the scores in §1 stay at the `main` values.**
+
+| Finding(s) | Fix PR | Disposition |
+| --- | --- | --- |
+| C1-1 unguarded user routes; C1-2 self-approvable applications; C1-3 self-service admin role; C2 guard class (profiles/dashboard/finance/credit/advisory/community/learning/analytics); C2 `ALLOW_DEV_HEADER_AUTH` warn-only; C3 insurance controller dead guards; C3 OIDC algorithm pin | #38 | Fixed; class-level `RolesGuard`, admin/self-or-admin scoping, actor-derived authorship (impersonating body fields removed from DTOs), `SELF_REGISTRATION_ROLES` allowlist with 400 on privileged roles, dev-header flag throws in production, RS256 pinned. CI green |
+| C1-4 NIN stub verifying in production; C1-5 insurance stub triggers booking real payouts; C2 partner-api published sandbox secret in production; C3 warehouse-pledge / livestock-passport stubs; C3 NODE_ENV casing; C3 default webhook secret | #40 | Fixed; production factory bans (boot-throwing), stub-basis verdicts ⇒ 503 with nothing persisted/posted, partner-api requires `PARTNER_API_DRIVER=live` + a private signing secret, `isProduction()` normalization across all call sites, boot rejects `local-development-only`/short webhook secrets. Unit/typecheck CI green; **smoke job red by design** — the new boot guards correctly refuse the current smoke env, and the PR body carries the exact ci.yml smoke-env lines a maintainer must apply (the automation token lacks `workflow` scope) |
+| C1-6 redeem vs expire/void double-debit; C3 agent-banking redeem/void race; C2 top-up + keyless issuance idempotency; C2 budget/cap TOCTOU | #37 | Fixed; `REDEEMING`/`EXPIRING`/`VOIDING` pending states with CAS-before-posting plus rollback/resume, unified idempotency keys, required top-up/issuance keys (migration 042; legacy NULL keys grandfathered), programme-row `FOR UPDATE` allocation lock. CI green |
+| C1-7 migration tooling not re-apply-safe; C2 lint:sql gaps; C2 CHECK-constraint gaps (035/037/001/004); C4 test/lint hygiene batch | #36 | Fixed; 015's FK add is `pg_constraint`-guarded, the baseline probes `events.processed_events` (partial-001 trap closed) plus a latest-artifact probe map, new lint rules with unit tests, migration 044 adds 19 CHECKs, 001's 59 tables are `IF NOT EXISTS`. CI green. **Companion migrate-twice CI step** is a maintainer-applied edit (workflow scope; exact snippet in PR body) |
+| C2 webhook dedupe-before-processing event loss; C2 sweeper premature publish; C3 Paystack SHA-512 vs generic SHA-256 | #39 | Fixed; provider-native signature dispatch, `processed_at`-backed re-drive of duplicate-unprocessed deliveries with a 5xx retry contract plus an admin sweep endpoint, sweeper awaits bus acceptance before `markPublished`. CI green |
+| C2 declarative escrow (no verify-before-credit) | #43 | Fixed; `deposit_paid` requires a provider reference verified server-side (status + exact kobo amount), production without a payment driver ⇒ 503, completion is blocked for unverified deposits (migration 045). CI green. Documented remainder: provider-backed release/refund rails stay declarative pending a PSSP disbursement API |
+| C2 audit-chain fork risk | #41 | Fixed; migration 043 (fail-loud history validation, NOT NULL + lowercase-hex CHECKs, `UNIQUE(prev_hash)` fork rejection), atomic guarded `INSERT…SELECT` append with bounded jittered retry and no per-process tail cache, pg `created_at` round-trip hash-stability fix. CI green incl. the pg contract suite. Documented residual: tail truncation needs an external anchoring checkpoint (follow-up) |
+| C2 unauthenticated AT callbacks; C2 PIN attempt TOCTOU; C3 OTP per-phone cap + leading-zero space | #42 | Fixed; shared callback token gate + optional IP allowlist + mid-session phone binding (boot-fatal when the driver is live without a token), atomic PIN attempt increment (`UPDATE…RETURNING` / synchronous in-memory), per-phone rolling OTP failure cap (429) and the full 6-digit code space. CI green |
+
+### Stage 23 closure dispositions (2026-08-16)
+
+Stage 23 closed the four engineering-closable follow-ups left open by Stage 22. Each PR is stacked on its Stage 22 sibling (base `main` so CI runs) and concluded **13/13 checks green**. Same verification standard as Stage 22; same caveat: until the set merges, `main` remains in the §5a state.
+
+| Follow-up | Fix PR | Disposition |
+| --- | --- | --- |
+| 001 index-guard residual (Stage 22 migration-tooling follow-on) | #45 `stage23/index-guards` (stacked on #36) | **Closed.** All 15 `CREATE INDEX` statements in migration 001 guarded with `IF NOT EXISTS`; the other 40 migration files swept clean; new `lint:sql` rule rejects unguarded `CREATE [UNIQUE] INDEX`, with +5 rule tests (rule spec 17/17). CI 13/13 green |
+| C3 unbacked-voucher-issuance (issuance vs float/programme backing) | #46 `stage23/voucher-backing` (stacked on #37) | **Closed.** Migration 046 `input_vouchers.programme_funding` (plus funding events and CHECK `reserved + settled <= funded`); issuance performs an atomic conditional reserve — 422 with nothing persisted when the programme is unfunded; settle/release are exactly-once via marker events; funding endpoints added; +10 tests; full api suite 2478/2478. CI 13/13 green |
+| Audit-chain tail-truncation anchoring (#41 documented residual) | #47 `stage23/audit-anchoring` (stacked on #41) | **Closed at the engineering layer.** Migration 047 `audit.anchors` (own hash chain, hex CHECKs); AuditAnchorService (on-demand plus opt-in interval, never on the append path); POST/GET `/admin/audit-log/anchors`; verify extended to detect anchor-chain breaks and truncation gaps (`event_count_regression` / `anchor_tip_missing` / `anchor_tip_hash_mismatch`); `AUDIT_ANCHOR_SINK=file:` JSONL sink; +24 tests. CI 13/13 green. **Design boundary (honest residual):** same-DB anchors bound but do not eliminate the truncation window — fully external (off-box) anchoring is an ops follow-up |
+| Provider-backed escrow release/refund rails (#43 documented remainder) | #48 `stage23/escrow-payout-rails` (stacked on #43) | **Closed at the engineering layer.** `ESCROW_PAYOUT_DRIVER=stub\|live` port; production stub/unset ⇒ lazy use-time 503 with zero persistence (never boot-fatal); `live` validates config then 503s "PSSP disbursement API not yet integrated"; release/refund run through the rail with idempotency (replay-safe, mismatch-409); migration 048 `marketplace.escrow_payouts`; +18 tests (6 driver + 8 service + 4 repository). CI 13/13 green. **Design boundary:** the rail fails closed until the PSSP disbursement API exists — a provider dependency, not an engineering gap |
+
+**Follow-up status after Stage 23 (tracked, none silent):** the former Stage 22 follow-ups (2) audit-chain tail-truncation anchoring, (3) provider-backed escrow release/refund rails, (5) C3 unbacked-voucher-issuance, and the 001 index-guard residual are **CLOSED by PRs #45–#48** as tabled above. What remains open is: (1) the two maintainer-gated `.github/workflows/ci.yml` edits — the db-contract migrate-twice step (#36) and the smoke-env additions (#40) — which need a `workflow`-scoped maintainer token; (4) the expected merge-order conflicts in `.env.example` (#38/#40/#42 overlap) and `agent-ussd.service.spec.ts` (#36/#42 overlap) — resolve in numerical PR order; and the external launch blockers L1–L10 (§4), which are unchanged and not engineering-closable. Two design boundaries are documented rather than claimed as closed: the same-DB anchor window (#47; off-box sink is an ops follow-up) and the PSSP disbursement dependency (#48; the rail fails closed until the provider API exists).
+
 ## 6. Release recommendation
 
 ### Ready now
@@ -245,30 +317,22 @@ The `production-a11y-i18n` wave (plan: `docs/roadmap/observability-a11y-plan.md`
 
 ## 8. Validation evidence from the current source tree
 
-The final merged-main validation completed successfully from a clean detached worktree after `npm ci`, using both:
+Re-measured 2026-08-16 during the Stage 21 assurance audit, on the audit branch (main @ `324dea5` + migration 041 and its structural spec), after `npm ci`:
 
-```bash
-npm run validate
-SKIP_INSTALL=1 bash scripts/validate-repo.sh
-```
+- Typecheck (all workspaces): passed
+- ESLint (all workspaces, incl. jsx-a11y gap rules): passed
+- Migration lint (`lint:sql`, pgsql-ast-parser): 41 migration files, all statements parsed, PK/DROP/TRUNCATE guards passed
+- API tests: **2,463 passed, 91 skipped** (2,554 cases in 214 spec files; the 91 skips are the pg-gated contract suites in 4 files — `test/pg/pg-repositories.spec.ts`, `sync.pg.spec.ts`, `traceability.pg.spec.ts`, `voice.pg.spec.ts` — gated by `describe.skipIf(!process.env.DATABASE_URL)`)
+- Web tests: **440 passed** (57 files)
+- Shared package tests: **30 passed** (5 files)
+- SDK tests: **18 passed** (1 file)
+- Mobile tests: **150 passed** (22 files)
+- **Total automated tests: 3,101 passed + 91 pg-gated skipped** (includes the 6 structural tests added with migration 041; main @ `324dea5` alone measures 3,095 + 91)
+- `npm run test --workspaces` aggregate exit code: 0
+- Next.js production build: passed; bundle budget gate (`scripts/check-bundle-budget.mjs`, < 250KB gzip shell): **passed at 224.5KB gzip-estimated** (route `/`, 13 JS files — measured locally 2026-08-16; the previously quoted 204.7KB dated from Stage 10)
+- Heuristic secret sweep (targeted grep for live-key patterns across tracked files, excluding scanner definitions and labelled test dummies): no real or real-looking secrets found; zero tracked `.env`/key files
 
-Results (final merged main, post-hardening waves):
-
-- API typecheck: passed
-- Web typecheck, including generated Next.js route types: passed
-- Shared package typecheck: passed
-- ESLint (incl. jsx-a11y gap rules): passed
-- Migration lint (`lint:sql`, pgsql-ast-parser): 2 migration files, all statements parsed, PK/DROP guards passed
-- API tests: 176 passed (+51 PostgreSQL-gated contract tests skipped without `DATABASE_URL`)
-- Web tests: 68 passed (API client, offline queue, security headers, a11y axe, contrast, i18n, PWA)
-- Shared package tests: 5 passed
-- Total automated tests: 249 passed
-- NestJS production build: passed
-- Next.js production build: passed
-- Static routes generated: 18
-- All-in-one production process smoke test: passed (`npm run start`, web page title, and `/api/v1/health`)
-- Heuristic tracked-file secret scan: passed
-- Tracked `.env` file check: passed
+Methodology notes: test counts are **runtime counts** from the vitest runs above (not static grep floors); migration count from `ls infra/postgres/*.sql`; web route count (61) from `find apps/web/app -name page.tsx`; repository-provider count (171) from `grep -rE "provide:\s*[A-Z_]+_REPOSITORY" apps/api/src` excluding spec files; mocked-fetch integration tests (188 cases in 20 files) from spec files under `apps/api/src/modules/integrations` that stub `fetch`.
 
 Docker, Docker Compose, Kubernetes, and external provider calls were not executed in this environment because the container runtime is unavailable. Dockerfiles, Compose, and Kubernetes probes were statically aligned with the verified production start command and `/api/v1/health` endpoints. Those items remain staging-verification tasks rather than locally proven evidence.
 
