@@ -1,16 +1,19 @@
 import { ConflictException } from '@nestjs/common';
 
 /**
- * Input-voucher persistence ports (wave NINVOUCHER). Rows map to the
- * input_vouchers schema (infra/postgres/035_input_vouchers.sql). These
- * tables hold OPERATIONAL records only — every value movement posts through
- * the double-entry ledger (finance module) and is cross-referenced by
- * `ledgerEntryId`. State machines advance via compare-and-set
- * (`updateExpected`) so concurrent transitions surface as 409 instead of
- * silently overwriting each other.
+ * Input-subsidy e-voucher persistence ports (wave NINVOUCHER). Rows map to
+ * the input_vouchers schema (infra/postgres/035_input_vouchers.sql). These
+ * tables hold OPERATIONAL records only — the budget envelope, outstanding
+ * liability and supplier receivables post through the double-entry ledger
+ * (finance module) and are cross-referenced by `ledgerEntryId`. State
+ * machines advance via compare-and-set (`updateExpected`) so concurrent
+ * transitions surface as 409 instead of silently overwriting each other.
+ *
+ * Data protection: the full NIN is NEVER persisted — only the salted
+ * HMAC-SHA256 hash (`ninHash`) and the last-3 mask (`ninMask`).
  */
 
-export const PROGRAMME_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'CLOSED'] as const;
+export const PROGRAMME_STATUSES = ['DRAFT', 'ACTIVE', 'CLOSED'] as const;
 export type ProgrammeStatus = (typeof PROGRAMME_STATUSES)[number];
 
 // Pending states (stage 22, audit C1-6): the CAS into a pending state happens
@@ -28,21 +31,23 @@ export const INPUT_VOUCHER_STATUSES = [
 ] as const;
 export type InputVoucherStatus = (typeof INPUT_VOUCHER_STATUSES)[number];
 
+export const VERIFICATION_BASES = ['stub', 'live'] as const;
+export type VerificationBasis = (typeof VERIFICATION_BASES)[number];
+
 export interface SubsidyProgrammeRecord {
   id: string;
   name: string;
-  /** e.g. 'fertiliser' | 'seed' | 'agrochemical' — free-text category. */
-  inputType: string;
-  sponsorName: string;
-  /** Total encumbered envelope in kobo (integers only). */
-  budgetKobo: number;
-  perFarmerCapKobo: number;
+  sponsor: string;
+  description?: string;
   status: ProgrammeStatus;
-  /** Ledger liability account holding the encumbrance (programme:<id>:liability). */
+  perFarmerCapKobo: number;
+  budgetKobo: number;
+  /** Empty array = all states eligible. */
+  eligibleStates: string[];
+  /** Empty array = all crops eligible. */
+  eligibleCrops: string[];
+  /** Ledger liability account backing the budget envelope (programme:<id>:liability). */
   liabilityAccountCode: string;
-  ledgerEntryId?: string;
-  startsAt?: string;
-  endsAt?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -54,17 +59,18 @@ export interface ProgrammeCriteria {
 
 export interface BeneficiaryRecord {
   id: string;
-  farmerId: string;
   programmeId: string;
-  /** Salted HMAC-SHA256 of the NIN — dedupe key; the plaintext NIN is never stored. */
+  farmerId: string;
+  /** Salted HMAC-SHA256 of the normalised NIN — never the plaintext NIN. */
   ninHash: string;
-  /** Last-3 mask for operator display (e.g. '***456'). */
+  /** Last-3 mask for operator display (e.g. '********123'). */
   ninMask: string;
-  verificationStatus: 'verified';
-  /** 'stub' (deterministic dev driver) or 'live' (licensed vendor). */
-  verificationBasis: 'stub' | 'live';
+  /** Honest provenance label of the identity verification. */
+  verificationBasis: VerificationBasis;
+  nameMatchScore?: number;
+  state?: string;
+  primaryCrop?: string;
   verifiedAt: string;
-  verifiedBy: string;
   createdAt: string;
 }
 
@@ -80,32 +86,42 @@ export interface InputVoucherRecord {
   farmerId: string;
   amountKobo: number;
   status: InputVoucherStatus;
-  /** UNIQUE — client idempotency key; transport retries replay, never duplicate. */
+  /** UNIQUE — allocation retries with the same key replay, never double-issue. */
   idempotencyKey: string;
   expiresAt: string;
   distributedAt?: string;
   redeemedAt?: string;
   voidedAt?: string;
+  /** Redemption ledger entry id (set on REDEEMED). */
   ledgerEntryId?: string;
   createdAt: string;
 }
 
 export interface InputVoucherCriteria {
   programmeId?: string;
+  beneficiaryId?: string;
   farmerId?: string;
   status?: InputVoucherStatus;
 }
 
 export interface RedemptionRecord {
   id: string;
+  /** UNIQUE — hard anti-double-spend constraint behind the status machine. */
   voucherId: string;
   programmeId: string;
   supplierId: string;
   invoiceRef: string;
   amountKobo: number;
+  /** UNIQUE — transport retries replay, never double-post. */
   idempotencyKey: string;
   ledgerEntryId: string;
   createdAt: string;
+}
+
+export interface RedemptionCriteria {
+  voucherId?: string;
+  programmeId?: string;
+  supplierId?: string;
 }
 
 export interface SubsidyProgrammeRepository {
@@ -130,14 +146,11 @@ export interface SubsidyProgrammeRepository {
 }
 
 export interface BeneficiaryRepository {
+  /** Throws ConflictException on duplicate (programmeId, farmerId) or (programmeId, ninHash). */
   create(record: BeneficiaryRecord): Promise<BeneficiaryRecord>;
   findById(id: string): Promise<BeneficiaryRecord | undefined>;
+  findByProgrammeAndFarmer(programmeId: string, farmerId: string): Promise<BeneficiaryRecord | undefined>;
   find(criteria: BeneficiaryCriteria): Promise<BeneficiaryRecord[]>;
-  /** Dedupe lookup by (programmeId, ninHash). */
-  findByProgrammeAndNinHash(
-    programmeId: string,
-    ninHash: string
-  ): Promise<BeneficiaryRecord | undefined>;
 }
 
 export interface InputVoucherRepository {
@@ -155,10 +168,21 @@ export interface InputVoucherRepository {
 }
 
 export interface RedemptionRepository {
+  /** Throws ConflictException when voucherId or idempotencyKey already exists. */
   create(record: RedemptionRecord): Promise<RedemptionRecord>;
   findByIdempotencyKey(key: string): Promise<RedemptionRecord | undefined>;
-  findByVoucherId(voucherId: string): Promise<RedemptionRecord | undefined>;
-  findByProgrammeId(programmeId: string): Promise<RedemptionRecord[]>;
+  find(criteria: RedemptionCriteria): Promise<RedemptionRecord[]>;
+}
+
+// ------------------------------------------------------------ in-memory
+
+function matches<T>(record: T, expected: Partial<T>): boolean {
+  for (const [key, value] of Object.entries(expected)) {
+    if (record[key as keyof T] !== value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepository {
@@ -178,6 +202,7 @@ export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepos
   async find(criteria: ProgrammeCriteria): Promise<SubsidyProgrammeRecord[]> {
     return [...this.items.values()]
       .filter((item) => !criteria.status || item.status === criteria.status)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((item) => structuredClone(item));
   }
 
@@ -187,13 +212,8 @@ export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepos
     expected: Partial<SubsidyProgrammeRecord>
   ): Promise<SubsidyProgrammeRecord> {
     const current = this.items.get(id);
-    if (!current) {
+    if (!current || !matches(current, expected)) {
       throw new ConflictException(`Programme '${id}' changed concurrently; reload and retry`);
-    }
-    for (const [key, value] of Object.entries(expected)) {
-      if (current[key as keyof SubsidyProgrammeRecord] !== value) {
-        throw new ConflictException(`Programme '${id}' changed concurrently; reload and retry`);
-      }
     }
     const updated = { ...current, ...patch };
     this.items.set(id, updated);
@@ -217,13 +237,13 @@ export class InMemoryBeneficiaryRepository implements BeneficiaryRepository {
   private readonly items = new Map<string, BeneficiaryRecord>();
 
   async create(record: BeneficiaryRecord): Promise<BeneficiaryRecord> {
-    // Mirror the pg UNIQUE (programme_id, nin_hash): one enrolment per NIN
-    // per programme.
-    const clash = [...this.items.values()].find(
-      (item) => item.programmeId === record.programmeId && item.ninHash === record.ninHash
-    );
-    if (clash) {
-      throw new ConflictException('This NIN is already enrolled in the programme');
+    for (const existing of this.items.values()) {
+      if (existing.programmeId === record.programmeId && existing.farmerId === record.farmerId) {
+        throw new ConflictException('This farmer is already enrolled in the programme');
+      }
+      if (existing.programmeId === record.programmeId && existing.ninHash === record.ninHash) {
+        throw new ConflictException('This NIN is already enrolled in the programme');
+      }
     }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
@@ -234,6 +254,16 @@ export class InMemoryBeneficiaryRepository implements BeneficiaryRepository {
     return record ? structuredClone(record) : undefined;
   }
 
+  async findByProgrammeAndFarmer(
+    programmeId: string,
+    farmerId: string
+  ): Promise<BeneficiaryRecord | undefined> {
+    const record = [...this.items.values()].find(
+      (item) => item.programmeId === programmeId && item.farmerId === farmerId
+    );
+    return record ? structuredClone(record) : undefined;
+  }
+
   async find(criteria: BeneficiaryCriteria): Promise<BeneficiaryRecord[]> {
     return [...this.items.values()]
       .filter(
@@ -241,17 +271,8 @@ export class InMemoryBeneficiaryRepository implements BeneficiaryRepository {
           (!criteria.programmeId || item.programmeId === criteria.programmeId) &&
           (!criteria.farmerId || item.farmerId === criteria.farmerId)
       )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((item) => structuredClone(item));
-  }
-
-  async findByProgrammeAndNinHash(
-    programmeId: string,
-    ninHash: string
-  ): Promise<BeneficiaryRecord | undefined> {
-    const record = [...this.items.values()].find(
-      (item) => item.programmeId === programmeId && item.ninHash === ninHash
-    );
-    return record ? structuredClone(record) : undefined;
   }
 }
 
@@ -259,11 +280,10 @@ export class InMemoryInputVoucherRepository implements InputVoucherRepository {
   private readonly items = new Map<string, InputVoucherRecord>();
 
   async create(record: InputVoucherRecord): Promise<InputVoucherRecord> {
-    const clash = [...this.items.values()].find(
-      (item) => item.idempotencyKey === record.idempotencyKey
-    );
-    if (clash) {
-      throw new ConflictException('A record with these unique values already exists');
+    for (const existing of this.items.values()) {
+      if (existing.idempotencyKey === record.idempotencyKey) {
+        throw new ConflictException('A record with these unique values already exists');
+      }
     }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
@@ -284,9 +304,11 @@ export class InMemoryInputVoucherRepository implements InputVoucherRepository {
       .filter(
         (item) =>
           (!criteria.programmeId || item.programmeId === criteria.programmeId) &&
+          (!criteria.beneficiaryId || item.beneficiaryId === criteria.beneficiaryId) &&
           (!criteria.farmerId || item.farmerId === criteria.farmerId) &&
           (!criteria.status || item.status === criteria.status)
       )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((item) => structuredClone(item));
   }
 
@@ -296,13 +318,8 @@ export class InMemoryInputVoucherRepository implements InputVoucherRepository {
     expected: Partial<InputVoucherRecord>
   ): Promise<InputVoucherRecord> {
     const current = this.items.get(id);
-    if (!current) {
+    if (!current || !matches(current, expected)) {
       throw new ConflictException(`Voucher '${id}' changed concurrently; reload and retry`);
-    }
-    for (const [key, value] of Object.entries(expected)) {
-      if (current[key as keyof InputVoucherRecord] !== value) {
-        throw new ConflictException(`Voucher '${id}' changed concurrently; reload and retry`);
-      }
     }
     const updated = { ...current, ...patch };
     this.items.set(id, updated);
@@ -314,12 +331,13 @@ export class InMemoryRedemptionRepository implements RedemptionRepository {
   private readonly items = new Map<string, RedemptionRecord>();
 
   async create(record: RedemptionRecord): Promise<RedemptionRecord> {
-    // Mirror the pg UNIQUE constraints on voucher_id and idempotency_key.
-    const clash = [...this.items.values()].find(
-      (item) => item.voucherId === record.voucherId || item.idempotencyKey === record.idempotencyKey
-    );
-    if (clash) {
-      throw new ConflictException('A record with these unique values already exists');
+    for (const existing of this.items.values()) {
+      if (existing.voucherId === record.voucherId) {
+        throw new ConflictException(`Voucher '${record.voucherId}' has already been redeemed`);
+      }
+      if (existing.idempotencyKey === record.idempotencyKey) {
+        throw new ConflictException('A record with these unique values already exists');
+      }
     }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
@@ -330,14 +348,15 @@ export class InMemoryRedemptionRepository implements RedemptionRepository {
     return record ? structuredClone(record) : undefined;
   }
 
-  async findByVoucherId(voucherId: string): Promise<RedemptionRecord | undefined> {
-    const record = [...this.items.values()].find((item) => item.voucherId === voucherId);
-    return record ? structuredClone(record) : undefined;
-  }
-
-  async findByProgrammeId(programmeId: string): Promise<RedemptionRecord[]> {
+  async find(criteria: RedemptionCriteria): Promise<RedemptionRecord[]> {
     return [...this.items.values()]
-      .filter((item) => item.programmeId === programmeId)
+      .filter(
+        (item) =>
+          (!criteria.voucherId || item.voucherId === criteria.voucherId) &&
+          (!criteria.programmeId || item.programmeId === criteria.programmeId) &&
+          (!criteria.supplierId || item.supplierId === criteria.supplierId)
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((item) => structuredClone(item));
   }
 }
