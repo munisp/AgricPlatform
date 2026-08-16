@@ -8,7 +8,6 @@ import type {
   InputVoucherRecord,
   InputVoucherRepository,
   ProgrammeCriteria,
-  RedemptionCriteria,
   RedemptionRecord,
   RedemptionRepository,
   SubsidyProgrammeRecord,
@@ -19,10 +18,7 @@ import type {
  * PostgreSQL implementations over the input_vouchers schema
  * (infra/postgres/035_input_vouchers.sql). Compare-and-set updates compile
  * `expected` into WHERE fragments so a lost race updates 0 rows → 409,
- * mirroring the in-memory repositories used in unit tests. jsonb columns
- * (eligible_states / eligible_crops) are serialised explicitly — node-pg
- * would otherwise encode JS arrays as Postgres array literals, which do
- * not cast to jsonb.
+ * mirroring the in-memory repositories used in unit tests.
  */
 
 function assertPgUnique(error: unknown, message: string): never {
@@ -38,36 +34,26 @@ function toIso(value: unknown): string | undefined {
     : new Date(value as string).toISOString();
 }
 
-function toStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map(String);
-  }
-  if (typeof value === 'string') {
-    return JSON.parse(value) as string[];
-  }
-  return [];
-}
-
 export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord> {
     await this.pool.query(
-      'INSERT INTO input_vouchers.programmes (id, name, sponsor, description, status, ' +
-        'per_farmer_cap_kobo, budget_kobo, eligible_states, eligible_crops, ' +
-        'liability_account_code, created_by, created_at, updated_at) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+      'INSERT INTO input_vouchers.programmes (id, name, input_type, sponsor_name, budget_kobo, ' +
+        'per_farmer_cap_kobo, status, liability_account_code, ledger_entry_id, starts_at, ends_at, ' +
+        'created_by, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
       [
         record.id,
         record.name,
-        record.sponsor,
-        record.description ?? null,
-        record.status,
-        record.perFarmerCapKobo,
+        record.inputType,
+        record.sponsorName,
         record.budgetKobo,
-        JSON.stringify(record.eligibleStates),
-        JSON.stringify(record.eligibleCrops),
+        record.perFarmerCapKobo,
+        record.status,
         record.liabilityAccountCode,
+        record.ledgerEntryId ?? null,
+        record.startsAt ?? null,
+        record.endsAt ?? null,
         record.createdBy,
         record.createdAt,
         record.updatedAt
@@ -77,7 +63,9 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
   }
 
   async findById(id: string): Promise<SubsidyProgrammeRecord | undefined> {
-    const result = await this.pool.query('SELECT * FROM input_vouchers.programmes WHERE id = $1', [id]);
+    const result = await this.pool.query('SELECT * FROM input_vouchers.programmes WHERE id = $1', [
+      id
+    ]);
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -94,6 +82,31 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
       ' ORDER BY created_at';
     const result = await this.pool.query(sql, params);
     return result.rows.map((row) => this.fromRow(row));
+  }
+
+  /**
+   * Allocation serialisation (stage 22, audit C2-10): locks the programme row
+   * (SELECT ... FOR UPDATE) inside a transaction for the callback's duration
+   * so a concurrent allocation for the same programme waits until this
+   * check+insert finishes — two 60% allocations can no longer both pass the
+   * budget check. Transaction style mirrors ledger.pg-repository.postEntry.
+   */
+  async withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM input_vouchers.programmes WHERE id = $1 FOR UPDATE', [
+        programmeId
+      ]);
+      const result = await fn();
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async updateExpected(
@@ -133,14 +146,15 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
     return {
       id: row.id as string,
       name: row.name as string,
-      sponsor: row.sponsor as string,
-      description: (row.description as string) ?? undefined,
-      status: row.status as SubsidyProgrammeRecord['status'],
-      perFarmerCapKobo: Number(row.per_farmer_cap_kobo),
+      inputType: row.input_type as string,
+      sponsorName: row.sponsor_name as string,
       budgetKobo: Number(row.budget_kobo),
-      eligibleStates: toStringArray(row.eligible_states),
-      eligibleCrops: toStringArray(row.eligible_crops),
+      perFarmerCapKobo: Number(row.per_farmer_cap_kobo),
+      status: row.status as SubsidyProgrammeRecord['status'],
       liabilityAccountCode: row.liability_account_code as string,
+      ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
+      startsAt: toIso(row.starts_at),
+      endsAt: toIso(row.ends_at),
       createdBy: row.created_by as string,
       createdAt: toIso(row.created_at) as string,
       updatedAt: toIso(row.updated_at) as string
@@ -154,42 +168,32 @@ export class PgBeneficiaryRepository implements BeneficiaryRepository {
   async create(record: BeneficiaryRecord): Promise<BeneficiaryRecord> {
     try {
       await this.pool.query(
-        'INSERT INTO input_vouchers.beneficiaries (id, programme_id, farmer_id, nin_hash, nin_mask, ' +
-          'verification_basis, name_match_score, state, primary_crop, verified_at, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        'INSERT INTO input_vouchers.beneficiaries (id, farmer_id, programme_id, nin_hash, nin_mask, ' +
+          'verification_status, verification_basis, verified_at, verified_by, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
         [
           record.id,
-          record.programmeId,
           record.farmerId,
+          record.programmeId,
           record.ninHash,
           record.ninMask,
+          record.verificationStatus,
           record.verificationBasis,
-          record.nameMatchScore ?? null,
-          record.state ?? null,
-          record.primaryCrop ?? null,
           record.verifiedAt,
+          record.verifiedBy,
           record.createdAt
         ]
       );
     } catch (error) {
-      assertPgUnique(error, 'This farmer or NIN is already enrolled in the programme');
+      assertPgUnique(error, 'This NIN is already enrolled in the programme');
     }
     return record;
   }
 
   async findById(id: string): Promise<BeneficiaryRecord | undefined> {
-    const result = await this.pool.query('SELECT * FROM input_vouchers.beneficiaries WHERE id = $1', [id]);
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
-  }
-
-  async findByProgrammeAndFarmer(
-    programmeId: string,
-    farmerId: string
-  ): Promise<BeneficiaryRecord | undefined> {
-    const result = await this.pool.query(
-      'SELECT * FROM input_vouchers.beneficiaries WHERE programme_id = $1 AND farmer_id = $2',
-      [programmeId, farmerId]
-    );
+    const result = await this.pool.query('SELECT * FROM input_vouchers.beneficiaries WHERE id = $1', [
+      id
+    ]);
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -212,21 +216,28 @@ export class PgBeneficiaryRepository implements BeneficiaryRepository {
     return result.rows.map((row) => this.fromRow(row));
   }
 
+  async findByProgrammeAndNinHash(
+    programmeId: string,
+    ninHash: string
+  ): Promise<BeneficiaryRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM input_vouchers.beneficiaries WHERE programme_id = $1 AND nin_hash = $2',
+      [programmeId, ninHash]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
   private fromRow(row: Record<string, unknown>): BeneficiaryRecord {
     return {
       id: row.id as string,
-      programmeId: row.programme_id as string,
       farmerId: row.farmer_id as string,
+      programmeId: row.programme_id as string,
       ninHash: row.nin_hash as string,
       ninMask: row.nin_mask as string,
+      verificationStatus: row.verification_status as BeneficiaryRecord['verificationStatus'],
       verificationBasis: row.verification_basis as BeneficiaryRecord['verificationBasis'],
-      nameMatchScore:
-        row.name_match_score === null || row.name_match_score === undefined
-          ? undefined
-          : Number(row.name_match_score),
-      state: (row.state as string) ?? undefined,
-      primaryCrop: (row.primary_crop as string) ?? undefined,
       verifiedAt: toIso(row.verified_at) as string,
+      verifiedBy: row.verified_by as string,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -238,8 +249,9 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
   async create(record: InputVoucherRecord): Promise<InputVoucherRecord> {
     try {
       await this.pool.query(
-        'INSERT INTO input_vouchers.vouchers (id, programme_id, beneficiary_id, farmer_id, amount_kobo, ' +
-          'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at) ' +
+        'INSERT INTO input_vouchers.vouchers (id, programme_id, beneficiary_id, farmer_id, ' +
+          'amount_kobo, status, idempotency_key, expires_at, distributed_at, redeemed_at, ' +
+          'voided_at, ledger_entry_id, created_at) ' +
           'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
         [
           record.id,
@@ -264,7 +276,9 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
   }
 
   async findById(id: string): Promise<InputVoucherRecord | undefined> {
-    const result = await this.pool.query('SELECT * FROM input_vouchers.vouchers WHERE id = $1', [id]);
+    const result = await this.pool.query('SELECT * FROM input_vouchers.vouchers WHERE id = $1', [
+      id
+    ]);
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -282,10 +296,6 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     if (criteria.programmeId) {
       params.push(criteria.programmeId);
       where.push(`programme_id = $${params.length}`);
-    }
-    if (criteria.beneficiaryId) {
-      params.push(criteria.beneficiaryId);
-      where.push(`beneficiary_id = $${params.length}`);
     }
     if (criteria.farmerId) {
       params.push(criteria.farmerId);
@@ -326,7 +336,7 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     const where: string[] = [];
     for (const [key, column] of Object.entries(columns)) {
       if (key in expected) {
-        params.push(expected[key as keyof InputVoucherRecord] ?? null);
+        params.push(expected[key as keyof InputVoucherRecord]);
         where.push(`${column} = $${params.length}`);
       }
     }
@@ -367,8 +377,8 @@ export class PgRedemptionRepository implements RedemptionRepository {
   async create(record: RedemptionRecord): Promise<RedemptionRecord> {
     try {
       await this.pool.query(
-        'INSERT INTO input_vouchers.redemptions (id, voucher_id, programme_id, supplier_id, invoice_ref, ' +
-          'amount_kobo, idempotency_key, ledger_entry_id, created_at) ' +
+        'INSERT INTO input_vouchers.redemptions (id, voucher_id, programme_id, supplier_id, ' +
+          'invoice_ref, amount_kobo, idempotency_key, ledger_entry_id, created_at) ' +
           'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         [
           record.id,
@@ -383,7 +393,7 @@ export class PgRedemptionRepository implements RedemptionRepository {
         ]
       );
     } catch (error) {
-      assertPgUnique(error, `Voucher '${record.voucherId}' has already been redeemed`);
+      assertPgUnique(error, 'A record with these unique values already exists');
     }
     return record;
   }
@@ -396,26 +406,19 @@ export class PgRedemptionRepository implements RedemptionRepository {
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
-  async find(criteria: RedemptionCriteria): Promise<RedemptionRecord[]> {
-    const where: string[] = [];
-    const params: unknown[] = [];
-    if (criteria.voucherId) {
-      params.push(criteria.voucherId);
-      where.push(`voucher_id = $${params.length}`);
-    }
-    if (criteria.programmeId) {
-      params.push(criteria.programmeId);
-      where.push(`programme_id = $${params.length}`);
-    }
-    if (criteria.supplierId) {
-      params.push(criteria.supplierId);
-      where.push(`supplier_id = $${params.length}`);
-    }
-    const sql =
-      'SELECT * FROM input_vouchers.redemptions' +
-      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-      ' ORDER BY created_at';
-    const result = await this.pool.query(sql, params);
+  async findByVoucherId(voucherId: string): Promise<RedemptionRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM input_vouchers.redemptions WHERE voucher_id = $1',
+      [voucherId]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByProgrammeId(programmeId: string): Promise<RedemptionRecord[]> {
+    const result = await this.pool.query(
+      'SELECT * FROM input_vouchers.redemptions WHERE programme_id = $1 ORDER BY created_at',
+      [programmeId]
+    );
     return result.rows.map((row) => this.fromRow(row));
   }
 
