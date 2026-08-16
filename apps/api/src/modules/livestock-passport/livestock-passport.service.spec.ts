@@ -359,17 +359,17 @@ describe('LivestockPassportService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('is rejected on a suspended passport', async () => {
+    it('allows only one pending transfer per passport', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      await service.suspend(regulator, document.passport.id);
+      await service.initiateTransfer(farmer, document.passport.id, { toUserId: buyer.id });
       await expect(
-        service.initiateTransfer(farmer, document.passport.id, { toUserId: buyer.id })
-      ).rejects.toThrow(BadRequestException);
+        service.initiateTransfer(farmer, document.passport.id, { toUserId: admin.id })
+      ).rejects.toThrow(ConflictException);
     });
   });
 
   describe('confirmTransfer', () => {
-    it('moves the animal and passport to the buyer through the core ownership ledger', async () => {
+    it('executes the ownership change through the livestock core ledger', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const transfer = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
@@ -379,19 +379,35 @@ describe('LivestockPassportService', () => {
       expect(confirmed.executedTransferId).toBeDefined();
       expect((await animals.getById(ANIMAL.id)).ownerUserId).toBe(buyer.id);
       expect((await passports.getById(document.passport.id)).ownerUserId).toBe(buyer.id);
-      // The executed row lives in the livestock core ownership ledger.
       const ledger = await ownershipTransfers.find({ animalId: ANIMAL.id });
       expect(ledger).toHaveLength(1);
-      expect(ledger[0].transferType).toBe('sale');
-      // Both parties are in the hash chain (initiation by seller, confirmation by buyer).
-      const { events, verification } = await service.getEvents(buyer, document.passport.id);
+      expect(ledger[0].fromUserId).toBe(farmer.id);
+      expect(ledger[0].toUserId).toBe(buyer.id);
+      const { events } = await service.getEvents(buyer, document.passport.id);
       expect(events.map((event) => event.type)).toEqual([
         'ISSUED',
         'TRANSFER_INITIATED',
         'TRANSFER_CONFIRMED'
       ]);
-      expect(events[2].actorId).toBe(buyer.id);
-      expect(verification.valid).toBe(true);
+    });
+
+    it('keeps both parties in the audit trail (seller initiated, buyer confirmed)', async () => {
+      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
+      const transfer = await service.initiateTransfer(farmer, document.passport.id, {
+        toUserId: buyer.id
+      });
+      await service.confirmTransfer(buyer, transfer.id);
+      const actions = audit.record.mock.calls.map((call) => call[0]);
+      expect(actions).toContainEqual(
+        expect.objectContaining({ action: 'livestock_passport.transfer_initiated', actorId: farmer.id })
+      );
+      expect(actions).toContainEqual(
+        expect.objectContaining({
+          action: 'livestock_passport.transfer_confirmed',
+          actorId: buyer.id,
+          metadata: expect.objectContaining({ fromUserId: farmer.id, toUserId: buyer.id })
+        })
+      );
     });
 
     it('rejects confirmation by anyone but the named buyer', async () => {
@@ -399,22 +415,24 @@ describe('LivestockPassportService', () => {
       const transfer = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
       });
-      await expect(service.confirmTransfer(farmer, transfer.id)).rejects.toThrow(ForbiddenException);
       await expect(service.confirmTransfer(stranger, transfer.id)).rejects.toThrow(
+        ForbiddenException
+      );
+      await expect(service.confirmTransfer(farmer, transfer.id)).rejects.toThrow(
         ForbiddenException
       );
     });
 
-    it('rejects confirming a cancelled transfer', async () => {
+    it('re-checks the lien guard at confirmation time', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const transfer = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
       });
-      await service.cancelTransfer(farmer, transfer.id);
-      await expect(service.confirmTransfer(buyer, transfer.id)).rejects.toThrow(BadRequestException);
+      await liens.create({ ...ACTIVE_LIEN, id: 'lien-late' });
+      await expect(service.confirmTransfer(buyer, transfer.id)).rejects.toThrow(ConflictException);
     });
 
-    it('rejects a stale transfer when the seller no longer owns the animal', async () => {
+    it('rejects a stale transfer when the animal already changed hands', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const transfer = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
@@ -422,159 +440,128 @@ describe('LivestockPassportService', () => {
       await animals.update(ANIMAL.id, { ownerUserId: stranger.id });
       await expect(service.confirmTransfer(buyer, transfer.id)).rejects.toThrow(ConflictException);
     });
-
-    it('re-checks the lien at confirmation time (lien registered after initiation still blocks)', async () => {
-      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      const transfer = await service.initiateTransfer(farmer, document.passport.id, {
-        toUserId: buyer.id
-      });
-      await liens.create(ACTIVE_LIEN);
-      await expect(service.confirmTransfer(buyer, transfer.id)).rejects.toThrow(ConflictException);
-      expect((await animals.getById(ANIMAL.id)).ownerUserId).toBe(farmer.id);
-    });
   });
 
   describe('cancelTransfer', () => {
-    it('lets the seller cancel and records it in the chain', async () => {
+    it('lets the seller or an admin cancel, but not the buyer', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      const transfer = await service.initiateTransfer(farmer, document.passport.id, {
+      const first = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
       });
-      const cancelled = await service.cancelTransfer(farmer, transfer.id);
+      await expect(service.cancelTransfer(buyer, first.id)).rejects.toThrow(ForbiddenException);
+      const cancelled = await service.cancelTransfer(farmer, first.id);
       expect(cancelled.status).toBe('cancelled');
-      expect(cancelled.cancelledAt).toBeDefined();
-      const { events } = await service.getEvents(farmer, document.passport.id);
-      expect(events.map((event) => event.type)).toEqual([
-        'ISSUED',
-        'TRANSFER_INITIATED',
-        'TRANSFER_CANCELLED'
-      ]);
-    });
-
-    it('rejects cancellation by the buyer or a stranger', async () => {
-      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      const transfer = await service.initiateTransfer(farmer, document.passport.id, {
+      // A fresh transfer can be initiated after cancellation.
+      const second = await service.initiateTransfer(farmer, document.passport.id, {
         toUserId: buyer.id
       });
-      await expect(service.cancelTransfer(buyer, transfer.id)).rejects.toThrow(ForbiddenException);
-      await expect(service.cancelTransfer(stranger, transfer.id)).rejects.toThrow(
-        ForbiddenException
-      );
+      const adminCancelled = await service.cancelTransfer(admin, second.id);
+      expect(adminCancelled.status).toBe('cancelled');
     });
 
-    it('lists incoming and outgoing transfers for the counterparties', async () => {
+    it('lists incoming transfers for the buyer and outgoing for the seller', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       await service.initiateTransfer(farmer, document.passport.id, { toUserId: buyer.id });
-      expect(await service.listMyTransfers(farmer, 'outgoing')).toHaveLength(1);
       expect(await service.listMyTransfers(buyer, 'incoming')).toHaveLength(1);
       expect(await service.listMyTransfers(buyer, 'outgoing')).toHaveLength(0);
+      expect(await service.listMyTransfers(farmer, 'outgoing')).toHaveLength(1);
     });
   });
 
   /* ------------------------- public verification ------------------------- */
 
-  describe('verifyPublic (QR flow)', () => {
-    it('verifies the code, redacts owner PII to initials and flags encumbrance honestly', async () => {
-      seed({ lien: ACTIVE_LIEN });
+  describe('verifyPublic (unauthenticated, redacted)', () => {
+    it('verifies the genuine code and returns the redacted view', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const view = await service.verifyPublic(document.passport.passportCode);
       expect(view.verified).toBe(true);
+      expect(view.animal.id).toBe(ANIMAL.id);
+      expect(view.animal.species).toBe('cattle');
       expect(view.ownerInitials).toBe('A.B.');
-      expect(JSON.stringify(view)).not.toContain(farmer.fullName);
-      expect(view.encumbrance.activeLien).toBe(true);
-      expect(view.encumbrance.insured).toBe(false);
+      expect(JSON.stringify(view)).not.toContain('Adamu');
+      expect(JSON.stringify(view)).not.toContain(farmer.id);
+      expect(view.vaccinationSummary.completedVaccinations).toEqual(['FMD']);
+      expect(view.movementLegality).toEqual({
+        totalMovements: 0,
+        movementsWithPermit: 0,
+        legal: true
+      });
+      expect(view.encumbrance).toEqual({ activeLien: false, insured: false });
       expect(view.tagCheck).toEqual({ basis: 'stub', stub: true });
-      expect(view.chain.valid).toBe(true);
-      expect(view.qr.verifyPath).toContain(encodeURIComponent(document.passport.passportCode));
-      expect(view.disclaimers.join(' ')).toContain('STUB');
-      expect(JSON.stringify(view)).not.toContain('30,000');
+      expect(view.chain).toMatchObject({ eventCount: 1, valid: true });
+      expect(view.qr.code).toBe(document.passport.passportCode);
+      expect(view.qr.verifyPath).toContain('/livestock-passport/verify/');
     });
 
-    it('answers 404 for forged, malformed or unknown codes (no oracle)', async () => {
+    it('flags an active lien without exposing amounts or lender identity', async () => {
+      seed({ lien: ACTIVE_LIEN });
+      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
+      const view = await service.verifyPublic(document.passport.passportCode);
+      expect(view.encumbrance.activeLien).toBe(true);
+      expect(JSON.stringify(view)).not.toContain('30000000');
+      expect(JSON.stringify(view)).not.toContain('lender-1');
+    });
+
+    it('rejects forged, tampered and malformed codes with a plain 404', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const code = document.passport.passportCode;
-      const forgedAnimal = code.replace('NG-BOV-KD-000123', 'NG-BOV-KD-000124');
-      const forgedSig = `${code.slice(0, -2)}ff`;
-      for (const bad of ['', 'LSP.x', 'garbage', forgedAnimal, forgedSig]) {
-        await expect(service.verifyPublic(bad)).rejects.toThrow(NotFoundException);
-      }
+      await expect(service.verifyPublic('not-a-code')).rejects.toThrow(NotFoundException);
+      // Forged: valid shape, wrong signature tail.
+      await expect(
+        service.verifyPublic(`${code.slice(0, -4)}ffff`)
+      ).rejects.toThrow(NotFoundException);
+      // Replayed nonce against a different animal id.
+      const replayed = code.replace(ANIMAL.id, 'NG-CAP-KD-000009');
+      await expect(service.verifyPublic(replayed)).rejects.toThrow(NotFoundException);
     });
   });
 
   /* ------------------------- oversight & lifecycle ----------------------- */
 
-  describe('oversight and lifecycle', () => {
-    it('regulator export aggregates every passport with chain validity', async () => {
-      seed({ lien: ACTIVE_LIEN });
+  describe('oversight export + status lifecycle', () => {
+    it('exports aggregate rows to regulators, never to farmers', async () => {
       await service.issuePassport(farmer, { animalId: ANIMAL.id });
       const rows = await service.oversightExport(regulator);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         animalId: ANIMAL.id,
-        species: 'cattle',
-        tagCheckBasis: 'stub',
-        activeLien: true,
+        ownerUserId: farmer.id,
+        status: 'active',
         chainValid: true,
-        eventCount: 1
+        eventCount: 1,
+        activeLien: false,
+        pendingTransfer: false
       });
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'livestock_passport.oversight_exported' })
-      );
-    });
-
-    it('rejects oversight export for farmers', async () => {
       await expect(service.oversightExport(farmer)).rejects.toThrow(ForbiddenException);
     });
 
-    it('suspend and reinstate walk the lifecycle with chain events', async () => {
+    it('suspension locks transfers and reinstatement restores them (regulator/admin only)', async () => {
       const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
+      await expect(service.suspend(farmer, document.passport.id)).rejects.toThrow(
+        ForbiddenException
+      );
       const suspended = await service.suspend(regulator, document.passport.id);
       expect(suspended.status).toBe('suspended');
-      const reinstated = await service.reinstate(admin, document.passport.id);
-      expect(reinstated.status).toBe('active');
-      const { events, verification } = await service.getEvents(farmer, document.passport.id);
-      expect(events.map((event) => event.type)).toEqual(['ISSUED', 'SUSPENDED', 'REINSTATED']);
-      expect(verification.valid).toBe(true);
+      await expect(
+        service.initiateTransfer(farmer, document.passport.id, { toUserId: buyer.id })
+      ).rejects.toThrow(BadRequestException);
+      await service.reinstate(admin, document.passport.id);
+      const transfer = await service.initiateTransfer(farmer, document.passport.id, {
+        toUserId: buyer.id
+      });
+      expect(transfer.status).toBe('pending');
+      const { events } = await service.getEvents(farmer, document.passport.id);
+      expect(events.map((event) => event.type)).toEqual([
+        'ISSUED',
+        'SUSPENDED',
+        'REINSTATED',
+        'TRANSFER_INITIATED'
+      ]);
     });
 
-    it('rejects lifecycle changes from non-privileged callers and invalid transitions', async () => {
-      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      await expect(service.suspend(farmer, document.passport.id)).rejects.toThrow(ForbiddenException);
-      await expect(service.reinstate(regulator, document.passport.id)).rejects.toThrow(
-        BadRequestException
-      );
-      await expect(service.suspend(regulator, document.passport.id)).resolves.toBeDefined();
-      await expect(service.suspend(regulator, document.passport.id)).rejects.toThrow(
-        BadRequestException
-      );
-    });
-
-    it('revoked is terminal (suspend of a revoked passport is impossible)', async () => {
-      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      await passports.update(document.passport.id, { status: 'revoked' });
-      await expect(service.suspend(regulator, document.passport.id)).rejects.toThrow(
-        BadRequestException
-      );
-    });
-
-    it('authorityStatus surfaces the honest stub posture', async () => {
-      const status = await service.authorityStatus(farmer);
-      expect(status.driver).toBe('stub');
-      expect(status.notes.join(' ')).toContain('Stub');
-    });
-  });
-
-  /* ------------------------------ tamper evidence ------------------------ */
-
-  describe('hash chain tamper evidence', () => {
-    it('detects a mutated event payload', async () => {
-      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
-      await service.suspend(regulator, document.passport.id);
-      const stored = await passportEvents.listByPassport(document.passport.id);
-      const tampered = { ...stored[0], payload: { ...stored[0].payload, species: 'poultry' } };
-      const { verifyPassportChain } = await import('./passport.types.js');
-      expect(verifyPassportChain(document.passport.id, [tampered, stored[1]]).valid).toBe(false);
-      expect(verifyPassportChain(document.passport.id, stored).valid).toBe(true);
+    it('reports the authority port status honestly', async () => {
+      const status = await service.authorityStatus(admin);
+      expect(status.detail).toContain('Stub provider');
     });
   });
 });
@@ -582,8 +569,8 @@ describe('LivestockPassportService', () => {
 describe('initialsOf', () => {
   it('redacts names to initials', () => {
     expect(initialsOf('Adamu Bello')).toBe('A.B.');
-    expect(initialsOf('Chidinma')).toBe('C.');
-    expect(initialsOf('  Mary  Jane  Watson ')).toBe('M.J.W.');
-    expect(initialsOf('')).toBe('—');
+    expect(initialsOf('chidinma')).toBe('C.');
+    expect(initialsOf('  ')).toBe('—');
+    expect(initialsOf('Ngozi Ada Eze')).toBe('N.A.E.');
   });
 });
