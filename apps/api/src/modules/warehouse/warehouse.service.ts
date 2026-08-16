@@ -438,7 +438,7 @@ export class WarehouseService {
     return verifyReceiptSignature(
       {
         receiptNumber: receipt.receiptNumber,
-        depositId: receipt.depositId,
+        depositId: deposit.id,
         warehouseId: receipt.warehouseId,
         ownerId: receipt.ownerId,
         crop: receipt.crop,
@@ -541,6 +541,17 @@ export class WarehouseService {
         );
       }
       throw error;
+    }
+    // Fail closed (same doctrine as the deposit certification guard above):
+    // a stub-basis registration is a fabricated reference — a lender lien
+    // recorded on it in production would be legally meaningless and
+    // unverifiable. Refuse the pledge instead of persisting it.
+    if (isProduction() && registration.basis !== 'live') {
+      throw new ServiceUnavailableException(
+        'The collateral registry registration was not confirmed against the live national ' +
+          'registry (basis is not live). Refusing the pledge in production — configure ' +
+          'COLLATERAL_REGISTRY_DRIVER=live with the registry credentials.'
+      );
     }
     const pledge: WarehousePledge = {
       id: pledgeId,
