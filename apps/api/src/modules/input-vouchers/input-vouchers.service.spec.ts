@@ -3,9 +3,10 @@ import {
   ConflictException,
   ForbiddenException,
   GoneException,
-  NotFoundException
+  NotFoundException,
+  ServiceUnavailableException
 } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   createInMemoryBeneficiaryRepository,
@@ -97,6 +98,10 @@ async function makeService() {
 }
 
 type Ctx = Awaited<ReturnType<typeof makeService>>;
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 async function activeProgramme(
   ctx: Ctx,
@@ -227,6 +232,23 @@ describe('InputVouchersService beneficiaries (wave NINVOUCHER)', () => {
     expect(record.ninMask).toBe(`********${nin.slice(-3)}`);
     expect(record.ninHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(record)).not.toContain(nin);
+  });
+
+  it('refuses stub-basis NIN verifications in production (fail closed, 503)', async () => {
+    // Belt-and-braces behind the createIdentityDriver boot ban: even with a
+    // stub port injected by hand, a production process must never enrol a
+    // beneficiary on a publicly computable verdict.
+    vi.stubEnv('NODE_ENV', 'production');
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await expect(
+      ctx.service.verifyBeneficiary(
+        programme.id,
+        { farmerId: ctx.farmer.id, nin: verifiedNin(30000000000), fullName: 'Farmer Femi' },
+        ADMIN.id
+      )
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(await ctx.service.listBeneficiaries(programme.id)).toHaveLength(0);
   });
 
   it('rejects enrolment when the NIN does not verify (and persists nothing)', async () => {
