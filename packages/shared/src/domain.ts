@@ -180,7 +180,7 @@ export interface Chapter {
   level: 'national' | 'state' | 'lga' | 'ward';
   parentId?: string;
   state: string;
-  lga: string;
+  lga?: string;
   leadUserId?: string;
   memberCount: number;
   active: boolean;
