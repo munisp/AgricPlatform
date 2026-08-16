@@ -56,8 +56,8 @@ async function makeChannel() {
 }
 
 describe('AgentUssdService channel', () => {
-  it('keeps the callback disabled unless the USSD driver is configured', () => {
-    expect(makeChannel().then((ctx) => ctx.ussd.driverConfig.enabled)).resolves.toBe(false);
+  it('keeps the callback disabled unless the USSD driver is configured', async () => {
+    await expect(makeChannel().then((ctx) => ctx.ussd.driverConfig.enabled)).resolves.toBe(false);
   });
 
   it('rejects callers without an ACTIVE agent registration', async () => {
