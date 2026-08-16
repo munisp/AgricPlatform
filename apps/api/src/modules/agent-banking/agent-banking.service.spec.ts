@@ -258,7 +258,7 @@ describe('AgentBankingService — float top-up workflow', () => {
   it('settlement fails closed when platform:cash is underfunded (solvency guard)', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 5_000_000, idempotencyKey: 'tu-solvency-1' }, ADMIN);
+    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 5_000_000, idempotencyKey: 'tu-1' }, ADMIN);
     await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
     await expect(ctx.service.settleTopUp(request.id, ADMIN.id)).rejects.toBeInstanceOf(
       BadRequestException
