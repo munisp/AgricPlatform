@@ -26,6 +26,8 @@ export function settlementStatusFor(paymentState: unknown): SettlementStatus {
 export interface OfnOrderEventResult {
   received: boolean;
   settlementStatus?: SettlementStatus;
+  /** True when a replay re-drove processing of a previously unprocessed event. */
+  reprocessed?: boolean;
 }
 
 /**
@@ -74,13 +76,18 @@ export class OfnSyndicationService {
   /**
    * Inbound OFN order event: ledgered (replay-safe), normalised onto the
    * marketplace order domain and republished with the settlement status.
+   * Audit C2: a replay whose ledgered event is still unprocessed (the first
+   * attempt failed between ingest and markProcessed) re-drives the publish
+   * — at-least-once by design; consumers dedupe via events.processed_events
+   * — and marks the event processed only on success; a failure propagates
+   * as a 5xx so the provider keeps retrying.
    */
   async handleOrderEvent(
     payload: Record<string, unknown>,
     eventId?: string
   ): Promise<OfnOrderEventResult> {
     const dedupeKey = eventId ?? String(payload['number'] ?? payload['id'] ?? payloadDedupeKey(payload));
-    const event = await this.inbound.ingest({
+    let event = await this.inbound.ingest({
       id: newId('evt'),
       system: 'ofn',
       eventType: String(payload['event'] ?? 'order.created'),
@@ -88,8 +95,15 @@ export class OfnSyndicationService {
       payload,
       receivedAt: new Date().toISOString()
     });
+    let reprocessed = false;
     if (!event) {
-      return { received: false };
+      const existing = await this.inbound.findOne({ system: 'ofn', dedupeKey });
+      if (!existing || existing.processedAt) {
+        return { received: false };
+      }
+      // Replay of an unprocessed event: re-drive the idempotent publish.
+      event = existing;
+      reprocessed = true;
     }
     const settlementStatus = settlementStatusFor(payload['payment_state']);
     await this.events.publish('marketplace.ofn_order.received', {
@@ -101,6 +115,8 @@ export class OfnSyndicationService {
       settlementStatus
     });
     await this.inbound.markProcessed(event.id, new Date().toISOString());
-    return { received: true, settlementStatus };
+    return reprocessed
+      ? { received: true, settlementStatus, reprocessed: true }
+      : { received: true, settlementStatus };
   }
 }

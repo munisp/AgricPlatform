@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
 import { KEY_VALUE_STORE, WEBHOOK_DEDUPE_STORE } from '../../database/persistence.tokens.js';
 import {
   createInMemoryWebhookDedupeStore,
@@ -28,6 +29,8 @@ import {
 import { createEmailDriver, type EmailDriver } from './drivers/email.drivers.js';
 import {
   createPaymentDriver,
+  verifyFlutterwaveSignature,
+  verifyPaystackSignature,
   type PaymentDriver
 } from './drivers/payments.drivers.js';
 import { createPushDriver, type OneSignalPushDriver } from './drivers/push.drivers.js';
@@ -55,14 +58,62 @@ const CHANNEL_PROVIDERS: Partial<Record<NotificationChannel, string>> = {
  */
 const LIVE_DELIVERABLE_CHANNELS: ReadonlySet<string> = new Set(['sms', 'whatsapp', 'email', 'push']);
 
-/** Provider-specific signature headers in priority order. */
+/**
+ * Signature headers for the GENERIC scheme (HMAC-SHA256 hex over the raw
+ * body, optionally `sha256=`-prefixed). Paystack and Flutterwave do NOT use
+ * this scheme — see WEBHOOK_SIGNATURE_SCHEMES.
+ */
 const SIGNATURE_HEADERS = ['x-webhook-signature', 'x-paystack-signature', 'x-flutterwave-signature'];
+
+/**
+ * Webhook signature scheme per provider (audit C3 — the shared verifier
+ * must match what each real provider actually sends, otherwise every live
+ * webhook fails closed with 401):
+ * - paystack: HMAC-SHA512 hex of the raw body, keyed by the secret
+ *   (PAYSTACK_WEBHOOK_SECRET / WEBHOOK_SIGNING_SECRET), header
+ *   `x-paystack-signature`.
+ * - flutterwave: static shared-secret comparison — the `verif-hash` header
+ *   must equal the configured secret (FLUTTERWAVE_WEBHOOK_SECRET /
+ *   WEBHOOK_SIGNING_SECRET), timing-safe.
+ * - every other registry provider (termii, whatsapp, mailgun, onesignal,
+ *   moodle, discourse, directus, weather, search): the generic HMAC-SHA256
+ *   scheme over the raw body via SIGNATURE_HEADERS. Providers that do not
+ *   document an HMAC scheme should run the stub driver (bypass is
+ *   non-production only) until their native scheme is added here.
+ */
+const WEBHOOK_SIGNATURE_SCHEMES = {
+  paystack: 'hmac-sha512',
+  flutterwave: 'verif-hash'
+} as const;
+
+type WebhookSignatureScheme =
+  | (typeof WEBHOOK_SIGNATURE_SCHEMES)[keyof typeof WEBHOOK_SIGNATURE_SCHEMES]
+  | 'hmac-sha256';
+
+function webhookSignatureScheme(provider: string): WebhookSignatureScheme {
+  return (
+    (WEBHOOK_SIGNATURE_SCHEMES as Record<string, WebhookSignatureScheme>)[provider] ??
+    'hmac-sha256'
+  );
+}
 
 export interface WebhookReceipt {
   received: true;
   provider: string;
-  /** True when the exact signed payload was already processed (safe replay). */
+  /** True when the exact signed payload was already recorded. */
   duplicate?: boolean;
+  /**
+   * True on a duplicate whose processing never completed (crash between
+   * recording and the side effects) — the caller MUST re-drive processing
+   * and answer 5xx on failure so the provider keeps retrying (audit C2).
+   */
+  reprocess?: boolean;
+}
+
+/** Result of one crash-recovery reprocessor pass (POST /admin/webhooks/reprocess). */
+export interface WebhookReprocessResult {
+  reprocessed: number;
+  failed: number;
 }
 
 /** Outbound message for the live delivery path (deliverMessage). */
@@ -95,6 +146,7 @@ type LiveDriver =
  */
 @Injectable()
 export class IntegrationsService {
+  private readonly logger = new Logger(IntegrationsService.name);
   private readonly adapters = new Map<string, IntegrationAdapter>();
   private readonly fallbackDedupe = createInMemoryWebhookDedupeStore();
   private readonly liveDrivers = new Map<string, LiveDriver>();
@@ -104,7 +156,11 @@ export class IntegrationsService {
     // Durable webhook dedupe (funds-integrity wave): pg-backed in
     // production; the bounded in-memory cache remains the fallback when no
     // store is wired (bare service constructions in unit tests).
-    @Optional() @Inject(WEBHOOK_DEDUPE_STORE) private readonly dedupe?: WebhookDedupeStore
+    @Optional() @Inject(WEBHOOK_DEDUPE_STORE) private readonly dedupe?: WebhookDedupeStore,
+    // Webhook crash-recovery reprocessor (audit C2): CoreModule is global,
+    // so Nest always wires this; bare unit-test constructions may omit it
+    // (recordWebhook/verifyWebhookSignature do not need it).
+    @Optional() private readonly events?: DomainEventsService
   ) {
     for (const definition of ADAPTER_DEFINITIONS) {
       this.adapters.set(definition.provider, createAdapter(definition));
@@ -385,9 +441,20 @@ export class IntegrationsService {
   }
 
   /**
-   * Verifies a provider webhook. `rawBody` must be the exact request body
-   * bytes (preserved in bootstrap); the signature is an HMAC-SHA256 hex
-   * digest (optionally `sha256=`-prefixed) of those bytes.
+   * Verifies a provider webhook using that provider's NATIVE scheme (see
+   * WEBHOOK_SIGNATURE_SCHEMES): Paystack signs HMAC-SHA512 over the raw
+   * body, Flutterwave sends a static `verif-hash` shared secret, and the
+   * remaining providers use the generic HMAC-SHA256 hex digest of the raw
+   * body (optionally `sha256=`-prefixed). `rawBody` must be the exact
+   * request body bytes (preserved in bootstrap). Fail-closed throughout:
+   * missing secret throws (misconfiguration), missing/invalid signature is
+   * a 401, and every comparison is timing-safe.
+   *
+   * Returns the dedupe digest for the verified payload: the provider's own
+   * signature digest where it is payload-dependent, otherwise an internal
+   * HMAC-SHA256 of the raw body (Flutterwave's verif-hash is static and
+   * MUST NOT be used as a dedupe key — it is identical for every event).
+   * Returns undefined only on the non-production stub bypass.
    */
   verifyWebhookSignature(
     provider: string,
@@ -406,10 +473,68 @@ export class IntegrationsService {
           `${this.get(provider).envPrefix}_WEBHOOK_SECRET or WEBHOOK_SIGNING_SECRET`
       );
     }
-    const signatureHeader = SIGNATURE_HEADERS.map((name) => headers[name])
-      .map((value) => (Array.isArray(value) ? value[0] : value))
-      .find((value) => Boolean(value));
-    if (!signatureHeader || !rawBody) {
+    const scheme = webhookSignatureScheme(provider);
+    if (scheme === 'verif-hash') {
+      return this.verifyStaticHashWebhook(provider, secret, rawBody, headers);
+    }
+    if (!rawBody) {
+      throw new UnauthorizedException(`Missing webhook signature for provider '${provider}'`);
+    }
+    if (scheme === 'hmac-sha512') {
+      return this.verifyPaystackWebhook(provider, secret, rawBody, headers);
+    }
+    return this.verifyGenericHmacWebhook(provider, secret, rawBody, headers);
+  }
+
+  /** Paystack: HMAC-SHA512 hex of the raw body in `x-paystack-signature`. */
+  private verifyPaystackWebhook(
+    provider: string,
+    secret: string,
+    rawBody: Buffer,
+    headers: Record<string, string | string[] | undefined>
+  ): string {
+    const signature = firstHeader(headers, 'x-paystack-signature');
+    if (!signature || !verifyPaystackSignature(rawBody, secret, signature)) {
+      throw new UnauthorizedException(
+        `${signature ? 'Invalid' : 'Missing'} webhook signature for provider '${provider}'`
+      );
+    }
+    return createHmac('sha512', secret).update(rawBody).digest('hex');
+  }
+
+  /**
+   * Flutterwave: the `verif-hash` header must equal the configured secret
+   * (timing-safe). The dedupe digest is an internal HMAC-SHA256 of the raw
+   * body — never the static hash itself.
+   */
+  private verifyStaticHashWebhook(
+    provider: string,
+    secret: string,
+    rawBody: Buffer | undefined,
+    headers: Record<string, string | string[] | undefined>
+  ): string | undefined {
+    const verifHash = firstHeader(headers, 'verif-hash');
+    if (!verifHash || !verifyFlutterwaveSignature(secret, verifHash)) {
+      throw new UnauthorizedException(
+        `${verifHash ? 'Invalid' : 'Missing'} webhook signature for provider '${provider}'`
+      );
+    }
+    return rawBody
+      ? createHmac('sha256', secret).update(rawBody).digest('hex')
+      : undefined;
+  }
+
+  /** Generic scheme: HMAC-SHA256 hex of the raw body (`sha256=` prefix optional). */
+  private verifyGenericHmacWebhook(
+    provider: string,
+    secret: string,
+    rawBody: Buffer,
+    headers: Record<string, string | string[] | undefined>
+  ): string {
+    const signatureHeader = SIGNATURE_HEADERS.map((name) => firstHeader(headers, name)).find(
+      (value) => Boolean(value)
+    );
+    if (!signatureHeader) {
       throw new UnauthorizedException(`Missing webhook signature for provider '${provider}'`);
     }
     const provided = signatureHeader.replace(/^sha256=/, '').trim();
@@ -427,10 +552,15 @@ export class IntegrationsService {
 
   /**
    * Records a verified webhook. Replays of the exact signed payload are
-   * idempotent: they return `duplicate: true` without re-triggering side
-   * effects (callers still get a 200 so providers stop retrying). Dedupe is
-   * durable when the WEBHOOK_DEDUPE_STORE is pg-backed — replays are
-   * suppressed across restarts and instances via
+   * idempotent: when the original delivery completed processing they return
+   * `duplicate: true` without re-triggering side effects (callers still get
+   * a 200 so providers stop retrying). A replay whose record is still
+   * UNPROCESSED (the first attempt crashed between recording and the side
+   * effects) returns `duplicate: true, reprocess: true` — the caller must
+   * re-run the (idempotent) side effects and answer 5xx on failure so the
+   * provider keeps retrying instead of the verified event being lost
+   * (audit C2). Dedupe is durable when the WEBHOOK_DEDUPE_STORE is
+   * pg-backed — replays are suppressed across restarts and instances via
    * integrations.inbound_events UNIQUE (system, dedupe_key).
    */
   async recordWebhook(
@@ -439,12 +569,80 @@ export class IntegrationsService {
     signatureDigest?: string
   ): Promise<WebhookReceipt> {
     this.get(provider); // validates the provider exists
-    const digest =
-      signatureDigest ?? createHmac('sha256', 'unsigned').update(stableStringify(payload)).digest('hex');
+    const digest = this.webhookDigest(payload, signatureDigest);
     const store = this.dedupe ?? this.fallbackDedupe;
     const isNew = await store.recordIfNew(provider, digest, payload);
-    return isNew ? { received: true, provider } : { received: true, provider, duplicate: true };
+    if (isNew) {
+      return { received: true, provider };
+    }
+    const processed = await store.isProcessed(provider, digest);
+    return processed
+      ? { received: true, provider, duplicate: true }
+      : { received: true, provider, duplicate: true, reprocess: true };
   }
+
+  /**
+   * Marks a recorded webhook processed. Call ONLY after the side effects
+   * (audit + domain-event publish) succeeded — until then a replay re-drives
+   * processing (audit C2).
+   */
+  async markWebhookProcessed(
+    provider: string,
+    payload: unknown,
+    signatureDigest?: string
+  ): Promise<void> {
+    const digest = this.webhookDigest(payload, signatureDigest);
+    await (this.dedupe ?? this.fallbackDedupe).markProcessed(provider, digest);
+  }
+
+  /**
+   * Crash-recovery reprocessor (audit C2): re-publishes recorded webhooks
+   * whose processing never completed, marking each row processed only after
+   * the event is accepted. Failures stay unprocessed for the next sweep.
+   * Invoked via POST /admin/webhooks/reprocess (same external-scheduler
+   * pattern as the outbox sweep); the API starts no timers of its own.
+   */
+  async reprocessUnprocessedWebhooks(limit = 100): Promise<WebhookReprocessResult> {
+    const store = this.dedupe ?? this.fallbackDedupe;
+    const pending = await store.listUnprocessed(limit);
+    const result: WebhookReprocessResult = { reprocessed: 0, failed: 0 };
+    for (const record of pending) {
+      try {
+        if (!this.events) {
+          throw new Error('DomainEventsService is not wired into IntegrationsService');
+        }
+        await this.events.publish('integration.webhook.received', {
+          provider: record.provider,
+          payload: record.payload
+        });
+        await store.markProcessed(record.provider, record.digest);
+        result.reprocessed += 1;
+      } catch (error) {
+        result.failed += 1;
+        this.logger.warn(
+          `webhook reprocess failed for ${record.provider} (${record.digest.slice(0, 12)}…): ` +
+            `${(error as Error).message}`
+        );
+      }
+    }
+    return result;
+  }
+
+  /** Dedupe key for a webhook: the verified signature digest, else a payload hash. */
+  private webhookDigest(payload: unknown, signatureDigest?: string): string {
+    return (
+      signatureDigest ??
+      createHmac('sha256', 'unsigned').update(stableStringify(payload)).digest('hex')
+    );
+  }
+}
+
+function firstHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string
+): string | undefined {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function stableStringify(value: unknown): string {

@@ -9,14 +9,22 @@ import { configureApp } from '../src/bootstrap.js';
 
 const SECRET = 'test-webhook-secret';
 
-function sign(rawBody: string): string {
+/** Paystack's native scheme: HMAC-SHA512 hex over the raw body. */
+function signSha512(rawBody: string): string {
+  return createHmac('sha512', SECRET).update(rawBody).digest('hex');
+}
+
+/** Generic scheme (non-payment providers): HMAC-SHA256 hex over the raw body. */
+function signSha256(rawBody: string): string {
   return createHmac('sha256', SECRET).update(rawBody).digest('hex');
 }
 
 /**
- * Webhook HMAC verification against a real HTTP listener. The payments
- * driver is forced to sandbox (credentialed) so signature checks are active;
- * the stub SMS driver exercises the development bypass.
+ * Webhook signature verification against a real HTTP listener (audit C3:
+ * per-provider native schemes). The payments driver is forced to sandbox
+ * (credentialed) so signature checks are active; the stub SMS driver
+ * exercises the development bypass; mailgun (sandbox) exercises the generic
+ * HMAC-SHA256 scheme.
  */
 describe('Provider webhooks (e2e)', () => {
   let app: NestExpressApplication;
@@ -28,6 +36,8 @@ describe('Provider webhooks (e2e)', () => {
     process.env.PAYMENT_DRIVER = 'sandbox';
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_xxx';
     process.env.FLUTTERWAVE_SECRET_KEY = 'flw_test_xxx';
+    process.env.EMAIL_DRIVER = 'sandbox';
+    process.env.MAILGUN_API_KEY = 'mg_test_xxx';
     app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false });
     configureApp(app);
     await app.listen(0);
@@ -48,34 +58,54 @@ describe('Provider webhooks (e2e)', () => {
     });
   }
 
-  it('accepts a correctly signed webhook', async () => {
+  it('accepts a Paystack webhook signed with its native HMAC-SHA512', async () => {
     const raw = JSON.stringify({ event: 'charge.success', data: { reference: 'ref-1' } });
-    const res = await postWebhook('paystack', raw, { 'x-paystack-signature': sign(raw) });
+    const res = await postWebhook('paystack', raw, { 'x-paystack-signature': signSha512(raw) });
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.data).toMatchObject({ received: true, provider: 'paystack' });
     expect(body.data.duplicate).toBeUndefined();
   });
 
-  it('accepts the generic header and sha256= prefix', async () => {
-    const raw = JSON.stringify({ event: 'transfer.success', data: { reference: 'ref-2' } });
-    const res = await postWebhook('paystack', raw, { 'x-webhook-signature': `sha256=${sign(raw)}` });
+  it('rejects Paystack webhooks signed with the wrong scheme (SHA-256)', async () => {
+    const raw = JSON.stringify({ event: 'charge.success', data: { reference: 'ref-wrong-scheme' } });
+    const res = await postWebhook('paystack', raw, { 'x-paystack-signature': signSha256(raw) });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts the generic HMAC-SHA256 header and sha256= prefix (mailgun)', async () => {
+    const raw = JSON.stringify({ event: 'delivered', id: 'msg-2' });
+    const res = await postWebhook('mailgun', raw, {
+      'x-webhook-signature': `sha256=${signSha256(raw)}`
+    });
     expect(res.status).toBe(201);
+  });
+
+  it('accepts a Flutterwave webhook with the matching verif-hash', async () => {
+    const raw = JSON.stringify({ event: 'charge.completed', data: { id: 9001 } });
+    const res = await postWebhook('flutterwave', raw, { 'verif-hash': SECRET });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data).toMatchObject({ received: true, provider: 'flutterwave' });
   });
 
   it('rejects missing and invalid signatures', async () => {
     const raw = JSON.stringify({ event: 'charge.success', data: { reference: 'ref-3' } });
     expect((await postWebhook('paystack', raw)).status).toBe(401);
     expect((await postWebhook('paystack', raw, { 'x-paystack-signature': 'deadbeef' })).status).toBe(401);
+    // Flutterwave: missing and mismatched verif-hash are both rejected.
+    const flw = JSON.stringify({ event: 'charge.completed', data: { id: 9002 } });
+    expect((await postWebhook('flutterwave', flw)).status).toBe(401);
+    expect((await postWebhook('flutterwave', flw, { 'verif-hash': 'wrong-hash' })).status).toBe(401);
     // Signature over a different body must not verify (tamper resistance).
-    const signed = sign(raw);
+    const signed = signSha512(raw);
     const tampered = JSON.stringify({ event: 'charge.success', data: { reference: 'ref-3', amount: 1 } });
     expect((await postWebhook('paystack', tampered, { 'x-paystack-signature': signed })).status).toBe(401);
   });
 
   it('treats replays of the exact signed payload as idempotent duplicates', async () => {
     const raw = JSON.stringify({ event: 'charge.success', data: { reference: 'ref-replay' } });
-    const headers = { 'x-paystack-signature': sign(raw) };
+    const headers = { 'x-paystack-signature': signSha512(raw) };
     const first = await (await postWebhook('paystack', raw, headers)).json();
     expect(first.data.duplicate).toBeUndefined();
     const replay = await postWebhook('paystack', raw, headers);

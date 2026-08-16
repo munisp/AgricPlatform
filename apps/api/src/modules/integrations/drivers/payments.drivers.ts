@@ -4,9 +4,10 @@
  * M7/J2). Covers transaction initialise/verify, refunds, transfers
  * (escrow release rail) and webhook signature verification. Amounts are
  * naira at the port boundary; each driver converts to provider units
- * (Paystack kobo) internally. The shared HMAC-SHA256 webhook path in
- * IntegrationsService stays the default; the verify*Signature helpers here
- * implement each provider's native scheme for direct endpoint use.
+ * (Paystack kobo) internally. The verify*Signature helpers implement each
+ * provider's NATIVE webhook scheme and are dispatched from
+ * IntegrationsService.verifyWebhookSignature (audit C3): Paystack signs
+ * HMAC-SHA512 over the raw body, Flutterwave sends a static `verif-hash`.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { httpJson, requireEnv } from './http.js';

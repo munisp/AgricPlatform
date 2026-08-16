@@ -1,5 +1,8 @@
-import { ServiceUnavailableException } from '@nestjs/common';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { createHmac } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DomainEventsService } from '../../core/domain-events.service.js';
+import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryWebhookDedupeStore } from '../../database/repositories/webhook-dedupe.repository.js';
 import { InMemoryKeyValueStore } from '../../redis/key-value-store.js';
 import { ProviderConfigError } from './drivers/http.js';
@@ -181,5 +184,172 @@ describe('IntegrationsService webhook dedupe (funds-integrity wave)', () => {
       (await after.recordWebhook('paystack', { event: 'charge.success', data: { reference: 'ref-2' } }))
         .duplicate
     ).toBeUndefined();
+  });
+});
+
+describe('IntegrationsService webhook signature schemes (audit C3)', () => {
+  const rawBody = (payload: unknown) => Buffer.from(JSON.stringify(payload));
+  const payload = { event: 'charge.success', data: { reference: 'ref-1' } };
+
+  describe('paystack (native HMAC-SHA512)', () => {
+    beforeEach(() => {
+      vi.stubEnv('PAYMENT_DRIVER', 'sandbox');
+      vi.stubEnv('PAYSTACK_WEBHOOK_SECRET', 'ps-whsec');
+    });
+
+    it('accepts a payload signed with HMAC-SHA512, as Paystack signs it', () => {
+      const service = new IntegrationsService();
+      const body = rawBody(payload);
+      const signature = createHmac('sha512', 'ps-whsec').update(body).digest('hex');
+      const digest = service.verifyWebhookSignature('paystack', body, {
+        'x-paystack-signature': signature
+      });
+      expect(digest).toBe(signature);
+    });
+
+    it('rejects the wrong scheme (HMAC-SHA256) with 401', () => {
+      const service = new IntegrationsService();
+      const body = rawBody(payload);
+      const sha256Sig = createHmac('sha256', 'ps-whsec').update(body).digest('hex');
+      expect(() =>
+        service.verifyWebhookSignature('paystack', body, { 'x-paystack-signature': sha256Sig })
+      ).toThrow(UnauthorizedException);
+      // The generic header is NOT consulted for paystack either.
+      expect(() =>
+        service.verifyWebhookSignature('paystack', body, { 'x-webhook-signature': sha256Sig })
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('rejects a missing signature with 401 and a missing secret fail-closed', () => {
+      const service = new IntegrationsService();
+      const body = rawBody(payload);
+      expect(() => service.verifyWebhookSignature('paystack', body, {})).toThrow(
+        UnauthorizedException
+      );
+      vi.stubEnv('PAYSTACK_WEBHOOK_SECRET', '');
+      vi.stubEnv('WEBHOOK_SIGNING_SECRET', '');
+      expect(() =>
+        service.verifyWebhookSignature('paystack', body, {
+          'x-paystack-signature': 'ab'.repeat(64)
+        })
+      ).toThrow(/WEBHOOK_SECRET/);
+    });
+  });
+
+  describe('flutterwave (static verif-hash)', () => {
+    beforeEach(() => {
+      vi.stubEnv('PAYMENT_DRIVER', 'sandbox');
+      vi.stubEnv('FLUTTERWAVE_WEBHOOK_SECRET', 'flw-verif-hash');
+    });
+
+    it('accepts a matching verif-hash header and returns a payload-scoped dedupe digest', () => {
+      const service = new IntegrationsService();
+      const body = rawBody({ event: 'charge.completed', data: { id: 1 } });
+      const digest = service.verifyWebhookSignature('flutterwave', body, {
+        'verif-hash': 'flw-verif-hash'
+      });
+      // The dedupe digest is an internal HMAC of the raw body — NEVER the
+      // static verif-hash (identical for every event).
+      expect(digest).toBe(
+        createHmac('sha256', 'flw-verif-hash').update(body).digest('hex')
+      );
+      expect(digest).not.toBe('flw-verif-hash');
+    });
+
+    it('rejects a mismatched or missing verif-hash with 401', () => {
+      const service = new IntegrationsService();
+      const body = rawBody(payload);
+      expect(() =>
+        service.verifyWebhookSignature('flutterwave', body, { 'verif-hash': 'wrong' })
+      ).toThrow(UnauthorizedException);
+      expect(() => service.verifyWebhookSignature('flutterwave', body, {})).toThrow(
+        UnauthorizedException
+      );
+    });
+  });
+
+  describe('generic HMAC-SHA256 scheme (other registry providers)', () => {
+    it('still verifies mailgun via the generic sha256 path incl. sha256= prefix', () => {
+      vi.stubEnv('EMAIL_DRIVER', 'sandbox');
+      vi.stubEnv('MAILGUN_WEBHOOK_SECRET', 'mg-whsec');
+      const service = new IntegrationsService();
+      const body = rawBody({ event: 'delivered' });
+      const signature = createHmac('sha256', 'mg-whsec').update(body).digest('hex');
+      expect(
+        service.verifyWebhookSignature('mailgun', body, {
+          'x-webhook-signature': `sha256=${signature}`
+        })
+      ).toBe(signature);
+      expect(() =>
+        service.verifyWebhookSignature('mailgun', body, { 'x-webhook-signature': 'deadbeef' })
+      ).toThrow(UnauthorizedException);
+    });
+  });
+
+  it('keeps the stub + non-production bypass (unsigned, no digest)', () => {
+    const service = new IntegrationsService();
+    expect(service.verifyWebhookSignature('termii', undefined, {})).toBeUndefined();
+  });
+});
+
+describe('IntegrationsService webhook crash recovery (audit C2)', () => {
+  const payload = { event: 'charge.success', data: { reference: 'ref-1' } };
+
+  it('flags a duplicate whose processing never completed for re-driving', async () => {
+    const store = createInMemoryWebhookDedupeStore();
+    const service = new IntegrationsService(undefined, store);
+    expect((await service.recordWebhook('paystack', payload)).duplicate).toBeUndefined();
+
+    // Processing crashed before markWebhookProcessed: the replay must NOT be
+    // answered as a bare duplicate — it asks the caller to re-drive.
+    const replay = await service.recordWebhook('paystack', payload);
+    expect(replay.duplicate).toBe(true);
+    expect(replay.reprocess).toBe(true);
+
+    // After the side effects succeed, the marker suppresses reprocessing.
+    await service.markWebhookProcessed('paystack', payload);
+    const settled = await service.recordWebhook('paystack', payload);
+    expect(settled.duplicate).toBe(true);
+    expect(settled.reprocess).toBeUndefined();
+  });
+
+  it('reprocessUnprocessedWebhooks drains pending rows and marks them processed', async () => {
+    const store = createInMemoryWebhookDedupeStore();
+    const outbox = createInMemoryOutboxRepository();
+    const events = new DomainEventsService(outbox);
+    const service = new IntegrationsService(undefined, store, events);
+
+    await service.recordWebhook('paystack', payload); // never processed
+    const other = { event: 'transfer.success', data: { reference: 'ref-2' } };
+    await service.recordWebhook('flutterwave', other);
+    await service.markWebhookProcessed('flutterwave', other); // processed: skip
+
+    const result = await service.reprocessUnprocessedWebhooks();
+    expect(result).toEqual({ reprocessed: 1, failed: 0 });
+    const published = await events.listOutbox();
+    expect(published).toHaveLength(1);
+    expect(published[0].name).toBe('integration.webhook.received');
+    expect(published[0].payload).toMatchObject({ provider: 'paystack' });
+
+    // Drained: nothing left to reprocess.
+    expect(await service.reprocessUnprocessedWebhooks()).toEqual({ reprocessed: 0, failed: 0 });
+    // The reprocessed row is now answered as a plain duplicate.
+    const replay = await service.recordWebhook('paystack', payload);
+    expect(replay.reprocess).toBeUndefined();
+  });
+
+  it('keeps rows unprocessed when republication fails so the next sweep retries', async () => {
+    const store = createInMemoryWebhookDedupeStore();
+    const events = {
+      publish: async () => {
+        throw new Error('bus down');
+      }
+    } as unknown as DomainEventsService;
+    const service = new IntegrationsService(undefined, store, events);
+
+    await service.recordWebhook('paystack', payload);
+    const result = await service.reprocessUnprocessedWebhooks();
+    expect(result).toEqual({ reprocessed: 0, failed: 1 });
+    expect((await store.listUnprocessed()).length).toBe(1);
   });
 });

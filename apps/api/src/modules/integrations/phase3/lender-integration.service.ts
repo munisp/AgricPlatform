@@ -91,13 +91,18 @@ export class LenderIntegrationService {
   /**
    * Inbound loan status / repayment event: ledgered (replay-safe) and
    * republished as a finance domain event. Returns whether it was new.
+   * Audit C2: a replay whose ledgered event is still unprocessed (the first
+   * attempt failed between ingest and markProcessed) re-drives the publish
+   * — at-least-once by design; consumers dedupe via events.processed_events
+   * — and marks the event processed only on success; a failure propagates
+   * as a 5xx so the provider keeps retrying.
    */
   async handleLoanEvent(
     payload: Record<string, unknown>,
     eventId?: string
-  ): Promise<{ received: boolean }> {
+  ): Promise<{ received: boolean; reprocessed?: boolean }> {
     const dedupeKey = eventId ?? String(payload['event_id'] ?? payload['reference'] ?? payloadDedupeKey(payload));
-    const event = await this.inbound.ingest({
+    let event = await this.inbound.ingest({
       id: newId('evt'),
       system: 'lender',
       eventType: String(payload['event'] ?? payload['type'] ?? 'loan.status_changed'),
@@ -105,8 +110,15 @@ export class LenderIntegrationService {
       payload,
       receivedAt: new Date().toISOString()
     });
+    let reprocessed = false;
     if (!event) {
-      return { received: false };
+      const existing = await this.inbound.findOne({ system: 'lender', dedupeKey });
+      if (!existing || existing.processedAt) {
+        return { received: false };
+      }
+      // Replay of an unprocessed event: re-drive the idempotent publish.
+      event = existing;
+      reprocessed = true;
     }
     await this.events.publish('finance.lender_event.received', {
       eventType: event.eventType,
@@ -116,6 +128,6 @@ export class LenderIntegrationService {
       amountNaira: typeof payload['amount'] === 'number' ? payload['amount'] : undefined
     });
     await this.inbound.markProcessed(event.id, new Date().toISOString());
-    return { received: true };
+    return reprocessed ? { received: true, reprocessed: true } : { received: true };
   }
 }

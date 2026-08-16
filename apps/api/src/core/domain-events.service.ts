@@ -104,6 +104,24 @@ export class DomainEventsService {
     }
   }
 
+  /**
+   * Awaitable variant of emit() (audit C2): resolves only after the event
+   * bus has ACCEPTED the event and local fan-out has run. With a live bus
+   * driver, a broker failure REJECTS the promise and the outbox row stays
+   * unpublished, so the outbox sweeper records the attempt (backoff then
+   * dead-letter) instead of falsely marking the row published while the
+   * event was never relayed. Callers that want fire-and-forget keep emit().
+   */
+  async emitAwaitable<T>(event: DomainEvent<T>): Promise<void> {
+    if (this.bus && this.bus.name !== 'stub') {
+      // Bus acceptance first (mirrors persist()): a broker outage must not
+      // fan out locally and then leave the row looking delivered.
+      await this.bus.publish(event as DomainEvent);
+    }
+    this.fanOut(event);
+    await this.markPublished(event.id);
+  }
+
   private fanOut<T>(event: DomainEvent<T>): void {
     this.logger.log(`event ${event.name} (${event.id})`);
     this.emitter.emit(event.name, event);

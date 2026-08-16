@@ -23,7 +23,7 @@ import type {
   InboundEventCriteria,
   InboundEventRepository
 } from './phase3.repository.js';
-import { webhookDedupeRow, type WebhookDedupeStore } from './webhook-dedupe.repository.js';
+import { webhookDedupeRow, type RecordedWebhook, type WebhookDedupeStore } from './webhook-dedupe.repository.js';
 
 // The mappers live next to the repositories (instead of row-mappers.ts) to
 // keep the wave P5a diff additive and conflict-free with concurrent waves.
@@ -321,7 +321,11 @@ const inboundEventMapper: RowMapper<InboundEvent> = {
 };
 
 export function inboundEventCriteriaSql(criteria: InboundEventCriteria): WhereClause {
-  return composeWhere(eq('system', criteria.system), eq('event_type', criteria.eventType));
+  return composeWhere(
+    eq('system', criteria.system),
+    eq('event_type', criteria.eventType),
+    eq('dedupe_key', criteria.dedupeKey)
+  );
 }
 
 export class PgInboundEventRepository
@@ -378,6 +382,49 @@ export class PgWebhookDedupeStore implements WebhookDedupeStore {
       [row.id, row.system, row.eventType, row.dedupeKey, JSON.stringify(row.payload)]
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Processed marker (audit C2): the row's existing processed_at column
+   * doubles as the marker — no schema change required. A replay whose row
+   * is still unprocessed must be re-driven, not answered as a duplicate.
+   */
+  async markProcessed(provider: string, digest: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE integrations.inbound_events
+       SET processed_at = now()
+       WHERE system = $1 AND dedupe_key = $2 AND event_type = 'provider_webhook'
+         AND processed_at IS NULL`,
+      [provider, digest]
+    );
+  }
+
+  async isProcessed(provider: string, digest: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT processed_at FROM integrations.inbound_events
+       WHERE system = $1 AND dedupe_key = $2 AND event_type = 'provider_webhook'`,
+      [provider, digest]
+    );
+    const row = result.rows[0] as { processed_at?: string | null } | undefined;
+    return Boolean(row?.processed_at);
+  }
+
+  /** Unprocessed provider webhooks, oldest first (reprocessor sweep input). */
+  async listUnprocessed(limit = 100): Promise<RecordedWebhook[]> {
+    const result = await this.pool.query(
+      `SELECT system, dedupe_key, payload, received_at
+       FROM integrations.inbound_events
+       WHERE event_type = 'provider_webhook' AND processed_at IS NULL
+       ORDER BY received_at
+       LIMIT $1`,
+      [limit]
+    );
+    return result.rows.map((row) => ({
+      provider: row.system as string,
+      digest: row.dedupe_key as string,
+      payload: row.payload as unknown,
+      receivedAt: ts(row.received_at)
+    }));
   }
 }
 

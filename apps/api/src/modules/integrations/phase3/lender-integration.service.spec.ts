@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { DomainEventsService } from '../../../core/domain-events.service.js';
 import { InMemoryConsentRepository } from '../../../database/repositories/consent.repository.js';
@@ -121,6 +121,45 @@ describe('LenderIntegrationService inbound loan events', () => {
     const replay = await service.handleLoanEvent({ event: 'repayment.received' }, 'evt-9');
     expect(replay.received).toBe(false);
     expect(await inbound.all()).toHaveLength(1);
+    expect((await inbound.all())[0].processedAt).toBeTruthy();
+  });
+
+  it('re-drives a replay whose first delivery never completed processing (audit C2)', async () => {
+    const { service, events, inbound } = setup([]);
+    const payload = { event: 'repayment.received', reference: 'loan-7', status: 'repaid' };
+    // Crash after the dedupe insert, before the publish: processed_at NULL.
+    await inbound.ingest({
+      id: 'evt-stalled',
+      system: 'lender',
+      eventType: 'repayment.received',
+      dedupeKey: 'evt-9',
+      payload,
+      receivedAt: '2026-05-01T00:00:00.000Z'
+    });
+
+    const replay = await service.handleLoanEvent(payload, 'evt-9');
+    expect(replay).toEqual({ received: true, reprocessed: true });
+    expect((await events.listOutbox()).map((event) => event.name)).toEqual([
+      'finance.lender_event.received'
+    ]);
+    expect((await inbound.all())[0].processedAt).toBeTruthy();
+
+    // Processed now: further replays are no-op duplicates.
+    const settled = await service.handleLoanEvent(payload, 'evt-9');
+    expect(settled.received).toBe(false);
+    expect(await events.listOutbox()).toHaveLength(1);
+  });
+
+  it('propagates processing failures so the provider retry re-drives (5xx contract)', async () => {
+    const { service, events, inbound } = setup([]);
+    vi.spyOn(events, 'publish').mockRejectedValueOnce(new Error('outbox down'));
+    const payload = { event: 'repayment.received', reference: 'loan-7' };
+
+    await expect(service.handleLoanEvent(payload, 'evt-9')).rejects.toThrow('outbox down');
+    expect((await inbound.all())[0].processedAt).toBeUndefined();
+
+    const retried = await service.handleLoanEvent(payload, 'evt-9');
+    expect(retried).toEqual({ received: true, reprocessed: true });
     expect((await inbound.all())[0].processedAt).toBeTruthy();
   });
 });
