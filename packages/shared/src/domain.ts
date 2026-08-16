@@ -180,7 +180,7 @@ export interface Chapter {
   level: 'national' | 'state' | 'lga' | 'ward';
   parentId?: string;
   state: string;
-  lga?: string;
+  lga: string;
   leadUserId?: string;
   memberCount: number;
   active: boolean;
@@ -428,6 +428,41 @@ export interface PaymentProviderPort {
   hold(command: PaymentHoldCommand): Promise<PaymentProviderResult>;
   release(providerReference: string): Promise<void>;
   refund(providerReference: string): Promise<void>;
+}
+
+/* ---------------------------------------------------------------------------
+ * Stage 23: escrow payout rail (disbursement). Money out of escrow — a
+ * release to the seller or a refund to the buyer — must go through the
+ * ESCROW_PAYOUT_DRIVER port and every attempt is recorded (integer kobo,
+ * idempotency key, provider reference, status) before/after the call.
+ * ------------------------------------------------------------------------- */
+
+export const ESCROW_PAYOUT_KINDS = ['release', 'refund'] as const;
+export type EscrowPayoutKind = (typeof ESCROW_PAYOUT_KINDS)[number];
+
+export const ESCROW_PAYOUT_STATUSES = ['recorded', 'succeeded', 'failed'] as const;
+export type EscrowPayoutStatus = (typeof ESCROW_PAYOUT_STATUSES)[number];
+
+/** One recorded payout attempt against an escrow hold (audit-grade). */
+export interface EscrowPayout {
+  id: string;
+  escrowId: string;
+  orderId: string;
+  kind: EscrowPayoutKind;
+  /** Integer kobo; always the full held amount for this rail. */
+  amountKobo: number;
+  /** Deterministic per (escrow, kind); retries replay, mismatches 409. */
+  idempotencyKey: string;
+  /** Stable fingerprint of the payout payload the key was first used with. */
+  payloadHash: string;
+  /** Driver that owns the attempt ('stub' | 'live'). */
+  provider: string;
+  /** Opaque provider-side reference, set once the driver succeeds. */
+  providerReference?: string;
+  status: EscrowPayoutStatus;
+  failureReason?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const INVOICE_STATUSES = ['draft', 'issued', 'paid', 'cancelled'] as const;
