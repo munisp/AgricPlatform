@@ -1,0 +1,5 @@
+# Stage 22 (PR #37): false positive — test idempotency key literal in an
+# intermediate branch commit. Not a credential; entropy just over the
+# generic-api-key threshold. Squash-merge erases the branch history, so this
+# fingerprint never exists on main. Cf. .trivyignore VEX discipline.
+b962cb7bdcbedb6876d45d1f78cd90c1875c774d:apps/api/src/modules/agent-banking/agent-banking.service.spec.ts:generic-api-key:261
