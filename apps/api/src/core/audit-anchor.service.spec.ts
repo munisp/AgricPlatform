@@ -160,7 +160,7 @@ describe('AuditAnchorService verification', () => {
     // the shortened-then-rewritten chain is internally valid again (same
     // length, different events — undetectable without the anchor).
     events.truncate(3);
-    await audit.record(input('attacker.cover_up', 'e-x'));
+    const forged1 = await audit.record(input('attacker.cover_up', 'e-x'));
     await audit.record(input('attacker.cover_up', 'e-y'));
     const chainCheck = await audit.verify();
     expect(chainCheck.valid).toBe(true); // event chain alone looks fine!
@@ -175,6 +175,7 @@ describe('AuditAnchorService verification', () => {
       actualEventCount: 5,
       currentTipEventId: expect.any(String)
     });
+    expect(result.gap?.currentTipEventId).not.toBe(forged1.id);
     expect(result.gap?.currentTipEventId).not.toBe(anchor.anchoredThroughEventId);
   });
 
