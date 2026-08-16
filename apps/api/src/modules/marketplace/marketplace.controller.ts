@@ -106,7 +106,7 @@ class CreateListingDto implements CreateListingInput {
 
   @ValidateNested()
   @Type(() => LocationDto)
-  location!: LocationRef;
+  location!: LocationDto;
 
   @IsOptional()
   @IsString()
