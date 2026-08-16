@@ -438,7 +438,7 @@ export class WarehouseService {
     return verifyReceiptSignature(
       {
         receiptNumber: receipt.receiptNumber,
-        depositId: deposit.id,
+        depositId: receipt.depositId,
         warehouseId: receipt.warehouseId,
         ownerId: receipt.ownerId,
         crop: receipt.crop,
