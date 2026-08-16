@@ -45,6 +45,12 @@ describe('EscrowService', () => {
     const calls: string[] = [];
     const provider: PaymentProviderPort = {
       name: 'stub-pay',
+      verify: async (reference) => ({
+        reference,
+        status: 'success',
+        amountKobo: 37_000_000,
+        providerReference: reference
+      }),
       hold: async (command) => {
         calls.push(`hold:${command.amountKobo}`);
         return { providerReference: 'ps_hold_123' };
@@ -147,6 +153,12 @@ function fakeProvider(failures: { release?: number; refund?: number } = {}) {
   let refundFailures = failures.refund ?? 0;
   const provider: PaymentProviderPort = {
     name: 'fake-pay',
+    verify: async (reference) => ({
+      reference,
+      status: 'success',
+      amountKobo: 37_000_000,
+      providerReference: reference
+    }),
     hold: async () => ({ providerReference: 'fake_hold_1' }),
     release: async (reference) => {
       calls.push(`release:${reference}`);
@@ -252,5 +264,69 @@ describe('EscrowService funds-integrity hardening', () => {
     const { service } = makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(Date.parse(record.heldUntil!)).toBeGreaterThan(Date.parse(record.heldAt));
+  });
+});
+
+// Stage 22 (audit C2): verify-before-credit evidence on the escrow record.
+describe('EscrowService deposit verification evidence (audit C2)', () => {
+  it('persists the verified deposit reference on the hold', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-001',
+      verified: true
+    });
+    expect(record.depositReference).toBe('paystack:dep-001');
+    expect(record.depositVerifiedAt).toBeDefined();
+    const stored = await service.escrowForOrder('order-buyer-cassava');
+    expect(stored?.depositReference).toBe('paystack:dep-001');
+    expect(stored?.depositVerifiedAt).toBe(record.depositVerifiedAt);
+  });
+
+  it('records declarative deposits as unverified', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    expect(record.depositReference).toBe('declared-ref');
+    expect(record.depositVerifiedAt).toBeUndefined();
+  });
+
+  it('auto-release proceeds for provider-verified holds when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-002',
+      verified: true
+    });
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
+  });
+
+  it('blocks auto-release of unverified holds when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    // Declarative hold (no provider verification) while a provider is wired.
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      ConflictException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+    // The admin-mediated path stays available for unverified holds.
+    const record = await service.escrowForOrder('order-buyer-cassava');
+    expect((await service.transition(record!.id, 'released', admin)).status).toBe('released');
+  });
+
+  it('still auto-releases unverified holds when no provider is wired outside production', async () => {
+    const { service } = makeService();
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'declared-ref',
+      verified: false
+    });
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
   });
 });
