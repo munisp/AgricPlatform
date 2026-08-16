@@ -80,11 +80,33 @@ export class AdminController {
   @Get('audit-log/verify')
   @ApiOperation({
     summary:
-      'Verify the tamper-evident audit hash chain ({valid, brokenAt?, checked}). ' +
-      'Optional fromId/toId bound the walk to a contiguous range (regulator spot-checks).'
+      'Verify the tamper-evident audit hash chain ({valid, brokenAt?, checked, anchors?}). ' +
+      'Optional fromId/toId bound the walk to a contiguous range (regulator spot-checks). ' +
+      'The anchors section verifies the Stage 23 anchoring checkpoints and reports ' +
+      'anchor-chain breaks (brokenAnchorAt) and tail-truncation gaps (gap).'
   })
   async verifyAuditLog(@Query('fromId') fromId?: string, @Query('toId') toId?: string) {
     return { data: await this.admin.verifyAuditLog({ fromId, toId }) };
+  }
+
+  @Post('audit-log/anchors')
+  @ApiOperation({
+    summary:
+      'Create an anchoring checkpoint over the current audit chain tip (Stage 23). ' +
+      'Notarizes tip event id + tip hash + event count into the tamper-evident anchor ' +
+      'chain (and the configured off-box sink). An external scheduler should invoke ' +
+      'this periodically, or set AUDIT_ANCHOR_INTERVAL_MS for an in-process timer.'
+  })
+  async createAuditAnchor() {
+    return { data: await this.admin.createAuditAnchor() };
+  }
+
+  @Get('audit-log/anchors')
+  @ApiOperation({
+    summary: 'List anchoring checkpoints in anchor-chain order (Stage 23, admin only)'
+  })
+  async auditAnchors() {
+    return { data: await this.admin.listAuditAnchors() };
   }
 
   @Get('events')
