@@ -57,7 +57,13 @@ describe('USSD callback (e2e, driver stub)', () => {
   const savedEnv = { ...process.env };
 
   beforeAll(async () => {
-    booted = await boot({ USSD_DRIVER: undefined, AT_API_KEY: undefined, AT_USERNAME: undefined });
+    booted = await boot({
+      USSD_DRIVER: undefined,
+      AT_API_KEY: undefined,
+      AT_USERNAME: undefined,
+      AT_CALLBACK_TOKEN: undefined,
+      AT_CALLBACK_IP_ALLOWLIST: undefined
+    });
   });
 
   afterAll(async () => {
@@ -83,7 +89,9 @@ describe('USSD callback (e2e, sandbox driver)', () => {
     booted = await boot({
       USSD_DRIVER: 'sandbox',
       AT_API_KEY: 'atsk_test_dummy',
-      AT_USERNAME: 'sandbox'
+      AT_USERNAME: 'sandbox',
+      AT_CALLBACK_TOKEN: undefined,
+      AT_CALLBACK_IP_ALLOWLIST: undefined
     });
   });
 
@@ -149,5 +157,120 @@ describe('USSD callback (e2e, sandbox driver)', () => {
     const replay = await ussdTurn(booted.base, { sessionId, phoneNumber, text: '1' });
     expect(replay.status).toBe(200);
     expect(replay.body).toBe(first.body);
+  });
+
+  it('rejects a mid-session phone-number change (audit C2-3)', async () => {
+    const sessionId = 'sess-e2e-3';
+    const phoneNumber = '+234810000004';
+    const open = await ussdTurn(booted.base, { sessionId, phoneNumber, text: '' });
+    expect(open.status).toBe(200);
+    const hijack = await ussdTurn(booted.base, {
+      sessionId,
+      phoneNumber: '+234819999999',
+      text: '1'
+    });
+    expect(hijack.status).toBe(401);
+    // The original phone still owns the session.
+    const next = await ussdTurn(booted.base, { sessionId, phoneNumber, text: '1' });
+    expect(next.status).toBe(200);
+    expect(next.body.startsWith('CON ')).toBe(true);
+  });
+});
+
+describe('USSD callback token gate (e2e, audit C2-3)', () => {
+  let booted: Booted;
+  const savedEnv = { ...process.env };
+  const TOKEN = 'e2e-callback-secret';
+
+  beforeAll(async () => {
+    booted = await boot({
+      USSD_DRIVER: 'sandbox',
+      AT_API_KEY: 'atsk_test_dummy',
+      AT_USERNAME: 'sandbox',
+      AT_CALLBACK_TOKEN: TOKEN,
+      AT_CALLBACK_IP_ALLOWLIST: undefined
+    });
+  });
+
+  afterAll(async () => {
+    await booted.app.close();
+    process.env = { ...savedEnv };
+  });
+
+  it('answers 401 without a token and with a wrong token', async () => {
+    const missing = await ussdTurn(booted.base, {
+      sessionId: 'sess-tok-1',
+      phoneNumber: '+234810000010',
+      text: ''
+    });
+    expect(missing.status).toBe(401);
+
+    const res = await fetch(`${booted.base}/ussd/callback?token=wrong`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        sessionId: 'sess-tok-1',
+        phoneNumber: '+234810000010',
+        text: ''
+      }).toString()
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('serves the callback when the token arrives as a query param or header', async () => {
+    const viaQuery = await fetch(`${booted.base}/ussd/callback?token=${TOKEN}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        sessionId: 'sess-tok-2',
+        phoneNumber: '+234810000011',
+        text: ''
+      }).toString()
+    });
+    expect(viaQuery.status).toBe(200);
+    expect((await viaQuery.text()).startsWith('CON ')).toBe(true);
+
+    const viaHeader = await fetch(`${booted.base}/ussd/callback`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-at-callback-token': TOKEN
+      },
+      body: new URLSearchParams({
+        sessionId: 'sess-tok-3',
+        phoneNumber: '+234810000012',
+        text: ''
+      }).toString()
+    });
+    expect(viaHeader.status).toBe(200);
+  });
+});
+
+describe('USSD callback IP allowlist (e2e, audit C2-3)', () => {
+  let booted: Booted;
+  const savedEnv = { ...process.env };
+
+  beforeAll(async () => {
+    booted = await boot({
+      USSD_DRIVER: 'sandbox',
+      AT_API_KEY: 'atsk_test_dummy',
+      AT_USERNAME: 'sandbox',
+      AT_CALLBACK_TOKEN: undefined,
+      AT_CALLBACK_IP_ALLOWLIST: '203.0.113.9' // not the loopback test client
+    });
+  });
+
+  afterAll(async () => {
+    await booted.app.close();
+    process.env = { ...savedEnv };
+  });
+
+  it('answers 403 for callers outside the allowlist', async () => {
+    const res = await ussdTurn(booted.base, {
+      sessionId: 'sess-ip-1',
+      phoneNumber: '+234810000020',
+      text: ''
+    });
+    expect(res.status).toBe(403);
   });
 });

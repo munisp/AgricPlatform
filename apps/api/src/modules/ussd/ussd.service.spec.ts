@@ -1,3 +1,4 @@
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import type { Course, Opportunity } from '@agric-platform/shared';
 import { createInMemoryCommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
@@ -6,6 +7,7 @@ import { createInMemoryUssdSessionRepository } from '../../database/repositories
 import type { LearningService } from '../learning/learning.service.js';
 import type { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { UsersService } from '../users/users.service.js';
+import { UssdController } from './ussd.controller.js';
 import { resolveUssdDriver, UssdService, USSD_SESSION_TTL_MS } from './ussd.service.js';
 
 const ENABLED_ENV = {
@@ -123,6 +125,36 @@ describe('resolveUssdDriver (fail-closed)', () => {
     const { service } = build({ env: { USSD_DRIVER: 'live' } as NodeJS.ProcessEnv });
     expect(service.driverConfig.enabled).toBe(false);
     expect(service.driverConfig.missing).toEqual(['AT_API_KEY', 'AT_USERNAME']);
+  });
+
+  it('throws at boot in production when the callback token is missing (audit C2-3)', () => {
+    const nodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() =>
+        build({
+          env: { USSD_DRIVER: 'live', AT_API_KEY: 'k', AT_USERNAME: 'u' } as NodeJS.ProcessEnv
+        })
+      ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+      // …and boots once the shared secret is configured.
+      expect(() =>
+        build({
+          env: {
+            USSD_DRIVER: 'live',
+            AT_API_KEY: 'k',
+            AT_USERNAME: 'u',
+            AT_CALLBACK_TOKEN: 'secret'
+          } as NodeJS.ProcessEnv
+        })
+      ).not.toThrow();
+    } finally {
+      process.env.NODE_ENV = nodeEnv;
+    }
+  });
+
+  it('keeps tests constructible without a token outside production', () => {
+    const { service } = build();
+    expect(service.driverConfig.enabled).toBe(true);
   });
 });
 
@@ -249,5 +281,95 @@ describe('UssdService.handleCallback', () => {
     expect(await service.sweepExpiredSessions(future)).toBe(1);
     expect(await sessions.findById('s-9')).toBeUndefined();
     expect(await service.sweepExpiredSessions(future)).toBe(0);
+  });
+
+  it('binds a session to its opening phone number and rejects mid-session changes (C2-3)', async () => {
+    const { service, sessions } = build();
+    await service.handleCallback({ sessionId: 's-10', phoneNumber: '+234810', text: '' });
+    await service.handleCallback({ sessionId: 's-10', phoneNumber: '+234810', text: '1' });
+    // A different phone number cannot continue (or replay) this session.
+    await expect(
+      service.handleCallback({ sessionId: 's-10', phoneNumber: '+234899', text: '1*Amina Bello' })
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      service.handleCallback({ sessionId: 's-10', phoneNumber: '+234899', text: '1' })
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    // The binding is unchanged: the original phone still owns the session.
+    expect((await sessions.findById('s-10'))?.phone).toBe('+234810');
+    const next = await service.handleCallback({
+      sessionId: 's-10',
+      phoneNumber: '+234810',
+      text: '1*Amina Bello'
+    });
+    expect(next).toContain('state');
+  });
+
+  it('lets a different phone reuse the sessionId after the session expired', async () => {
+    const { service, sessions } = build();
+    await service.handleCallback({ sessionId: 's-11', phoneNumber: '+234811', text: '' });
+    const stored = await sessions.findById('s-11');
+    await sessions.save({ ...stored!, expiresAt: new Date(Date.now() - 1000).toISOString() });
+    const open = await service.handleCallback({ sessionId: 's-11', phoneNumber: '+234899', text: '' });
+    expect(open).toContain('CON Welcome');
+    expect((await sessions.findById('s-11'))?.phone).toBe('+234899');
+  });
+});
+
+describe('UssdController callback token gate (audit C2-3)', () => {
+  const TOKEN = 'ussd-controller-test-token';
+
+  async function withToken<T>(fn: () => Promise<T> | T): Promise<T> {
+    const saved = process.env.AT_CALLBACK_TOKEN;
+    process.env.AT_CALLBACK_TOKEN = TOKEN;
+    try {
+      return await fn();
+    } finally {
+      if (saved === undefined) {
+        delete process.env.AT_CALLBACK_TOKEN;
+      } else {
+        process.env.AT_CALLBACK_TOKEN = saved;
+      }
+    }
+  }
+
+  it('rejects callbacks without or with a wrong token (401) once configured', async () => {
+    const { service } = build();
+    const controller = new UssdController(service);
+    await withToken(async () => {
+      await expect(
+        controller.callback({ sessionId: 's-g1', phoneNumber: '+234820', text: '' })
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        controller.callback({ sessionId: 's-g1', phoneNumber: '+234820', text: '' }, 'wrong')
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
+
+  it('serves callbacks carrying the token as a query param or header', async () => {
+    const { service } = build();
+    const controller = new UssdController(service);
+    await withToken(async () => {
+      const viaQuery = await controller.callback(
+        { sessionId: 's-g2', phoneNumber: '+234821', text: '' },
+        TOKEN
+      );
+      expect(viaQuery).toContain('CON Welcome');
+      const viaHeader = await controller.callback(
+        { sessionId: 's-g3', phoneNumber: '+234822', text: '' },
+        undefined,
+        TOKEN
+      );
+      expect(viaHeader).toContain('CON Welcome');
+    });
+  });
+
+  it('stays 404 while the driver is disabled, regardless of the token', async () => {
+    const { service } = build({ env: {} as NodeJS.ProcessEnv });
+    const controller = new UssdController(service);
+    await withToken(async () => {
+      await expect(
+        controller.callback({ sessionId: 's-g4', phoneNumber: '+234823', text: '' }, TOKEN)
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
   });
 });

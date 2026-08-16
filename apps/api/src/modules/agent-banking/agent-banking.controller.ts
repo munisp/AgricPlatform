@@ -3,7 +3,9 @@ import {
   Controller,
   Get,
   Header,
+  Headers,
   HttpCode,
+  Ip,
   NotFoundException,
   Param,
   Post,
@@ -16,6 +18,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
+import { assertAtCallbackIp, assertAtCallbackToken } from '../../common/auth/at-callback.utils.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -421,6 +424,11 @@ export class AgentBankingController {
 /**
  * Agent-banking USSD callback (wave AGENTBANK). Mirrors the agronomy USSD
  * channel: fail-closed unless USSD_DRIVER=live|sandbox with AT credentials.
+ * AT does not sign callbacks, so authenticity rides on the shared
+ * AT_CALLBACK_TOKEN secret (query param on the configured callback URL or
+ * x-at-callback-token header, audit C2-3) plus the optional
+ * AT_CALLBACK_IP_ALLOWLIST. This channel treats the caller's phone number as
+ * the agent's identity, so the token gate is load-bearing.
  */
 @ApiTags('agent-banking')
 @Controller('agent-banking/ussd')
@@ -434,14 +442,22 @@ export class AgentUssdController {
   @ApiOperation({
     summary:
       "Africa's Talking agent-banking USSD callback (CON/END plain text, ≤182 chars). " +
-      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY/AT_USERNAME.'
+      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY/AT_USERNAME. ' +
+      'Requires the AT_CALLBACK_TOKEN secret (?token= or x-at-callback-token) once configured.'
   })
-  async callback(@Body() dto: AgentUssdCallbackDto): Promise<string> {
+  async callback(
+    @Body() dto: AgentUssdCallbackDto,
+    @Query('token') token?: string,
+    @Headers('x-at-callback-token') headerToken?: string,
+    @Ip() ip?: string
+  ): Promise<string> {
     if (!this.ussd.driverConfig.enabled) {
       throw new NotFoundException(
         'Agent-banking USSD callback is disabled. Set USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME.'
       );
     }
+    assertAtCallbackToken(token ?? headerToken);
+    assertAtCallbackIp(ip);
     return this.ussd.handleCallback({
       sessionId: dto.sessionId,
       phoneNumber: dto.phoneNumber,
