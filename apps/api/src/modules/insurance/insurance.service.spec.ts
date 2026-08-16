@@ -168,6 +168,7 @@ afterEach(() => {
     }
   }
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -547,6 +548,57 @@ describe('trigger evaluation — fail-closed live weather', () => {
         sumInsuredKobo: 1_000_000
       })
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+});
+
+describe('trigger evaluation — production fail-closed stub providers', () => {
+  it('refuses to book ledger payouts from stub weather data in production (503)', async () => {
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    vi.stubEnv('NODE_ENV', 'production');
+    const context = makeService();
+    const policy = await activeRainPolicy(context, coords);
+
+    await expect(context.service.evaluateTriggers(admin)).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    // Fail closed: NO trigger event, NO payout, policy stays ACTIVE.
+    expect(await context.triggerEvents.all()).toHaveLength(0);
+    expect(await context.payouts.all()).toHaveLength(0);
+    expect((await context.policies.findById(policy.id))?.status).toBe('active');
+  });
+
+  it('refuses to book ledger payouts from stub flood data in production (503)', async () => {
+    const coords = await scanFloodCell((severity) => floodSeverityRank(severity) >= 3);
+    vi.stubEnv('NODE_ENV', 'production');
+    const context = makeService();
+    await context.plotRepo.create(
+      plot({ id: 'plot-flood', centroidLat: coords.lat, centroidLong: coords.long })
+    );
+    const { policy } = await context.service.quote(farmer, {
+      productCode: 'NG-FLOOD-26',
+      plotId: 'plot-flood',
+      season: '2026-wet',
+      sumInsuredKobo: 1_000_000
+    });
+    await context.service.issue(farmer, policy.id);
+
+    await expect(context.service.evaluateTriggers(admin)).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    expect(await context.triggerEvents.all()).toHaveLength(0);
+    expect(await context.payouts.all()).toHaveLength(0);
+    expect((await context.policies.findById(policy.id))?.status).toBe('active');
+  });
+
+  it('treats NODE_ENV casing variants as production (fail closed)', async () => {
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    vi.stubEnv('NODE_ENV', 'Production');
+    const context = makeService();
+    await activeRainPolicy(context, coords);
+    await expect(context.service.evaluateTriggers(admin)).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    expect(await context.triggerEvents.all()).toHaveLength(0);
   });
 });
 
