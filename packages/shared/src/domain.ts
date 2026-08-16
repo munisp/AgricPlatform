@@ -292,6 +292,27 @@ export interface AuditEvent {
 }
 
 /**
+ * Anchoring checkpoint over the audit hash chain (Stage 23, additive).
+ * Notarizes the chain tip at anchor time so a truncated/re-extended tail is
+ * detectable after the fact. Anchors form their own hash chain
+ * (prevAnchorHash → anchorHash, genesis = 64 zeros).
+ */
+export interface AuditAnchor {
+  id: string;
+  /** Chain tip event this anchor notarizes; null = anchor over an empty chain. */
+  anchoredThroughEventId: string | null;
+  /** Hash of the tip event (64 lowercase hex chars; genesis = 64 zeros). */
+  tipHash: string;
+  /** Number of chain events at anchor time. */
+  eventCount: number;
+  /** Hash of the previous anchor in the anchor chain. */
+  prevAnchorHash: string;
+  /** sha256 over the canonical anchor payload + prevAnchorHash. */
+  anchorHash: string;
+  createdAt: string;
+}
+
+/**
  * Consistent API error envelope produced by the API exception filter.
  * `requestId` is additive: older clients ignore it (observability wave).
  */

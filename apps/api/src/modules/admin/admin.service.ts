@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import type { PlatformMetric, User, UserRole } from '@agric-platform/shared';
-import { AuditService } from '../../core/audit.service.js';
+import type { AuditAnchor, PlatformMetric, User, UserRole } from '@agric-platform/shared';
+import { AuditAnchorService } from '../../core/audit-anchor.service.js';
+import { AuditService, type AuditVerification } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { OutboxSweeperService, type OutboxSweepResult } from '../../core/outbox-sweeper.service.js';
 import { AUTH_SESSION_REPOSITORY, CREDIT_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
@@ -47,7 +48,10 @@ export class AdminService {
     // Optional: a missing KPI source degrades to a labelled seed fixture
     // (refused in production), never a fabricated live number.
     @Optional() private readonly chapters?: ChaptersService,
-    @Optional() @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles?: CreditProfileRepository
+    @Optional() @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles?: CreditProfileRepository,
+    // Stage 23: anchoring checkpoints. Optional so older tests/wiring keep
+    // working; always provided in the deployed app via the global CoreModule.
+    @Optional() private readonly auditAnchors?: AuditAnchorService
   ) {}
 
   async listUsers(role?: UserRole): Promise<AdminUserView[]> {
@@ -156,9 +160,34 @@ export class AdminService {
     return this.audit.list({ actorId, entityType });
   }
 
-  /** Tamper-evidence check over the audit hash chain (observability plan §A.6). */
-  async verifyAuditLog(range?: { fromId?: string; toId?: string }) {
-    return this.audit.verify(range);
+  /**
+   * Tamper-evidence check over the audit hash chain (observability plan
+   * §A.6), extended with the Stage 23 anchoring checkpoints: the result
+   * carries an `anchors` section (anchor-chain integrity + truncation-gap
+   * detection against the latest anchor) and `valid` is the AND of the
+   * event-chain and anchor checks. Fails LOUDLY with structured detail
+   * (brokenAt / brokenAnchorAt / gap), never silently.
+   */
+  async verifyAuditLog(range?: { fromId?: string; toId?: string }): Promise<AuditVerification> {
+    const chain = await this.audit.verify(range);
+    if (!this.auditAnchors) {
+      return chain;
+    }
+    const anchors = await this.auditAnchors.verifyAnchors();
+    return { ...chain, valid: chain.valid && anchors.valid, anchors };
+  }
+
+  /** Stage 23: create an anchoring checkpoint over the current chain tip (on demand). */
+  async createAuditAnchor(): Promise<AuditAnchor> {
+    if (!this.auditAnchors) {
+      throw new Error('audit anchoring is not wired in this deployment');
+    }
+    return this.auditAnchors.createAnchor();
+  }
+
+  /** Stage 23: list anchoring checkpoints in anchor-chain order. */
+  async listAuditAnchors(): Promise<AuditAnchor[]> {
+    return this.auditAnchors ? this.auditAnchors.listAnchors() : [];
   }
 
   /** Wave P: one outbox sweeper pass (retries + dead-lettering). */

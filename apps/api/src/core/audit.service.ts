@@ -1,9 +1,12 @@
-import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AuditEvent } from '@agric-platform/shared';
 import { newId } from '../common/async-repository.js';
 import { AUDIT_REPOSITORY } from '../database/persistence.tokens.js';
 import type { AuditCriteria, AuditRepository } from '../database/repositories/audit.repository.js';
+import type { AuditAnchorVerification } from './audit-anchor.service.js';
+import { GENESIS_HASH, hashAuditEvent } from './audit-chain.js';
+
+export { canonicalJSON, GENESIS_HASH, hashAuditEvent, linkAuditEvent } from './audit-chain.js';
 
 export interface RecordAuditInput {
   actorId: string;
@@ -21,28 +24,13 @@ export interface AuditVerification {
   brokenAt?: string;
   /** Number of events verified in this walk (Wave P). */
   checked?: number;
-}
-
-/** prevHash of the first event in the chain. */
-export const GENESIS_HASH = '0'.repeat(64);
-
-/** Deterministic JSON (sorted keys, recursive) so hashes are stable across processes. */
-export function canonicalJSON(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value) ?? 'undefined';
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJSON).join(',')}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJSON(entry)}`);
-  return `{${entries.join(',')}}`;
-}
-
-/** Chain hash (plan §A.6): sha256 over the canonical event payload + prevHash. */
-export function hashAuditEvent(event: Omit<AuditEvent, 'hash'>, prevHash: string): string {
-  return createHash('sha256').update(canonicalJSON(event) + prevHash).digest('hex');
+  /**
+   * Anchoring checkpoint verification (Stage 23): anchor-chain integrity plus
+   * the truncation-gap check against the live tail. Present when an
+   * AuditAnchorService is wired (always in the deployed app); `valid` above
+   * is then the AND of the event-chain and anchor checks.
+   */
+  anchors?: AuditAnchorVerification;
 }
 
 /**
@@ -52,22 +40,32 @@ export function hashAuditEvent(event: Omit<AuditEvent, 'hash'>, prevHash: string
  *
  * Tamper evidence (observability plan §A.6): every record carries
  * `prevHash`/`hash` forming a hash chain (genesis = 64 zeros); `verify()`
- * re-walks the chain and reports the first broken link. The in-memory tail
- * is re-seeded from the repository on first use after boot so restarts
- * continue the persisted chain instead of forking it.
+ * re-walks the chain and reports the first broken link.
+ *
+ * Fork safety (audit C2-11): chain extension is atomic inside the
+ * repository's `append()` — the tail is read and linked in the same
+ * serialized step (UNIQUE(prev_hash) + guarded INSERT on PostgreSQL, a
+ * synchronous link-and-push in memory). This service intentionally keeps NO
+ * per-process tail cache: under the multi-replica HPA every replica used to
+ * hold an independent lastHash and fork the chain. Restarts and concurrent
+ * writers now all extend the same persisted chain.
+ *
+ * Anchoring checkpoints (Stage 23, migration 047): AuditAnchorService
+ * periodically/on-demand notarizes the chain tip (event id + tip hash +
+ * count) into the audit.anchors chain, so a deleted/re-extended tail is
+ * detected by the combined verification (see AdminService.verifyAuditLog).
+ * Anchors in the same database only BOUND the truncation window — a
+ * DB-write attacker can delete anchors too; AUDIT_ANCHOR_SINK ships anchors
+ * off-box, and a fully external anchor is an ops follow-up.
  */
 @Injectable()
 export class AuditService {
-  /** Hash of the last event in the chain; undefined = not yet loaded. */
-  private lastHash: string | undefined;
-
   constructor(
     @Inject(AUDIT_REPOSITORY) private readonly audits: AuditRepository
   ) {}
 
   async record(input: RecordAuditInput): Promise<AuditEvent> {
-    const prevHash = await this.currentHash();
-    const unsigned: Omit<AuditEvent, 'hash'> = {
+    const unsigned: Omit<AuditEvent, 'prevHash' | 'hash'> = {
       id: newId('audit'),
       actorId: input.actorId,
       action: input.action,
@@ -75,13 +73,10 @@ export class AuditService {
       entityId: input.entityId,
       metadata: input.metadata ?? {},
       createdAt: new Date().toISOString(),
-      prevHash,
       ...(input.requestId ? { requestId: input.requestId } : {})
     };
-    const event: AuditEvent = { ...unsigned, hash: hashAuditEvent(unsigned, prevHash) };
-    const recorded = await this.audits.record(event);
-    this.lastHash = event.hash;
-    return recorded;
+    // Atomic chain extension (prevHash + hash) happens inside the repository.
+    return this.audits.append(unsigned);
   }
 
   async list(filter?: AuditCriteria): Promise<AuditEvent[]> {
@@ -91,7 +86,9 @@ export class AuditService {
   /**
    * Re-walks the persisted chain. An event is broken when it lacks hash
    * fields, its prevHash does not match the running tail, or its payload no
-   * longer hashes to the stored value (i.e. it was tampered with).
+   * longer hashes to the stored value (i.e. it was tampered with). A forked
+   * history (two events claiming the same prevHash) is detected the same
+   * way: the second branch's prevHash cannot match the running tail.
    *
    * Wave P: optional [fromId, toId] range bounds the walk to a contiguous
    * slice. Inside a range the first event's prevHash is trusted (it links
@@ -127,16 +124,5 @@ export class AuditService {
       checked += 1;
     }
     return { valid: true, checked };
-  }
-
-  /** Tail hash, lazily resumed from the repository after a restart. */
-  private async currentHash(): Promise<string> {
-    if (this.lastHash === undefined) {
-      const existing = await this.audits.list();
-      this.lastHash = existing.length > 0
-        ? (existing[existing.length - 1].hash ?? GENESIS_HASH)
-        : GENESIS_HASH;
-    }
-    return this.lastHash;
   }
 }

@@ -820,6 +820,12 @@ export const auditMapper: RowMapper<AuditEvent> = {
     'hash',
     'request_id'
   ],
+  // Optional chain/correlation fields are conditionally spread, NOT emitted
+  // as `key: undefined`: canonicalJSON treats a present-but-undefined key as
+  // `"key":undefined`, so an emitted undefined would change the payload the
+  // hash covers and break verify() recomputation (audit C2-11 hash
+  // round-trip). created_at round-trips exactly through ts() (pg returns
+  // timestamptz as Date; toISOString reproduces the writer's string).
   fromRow: (row) => ({
     id: row.id as string,
     actorId: row.actor_id as string,
@@ -828,9 +834,9 @@ export const auditMapper: RowMapper<AuditEvent> = {
     entityId: row.entity_id as string,
     metadata: (row.metadata as Record<string, unknown>) ?? {},
     createdAt: ts(row.created_at),
-    prevHash: (row.prev_hash as string) ?? undefined,
-    hash: (row.hash as string) ?? undefined,
-    requestId: (row.request_id as string) ?? undefined
+    ...(row.prev_hash != null ? { prevHash: row.prev_hash as string } : {}),
+    ...(row.hash != null ? { hash: row.hash as string } : {}),
+    ...(row.request_id != null ? { requestId: row.request_id as string } : {})
   }),
   toRow: (item) => ({
     id: item.id,
