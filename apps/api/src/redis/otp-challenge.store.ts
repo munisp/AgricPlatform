@@ -10,6 +10,7 @@ export interface OtpChallenge {
 
 const CHALLENGE_PREFIX = 'otp:challenge:';
 const PHONE_PREFIX = 'otp:phone:';
+const PHONE_FAILURE_PREFIX = 'otp:phone-failures:';
 
 /**
  * OTP challenge store (plan §7). Challenges are keyed by id with a phone
@@ -25,6 +26,14 @@ export interface OtpChallengeStore {
   /** Atomic single-use read; undefined when the challenge is gone/expired. */
   consume(id: string): Promise<OtpChallenge | undefined>;
   invalidateForPhone(phone: string): Promise<void>;
+  /**
+   * Per-phone rolling failure counter (audit C3): reissuing a challenge must
+   * not reset the guessing budget, so failed verifications are counted per
+   * phone in a fixed window anchored at the first failure.
+   */
+  phoneFailureCount(phone: string): Promise<number>;
+  /** Atomically increments the per-phone failure counter; returns the new count. */
+  registerPhoneFailure(phone: string, windowMs: number): Promise<number>;
 }
 
 export class KeyValueOtpChallengeStore implements OtpChallengeStore {
@@ -75,5 +84,15 @@ export class KeyValueOtpChallengeStore implements OtpChallengeStore {
       await this.kv.delete(`${CHALLENGE_PREFIX}${id}`);
       await this.kv.delete(`${PHONE_PREFIX}${phone}`);
     }
+  }
+
+  async phoneFailureCount(phone: string): Promise<number> {
+    const raw = await this.kv.get(`${PHONE_FAILURE_PREFIX}${phone}`);
+    const count = raw === undefined ? 0 : Number.parseInt(raw, 10);
+    return Number.isNaN(count) ? 0 : count;
+  }
+
+  async registerPhoneFailure(phone: string, windowMs: number): Promise<number> {
+    return this.kv.incr(`${PHONE_FAILURE_PREFIX}${phone}`, windowMs);
   }
 }
