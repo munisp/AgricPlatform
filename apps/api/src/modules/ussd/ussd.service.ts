@@ -1,4 +1,12 @@
-import { ConflictException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  UnauthorizedException
+} from '@nestjs/common';
+import { missingAtCallbackConfig } from '../../common/auth/at-callback.utils.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 import {
   COMMODITY_PRICE_REPOSITORY,
@@ -88,9 +96,13 @@ export class UssdService {
   ) {
     this.driverConfig = resolveUssdDriver(env);
     // Fail closed at boot in production: a live/sandbox USSD driver without
-    // the Africa's Talking credentials aborts startup (wave P1 pattern).
-    if (isProduction() && this.driverConfig.mode !== 'stub' && this.driverConfig.missing.length > 0) {
-      throw new ProviderConfigError(USSD_PROVIDER, this.driverConfig.missing);
+    // the Africa's Talking credentials OR the callback shared secret
+    // (AT_CALLBACK_TOKEN, audit C2-3) aborts startup (wave P1 pattern).
+    if (isProduction() && this.driverConfig.mode !== 'stub') {
+      const missing = [...this.driverConfig.missing, ...missingAtCallbackConfig(env)];
+      if (missing.length > 0) {
+        throw new ProviderConfigError(USSD_PROVIDER, missing);
+      }
     }
   }
 
@@ -128,6 +140,19 @@ export class UssdService {
     const now = Date.now();
     const text = input.text ?? '';
     const existing = await this.sessions.findById(input.sessionId);
+
+    // Session phone binding (audit C2-3): a live session stays bound to the
+    // phone number that opened it; mid-session phone changes are rejected
+    // instead of silently re-attributing the session.
+    if (
+      existing &&
+      existing.expiresAt > new Date(now).toISOString() &&
+      existing.phone !== input.phoneNumber
+    ) {
+      throw new UnauthorizedException(
+        'USSD session is bound to a different phone number; start a new session.'
+      );
+    }
 
     if (existing && existing.expiresAt > new Date(now).toISOString()) {
       const stored = existing.state as unknown as StoredUssdState;
