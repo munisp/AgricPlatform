@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AuditEvent } from '@agric-platform/shared';
+import type { AuditAnchor, AuditEvent } from '@agric-platform/shared';
 
 /**
  * Tamper-evident audit hash chain primitives (observability plan §A.6).
@@ -58,4 +58,31 @@ export function linkAuditEvent(
 ): AuditEvent {
   const linked: Omit<AuditEvent, 'hash'> = { ...unsigned, prevHash };
   return { ...linked, hash: hashAuditEvent(linked, prevHash) };
+}
+
+/**
+ * Anchor-chain hash (Stage 23): identical construction to the event chain —
+ * sha256 over the canonical anchor payload (prevAnchorHash included, matching
+ * the event chain's shape) + prevAnchorHash. Sharing canonicalJSON keeps
+ * anchor hashes byte-stable across processes and repositories.
+ */
+export function hashAuditAnchor(
+  anchor: Omit<AuditAnchor, 'anchorHash'>,
+  prevAnchorHash: string
+): string {
+  return createHash('sha256').update(canonicalJSON(anchor) + prevAnchorHash).digest('hex');
+}
+
+/**
+ * Links an unsigned anchor to the previous anchor hash. Pure, like
+ * linkAuditEvent — the caller must make the parent read + insert atomic
+ * (UNIQUE(prev_anchor_hash) + guarded INSERT on PostgreSQL, a synchronous
+ * link-and-push in memory).
+ */
+export function linkAuditAnchor(
+  unsigned: Omit<AuditAnchor, 'prevAnchorHash' | 'anchorHash'>,
+  prevAnchorHash: string
+): AuditAnchor {
+  const linked: Omit<AuditAnchor, 'anchorHash'> = { ...unsigned, prevAnchorHash };
+  return { ...linked, anchorHash: hashAuditAnchor(linked, prevAnchorHash) };
 }
