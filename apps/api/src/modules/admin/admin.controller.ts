@@ -104,6 +104,18 @@ export class AdminController {
     return { data: await this.admin.sweepOutbox() };
   }
 
+  @Post('webhooks/reprocess')
+  @ApiOperation({
+    summary:
+      'Run one webhook crash-recovery pass: re-drives recorded provider webhooks whose ' +
+      'processing never completed (dedupe insert succeeded, side effects failed). An ' +
+      'external scheduler should invoke this endpoint periodically; the API starts no ' +
+      'timers of its own.'
+  })
+  async reprocessWebhooks() {
+    return { data: await this.admin.reprocessWebhooks() };
+  }
+
   @Get('outbox/dead-letters')
   @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
   async outboxDeadLetters() {
