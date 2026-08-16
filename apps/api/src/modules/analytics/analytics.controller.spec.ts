@@ -79,6 +79,12 @@ describe('AnalyticsController Wave B role gating', () => {
     expect(rolesOf('project')).toEqual(['admin']);
   });
 
+  it('GET /analytics/metrics, /overview and /segments require admin (stage 22 sweep)', () => {
+    expect(rolesOf('metrics')).toEqual(['admin']);
+    expect(rolesOf('overview')).toEqual(['admin']);
+    expect(rolesOf('segments')).toEqual(['admin']);
+  });
+
   it('GET /analytics/metrics/daily requires admin or regulator', () => {
     expect(rolesOf('dailyMetrics')).toEqual(['admin', 'regulator']);
   });
