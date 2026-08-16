@@ -6,13 +6,15 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional
+  Optional,
+  UnprocessableEntityException
 } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY,
   INPUT_VOUCHER_PROGRAMME_REPOSITORY,
   INPUT_VOUCHER_REDEMPTION_REPOSITORY,
   INPUT_VOUCHER_REPOSITORY
@@ -20,8 +22,11 @@ import {
 import type {
   BeneficiaryRecord,
   BeneficiaryRepository,
+  FundingEventRecord,
   InputVoucherRecord,
   InputVoucherRepository,
+  ProgrammeFundingRecord,
+  ProgrammeFundingRepository,
   ProgrammeStatus,
   RedemptionRecord,
   RedemptionRepository,
@@ -82,6 +87,27 @@ export interface AllocateVoucherInput {
   expiresAt?: string;
 }
 
+export interface FundProgrammeInput {
+  amountKobo: number;
+  /**
+   * Mandatory client idempotency key; a replay returns the original top-up
+   * WITHOUT double-crediting the float (mirrors the allocation/top-up
+   * idempotency doctrine from stage 22).
+   */
+  idempotencyKey: string;
+  /** Optional sponsor/disbursement reference for the audit trail. */
+  reference?: string;
+}
+
+export interface ProgrammeFundingView {
+  programmeId: string;
+  fundedKobo: number;
+  reservedKobo: number;
+  settledKobo: number;
+  /** funded - reserved - settled: the maximum further face value issuable. */
+  availableKobo: number;
+}
+
 export interface ProgrammeStateTotals {
   state: string;
   vouchersIssued: number;
@@ -115,6 +141,8 @@ export interface ProgrammeReconciliation {
     /** 0 when the double-entry math ties; non-zero flags an integrity breach. */
     discrepancyKobo: number;
   };
+  /** Funded-float backing state (stage 23, audit C3); zeroed when never topped up. */
+  funding: ProgrammeFundingView;
   generatedAt: string;
 }
 
@@ -148,6 +176,13 @@ function assertPositiveKobo(amountKobo: number, field = 'amountKobo'): void {
  * back to ISSUED best-effort. Allocation serialises the budget/cap check +
  * insert under the programme allocation lock (audit C2-10).
  *
+ * Funded-float backing (stage 23, audit C3): a voucher is only signed when
+ * the programme's funded float can back it. Issuance atomically reserves
+ * face value (`funded - reserved - settled >= amount`, zero rows ⇒ 422 and
+ * NOTHING is persisted); redemption moves reserved → settled exactly once
+ * per voucher (marker-keyed); expiry/void releases the reservation. The
+ * budget-envelope check stays as the allocation-policy cap.
+ *
  * Identity: allocation requires a beneficiary verified through the fail-closed
  * IdentityVerificationPort (stub default, honestly labelled). The plaintext
  * NIN is never persisted — salted HMAC hash + last-3 mask only.
@@ -161,6 +196,7 @@ export class InputVouchersService {
     @Inject(BENEFICIARY_REPOSITORY) private readonly beneficiaries: BeneficiaryRepository,
     @Inject(INPUT_VOUCHER_REPOSITORY) private readonly vouchers: InputVoucherRepository,
     @Inject(INPUT_VOUCHER_REDEMPTION_REPOSITORY) private readonly redemptions: RedemptionRepository,
+    @Inject(INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY) private readonly funding: ProgrammeFundingRepository,
     private readonly ledger: LedgerService,
     private readonly users: UsersService,
     private readonly events: DomainEventsService,
@@ -278,6 +314,75 @@ export class InputVouchersService {
     return updated;
   }
 
+  // ---------------------------------------------------------- funding float
+
+  /**
+   * Tops up the programme's funded float (stage 23, audit C3): money the
+   * sponsor has actually provided, which is what issuance now reserves
+   * against. Idempotent on the mandatory client key — a transport retry
+   * returns the original top-up (`replayed: true`) WITHOUT double-crediting.
+   */
+  async fundProgramme(
+    programmeId: string,
+    input: FundProgrammeInput,
+    actorId: string
+  ): Promise<{ event: FundingEventRecord; funding: ProgrammeFundingView; replayed: boolean }> {
+    await this.getProgramme(programmeId);
+    assertPositiveKobo(input.amountKobo);
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required — funding top-ups must replay safely');
+    }
+    const result = await this.funding.creditTopUp({
+      id: newId('ifev'),
+      programmeId,
+      kind: 'top_up',
+      amountKobo: input.amountKobo,
+      idempotencyKey: input.idempotencyKey.trim(),
+      reference: input.reference?.trim() || undefined,
+      createdBy: actorId,
+      createdAt: new Date().toISOString()
+    });
+    if (!result.replayed) {
+      await this.events.publish(
+        'inputvouchers.programme.funded',
+        { programmeId, amountKobo: input.amountKobo, fundedKobo: result.funding.fundedKobo },
+        actorId
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'inputvouchers.programme.funded',
+        entityType: 'input_vouchers_programme_funding',
+        entityId: programmeId,
+        metadata: { amountKobo: input.amountKobo, reference: input.reference }
+      });
+    }
+    return { event: result.event, funding: this.toFundingView(result.funding), replayed: result.replayed };
+  }
+
+  /** Funded-float view for operators/regulators; zeroed when never topped up. */
+  async getProgrammeFunding(programmeId: string): Promise<ProgrammeFundingView> {
+    await this.getProgramme(programmeId);
+    const funding = await this.funding.getFunding(programmeId);
+    return this.toFundingView(funding, programmeId);
+  }
+
+  private toFundingView(funding: ProgrammeFundingRecord | undefined, programmeId?: string): ProgrammeFundingView {
+    const record = funding ?? {
+      programmeId: programmeId ?? '',
+      fundedKobo: 0,
+      reservedKobo: 0,
+      settledKobo: 0,
+      updatedAt: ''
+    };
+    return {
+      programmeId: record.programmeId,
+      fundedKobo: record.fundedKobo,
+      reservedKobo: record.reservedKobo,
+      settledKobo: record.settledKobo,
+      availableKobo: record.fundedKobo - record.reservedKobo - record.settledKobo
+    };
+  }
+
   /** ACTIVE→CLOSED: blocks new allocations; outstanding vouchers still settle. */
   async closeProgramme(id: string, actorId: string): Promise<SubsidyProgrammeRecord> {
     const programme = await this.getProgramme(id);
@@ -383,7 +488,10 @@ export class InputVouchersService {
    * Allocates a voucher to a verified beneficiary. Idempotent on the client
    * idempotency key (replay returns the original). Enforces the programme
    * allocation rules: ACTIVE status, NIN-verified beneficiary, eligible
-   * state/crop, per-farmer cap and the remaining budget envelope.
+   * state/crop, per-farmer cap, the remaining budget envelope AND the
+   * funded-float backing check (stage 23, audit C3): the face value reserves
+   * atomically against funded money, so an unbacked programme rejects with
+   * 422 and nothing is signed or persisted.
    */
   async allocateVoucher(
     programmeId: string,
@@ -415,6 +523,13 @@ export class InputVouchersService {
     // programme row) so concurrent allocations cannot both pass the budget
     // check (stage 22, audit C2-10).
     return this.programmes.withAllocationLock(programmeId, async () => {
+      // Re-check the idempotency key INSIDE the lock: a twin request may
+      // have committed while this one waited on the programme row — replay
+      // it here so we never reserve the float twice for one voucher.
+      const twin = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+      if (twin) {
+        return twin;
+      }
       const live = (await this.vouchers.find({ programmeId })).filter(
         (voucher) =>
           voucher.status === 'ISSUED' || voucher.status === 'REDEEMING' || voucher.status === 'REDEEMED'
@@ -431,6 +546,16 @@ export class InputVouchersService {
       if (programmeUsed + input.amountKobo > programme.budgetKobo) {
         throw new BadRequestException(
           `Programme budget exceeded: ${programmeUsed + input.amountKobo} kobo would pass the ${programme.budgetKobo} kobo envelope`
+        );
+      }
+      // Funded-float backing (stage 23, audit C3): reserve the face value
+      // against actually-funded money BEFORE anything is signed. The
+      // conditional UPDATE moves 0 rows when the float cannot back the
+      // voucher ⇒ 422 and NOTHING is persisted.
+      const reserved = await this.funding.reserve(programmeId, input.amountKobo);
+      if (!reserved) {
+        throw new UnprocessableEntityException(
+          `Insufficient programme funding: the funded float cannot back another ${input.amountKobo} kobo voucher`
         );
       }
       try {
@@ -459,6 +584,9 @@ export class InputVouchersService {
         });
         return record;
       } catch (error) {
+        // Issuance failed after the reservation — release it best-effort so
+        // the float never leaks (a lost retry race re-adopts the twin below).
+        await this.funding.unreserve(programmeId, input.amountKobo).catch(() => undefined);
         if (error instanceof ConflictException) {
           // Lost a retry race — the original record is authoritative.
           const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
@@ -626,6 +754,16 @@ export class InputVouchersService {
         }
       }
     }
+    // Move the float reservation to settled (stage 23, audit C3). Marker-
+    // keyed per voucher, so a crash-resume or concurrent retry replays as a
+    // no-op instead of double-settling; runs BEFORE the finalize CAS so a
+    // REDEEMED voucher always implies its reservation was settled.
+    await this.funding.settleReserved(
+      voucher.programmeId,
+      voucher.amountKobo,
+      `input-voucher-funding-settle:${voucher.id}`,
+      actor.id
+    );
     // Finalize: REDEEMING→REDEEMED. A twin that already finalized loses this
     // CAS and surfaces as a 409 — the voucher pays out exactly once.
     const redeemed = await this.vouchers.updateExpected(
@@ -672,6 +810,14 @@ export class InputVouchersService {
     }
     try {
       await this.releaseEncumbrance(voucher, actorId, 'void');
+      // Release the float reservation exactly once (stage 23, audit C3) —
+      // marker-keyed so a retry resuming VOIDING never double-releases.
+      await this.funding.releaseReserved(
+        voucher.programmeId,
+        voucher.amountKobo,
+        `input-voucher-funding-release:${voucher.id}`,
+        actorId
+      );
     } catch (error) {
       // Release the claim so the void can be retried (best-effort — a crash
       // leaves VOIDING, which the next call resumes above).
@@ -726,6 +872,14 @@ export class InputVouchersService {
     }
     try {
       await this.releaseEncumbrance(voucher, actorId, 'expiry');
+      // Release the float reservation exactly once (stage 23, audit C3) —
+      // marker-keyed so a retry resuming EXPIRING never double-releases.
+      await this.funding.releaseReserved(
+        voucher.programmeId,
+        voucher.amountKobo,
+        `input-voucher-funding-release:${voucher.id}`,
+        actorId
+      );
     } catch (error) {
       await this.vouchers
         .updateExpected(voucher.id, { status: 'ISSUED' }, { status: 'EXPIRING' })
@@ -809,6 +963,7 @@ export class InputVouchersService {
     const balance = await this.ledger.balance(programme.liabilityAccountCode);
     const liabilityKobo = balance.creditsKobo - balance.debitsKobo;
     const expectedLiabilityKobo = programme.budgetKobo - redeemedKobo - releasedKobo;
+    const funding = await this.funding.getFunding(programmeId);
     return {
       programmeId,
       budgetKobo: programme.budgetKobo,
@@ -832,6 +987,7 @@ export class InputVouchersService {
         expectedLiabilityKobo,
         discrepancyKobo: liabilityKobo - expectedLiabilityKobo
       },
+      funding: this.toFundingView(funding, programmeId),
       generatedAt: new Date().toISOString()
     };
   }
