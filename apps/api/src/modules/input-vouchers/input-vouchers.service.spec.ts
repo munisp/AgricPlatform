@@ -63,11 +63,14 @@ async function makeService() {
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
+  const programmes = createInMemorySubsidyProgrammeRepository();
+  const vouchers = createInMemoryInputVoucherRepository();
+  const redemptions = createInMemoryRedemptionRepository();
   const service = new InputVouchersService(
-    createInMemorySubsidyProgrammeRepository(),
+    programmes,
     createInMemoryBeneficiaryRepository(),
-    createInMemoryInputVoucherRepository(),
-    createInMemoryRedemptionRepository(),
+    vouchers,
+    redemptions,
     ledger,
     users,
     events,
@@ -93,7 +96,7 @@ async function makeService() {
     roles: ['supplier'],
     preferredLanguage: 'en'
   });
-  return { service, ledger, users, events, outbox, farmer, farmerTwo, supplier };
+  return { service, ledger, users, events, outbox, farmer, farmerTwo, supplier, programmes, vouchers, redemptions };
 }
 
 type Ctx = Awaited<ReturnType<typeof makeService>>;
@@ -669,5 +672,210 @@ describe('InputVouchersService reconciliation + ledger invariants (wave NINVOUCH
     const status = ctx.service.identityStatus();
     expect(status.driver).toBe('stub');
     expect(status.detail.toLowerCase()).toContain('stub');
+  });
+});
+
+describe('InputVouchersService — stage-22 money-race regressions', () => {
+  /** Spy ledger: records attempted posting keys and widens the posting window. */
+  function spyLedger(ledger: LedgerService, delayMs: number) {
+    const attempts: string[] = [];
+    const original = ledger.postEntry.bind(ledger);
+    ledger.postEntry = (async (input: Parameters<LedgerService['postEntry']>[0], actorId: string) => {
+      attempts.push(input.idempotencyKey);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return original(input, actorId);
+    }) as LedgerService['postEntry'];
+    return attempts;
+  }
+
+  async function ledgerKeys(ctx: Ctx, prefix: string): Promise<string[]> {
+    const entries = await ctx.ledger.listEntries({});
+    return entries.filter((entry) => entry.idempotencyKey.startsWith(prefix)).map((entry) => entry.idempotencyKey);
+  }
+
+  it('concurrent redeem + expire settle exactly one ledger entry — redeem wins the claim (audit C1-6)', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    // Expires in 60ms: redeem loads it as valid, claims REDEEMING, then the
+    // delayed posting widens the race window; expiry crosses mid-flight.
+    const voucher = await ctx.service.allocateVoucher(
+      programme.id,
+      {
+        farmerId: ctx.farmer.id,
+        amountKobo: 100_000,
+        idempotencyKey: 'race-1',
+        expiresAt: new Date(Date.now() + 60).toISOString()
+      },
+      ADMIN.id
+    );
+    await ctx.service.distributeVoucher(voucher.id, ADMIN.id);
+    spyLedger(ctx.ledger, 150);
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    const [redeemResult, expireResult] = await Promise.allSettled([
+      ctx.service.redeemVoucher(voucher.id, 'INV-RACE', supplierActor),
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80)); // now past expiry
+        return ctx.service.expireVoucher(voucher.id, ADMIN.id);
+      })()
+    ]);
+    expect(redeemResult.status).toBe('fulfilled');
+    // The expiry sweep loses the claim: REDEEMING is not expirable.
+    expect(expireResult.status).toBe('rejected');
+    expect((expireResult as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMED');
+    // Exactly one liability debit — the release posting never happened.
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(0);
+    const liability = await ctx.ledger.balance(programme.liabilityAccountCode);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(programme.budgetKobo - 100_000);
+  });
+
+  it('concurrent expire + redeem settle exactly one ledger entry — expiry wins the claim (audit C1-6)', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await ctx.service.allocateVoucher(
+      programme.id,
+      {
+        farmerId: ctx.farmer.id,
+        amountKobo: 100_000,
+        idempotencyKey: 'race-2',
+        expiresAt: new Date(Date.now() + 30).toISOString()
+      },
+      ADMIN.id
+    );
+    await ctx.service.distributeVoucher(voucher.id, ADMIN.id);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // past expiry
+    spyLedger(ctx.ledger, 150);
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    const [expireResult, redeemResult] = await Promise.allSettled([
+      ctx.service.expireVoucher(voucher.id, ADMIN.id),
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return ctx.service.redeemVoucher(voucher.id, 'INV-RACE', supplierActor);
+      })()
+    ]);
+    // Expiry claimed EXPIRING first; the redeem attempt converges to 410 (or
+    // loses the finalize CAS as a 409) — either way no payout posts.
+    expect(['fulfilled', 'rejected']).toContain(expireResult.status);
+    expect(redeemResult.status).toBe('rejected');
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('EXPIRED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(0);
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(1);
+    const liability = await ctx.ledger.balance(programme.liabilityAccountCode);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(programme.budgetKobo - 100_000);
+  });
+
+  it('concurrent redeem + void debit the liability exactly once (audit C1-6)', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000);
+    spyLedger(ctx.ledger, 150);
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    const [redeemResult, voidResult] = await Promise.allSettled([
+      ctx.service.redeemVoucher(voucher.id, 'INV-RACE', supplierActor),
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return ctx.service.voidVoucher(voucher.id, ADMIN.id);
+      })()
+    ]);
+    expect(redeemResult.status).toBe('fulfilled');
+    expect(voidResult.status).toBe('rejected');
+    expect((voidResult as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(0);
+  });
+
+  it('a retry that finds REDEEMING with the redemption row finalizes instead of reposting', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000);
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    // Simulate the crash window: claim held, ledger entry + redemption row
+    // landed, but REDEEMING→REDEEMED never finalized.
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+    await ctx.ledger.ensureAccount({
+      code: supplierReceivableAccountCode(ctx.supplier.id),
+      type: 'liability',
+      ownerId: ctx.supplier.id
+    });
+    const entry = await ctx.ledger.postEntry(
+      {
+        idempotencyKey: `input-voucher-redemption:${voucher.id}`,
+        referenceType: 'input_voucher_redemption',
+        referenceId: voucher.id,
+        description: 'crashed redemption',
+        postings: [
+          { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo: 100_000 },
+          { accountCode: supplierReceivableAccountCode(ctx.supplier.id), direction: 'credit', amountKobo: 100_000 }
+        ]
+      },
+      ctx.supplier.id
+    );
+    await ctx.redemptions.create({
+      id: 'ired-crashed',
+      voucherId: voucher.id,
+      programmeId: programme.id,
+      supplierId: ctx.supplier.id,
+      invoiceRef: 'INV-CRASH',
+      amountKobo: 100_000,
+      idempotencyKey: `input-voucher-redemption:${voucher.id}`,
+      ledgerEntryId: entry.id,
+      createdAt: new Date().toISOString()
+    });
+    const settled = await ctx.service.redeemVoucher(voucher.id, 'INV-CRASH', supplierActor);
+    expect(settled.voucher.status).toBe('REDEEMED');
+    expect(settled.redemption.id).toBe('ired-crashed'); // settled view, not a repost
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect((await ctx.service.getVoucher(voucher.id)).ledgerEntryId).toBe(entry.id);
+  });
+
+  it('a posting failure rolls the REDEEMING claim back to ISSUED so a retry can succeed', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000);
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    const original = ctx.ledger.postEntry.bind(ctx.ledger);
+    ctx.ledger.postEntry = (async () => {
+      throw new Error('ledger unavailable');
+    }) as LedgerService['postEntry'];
+    await expect(ctx.service.redeemVoucher(voucher.id, 'INV-1', supplierActor)).rejects.toThrow(
+      'ledger unavailable'
+    );
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED'); // claim rolled back
+    ctx.ledger.postEntry = original;
+    const retried = await ctx.service.redeemVoucher(voucher.id, 'INV-1', supplierActor);
+    expect(retried.voucher.status).toBe('REDEEMED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+  });
+
+  it('concurrent 60% + 60% allocations cannot both succeed — the budget lock serialises (audit C2-10)', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, { perFarmerCapKobo: 600_000, budgetKobo: 1_000_000 });
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    await enrol(ctx, ctx.farmerTwo.id, programme.id);
+    const [first, second] = await Promise.allSettled([
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmer.id, amountKobo: 600_000, idempotencyKey: 'cap-race-a' },
+        ADMIN.id
+      ),
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmerTwo.id, amountKobo: 600_000, idempotencyKey: 'cap-race-b' },
+        ADMIN.id
+      )
+    ]);
+    const settled = [first, second];
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const loser = settled.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(BadRequestException);
+    expect(loser.reason.message).toContain('budget');
+    expect(await ctx.service.listVouchers({ programmeId: programme.id })).toHaveLength(1);
   });
 });
