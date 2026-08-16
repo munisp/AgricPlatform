@@ -103,6 +103,23 @@ class RedeemVoucherDto {
   invoiceRef!: string;
 }
 
+class FundProgrammeDto {
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  amountKobo!: number;
+
+  /** Mandatory client idempotency key — top-up retries replay, never double-fund. */
+  @IsString()
+  @IsNotEmpty()
+  idempotencyKey!: string;
+
+  /** Optional sponsor/disbursement reference for the audit trail. */
+  @IsOptional()
+  @IsString()
+  reference?: string;
+}
+
 function actorOf(user: User | null): ActorRef {
   if (!user) {
     throw new UnauthorizedException('Authentication required');
@@ -163,6 +180,29 @@ export class InputVouchersController {
   @ApiOperation({ summary: 'Close an ACTIVE programme to new allocations (admin)' })
   async closeProgramme(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.vouchers.closeProgramme(id, actorOf(actor).id) };
+  }
+
+  // ---------------------------------------------------------- funding float
+
+  @Post('programmes/:id/funding')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Top up the programme funded float (admin; idempotent) — issuance only reserves against funded money'
+  })
+  async fundProgramme(@Param('id') id: string, @Body() dto: FundProgrammeDto, @CurrentUser() actor: User | null) {
+    return { data: await this.vouchers.fundProgramme(id, dto, actorOf(actor).id) };
+  }
+
+  @Get('programmes/:id/funding')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'regulator', 'donor')
+  @ApiOperation({
+    summary: 'Funded-float state: funded / reserved / settled / available kobo (admin/regulator/donor)'
+  })
+  async getProgrammeFunding(@Param('id') id: string) {
+    return { data: await this.vouchers.getProgrammeFunding(id) };
   }
 
   // ---------------------------------------------------------- beneficiaries

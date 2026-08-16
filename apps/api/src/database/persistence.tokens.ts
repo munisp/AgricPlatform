@@ -255,6 +255,10 @@ export const INPUT_VOUCHER_PROGRAMME_REPOSITORY = Symbol('INPUT_VOUCHER_PROGRAMM
 export const BENEFICIARY_REPOSITORY = Symbol('BENEFICIARY_REPOSITORY');
 export const INPUT_VOUCHER_REPOSITORY = Symbol('INPUT_VOUCHER_REPOSITORY');
 export const INPUT_VOUCHER_REDEMPTION_REPOSITORY = Symbol('INPUT_VOUCHER_REDEMPTION_REPOSITORY');
+// Stage 23 (audit C3): funded-float backing for voucher issuance
+// (migration 046) — funded/reserved/settled kobo per programme plus the
+// idempotent funding event log.
+export const INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY = Symbol('INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY');
 // Wave WAREHOUSE: electronic warehouse receipts (warehouse schema, migration
 // 034) — certified warehouse registry, deposits/grading, signed receipts,
 // pledge liens, ownership-transfer audit trail. Money stays in the finance

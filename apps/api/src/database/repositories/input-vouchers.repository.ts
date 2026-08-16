@@ -16,7 +16,19 @@ import { ConflictException } from '@nestjs/common';
 export const PROGRAMME_STATUSES = ['DRAFT', 'ACTIVE', 'CLOSED'] as const;
 export type ProgrammeStatus = (typeof PROGRAMME_STATUSES)[number];
 
-export const INPUT_VOUCHER_STATUSES = ['ISSUED', 'REDEEMED', 'EXPIRED', 'VOIDED'] as const;
+// Pending states (stage 22, audit C1-6): the CAS into a pending state happens
+// BEFORE the ledger posting so only the CAS winner ever posts — a redeem vs
+// expire/void race can no longer double-debit the programme liability. A
+// retry that finds a pending state resumes finalization instead of reposting.
+export const INPUT_VOUCHER_STATUSES = [
+  'ISSUED',
+  'REDEEMING',
+  'REDEEMED',
+  'EXPIRING',
+  'EXPIRED',
+  'VOIDING',
+  'VOIDED'
+] as const;
 export type InputVoucherStatus = (typeof INPUT_VOUCHER_STATUSES)[number];
 
 export const VERIFICATION_BASES = ['stub', 'live'] as const;
@@ -112,6 +124,78 @@ export interface RedemptionCriteria {
   supplierId?: string;
 }
 
+/**
+ * Funded-float backing state per programme (stage 23, audit C3 —
+ * infra/postgres/046_voucher_programme_funding.sql). Invariant:
+ * `reservedKobo + settledKobo <= fundedKobo` — outstanding plus settled face
+ * value never exceeds actually-funded money.
+ */
+export interface ProgrammeFundingRecord {
+  programmeId: string;
+  /** Money actually topped up into the programme float. */
+  fundedKobo: number;
+  /** Face value reserved by live vouchers (ISSUED / pending states). */
+  reservedKobo: number;
+  /** Face value paid out on REDEEMED vouchers. */
+  settledKobo: number;
+  updatedAt: string;
+}
+
+export const FUNDING_EVENT_KINDS = ['top_up', 'settle', 'release'] as const;
+export type FundingEventKind = (typeof FUNDING_EVENT_KINDS)[number];
+
+export interface FundingEventRecord {
+  id: string;
+  programmeId: string;
+  kind: FundingEventKind;
+  amountKobo: number;
+  /**
+   * UNIQUE. top_up events carry the mandatory CLIENT idempotency key;
+   * settle/release events carry the system marker
+   * input-voucher-funding-{settle,release}:<voucherId> so a crash-resume or
+   * concurrent retry applies the funding move exactly once per voucher.
+   */
+  idempotencyKey: string;
+  reference?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface FundingTopUpResult {
+  event: FundingEventRecord;
+  funding: ProgrammeFundingRecord;
+  /** True when the idempotency key was already recorded — no double credit. */
+  replayed: boolean;
+}
+
+export interface ProgrammeFundingRepository {
+  getFunding(programmeId: string): Promise<ProgrammeFundingRecord | undefined>;
+  /**
+   * Credits funded_kobo, idempotent on the event idempotency key: a replay
+   * returns the original event WITHOUT double-crediting the float.
+   */
+  creditTopUp(event: FundingEventRecord): Promise<FundingTopUpResult>;
+  /**
+   * Atomic float reservation (audit C3): a single conditional UPDATE
+   * (funded - reserved - settled >= amount); false means the float cannot
+   * back the voucher and NOTHING may be issued.
+   */
+  reserve(programmeId: string, amountKobo: number): Promise<boolean>;
+  /** Compensating release for a reservation whose voucher insert failed. */
+  unreserve(programmeId: string, amountKobo: number): Promise<void>;
+  /**
+   * Exactly-once reserved → settled move, marker-keyed per voucher so
+   * crash-resume replays never double-settle. No-op when the marker exists
+   * or no reservation backs the voucher (legacy pre-046 vouchers).
+   */
+  settleReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void>;
+  /**
+   * Exactly-once reservation release on expire/void, marker-keyed per
+   * voucher. Same no-op semantics as settleReserved.
+   */
+  releaseReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void>;
+}
+
 export interface SubsidyProgrammeRepository {
   create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord>;
   findById(id: string): Promise<SubsidyProgrammeRecord | undefined>;
@@ -121,6 +205,16 @@ export interface SubsidyProgrammeRepository {
     patch: Partial<SubsidyProgrammeRecord>,
     expected: Partial<SubsidyProgrammeRecord>
   ): Promise<SubsidyProgrammeRecord>;
+  /**
+   * Serialises the callback per programme (stage 22, audit C2-10): the
+   * budget/cap check + voucher insert inside the callback cannot interleave
+   * with a concurrent allocation for the same programme. The pg
+   * implementation holds a `SELECT ... FOR UPDATE` row lock on the programme
+   * for the callback's duration; the in-memory implementation chains a
+   * per-programme promise mutex (Node is single-threaded, so each awaited
+   * step is atomic — the chain closes the check-then-act window).
+   */
+  withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export interface BeneficiaryRepository {
@@ -165,6 +259,7 @@ function matches<T>(record: T, expected: Partial<T>): boolean {
 
 export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepository {
   private readonly items = new Map<string, SubsidyProgrammeRecord>();
+  private readonly allocationLocks = new Map<string, Promise<unknown>>();
 
   async create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord> {
     this.items.set(record.id, structuredClone(record));
@@ -195,6 +290,18 @@ export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepos
     const updated = { ...current, ...patch };
     this.items.set(id, updated);
     return structuredClone(updated);
+  }
+
+  async withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T> {
+    // Per-programme promise-chain mutex: mirrors the pg row lock so the
+    // budget/cap check + insert serialise in tests exactly as in production.
+    const previous = this.allocationLocks.get(programmeId) ?? Promise.resolve();
+    const run = previous.then(() => fn());
+    this.allocationLocks.set(
+      programmeId,
+      run.catch(() => undefined)
+    );
+    return run;
   }
 }
 
@@ -340,4 +447,122 @@ export function createInMemoryInputVoucherRepository(): InMemoryInputVoucherRepo
 
 export function createInMemoryRedemptionRepository(): InMemoryRedemptionRepository {
   return new InMemoryRedemptionRepository();
+}
+
+/**
+ * In-memory funded-float store (stage 23, audit C3). Mirrors the pg
+ * conditional UPDATEs: Node's single-threaded awaits make each method
+ * atomic, and the event-key set mirrors the UNIQUE idempotency_key marker
+ * that makes settle/release exactly-once per voucher.
+ */
+export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepository {
+  private readonly funding = new Map<string, ProgrammeFundingRecord>();
+  private readonly events = new Map<string, FundingEventRecord>();
+
+  async getFunding(programmeId: string): Promise<ProgrammeFundingRecord | undefined> {
+    const record = this.funding.get(programmeId);
+    return record ? { ...record } : undefined;
+  }
+
+  async creditTopUp(event: FundingEventRecord): Promise<FundingTopUpResult> {
+    const replay = this.events.get(event.idempotencyKey);
+    if (replay) {
+      return {
+        event: { ...replay },
+        funding: { ...this.requireFunding(event.programmeId) },
+        replayed: true
+      };
+    }
+    const current = this.funding.get(event.programmeId) ?? {
+      programmeId: event.programmeId,
+      fundedKobo: 0,
+      reservedKobo: 0,
+      settledKobo: 0,
+      updatedAt: event.createdAt
+    };
+    const updated: ProgrammeFundingRecord = {
+      ...current,
+      fundedKobo: current.fundedKobo + event.amountKobo,
+      updatedAt: event.createdAt
+    };
+    this.funding.set(event.programmeId, updated);
+    this.events.set(event.idempotencyKey, { ...event });
+    return { event: { ...event }, funding: { ...updated }, replayed: false };
+  }
+
+  async reserve(programmeId: string, amountKobo: number): Promise<boolean> {
+    const current = this.funding.get(programmeId);
+    if (!current || current.fundedKobo - current.reservedKobo - current.settledKobo < amountKobo) {
+      return false;
+    }
+    this.funding.set(programmeId, {
+      ...current,
+      reservedKobo: current.reservedKobo + amountKobo,
+      updatedAt: new Date().toISOString()
+    });
+    return true;
+  }
+
+  async unreserve(programmeId: string, amountKobo: number): Promise<void> {
+    const current = this.funding.get(programmeId);
+    if (!current || current.reservedKobo < amountKobo) {
+      return;
+    }
+    this.funding.set(programmeId, {
+      ...current,
+      reservedKobo: current.reservedKobo - amountKobo,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  async settleReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'settle');
+  }
+
+  async releaseReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'release');
+  }
+
+  private applyMarker(
+    programmeId: string,
+    amountKobo: number,
+    markerKey: string,
+    actorId: string,
+    kind: 'settle' | 'release'
+  ): void {
+    if (this.events.has(markerKey)) {
+      return; // exactly-once: the marker proves the move already happened
+    }
+    const current = this.funding.get(programmeId);
+    if (!current || current.reservedKobo < amountKobo) {
+      return; // no backing reservation (legacy voucher) — fail closed, no negative float
+    }
+    this.events.set(markerKey, {
+      id: markerKey,
+      programmeId,
+      kind,
+      amountKobo,
+      idempotencyKey: markerKey,
+      createdBy: actorId,
+      createdAt: new Date().toISOString()
+    });
+    this.funding.set(programmeId, {
+      ...current,
+      reservedKobo: current.reservedKobo - amountKobo,
+      settledKobo: kind === 'settle' ? current.settledKobo + amountKobo : current.settledKobo,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  private requireFunding(programmeId: string): ProgrammeFundingRecord {
+    const record = this.funding.get(programmeId);
+    if (!record) {
+      throw new ConflictException(`Programme '${programmeId}' has no funding row`);
+    }
+    return record;
+  }
+}
+
+export function createInMemoryProgrammeFundingRepository(): InMemoryProgrammeFundingRepository {
+  return new InMemoryProgrammeFundingRepository();
 }

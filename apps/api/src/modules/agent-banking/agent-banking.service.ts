@@ -92,13 +92,27 @@ export interface CashTransactionInput {
   idempotencyKey: string;
 }
 
+export interface TopUpRequestInput {
+  amountKobo: number;
+  /**
+   * Mandatory client idempotency key (stage 22, audit C2-9); replays return
+   * the original top-up request instead of creating a second settleable row.
+   */
+  idempotencyKey: string;
+}
+
 export interface IssueVoucherInput {
   farmerId: string;
   amountKobo: number;
   /** Optional ISO expiry; defaults to now + 72h. */
   expiresAt?: string;
-  /** Optional client idempotency key; replays return the original voucher. */
-  idempotencyKey?: string;
+  /**
+   * Mandatory client idempotency key (stage 22, audit C2-10): a keyless
+   * issuance request is rejected with 400 — a keyless retry would duplicate
+   * a signed, money-bearing voucher. NULL keys remain only on rows that
+   * predate this requirement (038 keeps the partial UNIQUE index).
+   */
+  idempotencyKey: string;
 }
 
 export interface CommissionStatementRow {
@@ -333,20 +347,41 @@ export class AgentBankingService {
     };
   }
 
-  async requestTopUp(agentId: string, amountKobo: number, actor: ActorRef): Promise<AgentFloatTopUpRecord> {
+  async requestTopUp(agentId: string, input: TopUpRequestInput, actor: ActorRef): Promise<AgentFloatTopUpRecord> {
+    const replay = await this.topups.findByIdempotencyKey(input.idempotencyKey);
+    if (replay) {
+      return replay; // idempotent replay of a transport retry
+    }
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
-    assertPositiveKobo(amountKobo);
-    const record = await this.topups.create({
-      id: newId('topup'),
-      agentId,
-      amountKobo,
-      status: 'REQUESTED',
-      requestedBy: actor.id,
-      createdAt: new Date().toISOString()
-    });
-    await this.events.publish('agentbank.topup.requested', { topUpId: record.id, agentId, amountKobo }, actor.id);
-    return record;
+    assertPositiveKobo(input.amountKobo);
+    try {
+      const record = await this.topups.create({
+        id: newId('topup'),
+        agentId,
+        amountKobo: input.amountKobo,
+        status: 'REQUESTED',
+        requestedBy: actor.id,
+        idempotencyKey: input.idempotencyKey,
+        createdAt: new Date().toISOString()
+      });
+      await this.events.publish(
+        'agentbank.topup.requested',
+        { topUpId: record.id, agentId, amountKobo: input.amountKobo },
+        actor.id
+      );
+      return record;
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        // Lost a retry race — the original request is authoritative; return
+        // it instead of creating a second settleable row.
+        const existing = await this.topups.findByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
   }
 
   async listTopUps(filter: { agentId?: string; status?: AgentTopUpStatus }): Promise<AgentFloatTopUpRecord[]> {
@@ -579,11 +614,15 @@ export class AgentBankingService {
   // --------------------------------------------------------------- vouchers
 
   async issueVoucher(agentId: string, input: IssueVoucherInput, actor: ActorRef): Promise<AgentVoucherRecord> {
-    if (input.idempotencyKey) {
-      const replay = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
-      if (replay) {
-        return replay; // idempotent replay of a transport retry
-      }
+    // The key is mandatory at the API layer (stage 22, audit C2-10): keyless
+    // issuance is rejected — a keyless retry duplicates signed money-bearing
+    // vouchers. Service-level guard so non-HTTP callers cannot bypass it.
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required — voucher issuance must be replay-safe');
+    }
+    const replay = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+    if (replay) {
+      return replay; // idempotent replay of a transport retry
     }
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
@@ -619,7 +658,7 @@ export class AgentBankingService {
       );
       return record;
     } catch (error) {
-      if (error instanceof ConflictException && input.idempotencyKey) {
+      if (error instanceof ConflictException) {
         // Lost a retry race — the original voucher is authoritative; return
         // it instead of issuing a duplicate.
         const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
@@ -645,27 +684,35 @@ export class AgentBankingService {
 
   /**
    * Redeems a signed voucher: verifies the HMAC server-side, checks the
-   * state machine and expiry, posts the ledger entry (idempotency key
-   * voucher-redemption:<id>) and CAS-transitions ISSUED→REDEEMED in the same
-   * discipline as the loan disbursement path. A replay after redemption is
-   * a 409 — a voucher can pay out exactly once.
+   * state machine and expiry, then settles through the ledger. Anti-race
+   * (stage 22, audit C3/C2-9 — escrow pending-state pattern): the voucher
+   * CASes ISSUED→REDEEMING BEFORE the ledger posting (idempotency key
+   * voucher-redemption:<id>), so a concurrent void loses the same CAS and
+   * cannot interleave with the payout; only the claim holder posts. A retry
+   * that finds REDEEMING with the transaction row already present completes
+   * finalization instead of reposting; on posting failure the claim rolls
+   * back REDEEMING→ISSUED best-effort. A replay after redemption is a 409 —
+   * a voucher can pay out exactly once.
    */
   async redeemVoucher(
     id: string,
     presentedSignature: string | undefined,
     actor: ActorRef
   ): Promise<{ voucher: AgentVoucherRecord; transaction: AgentTransactionRecord }> {
-    const voucher = await this.getVoucher(id);
+    let voucher = await this.getVoucher(id);
     if (voucher.status === 'REDEEMED') {
       throw new ConflictException(`Voucher '${id}' has already been redeemed`);
     }
     if (voucher.status === 'VOIDED') {
       throw new ConflictException(`Voucher '${id}' was voided`);
     }
-    if (voucher.status === 'EXPIRED' || Date.parse(voucher.expiresAt) <= Date.now()) {
-      if (voucher.status === 'ISSUED') {
-        await this.vouchers.updateExpected(id, { status: 'EXPIRED' }, { status: 'ISSUED' });
-      }
+    if (voucher.status === 'EXPIRED') {
+      throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
+    }
+    // A REDEEMING voucher resumes below regardless of the expiry clock — the
+    // claim was taken while the voucher was valid and must settle exactly once.
+    if (voucher.status === 'ISSUED' && Date.parse(voucher.expiresAt) <= Date.now()) {
+      await this.vouchers.updateExpected(id, { status: 'EXPIRED' }, { status: 'ISSUED' });
       throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
     }
     // Server-side signature verification: the presented signature must be a
@@ -692,51 +739,78 @@ export class AgentBankingService {
     if (!actor.roles.includes('admin') && actor.id !== voucher.farmerId && actor.id !== agent.userId) {
       throw new ForbiddenException('Only the farmer, the issuing agent or an admin can redeem this voucher');
     }
+    if (voucher.status === 'ISSUED') {
+      // Claim the redemption FIRST: after this write a concurrent void (or
+      // second redeem) loses its CAS and surfaces as a 409 — the void can no
+      // longer interleave between the ledger posting and the state advance.
+      voucher = await this.vouchers.updateExpected(id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+    }
 
     const walletCode = farmerWalletAccountCode(voucher.farmerId);
     await this.ledger.ensureAccount({ code: walletCode, type: 'asset', ownerId: voucher.farmerId });
-    const txId = newId('agtx');
-    const entry = await this.ledger.postEntry(
-      {
-        idempotencyKey: `voucher-redemption:${voucher.id}`,
-        referenceType: 'agent_banking_voucher_redemption',
-        referenceId: txId,
-        description: `Offline voucher ${voucher.id} redeemed for farmer ${voucher.farmerId}`,
-        postings: [
-          { accountCode: walletCode, direction: 'debit', amountKobo: voucher.amountKobo },
-          { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: voucher.amountKobo }
-        ],
-        requireSolventAccounts: [agent.floatAccountCode]
-      },
-      actor.id
-    );
-    // Atomic state advance: a concurrent redemption that already flipped the
-    // voucher surfaces as a 409 (its ledger posting replayed via the key).
+    const redemptionKey = `voucher-redemption:${voucher.id}`;
+    let transaction = await this.transactions.findByIdempotencyKey(redemptionKey);
+    if (!transaction) {
+      const txId = newId('agtx');
+      try {
+        const entry = await this.ledger.postEntry(
+          {
+            idempotencyKey: redemptionKey,
+            referenceType: 'agent_banking_voucher_redemption',
+            referenceId: txId,
+            description: `Offline voucher ${voucher.id} redeemed for farmer ${voucher.farmerId}`,
+            postings: [
+              { accountCode: walletCode, direction: 'debit', amountKobo: voucher.amountKobo },
+              { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: voucher.amountKobo }
+            ],
+            requireSolventAccounts: [agent.floatAccountCode]
+          },
+          actor.id
+        );
+        const commissionKobo = await this.accrueCommission(
+          agent,
+          'voucher_redemption',
+          voucher.amountKobo,
+          redemptionKey,
+          txId,
+          actor.id
+        );
+        transaction = await this.transactions.create({
+          id: txId,
+          agentId: agent.id,
+          farmerId: voucher.farmerId,
+          type: 'voucher_redemption',
+          amountKobo: voucher.amountKobo,
+          commissionKobo,
+          idempotencyKey: redemptionKey,
+          ledgerEntryId: entry.id,
+          voucherId: voucher.id,
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          // A twin request created the transaction row first — adopt its
+          // record instead of double-settling.
+          transaction = await this.transactions.findByIdempotencyKey(redemptionKey);
+        }
+        if (!transaction) {
+          // Posting failed: release the claim so the redemption can be
+          // retried. Best-effort — a crash leaves REDEEMING, which the next
+          // call resumes via the transaction-row check above.
+          await this.vouchers
+            .updateExpected(id, { status: 'ISSUED' }, { status: 'REDEEMING' })
+            .catch(() => undefined);
+          throw error;
+        }
+      }
+    }
+    // Finalize: REDEEMING→REDEEMED. A twin that already finalized loses this
+    // CAS and surfaces as a 409 — exactly-once payout is preserved.
     const redeemed = await this.vouchers.updateExpected(
       id,
-      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: entry.id },
-      { status: 'ISSUED' }
+      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: transaction.ledgerEntryId },
+      { status: 'REDEEMING' }
     );
-    const commissionKobo = await this.accrueCommission(
-      agent,
-      'voucher_redemption',
-      voucher.amountKobo,
-      `voucher-redemption:${voucher.id}`,
-      txId,
-      actor.id
-    );
-    const transaction = await this.transactions.create({
-      id: txId,
-      agentId: agent.id,
-      farmerId: voucher.farmerId,
-      type: 'voucher_redemption',
-      amountKobo: voucher.amountKobo,
-      commissionKobo,
-      idempotencyKey: `voucher-redemption:${voucher.id}`,
-      ledgerEntryId: entry.id,
-      voucherId: voucher.id,
-      createdAt: new Date().toISOString()
-    });
     await this.events.publish(
       'agentbank.voucher.redeemed',
       { voucherId: voucher.id, agentId: agent.id, farmerId: voucher.farmerId, amountKobo: voucher.amountKobo },
@@ -745,6 +819,13 @@ export class AgentBankingService {
     return { voucher: redeemed, transaction };
   }
 
+  /**
+   * Voids an ISSUED voucher (issuing agent or admin). Void deliberately
+   * REFUSES any non-ISSUED state — including REDEEMING (stage 22, audit
+   * C3/C2-9): a voucher whose redemption claim is held cannot be voided out
+   * from under the in-flight ledger posting; the redemption either settles
+   * or rolls its claim back to ISSUED, after which a void can proceed.
+   */
   async voidVoucher(id: string, actor: ActorRef): Promise<AgentVoucherRecord> {
     const voucher = await this.getVoucher(id);
     const agent = await this.getAgent(voucher.agentId);

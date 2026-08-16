@@ -124,12 +124,16 @@ describe('AgentUssdService channel', () => {
       },
       'user-admin'
     );
-    const request = await ctx.banking.requestTopUp(agent.id, 500_000, { id: 'user-admin', roles: ['admin'] });
+    const request = await ctx.banking.requestTopUp(
+      agent.id,
+      { amountKobo: 500_000, idempotencyKey: 'ussd-topup-1' },
+      { id: 'user-admin', roles: ['admin'] }
+    );
     await ctx.banking.decideTopUp(request.id, 'approve', 'user-admin');
     await ctx.banking.settleTopUp(request.id, 'user-admin');
     const voucher = await ctx.banking.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 100_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'ussd-v-1' },
       { id: ctx.agentUser.id, roles: ['agent'] }
     );
 
