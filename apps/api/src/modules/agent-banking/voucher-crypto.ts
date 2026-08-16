@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isProduction } from '../../common/auth/auth.config.js';
 
 /**
  * Offline-voucher signature scheme (wave AGENTBANK). A voucher payload —
@@ -65,7 +66,7 @@ export function resolveVoucherSecret(env: NodeJS.ProcessEnv = process.env): stri
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
     throw new Error(
       'AGENT_VOUCHER_SECRET is required in production — refusing to sign vouchers with the development default.'
     );
