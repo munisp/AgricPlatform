@@ -112,15 +112,19 @@ export class FarmRecordsService {
   /**
    * Webhook push receiver: ledgers the event (replay-safe), then upserts
    * the record when it maps to a known link. Returns whether the event was
-   * new (false on replay).
+   * new (false on replay). Audit C2: a replay whose ledgered event is still
+   * unprocessed (the first attempt failed between ingest and markProcessed)
+   * re-drives the side effects — the normalised upsert is idempotent — and
+   * marks the event processed only on success; a failure propagates as a
+   * 5xx so the provider keeps retrying instead of the event being lost.
    */
   async handleWebhook(
     system: 'farmos' | 'litefarm',
     payload: Record<string, unknown>,
     eventId?: string
-  ): Promise<{ received: boolean }> {
+  ): Promise<{ received: boolean; reprocessed?: boolean }> {
     const dedupeKey = eventId ?? payloadDedupeKey(payload);
-    const event = await this.inbound.ingest({
+    let event = await this.inbound.ingest({
       id: newId('evt'),
       system,
       eventType: String(payload['event'] ?? payload['type'] ?? 'record.pushed'),
@@ -128,8 +132,15 @@ export class FarmRecordsService {
       payload,
       receivedAt: new Date().toISOString()
     });
+    let reprocessed = false;
     if (!event) {
-      return { received: false };
+      const existing = await this.inbound.findOne({ system, dedupeKey });
+      if (!existing || existing.processedAt) {
+        return { received: false };
+      }
+      // Replay of an unprocessed event: re-drive the idempotent side effects.
+      event = existing;
+      reprocessed = true;
     }
     const externalAccountId = String(payload['account_id'] ?? payload['farm_id'] ?? '');
     const link = (await this.links.find({ system, activeOnly: true })).find(
@@ -140,7 +151,7 @@ export class FarmRecordsService {
       await this.upsertNormalised(link.id, [normalised]);
     }
     await this.inbound.markProcessed(event.id, new Date().toISOString());
-    return { received: true };
+    return reprocessed ? { received: true, reprocessed: true } : { received: true };
   }
 
   private async upsertNormalised(linkId: string, fetched: NormalisedFarmRecord[]): Promise<number> {
