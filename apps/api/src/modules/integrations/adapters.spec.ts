@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ADAPTER_DEFINITIONS,
   assertProductionDriverConfig,
+  assertProductionWebhookSecrets,
+  WEBHOOK_DEV_ONLY_SECRET,
   createAdapter,
   resolveDriver
 } from './adapters.js';
@@ -102,6 +104,58 @@ describe('Integration adapter driver resolution', () => {
     });
     expect(() =>
       assertProductionDriverConfig({ NODE_ENV: 'production', WEATHER_DRIVER: 'production' })
+    ).not.toThrow();
+  });
+});
+
+describe('assertProductionWebhookSecrets (fail-closed boot)', () => {
+  it('rejects the published development default in production', () => {
+    expect(() =>
+      assertProductionWebhookSecrets({
+        NODE_ENV: 'production',
+        WEBHOOK_SIGNING_SECRET: WEBHOOK_DEV_ONLY_SECRET
+      })
+    ).toThrow(/weak webhook signing secret/);
+    expect(() =>
+      assertProductionWebhookSecrets({
+        NODE_ENV: 'production',
+        WEBHOOK_SIGNING_SECRET: 'local-development-only'
+      })
+    ).toThrow(/WEBHOOK_SIGNING_SECRET/);
+  });
+
+  it('rejects short secrets in production (shared and per-provider)', () => {
+    expect(() =>
+      assertProductionWebhookSecrets({ NODE_ENV: 'production', WEBHOOK_SIGNING_SECRET: 'short' })
+    ).toThrow(/WEBHOOK_SIGNING_SECRET/);
+    expect(() =>
+      assertProductionWebhookSecrets({ NODE_ENV: 'production', PAYSTACK_WEBHOOK_SECRET: '123' })
+    ).toThrow(/PAYSTACK_WEBHOOK_SECRET/);
+  });
+
+  it('treats NODE_ENV casing variants as production (fail closed)', () => {
+    expect(() =>
+      assertProductionWebhookSecrets({
+        NODE_ENV: ' Production ',
+        WEBHOOK_SIGNING_SECRET: WEBHOOK_DEV_ONLY_SECRET
+      })
+    ).toThrow(/WEBHOOK_SIGNING_SECRET/);
+  });
+
+  it('accepts strong secrets and stays silent outside production', () => {
+    expect(() =>
+      assertProductionWebhookSecrets({
+        NODE_ENV: 'production',
+        WEBHOOK_SIGNING_SECRET: 'ci-smoke-webhook-signing-key'
+      })
+    ).not.toThrow();
+    // Unset secrets are left to the per-request fail-closed verifier.
+    expect(() => assertProductionWebhookSecrets({ NODE_ENV: 'production' })).not.toThrow();
+    expect(() =>
+      assertProductionWebhookSecrets({
+        NODE_ENV: 'test',
+        WEBHOOK_SIGNING_SECRET: WEBHOOK_DEV_ONLY_SECRET
+      })
     ).not.toThrow();
   });
 });
