@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -16,10 +17,11 @@ import { createInMemoryUssdSessionRepository } from '../../database/repositories
 import { LedgerService } from '../finance/ledger.service.js';
 import { UsersService } from '../users/users.service.js';
 import { AgentBankingService } from './agent-banking.service.js';
+import { AgentUssdController } from './agent-banking.controller.js';
 import { AgentUssdService } from './agent-ussd.service.js';
 import { StubOtpDriver } from './otp.driver.js';
 
-async function makeChannel() {
+async function makeChannel(env: NodeJS.ProcessEnv = {} as NodeJS.ProcessEnv) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
   const ledger = new LedgerService(
     events,
@@ -39,7 +41,7 @@ async function makeChannel() {
     undefined,
     {}
   );
-  const ussd = new AgentUssdService(users, banking, createInMemoryUssdSessionRepository(), {});
+  const ussd = new AgentUssdService(users, banking, createInMemoryUssdSessionRepository(), env);
   const agentUser = await users.create({
     phone: '+2348000000001',
     fullName: 'Agent Amaka',
@@ -149,5 +151,83 @@ describe('AgentUssdService channel', () => {
     expect(done).toMatch(/^END /);
     expect(done).toContain('Voucher redeemed');
     expect((await ctx.banking.getVoucher(voucher.id)).status).toBe('REDEEMED');
+  });
+
+  it('binds a session to its opening phone and rejects mid-session changes (C2-3)', async () => {
+    const ctx = await makeChannel();
+    const agent = await ctx.banking.registerAgent(
+      { userId: ctx.agentUser.id, organisation: 'Coop' },
+      'user-admin'
+    );
+    await ctx.banking.setAgentStatus(agent.id, 'ACTIVE', 'user-admin');
+
+    const open = await ctx.ussd.handleCallback({
+      sessionId: 'sess-bind',
+      phoneNumber: '+2348000000001',
+      text: ''
+    });
+    expect(open).toMatch(/^CON /);
+    // The agent's phone is the identity here — a mid-session phone change is
+    // refused instead of re-attributing the session to another caller.
+    await expect(
+      ctx.ussd.handleCallback({ sessionId: 'sess-bind', phoneNumber: '+2348000000002', text: '1' })
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    // The original phone keeps the session.
+    const balance = await ctx.ussd.handleCallback({
+      sessionId: 'sess-bind',
+      phoneNumber: '+2348000000001',
+      text: '1'
+    });
+    expect(balance).toContain('Float balance');
+  });
+
+  it('refuses to boot in production when the callback token is missing (C2-3)', async () => {
+    const nodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await expect(
+        makeChannel({
+          USSD_DRIVER: 'live',
+          AT_API_KEY: 'k',
+          AT_USERNAME: 'u'
+        } as NodeJS.ProcessEnv)
+      ).rejects.toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+    } finally {
+      process.env.NODE_ENV = nodeEnv;
+    }
+  });
+
+  it('controller gates the callback on AT_CALLBACK_TOKEN once configured (C2-3)', async () => {
+    const ctx = await makeChannel({
+      USSD_DRIVER: 'sandbox',
+      AT_API_KEY: 'k',
+      AT_USERNAME: 'u'
+    } as NodeJS.ProcessEnv);
+    const controller = new AgentUssdController(ctx.ussd);
+    const saved = process.env.AT_CALLBACK_TOKEN;
+    process.env.AT_CALLBACK_TOKEN = 'agent-ussd-test-token';
+    try {
+      await expect(
+        controller.callback({ sessionId: 'sess-g1', phoneNumber: '+2348000000001', text: '' })
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        controller.callback(
+          { sessionId: 'sess-g1', phoneNumber: '+2348000000001', text: '' },
+          'wrong'
+        )
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      // Correct token passes the gate (the farmer phone is not an agent → END).
+      const response = await controller.callback(
+        { sessionId: 'sess-g1', phoneNumber: '+2348000000002', text: '' },
+        'agent-ussd-test-token'
+      );
+      expect(response).toMatch(/^END /);
+    } finally {
+      if (saved === undefined) {
+        delete process.env.AT_CALLBACK_TOKEN;
+      } else {
+        process.env.AT_CALLBACK_TOKEN = saved;
+      }
+    }
   });
 });
