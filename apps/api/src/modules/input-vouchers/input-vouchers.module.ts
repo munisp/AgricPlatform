@@ -1,4 +1,8 @@
 import { Module } from '@nestjs/common';
+import type pg from 'pg';
+import { PG_POOL, INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY } from '../../database/persistence.tokens.js';
+import { createInMemoryProgrammeFundingRepository } from '../../database/repositories/input-vouchers.repository.js';
+import { createPgProgrammeFundingRepository } from '../../database/repositories/input-vouchers.pg-repository.js';
 import { FinanceModule } from '../finance/finance.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { InputVouchersController } from './input-vouchers.controller.js';
@@ -20,8 +24,17 @@ import { IDENTITY_VERIFICATION_PORT, createIdentityDriver } from './identity.dri
   controllers: [InputVouchersController],
   providers: [
     InputVouchersService,
+    // Stage 23 (audit C3): funded-float backing store. Wired module-locally
+    // against the global PG_POOL (pg when DATABASE_URL is set, in-memory
+    // otherwise) — same swappable pattern as the DatabaseModule factories.
+    {
+      provide: INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeFundingRepository(pool) : createInMemoryProgrammeFundingRepository(),
+      inject: [PG_POOL]
+    },
     { provide: IDENTITY_VERIFICATION_PORT, useFactory: () => createIdentityDriver(process.env) }
   ],
-  exports: [InputVouchersService, IDENTITY_VERIFICATION_PORT]
+  exports: [InputVouchersService, IDENTITY_VERIFICATION_PORT, INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY]
 })
 export class InputVouchersModule {}

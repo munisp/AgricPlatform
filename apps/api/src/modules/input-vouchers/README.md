@@ -50,6 +50,20 @@ reconciliation report (`GET /input-vouchers/programmes/:id/reconciliation`)
 asserts this tie and returns `discrepancyKobo` — anything non-zero is an
 integrity breach.
 
+## Funded-float backing (stage 23, audit C3)
+
+The budget envelope is an allocation-policy NUMBER; the **funded float**
+(`input_vouchers.programme_funding`, migration 046) is actually-topped-up
+money, credited via `POST /input-vouchers/programmes/:id/funding`
+(idempotency key mandatory — a replay never double-credits). Issuance
+reserves face value atomically against the float
+(`funded − reserved − settled >= amount`, zero rows ⇒ **422**, nothing is
+signed or persisted); redemption moves reserved → settled exactly once per
+voucher (marker-keyed funding event); expiry/void releases the reservation.
+DB invariant: `reserved + settled <= funded` (CHECK), so outstanding plus
+settled face value can never exceed funded money. The reconciliation report
+carries the float state under `funding`.
+
 ## Voucher lifecycle
 
 allocate (post NIN-verification, idempotent on the client key, budget/cap
@@ -82,3 +96,5 @@ replay is a 409, a voucher pays out once.
 
 `infra/postgres/035_input_vouchers.sql` — schema `input_vouchers`
 (programmes, beneficiaries, vouchers, redemptions). No PostGIS, no triggers.
+`infra/postgres/046_voucher_programme_funding.sql` — funded-float state +
+idempotent funding event log (stage 23).
