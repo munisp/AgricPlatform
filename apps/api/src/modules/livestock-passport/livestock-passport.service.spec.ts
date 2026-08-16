@@ -6,7 +6,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException
 } from '@nestjs/common';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Animal, AnimalHealthRecord, LivestockLien, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
@@ -150,6 +150,8 @@ describe('LivestockPassportService', () => {
 
   beforeEach(() => seed());
 
+  afterEach(() => vi.unstubAllEnvs());
+
   /* ------------------------------ issuance ------------------------------ */
 
   describe('issuePassport', () => {
@@ -232,6 +234,50 @@ describe('LivestockPassportService', () => {
         ServiceUnavailableException
       );
       expect(await passports.findByAnimalId(ANIMAL.id)).toBeUndefined();
+    });
+
+    it('refuses stub-basis tag checks for issuance in production (fail closed)', async () => {
+      // The stub authority verdict is a deterministic fabrication — stamping
+      // it on a passport in production would certify identity against no real
+      // registry. Issuance must refuse with 503 and persist nothing.
+      vi.stubEnv('NODE_ENV', 'production');
+      await expect(service.issuePassport(farmer, { animalId: ANIMAL.id })).rejects.toThrow(
+        ServiceUnavailableException
+      );
+      expect(await passports.findByAnimalId(ANIMAL.id)).toBeUndefined();
+    });
+
+    it('issues in production when the authority check is live-basis', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('LIVESTOCK_PASSPORT_SECRET', 'spec-passport-signing-secret');
+      const liveAuthority = {
+        name: 'http' as const,
+        checkTag: vi.fn().mockResolvedValue({
+          registered: true,
+          registryReference: 'NAIS-LIVE-1',
+          basis: 'live',
+          detail: 'live registry hit'
+        }),
+        status: vi.fn()
+      };
+      service = new LivestockPassportService(
+        users as never,
+        audit as never,
+        new DomainEventsService(createInMemoryOutboxRepository()),
+        liveAuthority,
+        animals,
+        ownershipTransfers,
+        healthRecords,
+        movements,
+        permits,
+        liens,
+        policies,
+        passports,
+        passportEvents,
+        passportTransfers
+      );
+      const document = await service.issuePassport(farmer, { animalId: ANIMAL.id });
+      expect(document.passport.tagCheckBasis).toBe('live');
     });
   });
 

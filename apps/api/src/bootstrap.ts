@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { isProduction } from './common/auth/auth.config.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
@@ -65,7 +66,7 @@ export function configureApp(app: NestExpressApplication): void {
   app.useGlobalInterceptors(app.get(HttpMetricsInterceptor));
 
   // API documentation is disabled in production unless explicitly enabled.
-  if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {
+  if (!isProduction() || process.env.ENABLE_API_DOCS === 'true') {
     const document = buildOpenApiDocument(app);
     SwaggerModule.setup('api/v1/docs', app, document);
   }

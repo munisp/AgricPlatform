@@ -36,6 +36,7 @@ import {
   S3Client
 } from '@aws-sdk/client-s3';
 import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { isProduction } from '../../../common/auth/auth.config.js';
 import { ANALYTICS_STAR_REPOSITORY } from '../../../database/persistence.tokens.js';
 import type { AnalyticsStarRepository } from '../../../database/repositories/analytics-star.repository.js';
 import { lagosDateKey } from '../retention.js';
@@ -119,7 +120,7 @@ export class LakehouseExporterService {
       const message =
         'LAKEHOUSE_ENABLED=true but LAKEHOUSE_BUCKET and/or LAKEHOUSE_S3_ACCESS_KEY / ' +
         'LAKEHOUSE_S3_SECRET_KEY are missing.';
-      if (this.config.nodeEnv === 'production') {
+      if (isProduction({ NODE_ENV: this.config.nodeEnv } as NodeJS.ProcessEnv)) {
         throw new Error(`Refusing to start: ${message} (fail-closed)`);
       }
       this.degradedReason = `${message} Exporter disabled for this process (non-production).`;
