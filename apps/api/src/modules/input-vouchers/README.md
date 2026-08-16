@@ -52,11 +52,15 @@ integrity breach.
 
 ## Voucher lifecycle
 
-allocate (post NIN-verification, idempotent on the client key) → distribute
+allocate (post NIN-verification, idempotent on the client key, budget/cap
+check serialised per programme under the allocation row lock) → distribute
 (farmer sees the voucher) → redeem at an agro-dealer (supplier role, against
 an invoice reference). Anti-double-spend: CAS state machine
-ISSUED→REDEEMED/EXPIRED/VOIDED, UNIQUE `redemptions.voucher_id`, and the
-idempotent ledger posting — a replay is a 409, a voucher pays out once.
+ISSUED→REDEEMING→REDEEMED / ISSUED→EXPIRING→EXPIRED / ISSUED→VOIDING→VOIDED
+(the pending state is claimed BEFORE the ledger posting, so a redeem vs
+expire/void race posts exactly one entry; a retry resumes finalization),
+UNIQUE `redemptions.voucher_id`, and the idempotent ledger posting — a
+replay is a 409, a voucher pays out once.
 
 ## RBAC
 
