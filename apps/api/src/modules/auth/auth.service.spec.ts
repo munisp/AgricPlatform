@@ -104,11 +104,15 @@ describe('AuthService OTP hardening', () => {
 
   it('issues codes from the full 6-digit space, including leading zeros (audit C3)', async () => {
     process.env.NODE_ENV = 'test';
-    vi.mocked(randomInt).mockClear();
-    vi.mocked(randomInt).mockReturnValueOnce(42);
+    // node:crypto's randomInt is overloaded (sync + callback forms); TS picks
+    // the void-returning callback overload for vi.mocked, so pin the sync
+    // (min, max) => number signature before stubbing the return value.
+    const randomIntMock = vi.mocked(randomInt as unknown as (min: number, max: number) => number);
+    randomIntMock.mockClear();
+    randomIntMock.mockReturnValueOnce(42);
     const { devCode } = await makeService().requestOtp(PHONE);
     expect(devCode).toBe('000042');
-    expect(vi.mocked(randomInt)).toHaveBeenCalledWith(0, 1_000_000);
+    expect(randomIntMock).toHaveBeenCalledWith(0, 1_000_000);
   });
 
   it('caps failed verifications per phone across reissued challenges (audit C3)', async () => {
