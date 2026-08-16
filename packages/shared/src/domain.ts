@@ -27,6 +27,26 @@ export const USER_ROLES = [
 
 export type UserRole = (typeof USER_ROLES)[number];
 
+/**
+ * Roles a member may self-select at registration (POST /auth/register).
+ * Every other role is privileged and may only be granted by an
+ * administrator via the admin roles endpoint (PATCH /admin/users/:id/roles):
+ * - `admin` — platform administration;
+ * - `partner`, `chapter_lead` — programme/chapter operations;
+ * - `enumerator`, `agronomist`, `agent`, `vet` — agent-type field roles that
+ *   act on behalf of farmers or work operational queues;
+ * - `lender`, `insurer`, `regulator`, `donor` — finance/compliance oversight.
+ * The plain member roles below carry no operational authority.
+ */
+export const SELF_REGISTRATION_ROLES = [
+  'farmer',
+  'student',
+  'buyer',
+  'supplier'
+] as const satisfies readonly UserRole[];
+
+export type SelfRegistrationRole = (typeof SELF_REGISTRATION_ROLES)[number];
+
 export const LANGUAGE_CODES = ['en', 'ha', 'yo', 'ig'] as const;
 export type LanguageCode = (typeof LANGUAGE_CODES)[number];
 

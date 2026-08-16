@@ -1,7 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
-import { LANGUAGE_CODES, type Course, type LanguageCode } from '@agric-platform/shared';
+import { LANGUAGE_CODES, type Course, type LanguageCode, type User } from '@agric-platform/shared';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { UsersService } from '../users/users.service.js';
 import { LearningService, type CreateCourseInput } from './learning.service.js';
@@ -58,8 +62,14 @@ class ProgressDto {
   progressPercent!: number;
 }
 
+/**
+ * Course catalog reads and certificate verification are public. Enrolments,
+ * progress and per-user learning records are personal data — restricted to
+ * the owning user or an admin. Course authoring is admin-only.
+ */
 @ApiTags('learning')
 @Controller()
+@UseGuards(RolesGuard)
 export class LearningController {
   constructor(
     private readonly learning: LearningService,
@@ -67,55 +77,72 @@ export class LearningController {
   ) {}
 
   @Get('courses')
-  @ApiOperation({ summary: 'List courses with filters' })
+  @ApiOperation({ summary: 'List courses with filters (public catalog)' })
   listCourses(@Query() query: ListCoursesQuery) {
     return this.learning.listCourses(query);
   }
 
   @Post('courses')
-  @ApiOperation({ summary: 'Create a course (content team)' })
+  @Roles('admin')
+  @ApiOperation({ summary: 'Create a course (admin content team)' })
   async createCourse(@Body() dto: CreateCourseDto) {
     return { data: await this.learning.createCourse(dto) };
   }
 
   @Get('courses/:id')
-  @ApiOperation({ summary: 'Course detail' })
+  @ApiOperation({ summary: 'Course detail (public catalog)' })
   async getCourse(@Param('id') id: string) {
     return { data: await this.learning.getCourse(id) };
   }
 
   @Post('courses/:id/enrol')
-  @ApiOperation({ summary: 'Enrol a user in a course' })
-  async enrol(@Param('id') id: string, @Body() dto: EnrolDto) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Enrol a user in a course (own user or admin)' })
+  async enrol(@Param('id') id: string, @Body() dto: EnrolDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
     return { data: await this.learning.enrol(id, dto.userId) };
   }
 
   @Get('enrolments/:id')
-  @ApiOperation({ summary: 'Enrolment detail' })
-  async getEnrolment(@Param('id') id: string) {
-    return { data: await this.learning.getEnrolment(id) };
+  @Authenticated()
+  @ApiOperation({ summary: 'Enrolment detail (owning user or admin)' })
+  async getEnrolment(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const enrolment = await this.learning.getEnrolment(id);
+    assertSelfOrAdmin(actor, enrolment.userId);
+    return { data: enrolment };
   }
 
   @Patch('enrolments/:id/progress')
-  @ApiOperation({ summary: 'Update enrolment progress; issues a certificate at 100%' })
-  async updateProgress(@Param('id') id: string, @Body() dto: ProgressDto) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Update enrolment progress; issues a certificate at 100% (owning user or admin)' })
+  async updateProgress(
+    @Param('id') id: string,
+    @Body() dto: ProgressDto,
+    @CurrentUser() actor: User | null
+  ) {
+    const enrolment = await this.learning.getEnrolment(id);
+    assertSelfOrAdmin(actor, enrolment.userId);
     return { data: await this.learning.updateProgress(id, dto.progressPercent) };
   }
 
   @Get('users/:userId/enrolments')
-  @ApiOperation({ summary: 'Enrolments for a user' })
-  async enrolmentsForUser(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Enrolments for a user (own records or admin)' })
+  async enrolmentsForUser(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.learning.enrolmentsForUser(userId) };
   }
 
   @Get('users/:userId/certificates')
-  @ApiOperation({ summary: 'Certificates earned by a user' })
-  async certificatesForUser(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Certificates earned by a user (own records or admin)' })
+  async certificatesForUser(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.learning.certificatesForUser(userId) };
   }
 
   @Get('certificates/verify/:code')
-  @ApiOperation({ summary: 'Verify a certificate by its public verification code' })
+  @ApiOperation({ summary: 'Verify a certificate by its public verification code (public)' })
   async verifyCertificate(@Param('code') code: string) {
     return {
       data: await this.learning.verifyCertificate(

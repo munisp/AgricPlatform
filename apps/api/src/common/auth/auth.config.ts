@@ -84,10 +84,14 @@ export function assertProductionAuthConfig(env: NodeJS.ProcessEnv = process.env)
     );
   }
   if (env.ALLOW_DEV_HEADER_AUTH === 'true') {
-    // Loud but non-fatal: explicit operator opt-in (e.g. break-glass drills).
-    console.warn(
-      'WARNING: ALLOW_DEV_HEADER_AUTH=true in production — x-user-id header auth is enabled. ' +
-        'Disable this flag for normal operation.'
+    // The x-user-id header is unverified identity — enabling it in
+    // production silently disables authentication, so this is fatal
+    // (same fail-closed style as the OIDC assertions above). Header auth
+    // remains available outside production without any flag.
+    throw new Error(
+      'FATAL: ALLOW_DEV_HEADER_AUTH=true is forbidden when NODE_ENV=production. ' +
+        'The x-user-id header is unverified identity; refusing to start. ' +
+        'Remove the flag (header auth is always allowed outside production).'
     );
   }
 }

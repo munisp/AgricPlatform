@@ -36,6 +36,7 @@ class DocumentStatusDto {
 
 @ApiTags('finance')
 @Controller('finance')
+@UseGuards(RolesGuard)
 export class FinanceController {
   constructor(
     private readonly finance: FinanceService,
@@ -43,25 +44,30 @@ export class FinanceController {
   ) {}
 
   @Get('credit-profile/:userId')
-  @ApiOperation({ summary: 'Credit readiness profile recomputed from live signals' })
-  async creditProfile(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Credit readiness profile recomputed from live signals (own record or admin)' })
+  async creditProfile(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.finance.creditProfile(userId) };
   }
 
   @Get('kyc/:userId')
-  @ApiOperation({ summary: 'KYC tier and requirements for the next tier' })
-  async kyc(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'KYC tier and requirements for the next tier (own record or admin)' })
+  async kyc(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.finance.kycStatus(userId) };
   }
 
   @Get('lender-matches/:userId')
-  @ApiOperation({ summary: 'Lender matches for a credit profile (stub lenders)' })
-  async lenderMatches(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Lender matches for a credit profile (own record or admin)' })
+  async lenderMatches(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.finance.lenderMatches(userId) };
   }
 
   @Get('documents')
-  @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'List document vault entries (own records or admin)' })
   async documents(
@@ -78,7 +84,6 @@ export class FinanceController {
   }
 
   @Post('documents')
-  @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Register an uploaded vault document (own vault or admin)' })
   async upload(@Body() dto: UploadDocumentDto, @CurrentUser() actor: User | null) {
@@ -87,7 +92,6 @@ export class FinanceController {
   }
 
   @Patch('documents/:id/status')
-  @UseGuards(RolesGuard)
   @Roles('admin')
   @ApiOperation({ summary: 'Verify or reject a vault document (admin review workflow)' })
   async setDocumentStatus(
