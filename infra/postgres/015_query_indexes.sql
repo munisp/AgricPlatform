@@ -70,6 +70,16 @@ CREATE INDEX IF NOT EXISTS opportunities_value_chains_gin
   ON opportunities.opportunities USING gin (value_chains);
 
 -- Missing intra-schema FK (pathways enrolment -> current stage) -----------
-ALTER TABLE pathways.enrolments
-  ADD CONSTRAINT enrolments_current_stage_fk
-  FOREIGN KEY (current_stage_id) REFERENCES pathways.stages(id);
+-- Guarded via pg_constraint (019a pattern): PostgreSQL has no
+-- ADD CONSTRAINT IF NOT EXISTS, so a re-apply (e.g. migrate after a
+-- Compose-bootstrapped database) would die with 'constraint already exists'.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'enrolments_current_stage_fk'
+    ) THEN
+        ALTER TABLE pathways.enrolments
+            ADD CONSTRAINT enrolments_current_stage_fk
+            FOREIGN KEY (current_stage_id) REFERENCES pathways.stages(id);
+    END IF;
+END $$;
