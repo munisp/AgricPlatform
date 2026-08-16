@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { isProduction } from '../auth/auth.config.js';
 
 /**
  * Log redaction policy (observability plan section A.2). Centralised here so
@@ -72,7 +73,7 @@ export function isHealthProbe(req: IncomingMessage): boolean {
 
 /** Log level by environment; LOG_LEVEL wins when set. */
 export function resolveLogLevel(env: NodeJS.ProcessEnv = process.env): string {
-  return env.LOG_LEVEL ?? (env.NODE_ENV === 'production' ? 'info' : 'debug');
+  return env.LOG_LEVEL ?? (isProduction(env) ? 'info' : 'debug');
 }
 
 /**

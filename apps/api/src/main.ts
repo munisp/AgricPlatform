@@ -5,7 +5,10 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
 import { assertProductionAuthConfig } from './common/auth/auth.config.js';
-import { assertProductionDriverConfig } from './modules/integrations/adapters.js';
+import {
+  assertProductionDriverConfig,
+  assertProductionWebhookSecrets
+} from './modules/integrations/adapters.js';
 import { assertProductionPartnerApiConfig } from './modules/partner-api/partner-api.config.js';
 
 async function bootstrap(): Promise<void> {
@@ -14,6 +17,7 @@ async function bootstrap(): Promise<void> {
   // credentials (docs/security-compliance.md §1/§6).
   assertProductionAuthConfig();
   assertProductionDriverConfig();
+  assertProductionWebhookSecrets();
   assertProductionPartnerApiConfig();
 
   // bufferLogs: startup logs are captured until the pino logger is bound.
