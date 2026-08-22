@@ -27,6 +27,26 @@ export const USER_ROLES = [
 
 export type UserRole = (typeof USER_ROLES)[number];
 
+/**
+ * Roles a member may self-select at registration (POST /auth/register).
+ * Every other role is privileged and may only be granted by an
+ * administrator via the admin roles endpoint (PATCH /admin/users/:id/roles):
+ * - `admin` — platform administration;
+ * - `partner`, `chapter_lead` — programme/chapter operations;
+ * - `enumerator`, `agronomist`, `agent`, `vet` — agent-type field roles that
+ *   act on behalf of farmers or work operational queues;
+ * - `lender`, `insurer`, `regulator`, `donor` — finance/compliance oversight.
+ * The plain member roles below carry no operational authority.
+ */
+export const SELF_REGISTRATION_ROLES = [
+  'farmer',
+  'student',
+  'buyer',
+  'supplier'
+] as const satisfies readonly UserRole[];
+
+export type SelfRegistrationRole = (typeof SELF_REGISTRATION_ROLES)[number];
+
 export const LANGUAGE_CODES = ['en', 'ha', 'yo', 'ig'] as const;
 export type LanguageCode = (typeof LANGUAGE_CODES)[number];
 
@@ -146,7 +166,6 @@ export interface MentorRequest {
   id: string;
   userId: string;
   crop: string;
-  state: string;
   challenge: string;
   status: 'requested' | 'matched' | 'closed';
   createdAt: string;
@@ -289,6 +308,27 @@ export interface AuditEvent {
   hash?: string;
   /** Correlates the audit event with the HTTP request that caused it (additive). */
   requestId?: string;
+}
+
+/**
+ * Anchoring checkpoint over the audit hash chain (Stage 23, additive).
+ * Notarizes the chain tip at anchor time so a truncated/re-extended tail is
+ * detectable after the fact. Anchors form their own hash chain
+ * (prevAnchorHash → anchorHash, genesis = 64 zeros).
+ */
+export interface AuditAnchor {
+  id: string;
+  /** Chain tip event this anchor notarizes; null = anchor over an empty chain. */
+  anchoredThroughEventId: string | null;
+  /** Hash of the tip event (64 lowercase hex chars; genesis = 64 zeros). */
+  tipHash: string;
+  /** Number of chain events at anchor time. */
+  eventCount: number;
+  /** Hash of the previous anchor in the anchor chain. */
+  prevAnchorHash: string;
+  /** sha256 over the canonical anchor payload + prevAnchorHash. */
+  anchorHash: string;
+  createdAt: string;
 }
 
 /**
@@ -440,7 +480,13 @@ export interface PaymentProviderPort {
 export const ESCROW_PAYOUT_KINDS = ['release', 'refund'] as const;
 export type EscrowPayoutKind = (typeof ESCROW_PAYOUT_KINDS)[number];
 
-export const ESCROW_PAYOUT_STATUSES = ['recorded', 'succeeded', 'failed'] as const;
+/**
+ * Attempt lifecycle: a claimable row starts 'recorded' (legacy pre-claim
+ * rows); a caller holds it via a CAS claim to 'in_progress' (exactly one
+ * claimant drives the payout); the claimant finalizes to 'succeeded' or
+ * 'failed'. 'succeeded' is terminal — guarded writes must never regress it.
+ */
+export const ESCROW_PAYOUT_STATUSES = ['recorded', 'in_progress', 'succeeded', 'failed'] as const;
 export type EscrowPayoutStatus = (typeof ESCROW_PAYOUT_STATUSES)[number];
 
 /** One recorded payout attempt against an escrow hold (audit-grade). */
@@ -460,6 +506,8 @@ export interface EscrowPayout {
   /** Opaque provider-side reference, set once the driver succeeds. */
   providerReference?: string;
   status: EscrowPayoutStatus;
+  /** Set by the CAS claim while the attempt is 'in_progress' (lease start). */
+  claimedAt?: string;
   failureReason?: string;
   createdAt: string;
   updatedAt: string;

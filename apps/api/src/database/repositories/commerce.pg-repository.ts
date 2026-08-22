@@ -18,7 +18,11 @@ import type { ShipmentCriteria, ShipmentRepository } from './shipment.repository
  * marketplace.invoices + invoice_counters, marketplace.shipments).
  */
 export function escrowCriteriaSql(criteria: EscrowCriteria): WhereClause {
-  return composeWhere(eq('order_id', criteria.orderId), eq('status', criteria.status));
+  return composeWhere(
+    eq('order_id', criteria.orderId),
+    eq('status', criteria.status),
+    eq('deposit_payment_reference', criteria.depositReference)
+  );
 }
 
 export class PgEscrowRepository
