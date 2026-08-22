@@ -4,6 +4,7 @@ import type { AuditService } from '../../core/audit.service.js';
 import type { DomainEventsService } from '../../core/domain-events.service.js';
 import type { OutboxSweeperService } from '../../core/outbox-sweeper.service.js';
 import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
+import { createInMemoryPartnerMemberRepository } from '../../database/repositories/partner-member.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { SessionService } from '../auth/session.service.js';
 import type { CommunityService } from '../community/community.service.js';
@@ -36,7 +37,8 @@ function build() {
     stub as LearningService,
     stub as MarketplaceService,
     stub as OutboxSweeperService,
-    sessions
+    sessions,
+    createInMemoryPartnerMemberRepository()
   );
   return { admin, users, sessions, sessionService };
 }

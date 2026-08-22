@@ -86,7 +86,13 @@ any online touchpoint (API or agent USSD).
   CON/END menu engine (float balance, last 5 transactions, voucher
   redemption), 3-minute sessions with idempotent replay, and the endpoint
   stays 404 unless `USSD_DRIVER=live|sandbox` with the Africa's Talking
-  credentials.
+  credentials. Africa's Talking does not sign callbacks, so the callback URL
+  configured in the AT dashboard must embed the `AT_CALLBACK_TOKEN` shared
+  secret as a query param (or send it as the `x-at-callback-token` header);
+  a missing/invalid token is 401, an optional `AT_CALLBACK_IP_ALLOWLIST`
+  403s unlisted source IPs, production refuses to boot a live|sandbox
+  driver without the token, and a session stays bound to the phone number
+  that opened it (mid-session phone changes are rejected).
 
 ## Roles
 

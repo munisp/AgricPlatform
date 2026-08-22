@@ -89,6 +89,8 @@ export const PIN_PROFILE_REPOSITORY = Symbol('PIN_PROFILE_REPOSITORY');
 export const PARTNER_CLIENT_REPOSITORY = Symbol('PARTNER_CLIENT_REPOSITORY');
 export const API_KEY_REPOSITORY = Symbol('API_KEY_REPOSITORY');
 export const WEBHOOK_SUBSCRIPTION_REPOSITORY = Symbol('WEBHOOK_SUBSCRIPTION_REPOSITORY');
+// Stage 24: partner tenant binding (user ↔ partner organisation membership).
+export const PARTNER_MEMBER_REPOSITORY = Symbol('PARTNER_MEMBER_REPOSITORY');
 // Wave P6a: IVR voice channel.
 export const IVR_CALL_REPOSITORY = Symbol('IVR_CALL_REPOSITORY');
 // Wave L1a: ALTP livestock core (animals, lots, transfers, pastoralists).

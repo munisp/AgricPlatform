@@ -1,10 +1,19 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import type { PlatformMetric, User, UserRole } from '@agric-platform/shared';
+import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { OutboxSweeperService, type OutboxSweepResult } from '../../core/outbox-sweeper.service.js';
-import { AUTH_SESSION_REPOSITORY, CREDIT_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
+import {
+  AUTH_SESSION_REPOSITORY,
+  CREDIT_PROFILE_REPOSITORY,
+  PARTNER_MEMBER_REPOSITORY
+} from '../../database/persistence.tokens.js';
 import type { AuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
+import type {
+  PartnerMember,
+  PartnerMemberRepository
+} from '../../database/repositories/partner-member.repository.js';
 import type { CreditProfileRepository } from '../../database/repositories/credit-profile.repository.js';
 import type { OutboxRecord } from '../../database/repositories/outbox.repository.js';
 import type { AccountStatus } from '../../database/repositories/user.repository.js';
@@ -44,6 +53,7 @@ export class AdminService {
     private readonly marketplace: MarketplaceService,
     private readonly outboxSweeper: OutboxSweeperService,
     @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository,
+    @Inject(PARTNER_MEMBER_REPOSITORY) private readonly partnerMembers: PartnerMemberRepository,
     // Optional: a missing KPI source degrades to a labelled seed fixture
     // (refused in production), never a fabricated live number.
     @Optional() private readonly chapters?: ChaptersService,
@@ -68,6 +78,60 @@ export class AdminService {
     });
     await this.domainEvents.publish('identity.user.roles_updated', { userId, roles }, actorId);
     return { user, accountStatus: await this.users.statusFor(userId) };
+  }
+
+  /**
+   * Partner tenant binding (Stage 24, audit A2-1): grants `userId` acting
+   * rights on `/partner/:partnerId/*`. Idempotent; audited. Only meaningful
+   * for accounts holding the `partner` role (the route guard enforces that).
+   */
+  async bindPartnerMember(userId: string, partnerId: string, actorId: string): Promise<PartnerMember> {
+    await this.users.getById(userId);
+    const existing = await this.partnerMembers.findOne({ userId, partnerId });
+    if (existing) {
+      return existing;
+    }
+    const member = await this.partnerMembers.create({
+      id: newId('pmem'),
+      userId,
+      partnerId,
+      createdBy: actorId,
+      createdAt: new Date().toISOString()
+    });
+    await this.audit.record({
+      actorId,
+      action: 'admin.partner_member.bound',
+      entityType: 'partner_member',
+      entityId: member.id,
+      metadata: { userId, partnerId }
+    });
+    return member;
+  }
+
+  /** Revokes a partner tenant binding (audited); 404 when none exists. */
+  async unbindPartnerMember(
+    userId: string,
+    partnerId: string,
+    actorId: string
+  ): Promise<{ removed: boolean }> {
+    const existing = await this.partnerMembers.findOne({ userId, partnerId });
+    if (!existing) {
+      throw new NotFoundException(`No partner membership for ${userId} on ${partnerId}`);
+    }
+    await this.partnerMembers.remove(existing.id);
+    await this.audit.record({
+      actorId,
+      action: 'admin.partner_member.unbound',
+      entityType: 'partner_member',
+      entityId: existing.id,
+      metadata: { userId, partnerId }
+    });
+    return { removed: true };
+  }
+
+  /** Partner membership rows (operability for the tenant-binding surface). */
+  async partnerMemberships(userId?: string): Promise<PartnerMember[]> {
+    return this.partnerMembers.find({ userId });
   }
 
   async setStatus(userId: string, status: AccountStatus, actorId: string): Promise<AdminUserView> {

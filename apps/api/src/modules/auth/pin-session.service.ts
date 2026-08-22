@@ -115,7 +115,10 @@ export class PinSessionService {
       );
     }
     if (profile.pinHash !== this.hashPin(deviceToken, userId, pin)) {
-      const attempts = profile.attempts + 1;
+      // Atomic increment (audit C2-5): the repository counts this failed
+      // attempt indivisibly, so concurrent wrong PINs cannot read the same
+      // pre-increment counter and defeat the lockout.
+      const attempts = await this.profiles.incrementAttempts(deviceToken, userId);
       if (attempts >= PIN_MAX_ATTEMPTS) {
         await this.profiles.update(deviceToken, userId, {
           attempts: 0,
@@ -126,7 +129,6 @@ export class PinSessionService {
           HttpStatus.TOO_MANY_REQUESTS
         );
       }
-      await this.profiles.update(deviceToken, userId, { attempts });
       throw new UnauthorizedException('Incorrect PIN');
     }
     if (profile.attempts > 0 || profile.lockedUntil) {

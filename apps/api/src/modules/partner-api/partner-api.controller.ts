@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   Param,
@@ -23,13 +24,40 @@ import {
 } from 'class-validator';
 import type { Request } from 'express';
 import { PartnerApiService } from './partner-api.service.js';
-import { PartnerAuthGuard, partnerIdentity } from './partner-auth.guard.js';
+import {
+  PartnerAuthGuard,
+  assertPartnerTenant,
+  partnerIdentity,
+  type PartnerRequestIdentity
+} from './partner-auth.guard.js';
 import { PartnerScopes } from './partner-scopes.decorator.js';
 import { PARTNER_EVENT_TYPES } from './webhook-dispatch.service.js';
 
+/**
+ * Resolves the effective tenant for a write (Stage 24, audit A2-2): the
+ * TOKEN's bound partnerId always wins. A caller-supplied partnerId that
+ * disagrees is a 400 (likely client bug); an unbound credential is a 403
+ * (fail closed — money events are never recorded under an arbitrary slug).
+ */
+function writeTenantFor(identity: PartnerRequestIdentity, supplied?: string): string {
+  if (!identity.partnerId) {
+    throw new ForbiddenException(
+      'This credential is not bound to a partner organisation; partner writes require a bound client-credentials token'
+    );
+  }
+  if (supplied && supplied !== identity.partnerId) {
+    throw new BadRequestException(
+      `partnerId mismatch: this client is bound to '${identity.partnerId}'; omit partnerId or send the bound value`
+    );
+  }
+  return identity.partnerId;
+}
+
 class RecordDisbursementDto {
+  /** Optional — the token's bound partnerId is authoritative (400 on mismatch). */
+  @IsOptional()
   @IsString()
-  partnerId!: string;
+  partnerId?: string;
 
   @IsString()
   userId!: string;
@@ -48,8 +76,10 @@ class RecordDisbursementDto {
 }
 
 class RecordEnrolmentDto {
+  /** Optional — the token's bound partnerId is authoritative (400 on mismatch). */
+  @IsOptional()
   @IsString()
-  partnerId!: string;
+  partnerId?: string;
 
   @IsString()
   userId!: string;
@@ -101,21 +131,24 @@ export class PartnerApiController {
   @Get('participation/:partnerId')
   @PartnerScopes('programmes:read')
   @ApiOperation({ summary: 'Programme participation (consented members only)' })
-  async participation(@Param('partnerId') partnerId: string) {
+  async participation(@Param('partnerId') partnerId: string, @Req() request: Request) {
+    assertPartnerTenant(partnerIdentity(request), partnerId);
     return { data: await this.partnerApi.consentedParticipation(partnerId) };
   }
 
   @Get('impact/:partnerId')
   @PartnerScopes('impact:read')
   @ApiOperation({ summary: 'Aggregate impact metrics (counts only, no PII)' })
-  async impact(@Param('partnerId') partnerId: string) {
+  async impact(@Param('partnerId') partnerId: string, @Req() request: Request) {
+    assertPartnerTenant(partnerIdentity(request), partnerId);
     return { data: await this.partnerApi.impactAggregate(partnerId) };
   }
 
   @Get('applications/count/:partnerId')
   @PartnerScopes('applications:read')
   @ApiOperation({ summary: 'Application count for a partner (aggregate)' })
-  async applicationCount(@Param('partnerId') partnerId: string) {
+  async applicationCount(@Param('partnerId') partnerId: string, @Req() request: Request) {
+    assertPartnerTenant(partnerIdentity(request), partnerId);
     return { data: await this.partnerApi.applicationCount(partnerId) };
   }
 
@@ -131,8 +164,9 @@ export class PartnerApiController {
   @ApiOperation({ summary: 'Record a disbursement event (webhook fanned out)' })
   async recordDisbursement(@Body() dto: RecordDisbursementDto, @Req() request: Request) {
     const identity = partnerIdentity(request);
+    const partnerId = writeTenantFor(identity, dto.partnerId);
     return {
-      data: await this.partnerApi.recordDisbursement(dto.partnerId, dto, identity.clientId)
+      data: await this.partnerApi.recordDisbursement(partnerId, dto, identity.clientId)
     };
   }
 
@@ -141,8 +175,9 @@ export class PartnerApiController {
   @ApiOperation({ summary: 'Record a partner programme enrolment' })
   async recordEnrolment(@Body() dto: RecordEnrolmentDto, @Req() request: Request) {
     const identity = partnerIdentity(request);
+    const partnerId = writeTenantFor(identity, dto.partnerId);
     return {
-      data: await this.partnerApi.recordEnrolment(dto.partnerId, dto, identity.clientId)
+      data: await this.partnerApi.recordEnrolment(partnerId, dto, identity.clientId)
     };
   }
 
