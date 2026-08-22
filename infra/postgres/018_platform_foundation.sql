@@ -40,6 +40,9 @@ ALTER TABLE identity.auth_sessions
 
 -- Pre-existing rows (created before families existed) each form their own
 -- single-member family.
+-- lint:sql waiver: the DML rule allows ONLY this self-guarding null-backfill
+-- shape (SET c = … WHERE c IS NULL) — re-apply is a provable no-op because
+-- backfilled rows no longer match the predicate.
 UPDATE identity.auth_sessions SET family_id = id WHERE family_id IS NULL;
 
 CREATE INDEX IF NOT EXISTS auth_sessions_token_hash_idx
