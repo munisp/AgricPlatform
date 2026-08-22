@@ -166,6 +166,7 @@ export interface MentorRequest {
   id: string;
   userId: string;
   crop: string;
+  state: string;
   challenge: string;
   status: 'requested' | 'matched' | 'closed';
   createdAt: string;
