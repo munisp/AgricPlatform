@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ConflictException } from '@nestjs/common';
 import pg from 'pg';
 import type { EscrowPayout } from '@agric-platform/shared';
@@ -8,7 +8,11 @@ import {
   hashPayoutPayload,
   PAYOUT_CLAIM_LEASE_MS
 } from '../../src/database/repositories/payout.repository.js';
-import { PgEscrowPayoutRepository } from '../../src/database/repositories/commerce.pg-repository.js';
+import {
+  createPgEscrowRepository,
+  PgEscrowPayoutRepository
+} from '../../src/database/repositories/commerce.pg-repository.js';
+import { createPgOrderRepository } from '../../src/database/repositories/marketplace.pg-repository.js';
 
 /**
  * Escrow payout rail claim contract (Stage 24, audit A4-3 / A4-10;
@@ -176,6 +180,40 @@ const pool = process.env.DATABASE_URL
 
 const CONTRACT_PREFIX = 'contract-payout-';
 
+/**
+ * Seeds the FK chain a payout row needs: listing → order → escrow
+ * (escrow_payouts references escrow_records, which references orders and
+ * listings — same seeding pattern as pg-repositories.spec.ts).
+ */
+async function seedEscrow(id: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO marketplace.listings (id, seller_id, kind, title, quantity, unit, price_ngn)
+     VALUES ($1, $2, 'produce', 'Payout claim contract listing', 100, 'tonnes', 370000)
+     ON CONFLICT (id) DO NOTHING`,
+    [`${CONTRACT_PREFIX}listing`, `${CONTRACT_PREFIX}seller`]
+  );
+  await createPgOrderRepository(pool).placeOrder({
+    id: `${id}-order`,
+    listingId: `${CONTRACT_PREFIX}listing`,
+    buyerId: `${CONTRACT_PREFIX}buyer`,
+    sellerId: `${CONTRACT_PREFIX}seller`,
+    quantity: 1,
+    totalNaira: 370_000,
+    status: 'confirmed',
+    escrowRequired: true,
+    createdAt: new Date().toISOString()
+  });
+  await createPgEscrowRepository(pool).create({
+    id,
+    orderId: `${id}-order`,
+    amountKobo: 37_000_000,
+    status: 'held',
+    heldAt: new Date().toISOString(),
+    heldUntil: new Date(Date.now() + 14 * 24 * 3600 * 1000).toISOString()
+  });
+}
+
 async function cleanContractRows(): Promise<void> {
   if (!pool) return;
   await pool.query(`DELETE FROM marketplace.escrow_payouts WHERE escrow_id LIKE $1`, [
@@ -184,18 +222,12 @@ async function cleanContractRows(): Promise<void> {
   await pool.query(`DELETE FROM marketplace.escrow_records WHERE id LIKE $1`, [
     `${CONTRACT_PREFIX}%`
   ]);
-}
-
-async function seedEscrow(id: string): Promise<void> {
-  if (!pool) return;
-  await pool.query(
-    `INSERT INTO marketplace.escrow_records (id, order_id, amount_kobo, status, held_at, held_until)
-     VALUES ($1, $2, $3, 'held', now(), now() + interval '14 days')`,
-    [id, `${id}-order`, 37_000_000]
-  );
+  await pool.query(`DELETE FROM marketplace.orders WHERE id LIKE $1`, [`${CONTRACT_PREFIX}%`]);
+  await pool.query(`DELETE FROM marketplace.listings WHERE id LIKE $1`, [`${CONTRACT_PREFIX}%`]);
 }
 
 describePg('pg escrow payout claim CAS (migrations 048-052)', () => {
+  afterEach(cleanContractRows);
   it('two concurrent claims of the same attempt produce exactly one claimant', async () => {
     if (!pool) return;
     await cleanContractRows();
