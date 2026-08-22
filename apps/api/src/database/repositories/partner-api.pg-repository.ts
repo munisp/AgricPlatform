@@ -31,6 +31,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     'scopes',
     'status',
     'rate_limit_per_min',
+    'partner_id',
     'created_at'
   ],
   fromRow: (row) => ({
@@ -42,6 +43,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     scopes: (row.scopes as string[]) ?? [],
     status: row.status as PartnerClient['status'],
     rateLimitPerMin: Number(row.rate_limit_per_min),
+    partnerId: (row.partner_id as string | null) ?? undefined,
     createdAt: new Date(row.created_at as string).toISOString()
   }),
   toRow: (item) => ({
@@ -53,6 +55,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     scopes: item.scopes,
     status: item.status,
     rate_limit_per_min: item.rateLimitPerMin,
+    partner_id: item.partnerId ?? null,
     created_at: item.createdAt
   })
 };
@@ -71,9 +74,10 @@ const apiKeyMapper: RowMapper<DeveloperApiKey> = {
   ],
   fromRow: (row) => ({
     id: row.id as string,
-    ownerUserId: row.owner_user_id as string,
-    keyHash: row.key_hash as string,
-    keySalt: row.key_salt as string,
+    name: row.name as string,
+    clientId: row.client_id as string,
+    clientSecretHash: row.client_secret_hash as string,
+    clientSecretSalt: row.client_secret_salt as string,
     prefix: row.prefix as string,
     scopes: (row.scopes as string[]) ?? [],
     sandbox: Boolean(row.sandbox),
@@ -82,6 +86,8 @@ const apiKeyMapper: RowMapper<DeveloperApiKey> = {
   }),
   toRow: (item) => ({
     id: item.id,
+    name: item.name,
+    client_id: item.clientId,
     owner_user_id: item.ownerUserId,
     key_hash: item.keyHash,
     key_salt: item.keySalt,
@@ -98,6 +104,7 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
   fromRow: (row) => ({
     id: row.id as string,
     clientId: row.client_id as string,
+    clientId2: undefined,
     eventTypes: (row.event_types as string[]) ?? [],
     targetUrl: row.target_url as string,
     secret: row.secret as string,
