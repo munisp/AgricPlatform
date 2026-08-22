@@ -133,6 +133,28 @@ export interface VslaShareOutCriteria {
   memberId?: string;
 }
 
+/**
+ * Persisted per-member distribution plan written BEFORE any close-cycle
+ * payout posts to the ledger (stage-24 audit A4-4). Crash-resume pays the
+ * remaining members from these rows — shares are NEVER recomputed from the
+ * (reduced) live pool mid-resume.
+ */
+export interface VslaShareOutPlanRecord {
+  id: string;
+  cycleId: string;
+  memberId: string;
+  /** Pro-rata share computed from the pre-payout pool snapshot. */
+  shareKobo: number;
+  contributedKobo: number;
+  residualKobo: number;
+  createdAt: string;
+}
+
+export interface VslaShareOutPlanCriteria {
+  cycleId?: string;
+  memberId?: string;
+}
+
 export interface VslaLoanRecord {
   id: string;
   groupId: string;
@@ -286,6 +308,12 @@ export interface VslaShareOutRepository {
   find(criteria: VslaShareOutCriteria): Promise<VslaShareOutRecord[]>;
 }
 
+export interface VslaShareOutPlanRepository {
+  /** Throws ConflictException when a plan row already exists for (cycleId, memberId). */
+  create(record: VslaShareOutPlanRecord): Promise<VslaShareOutPlanRecord>;
+  find(criteria: VslaShareOutPlanCriteria): Promise<VslaShareOutPlanRecord[]>;
+}
+
 export interface VslaLoanRepository {
   create(record: VslaLoanRecord): Promise<VslaLoanRecord>;
   findById(id: string): Promise<VslaLoanRecord | undefined>;
@@ -295,6 +323,21 @@ export interface VslaLoanRepository {
     patch: Partial<VslaLoanRecord>,
     expected: Partial<VslaLoanRecord>
   ): Promise<VslaLoanRecord>;
+  /**
+   * Claim-first repayment reservation (stage-24 audit A1-4/A4-5): atomically
+   * adds amountKobo to repaid_kobo ONLY when the loan is still ACTIVE and the
+   * running total stays <= total_due_kobo (pg: a single guarded
+   * UPDATE … RETURNING that serializes on the loan row). Returns the updated
+   * row, or undefined when the guard rejects — the caller must surface a 409
+   * BEFORE any money movement when undefined comes back.
+   */
+  claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined>;
+  /**
+   * Compensating release for a claim whose ledger posting (or row insert)
+   * failed. Guarded (repaid_kobo >= amountKobo) so a rollback can never drive
+   * the aggregate negative.
+   */
+  rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void>;
 }
 
 export interface VslaLoanRepaymentRepository {
@@ -550,6 +593,31 @@ export class InMemoryVslaShareOutRepository implements VslaShareOutRepository {
   }
 }
 
+export class InMemoryVslaShareOutPlanRepository implements VslaShareOutPlanRepository {
+  private readonly items = new Map<string, VslaShareOutPlanRecord>();
+
+  async create(record: VslaShareOutPlanRecord): Promise<VslaShareOutPlanRecord> {
+    // Mirror the pg UNIQUE constraint on (cycle_id, member_id).
+    for (const existing of this.items.values()) {
+      if (existing.cycleId === record.cycleId && existing.memberId === record.memberId) {
+        throw new ConflictException('A share-out plan row already exists for this member');
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async find(criteria: VslaShareOutPlanCriteria): Promise<VslaShareOutPlanRecord[]> {
+    return [...this.items.values()]
+      .filter(
+        (item) =>
+          (!criteria.cycleId || item.cycleId === criteria.cycleId) &&
+          (!criteria.memberId || item.memberId === criteria.memberId)
+      )
+      .map((item) => structuredClone(item));
+  }
+}
+
 export class InMemoryVslaLoanRepository implements VslaLoanRepository {
   private readonly items = new Map<string, VslaLoanRecord>();
 
@@ -592,6 +660,42 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
     const updated = { ...current, ...patch };
     this.items.set(id, updated);
     return structuredClone(updated);
+  }
+
+  async claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined> {
+    // Mirrors the pg guarded UPDATE … RETURNING: the read-check-write runs
+    // synchronously, so concurrent claimants serialize exactly like the loan
+    // row lock does under Postgres.
+    const current = this.items.get(id);
+    if (
+      !current ||
+      current.status !== 'ACTIVE' ||
+      current.repaidKobo + amountKobo > current.totalDueKobo
+    ) {
+      return undefined;
+    }
+    const repaidKobo = current.repaidKobo + amountKobo;
+    const fullyRepaid = repaidKobo >= current.totalDueKobo;
+    const updated: VslaLoanRecord = {
+      ...current,
+      repaidKobo,
+      ...(fullyRepaid ? { status: 'REPAID' as const, repaidAt: new Date().toISOString() } : {})
+    };
+    this.items.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  async rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void> {
+    const current = this.items.get(id);
+    if (!current || current.repaidKobo < amountKobo) {
+      return; // guarded: never drive the aggregate negative
+    }
+    this.items.set(id, {
+      ...current,
+      repaidKobo: current.repaidKobo - amountKobo,
+      status: 'ACTIVE',
+      repaidAt: undefined
+    });
   }
 }
 
@@ -757,6 +861,10 @@ export function createInMemoryVslaContributionRepository(): InMemoryVslaContribu
 
 export function createInMemoryVslaShareOutRepository(): InMemoryVslaShareOutRepository {
   return new InMemoryVslaShareOutRepository();
+}
+
+export function createInMemoryVslaShareOutPlanRepository(): InMemoryVslaShareOutPlanRepository {
+  return new InMemoryVslaShareOutPlanRepository();
 }
 
 export function createInMemoryVslaLoanRepository(): InMemoryVslaLoanRepository {

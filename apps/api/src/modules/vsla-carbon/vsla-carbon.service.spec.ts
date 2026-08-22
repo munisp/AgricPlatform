@@ -21,6 +21,7 @@ import {
   createInMemoryVslaLoanRepository,
   createInMemoryVslaLoanRepaymentRepository,
   createInMemoryVslaMemberRepository,
+  createInMemoryVslaShareOutPlanRepository,
   createInMemoryVslaShareOutRepository
 } from '../../database/repositories/vsla-carbon.repository.js';
 import { LedgerService } from '../finance/ledger.service.js';
@@ -73,14 +74,19 @@ function makeService(ndvi: NdviProvider = stubNdvi) {
     createInMemoryLedgerAccountRepository(),
     createInMemoryLedgerEntryRepository()
   );
+  const shareOuts = createInMemoryVslaShareOutRepository();
+  const shareOutPlan = createInMemoryVslaShareOutPlanRepository();
+  const loans = createInMemoryVslaLoanRepository();
+  const repayments = createInMemoryVslaLoanRepaymentRepository();
   const service = new VslaCarbonService(
     createInMemoryVslaGroupRepository(),
     createInMemoryVslaMemberRepository(),
     createInMemoryVslaCycleRepository(),
     createInMemoryVslaContributionRepository(),
-    createInMemoryVslaShareOutRepository(),
-    createInMemoryVslaLoanRepository(),
-    createInMemoryVslaLoanRepaymentRepository(),
+    shareOuts,
+    shareOutPlan,
+    loans,
+    repayments,
     createInMemoryCarbonPlotRepository(),
     createInMemoryCarbonEvidenceRepository(),
     createInMemoryCarbonEstimateRepository(),
@@ -90,7 +96,7 @@ function makeService(ndvi: NdviProvider = stubNdvi) {
     ndvi,
     chaptersStub as never
   );
-  return { service, ledger };
+  return { service, ledger, events, shareOuts, shareOutPlan, loans, repayments };
 }
 
 /** Group with two members and an open cycle — the standard fixture. */
@@ -383,6 +389,135 @@ describe('internal loans with simple interest', () => {
   });
 });
 
+describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5)', () => {
+  async function makeRepayableLoan() {
+    const ctx = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(ctx.service);
+    await contributeBoth(ctx.service, cycle.id, leadMember.id, member2.id);
+    const loan = await ctx.service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 100_000,
+      interestRateBps: 0
+    });
+    return { ...ctx, group, loan };
+  }
+
+  it('two concurrent repayments BOTH commit — loan, repayment rows and ledger agree', async () => {
+    const { service, ledger, group, loan } = await makeRepayableLoan();
+    // Two legitimate repayments race (double-click across two channels).
+    const [a, b] = await Promise.allSettled([
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-1' }),
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-2' })
+    ]);
+    // Claim-first: both claims fit under total_due_kobo, so neither 409s.
+    expect(a.status).toBe('fulfilled');
+    expect(b.status).toBe('fulfilled');
+    const final = await service.getLoan(loan.id);
+    const repayments = await service.listRepayments(loan.id);
+    const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
+    expect(repayments).toHaveLength(2);
+    expect(repayments.reduce((sum, row) => sum + row.amountKobo, 0)).toBe(80_000);
+    expect(final.repaidKobo).toBe(80_000); // loan credited for BOTH payments
+    expect(receivable.balanceKobo).toBe(20_000); // 100k - 80k: ledger agrees with the loan row
+  });
+
+  it('a racer that would overshoot total_due 409s BEFORE any money moves', async () => {
+    const { service, ledger, group, loan } = await makeRepayableLoan();
+    const [a, b] = await Promise.allSettled([
+      service.repayLoan(farmer, loan.id, { amountKobo: 60_000, idempotencyKey: 'repay-a' }),
+      service.repayLoan(farmer, loan.id, { amountKobo: 60_000, idempotencyKey: 'repay-b' })
+    ]);
+    const outcomes = [a.status, b.status].sort();
+    expect(outcomes).toEqual(['fulfilled', 'rejected']);
+    const loser = a.status === 'rejected' ? a : (b as PromiseRejectedResult);
+    expect(loser.reason).toBeInstanceOf(ConflictException);
+    const final = await service.getLoan(loan.id);
+    const repayments = await service.listRepayments(loan.id);
+    const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
+    // Exactly ONE payment committed anywhere — the loser's kobo never reached
+    // the ledger, so nothing is trapped against the receivable guard.
+    expect(repayments).toHaveLength(1);
+    expect(final.repaidKobo).toBe(60_000);
+    expect(receivable.balanceKobo).toBe(40_000);
+    // The loan still accepts the remaining 40k (no trapped overpayment).
+    const topUp = await service.repayLoan(farmer, loan.id, {
+      amountKobo: 40_000,
+      idempotencyKey: 'repay-c'
+    });
+    expect(topUp.loan.status).toBe('REPAID');
+    expect(topUp.loan.repaidKobo).toBe(100_000);
+  });
+
+  it('a same-key double-click converges to exactly one claim, entry and row', async () => {
+    const { service, ledger, group, loan } = await makeRepayableLoan();
+    const [a, b] = await Promise.allSettled([
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-same' }),
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-same' })
+    ]);
+    // The loser adopts/replays the twin — it never double-charges the loan.
+    expect(a.status).toBe('fulfilled');
+    expect(b.status).toBe('fulfilled');
+    const final = await service.getLoan(loan.id);
+    const repayments = await service.listRepayments(loan.id);
+    const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
+    expect(repayments).toHaveLength(1);
+    expect(final.repaidKobo).toBe(40_000);
+    expect(receivable.balanceKobo).toBe(60_000);
+  });
+
+  it('rolls the claim back when the posting fails pre-commit, leaving no trace', async () => {
+    const { service, ledger, loan } = await makeRepayableLoan();
+    const original = ledger.postEntry.bind(ledger);
+    let sabotaged = true;
+    ledger.postEntry = ((input: Parameters<LedgerService['postEntry']>[0], actorId: string) =>
+      sabotaged
+        ? Promise.reject(new Error('ledger down'))
+        : original(input, actorId)) as LedgerService['postEntry'];
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-x' })
+    ).rejects.toThrow('ledger down');
+    // The claim was rolled back: no money moved and the aggregate is clean.
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(0);
+    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    // A same-key retry after recovery succeeds cleanly (no trapped claim).
+    sabotaged = false;
+    const retried = await service.repayLoan(farmer, loan.id, {
+      amountKobo: 40_000,
+      idempotencyKey: 'repay-x'
+    });
+    expect(retried.loan.repaidKobo).toBe(40_000);
+    expect(await service.listRepayments(loan.id)).toHaveLength(1);
+  });
+
+  it('resume after a crash between posting and row insert adopts the entry (no double claim)', async () => {
+    const { service, ledger, group, loan, repayments } = await makeRepayableLoan();
+    const originalCreate = repayments.create.bind(repayments);
+    let sabotaged = true;
+    repayments.create = ((record: Parameters<typeof originalCreate>[0]) =>
+      sabotaged ? Promise.reject(new Error('db down')) : originalCreate(record)) as typeof repayments.create;
+    // Crash AFTER the ledger posting commits but BEFORE the repayment row.
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-crash' })
+    ).rejects.toThrow('db down');
+    // The claim stays standing (it matches the committed entry); the row is missing.
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(40_000);
+    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    // Retry with the same key: resumes through the prior-entry path — no
+    // second claim, no second posting, just the missing row.
+    sabotaged = false;
+    const resumed = await service.repayLoan(farmer, loan.id, {
+      amountKobo: 40_000,
+      idempotencyKey: 'repay-crash'
+    });
+    expect(resumed.loan.repaidKobo).toBe(40_000);
+    const rows = await service.listRepayments(loan.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountKobo).toBe(40_000);
+    const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
+    expect(receivable.balanceKobo).toBe(60_000); // ledger, row and loan agree
+  });
+});
+
 describe('deterministic share-out at cycle close', () => {
   it('pays out pro-rata, zeroes the pool, and conserves the total', async () => {
     const { service, ledger } = makeService();
@@ -462,6 +597,78 @@ describe('deterministic share-out at cycle close', () => {
     const { service } = makeService();
     const { cycle } = await makeGroupWithCycle(service);
     await expect(service.closeCycle(farmer, cycle.id)).rejects.toThrow(ForbiddenException);
+  });
+});
+
+describe('stage-24 audit regression: closeCycle crash-resume pays the persisted plan (A4-4)', () => {
+  it('crash after the first payout: resume pays remaining members their ORIGINAL shares', async () => {
+    const { service, ledger, shareOuts } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    // Equal contributions: the fair close pays 100k to each member.
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id, [100_000, 100_000]);
+
+    // Sabotage the FIRST share-out row insert: the ledger entry for the lead
+    // member commits, then the process "dies" before the row is recorded.
+    const originalCreate = shareOuts.create.bind(shareOuts);
+    let sabotaged = true;
+    shareOuts.create = ((record: Parameters<typeof originalCreate>[0]) =>
+      sabotaged
+        ? Promise.reject(new Error('process crash'))
+        : originalCreate(record)) as typeof shareOuts.create;
+    await expect(service.closeCycle(lead, cycle.id)).rejects.toThrow('process crash');
+
+    // Mid-crash state: the plan is persisted, one payout posted, no rows.
+    expect(await service.getShareOut(cycle.id)).toHaveLength(0);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(100_000);
+
+    // Resume: shares come from the PERSISTED plan, not the reduced pool.
+    sabotaged = false;
+    const resumed = await service.closeCycle(lead, cycle.id);
+    expect(resumed.replayed).toBe(true);
+    expect(resumed.distributableKobo).toBe(200_000); // not the reduced 100k
+    const leadPayout = resumed.payouts.find((p) => p.memberId === leadMember.id);
+    const farmerPayout = resumed.payouts.find((p) => p.memberId === member2.id);
+    expect(leadPayout?.shareKobo).toBe(100_000); // original share, matching the posted entry
+    expect(farmerPayout?.shareKobo).toBe(100_000); // B paid in full — no underpayment
+    // The recorded row points at the ORIGINAL ledger entry (same amount).
+    expect(leadPayout?.ledgerEntryId).not.toBe('');
+    // Conservation holds and nothing is stranded in the pool.
+    expect(resumed.payouts.reduce((sum, p) => sum + p.shareKobo, 0)).toBe(200_000);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
+    expect(await service.getShareOut(cycle.id)).toHaveLength(2);
+
+    // A further close is a clean replay of the same report.
+    const replay = await service.closeCycle(lead, cycle.id);
+    expect(replay.distributableKobo).toBe(200_000);
+    expect(replay.payouts.map((p) => [p.memberId, p.shareKobo])).toEqual(
+      resumed.payouts.map((p) => [p.memberId, p.shareKobo])
+    );
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
+  });
+
+  it('concurrent closers converge on one persisted plan and one payout per member', async () => {
+    const { service, ledger, group, cycle } = await (async () => {
+      const ctx = makeService();
+      const fixture = await makeGroupWithCycle(ctx.service);
+      await contributeBoth(ctx.service, fixture.cycle.id, fixture.leadMember.id, fixture.member2.id);
+      return { ...ctx, ...fixture };
+    })();
+    const results = await Promise.allSettled([
+      service.closeCycle(lead, cycle.id),
+      service.closeCycle(lead, cycle.id)
+    ]);
+    // At most one closer wins the OPEN→CLOSED CAS; a loser 409s BEFORE any
+    // payout posts, and its retry replays the persisted plan cleanly.
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        expect(result.reason).toBeInstanceOf(ConflictException);
+      }
+    }
+    await service.closeCycle(lead, cycle.id);
+    const rows = await service.getShareOut(cycle.id);
+    expect(rows).toHaveLength(2); // exactly one payout row per member
+    expect(rows.reduce((sum, row) => sum + row.shareKobo, 0)).toBe(400_000);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
   });
 });
 
