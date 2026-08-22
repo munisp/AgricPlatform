@@ -59,9 +59,12 @@ CREATE TABLE IF NOT EXISTS identity.auth_sessions (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
+-- Seed role codes (natural keys referenced by the API). ON CONFLICT keeps a
+-- re-applied baseline idempotent (003/021 seed pattern; lint:sql DML rule).
 INSERT INTO identity.roles (code) VALUES
     ('farmer'), ('student'), ('buyer'), ('supplier'),
-    ('chapter_lead'), ('partner'), ('admin');
+    ('chapter_lead'), ('partner'), ('admin')
+ON CONFLICT (code) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- profiles: progressive member profiles
@@ -795,6 +798,7 @@ CREATE TABLE IF NOT EXISTS integrations.webhook_deliveries (
     UNIQUE (endpoint_id, external_id)
 );
 
+
 -- ---------------------------------------------------------------------------
 -- events: domain event outbox (transactional outbox pattern)
 -- ---------------------------------------------------------------------------
@@ -842,6 +846,7 @@ INSERT INTO integrations.providers (code, display_name, driver, status) VALUES
     ('nimet',       'NiMet Weather',       'stub', 'enabled'),
     ('openmeteo',   'Open-Meteo Weather',  'stub', 'enabled'),
     ('fewsnet',     'FEWS NET Prices',     'stub', 'enabled'),
-    ('farmos',      'farmOS',              'stub', 'disabled');
+    ('farmos',      'farmOS',              'stub', 'disabled')
+ON CONFLICT (code) DO NOTHING;
 
 COMMIT;
