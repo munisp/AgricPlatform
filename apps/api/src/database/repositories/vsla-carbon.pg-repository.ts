@@ -28,6 +28,9 @@ import type {
   VslaMemberRecord,
   VslaMemberRepository,
   VslaShareOutCriteria,
+  VslaShareOutPlanCriteria,
+  VslaShareOutPlanRecord,
+  VslaShareOutPlanRepository,
   VslaShareOutRecord,
   VslaShareOutRepository
 } from './vsla-carbon.repository.js';
@@ -486,6 +489,68 @@ export class PgVslaShareOutRepository implements VslaShareOutRepository {
   }
 }
 
+/**
+ * Persisted close-cycle distribution plan (stage-24 audit A4-4): the pro-rata
+ * payout vector is stored BEFORE the first payout posts, and crash-resume
+ * pays the remaining members from these rows — never recomputing shares from
+ * the reduced live pool.
+ */
+export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: VslaShareOutPlanRecord): Promise<VslaShareOutPlanRecord> {
+    try {
+      await this.pool.query(
+        'INSERT INTO vsla_carbon.vsla_share_out_plan (id, cycle_id, member_id, share_kobo, ' +
+          'contributed_kobo, residual_kobo, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [
+          record.id,
+          record.cycleId,
+          record.memberId,
+          record.shareKobo,
+          record.contributedKobo,
+          record.residualKobo,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'A share-out plan row already exists for this member');
+    }
+    return record;
+  }
+
+  async find(criteria: VslaShareOutPlanCriteria): Promise<VslaShareOutPlanRecord[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (criteria.cycleId) {
+      params.push(criteria.cycleId);
+      where.push(`cycle_id = $${params.length}`);
+    }
+    if (criteria.memberId) {
+      params.push(criteria.memberId);
+      where.push(`member_id = $${params.length}`);
+    }
+    const sql =
+      'SELECT * FROM vsla_carbon.vsla_share_out_plan' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY created_at, id';
+    const result = await this.pool.query(sql, params);
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  private fromRow(row: Record<string, unknown>): VslaShareOutPlanRecord {
+    return {
+      id: row.id as string,
+      cycleId: row.cycle_id as string,
+      memberId: row.member_id as string,
+      shareKobo: Number(row.share_kobo),
+      contributedKobo: Number(row.contributed_kobo),
+      residualKobo: Number(row.residual_kobo),
+      createdAt: toIso(row.created_at) as string
+    };
+  }
+}
+
 export class PgVslaLoanRepository implements VslaLoanRepository {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -579,6 +644,46 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
       throw new ConflictException(`VSLA loan '${id}' changed concurrently; reload and retry`);
     }
     return (await this.findById(id)) as VslaLoanRecord;
+  }
+
+  /**
+   * Claim-first repayment reservation (stage-24 audit A1-4/A4-5): one guarded
+   * UPDATE serializes concurrent repayments on the loan row lock — a racing
+   * claim that would overshoot total_due_kobo updates 0 rows and the caller
+   * 409s BEFORE any ledger posting, so money can never commit ahead of the
+   * loan aggregate again.
+   */
+  async claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined> {
+    const result = await this.pool.query(
+      `UPDATE vsla_carbon.vsla_loans
+       SET repaid_kobo = repaid_kobo + $1,
+           status = CASE
+             WHEN repaid_kobo + $1 >= total_due_kobo THEN 'REPAID'
+             ELSE status
+           END,
+           repaid_at = CASE
+             WHEN repaid_kobo + $1 >= total_due_kobo AND repaid_at IS NULL THEN now()
+             ELSE repaid_at
+           END
+       WHERE id = $2
+         AND status = 'ACTIVE'
+         AND repaid_kobo + $1 <= total_due_kobo
+       RETURNING *`,
+      [amountKobo, id]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  /** Compensating release for a claim whose posting failed (guarded). */
+  async rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE vsla_carbon.vsla_loans
+       SET repaid_kobo = repaid_kobo - $1,
+           status = 'ACTIVE',
+           repaid_at = NULL
+       WHERE id = $2 AND repaid_kobo >= $1`,
+      [amountKobo, id]
+    );
   }
 
   private fromRow(row: Record<string, unknown>): VslaLoanRecord {
@@ -938,6 +1043,10 @@ export function createPgVslaContributionRepository(pool: pg.Pool): PgVslaContrib
 
 export function createPgVslaShareOutRepository(pool: pg.Pool): PgVslaShareOutRepository {
   return new PgVslaShareOutRepository(pool);
+}
+
+export function createPgVslaShareOutPlanRepository(pool: pg.Pool): PgVslaShareOutPlanRepository {
+  return new PgVslaShareOutPlanRepository(pool);
 }
 
 export function createPgVslaLoanRepository(pool: pg.Pool): PgVslaLoanRepository {
