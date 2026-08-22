@@ -139,6 +139,7 @@ export class PgAgentBankingAgentRepository implements AgentBankingAgentRepositor
       organisation: row.organisation as string,
       status: row.status as AgentRecord['status'],
       floatAccountCode: row.float_account_code as string,
+      commissionAccountCode: row.commission_account_code as string,
       dailyLimitKobo: Number(row.daily_limit_kobo),
       lowFloatThresholdKobo: Number(row.low_float_threshold_kobo),
       createdAt: toIso(row.created_at) as string,
