@@ -1,16 +1,17 @@
 import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { PaymentProviderPort, User } from '@agric-platform/shared';
+import type { EscrowRecord, PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import { createInMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
+import { createInMemoryEscrowRepository, InMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
-import { EscrowService } from './escrow.service.js';
+import { ESCROW_HOLD_TTL_MS, EscrowService } from './escrow.service.js';
 import {
   LiveEscrowPayoutDriver,
   StubEscrowPayoutDriver,
-  type EscrowPayoutDriverPort
+  type EscrowPayoutDriverPort,
+  type EscrowPayoutResult
 } from './payout.driver.js';
 
 const buyer: Pick<User, 'id' | 'roles'> = { id: 'user-buyer', roles: ['buyer'] };
@@ -75,7 +76,12 @@ describe('EscrowService', () => {
       }
     };
     const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    // Provider wired ⇒ verification required ⇒ the hold needs verified
+    // deposit evidence (Stage 24, audit A1-1).
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-hold-ref',
+      verified: true
+    });
     expect(record.providerReference).toBe('ps_hold_123');
     expect(calls).toEqual(['hold:37000000']);
 
@@ -199,7 +205,10 @@ describe('EscrowService funds-integrity hardening', () => {
   it('persists the release intent BEFORE calling the provider and converges on retry', async () => {
     const { provider, calls } = fakeProvider({ release: 1 }); // first release call crashes
     const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-resume-1',
+      verified: true
+    });
 
     // Provider crash: the record is left in the resumable 'releasing' state.
     await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
@@ -223,7 +232,10 @@ describe('EscrowService funds-integrity hardening', () => {
   it('never double-releases: a concurrent release + refund race has exactly one winner', async () => {
     const { provider, calls } = fakeProvider();
     const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-race-1',
+      verified: true
+    });
 
     const [release, refund] = await Promise.allSettled([
       service.transition(record.id, 'released', buyer),
@@ -246,7 +258,10 @@ describe('EscrowService funds-integrity hardening', () => {
   it('system release path resumes a stuck releasing record', async () => {
     const { provider } = fakeProvider({ release: 1 });
     const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-resume-2',
+      verified: true
+    });
     await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
       BadGatewayException
     );
@@ -317,19 +332,34 @@ describe('EscrowService deposit verification evidence (audit C2)', () => {
 
   it('blocks auto-release of unverified holds when a provider is wired', async () => {
     const { provider } = fakeProvider();
-    const { service } = makeService(provider);
-    // Declarative hold (no provider verification) while a provider is wired.
-    await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'declared-ref',
-      verified: false
-    });
+    // Legacy pre-Stage-22 row: held with a declarative (never verified)
+    // deposit. New unverified holds can no longer be created while a
+    // provider is wired (Stage 24 hold gate), so seed the legacy row
+    // directly.
+    const legacy: EscrowRecord = {
+      id: 'escrow-legacy-unverified',
+      orderId: 'order-buyer-cassava',
+      amountKobo: 37_000_000,
+      status: 'held',
+      depositReference: 'declared-ref',
+      heldAt: new Date().toISOString(),
+      heldUntil: new Date(Date.now() + ESCROW_HOLD_TTL_MS).toISOString()
+    };
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      new InMemoryEscrowRepository([legacy]),
+      provider
+    );
     await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
       ConflictException
     );
     expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
-    // The admin-mediated path stays available for unverified holds.
-    const record = await service.escrowForOrder('order-buyer-cassava');
-    expect((await service.transition(record!.id, 'released', admin)).status).toBe('released');
+    // The admin-mediated path stays available for unverified holds — via
+    // DISPUTE resolution only (Stage 24, audit A1-1).
+    expect((await service.transition(legacy.id, 'disputed', seller)).status).toBe('disputed');
+    expect((await service.transition(legacy.id, 'released', admin)).status).toBe('released');
   });
 
   it('still auto-releases unverified holds when no provider is wired outside production', async () => {
@@ -411,7 +441,10 @@ describe('EscrowService payout rails (Stage 23)', () => {
   it('fails closed 503 in production with a stub driver — nothing recorded, escrow untouched', async () => {
     process.env.NODE_ENV = 'production';
     const { service, events, payouts } = makeService(undefined, new StubEscrowPayoutDriver());
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-prod-1',
+      verified: true
+    });
 
     await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
       ServiceUnavailableException
@@ -431,7 +464,10 @@ describe('EscrowService payout rails (Stage 23)', () => {
   it('fails closed 503 in production with no payout driver at all', async () => {
     process.env.NODE_ENV = 'production';
     const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-prod-2',
+      verified: true
+    });
     await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
       ServiceUnavailableException
     );
@@ -522,5 +558,191 @@ describe('EscrowService payout rails (Stage 23)', () => {
     expect(calls).toHaveLength(1);
     const attempts = await payouts!.all();
     expect(attempts.filter((a) => a.status === 'succeeded')).toHaveLength(1);
+  });
+});
+
+// Stage 24 (audit A1-1): verify-before-credit on EVERY money-out path —
+// the party-driven transition and the expiry sweep were ungated siblings of
+// the system release path. Adopted from the Stage-24 auditor red spec.
+describe('EscrowService verify gates on all money-out paths (Stage 24, audit A1-1)', () => {
+  it('refuses to create a hold without verified deposit evidence when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    // What POST /orders/:id/escrow used to do: hold with NO deposit evidence.
+    await expect(service.holdForOrder('order-buyer-cassava', buyer.id)).rejects.toThrowError(
+      ConflictException
+    );
+    await expect(
+      service.holdForOrder('order-buyer-cassava', buyer.id, {
+        reference: 'declared-ref',
+        verified: false
+      })
+    ).rejects.toThrowError(ConflictException);
+    expect(await service.escrowForOrder('order-buyer-cassava')).toBeUndefined();
+  });
+
+  it('the buyer-driven transition cannot release an unverified hold through the payout rail', async () => {
+    const { provider } = fakeProvider();
+    const { driver, calls } = fakePayoutDriver();
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const payouts = createInMemoryEscrowPayoutRepository();
+    const legacy: EscrowRecord = {
+      id: 'escrow-unverified-rail',
+      orderId: 'order-buyer-cassava',
+      amountKobo: 37_000_000,
+      status: 'held',
+      depositReference: 'declared-ref',
+      heldAt: new Date().toISOString(),
+      heldUntil: new Date(Date.now() + ESCROW_HOLD_TTL_MS).toISOString()
+    };
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      new InMemoryEscrowRepository([legacy]),
+      provider,
+      driver,
+      payouts
+    );
+    // System path refuses (Stage 22 gate, still holding):
+    await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      ConflictException
+    );
+    // Stage 24: the direct transition endpoint refuses identically — no
+    // payout attempt is recorded and the driver is never invoked.
+    await expect(service.transition(legacy.id, 'released', buyer)).rejects.toThrowError(
+      ConflictException
+    );
+    expect(calls).toHaveLength(0);
+    expect(await payouts.all()).toHaveLength(0);
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+  });
+
+  it('the expiry sweep skips (never refunds) an unverified hold when a provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { driver, calls } = fakePayoutDriver();
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const payouts = createInMemoryEscrowPayoutRepository();
+    const legacy: EscrowRecord = {
+      id: 'escrow-unverified-expiry',
+      orderId: 'order-buyer-cassava',
+      amountKobo: 37_000_000,
+      status: 'held',
+      depositReference: 'declared-ref',
+      heldAt: new Date().toISOString(),
+      heldUntil: new Date(Date.now() - 1000).toISOString() // already past deadline
+    };
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      new InMemoryEscrowRepository([legacy]),
+      provider,
+      driver,
+      payouts
+    );
+    const expired = await service.expireHeldEscrows(new Date().toISOString());
+    expect(expired).toHaveLength(0); // skipped, not refunded
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+    expect(calls).toHaveLength(0); // no refund of money never deposited
+    expect(await payouts.all()).toHaveLength(0);
+  });
+
+  it('the expiry sweep still refunds verified holds through the rail', async () => {
+    const { provider } = fakeProvider();
+    const { driver } = fakePayoutDriver();
+    const { service } = makeService(provider, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-expiry-ok',
+      verified: true
+    });
+    const afterDeadline = new Date(Date.parse(record.heldUntil!) + 1000).toISOString();
+    const expired = await service.expireHeldEscrows(afterDeadline);
+    expect(expired.map((row) => row.id)).toEqual([record.id]);
+    expect(expired[0].status).toBe('refunded');
+  });
+});
+
+// Stage 24 (audit A4-3): the payout attempt is CLAIMED (CAS to in_progress)
+// before the driver is invoked — concurrent retries never drive twice, and
+// a succeeded attempt can never regress to failed.
+describe('EscrowService payout attempt claims (Stage 24, audit A4-3)', () => {
+  it('two concurrent retries of a failed attempt invoke the driver exactly once', async () => {
+    const { driver, calls } = fakePayoutDriver(1); // first payout attempt crashes
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      BadGatewayException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('releasing');
+    expect((await payouts!.all())[0].status).toBe('failed');
+    expect(calls).toHaveLength(1);
+
+    // Two concurrent retries (double-click across channels): exactly one
+    // claims the attempt and drives; the loser sees 409 in-progress.
+    const outcomes = await Promise.allSettled([
+      service.transition(record.id, 'released', buyer),
+      service.transition(record.id, 'released', buyer)
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
+    expect(loser.reason).toBeInstanceOf(ConflictException);
+    expect(String(loser.reason.message)).toMatch(/in progress/);
+
+    // One driver invocation across both retries; one attempt row, succeeded.
+    expect(calls).toEqual([
+      `release:escrow-payout:release:${record.id}`,
+      `release:escrow-payout:release:${record.id}`
+    ]);
+    const attempts = await payouts!.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].status).toBe('succeeded');
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('released');
+  });
+
+  it('a fresh in_progress claim rejects the concurrent retry before any driver call', async () => {
+    // A driver that stays in flight until released, so the second caller
+    // observes a live claim.
+    let releaseDriver: (value: EscrowPayoutResult) => void = () => {};
+    const driver: EscrowPayoutDriverPort = {
+      name: 'stub',
+      payout: () =>
+        new Promise((res) => {
+          releaseDriver = res;
+        })
+    };
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const first = service.transition(record.id, 'released', buyer);
+    // Let the first claimant reach the driver.
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
+      ConflictException
+    );
+    expect((await payouts!.all())[0].status).toBe('in_progress');
+
+    releaseDriver({ providerReference: 'stub-payout:ok', basis: 'stub' });
+    expect((await first).status).toBe('released');
+    expect((await payouts!.all())[0].status).toBe('succeeded');
+  });
+
+  it('succeeded never regresses: a stale failure finalize is adopted, not written', async () => {
+    const { driver } = fakePayoutDriver();
+    const { service, payouts } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await service.transition(record.id, 'released', buyer);
+    const attempt = (await payouts!.all())[0];
+    expect(attempt.status).toBe('succeeded');
+
+    // A stale writer (e.g. a crashed-and-resumed twin) tries to finalize the
+    // same attempt as failed. The guarded write refuses the regression.
+    await expect(
+      payouts!.updateExpected(
+        attempt.id,
+        { status: 'failed', failureReason: 'late failure', updatedAt: new Date().toISOString() },
+        { status: 'in_progress' }
+      )
+    ).rejects.toThrowError(ConflictException);
+    expect((await payouts!.all())[0].status).toBe('succeeded');
   });
 });
