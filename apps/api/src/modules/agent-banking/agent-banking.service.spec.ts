@@ -44,11 +44,15 @@ async function makeService(env: NodeJS.ProcessEnv = {}) {
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
+  const agents = createInMemoryAgentBankingAgentRepository();
+  const topUps = createInMemoryAgentFloatTopUpRepository();
+  const vouchers = createInMemoryAgentVoucherRepository();
+  const transactions = createInMemoryAgentTransactionRepository();
   const service = new AgentBankingService(
-    createInMemoryAgentBankingAgentRepository(),
-    createInMemoryAgentFloatTopUpRepository(),
-    createInMemoryAgentVoucherRepository(),
-    createInMemoryAgentTransactionRepository(),
+    agents,
+    topUps,
+    vouchers,
+    transactions,
     ledger,
     users,
     events,
@@ -68,7 +72,7 @@ async function makeService(env: NodeJS.ProcessEnv = {}) {
     roles: ['farmer'],
     preferredLanguage: 'en'
   });
-  return { service, ledger, users, events, agentUser, farmer };
+  return { service, ledger, users, events, agentUser, farmer, agents, topUps, vouchers, transactions };
 }
 
 function agentActor(user: User): ActorRef {
@@ -875,5 +879,103 @@ describe('AgentBankingService — stage-22 money-race regressions', () => {
     expect(retried.voucher.status).toBe('REDEEMED');
     const entries = await ctx.ledger.listEntries({});
     expect(entries.filter((entry) => entry.idempotencyKey === `voucher-redemption:${voucher.id}`)).toHaveLength(1);
+  });
+});
+
+describe('AgentBankingService — stage-24 crash-safe redemption rollback (audit A1-6)', () => {
+  async function issuedVoucher(ctx: Awaited<ReturnType<typeof makeService>>, amountKobo = 100_000, key = 'v-a1-6') {
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const voucher = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo, idempotencyKey: key },
+      agentActor(ctx.agentUser)
+    );
+    return { agent, voucher };
+  }
+
+  async function redemptionEntries(ctx: Awaited<ReturnType<typeof makeService>>, voucherId: string) {
+    const entries = await ctx.ledger.listEntries({});
+    return entries.filter((entry) => entry.idempotencyKey === `voucher-redemption:${voucherId}`);
+  }
+
+  it('a redemption whose transaction-row insert fails after the payout does NOT re-open the voucher — resume pays exactly once', async () => {
+    const ctx = await makeService();
+    const { agent, voucher } = await issuedVoucher(ctx);
+    const farmer = { id: ctx.farmer.id, roles: ['farmer'] };
+
+    // Crash AFTER the payout posting commits but BEFORE the transaction row.
+    const originalCreate = ctx.transactions.create.bind(ctx.transactions);
+    let failOnce = true;
+    ctx.transactions.create = (async (record: Parameters<typeof originalCreate>[0]) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('simulated crash: transaction row insert failed after posting');
+      }
+      return originalCreate(record);
+    }) as typeof ctx.transactions.create;
+
+    // The claim must NOT roll back to ISSUED: the payout committed. The
+    // caller gets a 409 and the voucher stays REDEEMING for resume.
+    await expect(ctx.service.redeemVoucher(voucher.id, voucher.signature, farmer)).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMING');
+
+    // A void can no longer flip a PAID voucher to VOIDED.
+    await expect(ctx.service.voidVoucher(voucher.id, agentActor(ctx.agentUser))).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMING');
+
+    // The resume path replays the committed posting, writes the row and
+    // finalizes — the farmer is paid exactly once.
+    const retried = await ctx.service.redeemVoucher(voucher.id, voucher.signature, farmer);
+    expect(retried.voucher.status).toBe('REDEEMED');
+    expect(await redemptionEntries(ctx, voucher.id)).toHaveLength(1);
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(100_000);
+    expect((await ctx.service.floatBalance(agent.id)).balanceKobo).toBe(1_900_000);
+    expect(await ctx.transactions.find({ voucherId: voucher.id })).toHaveLength(1);
+  });
+
+  it('an ISSUED voucher with a committed redemption payout cannot be voided (legacy rollback state)', async () => {
+    const ctx = await makeService();
+    const { agent, voucher } = await issuedVoucher(ctx, 100_000, 'v-a1-6-legacy');
+    const farmer = { id: ctx.farmer.id, roles: ['farmer'] };
+    // The OLD rollback leg left exactly this state: ISSUED with the payout
+    // entry committed and no transaction row.
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+    await ctx.ledger.ensureAccount({
+      code: farmerWalletAccountCode(ctx.farmer.id),
+      type: 'asset',
+      ownerId: ctx.farmer.id
+    });
+    await ctx.ledger.postEntry(
+      {
+        idempotencyKey: `voucher-redemption:${voucher.id}`,
+        referenceType: 'agent_banking_voucher_redemption',
+        referenceId: 'agtx-crashed',
+        description: 'committed payout without its transaction row',
+        postings: [
+          { accountCode: farmerWalletAccountCode(ctx.farmer.id), direction: 'debit', amountKobo: 100_000 },
+          { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: 100_000 }
+        ],
+        requireSolventAccounts: [agent.floatAccountCode]
+      },
+      ctx.farmer.id
+    );
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'ISSUED' }, { status: 'REDEEMING' });
+
+    await expect(ctx.service.voidVoucher(voucher.id, agentActor(ctx.agentUser))).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED');
+
+    // The redeem resume settles the voucher exactly once.
+    const settled = await ctx.service.redeemVoucher(voucher.id, voucher.signature, farmer);
+    expect(settled.voucher.status).toBe('REDEEMED');
+    expect(await redemptionEntries(ctx, voucher.id)).toHaveLength(1);
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(100_000);
   });
 });
