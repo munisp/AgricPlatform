@@ -139,7 +139,6 @@ export class PgAgentBankingAgentRepository implements AgentBankingAgentRepositor
       organisation: row.organisation as string,
       status: row.status as AgentRecord['status'],
       floatAccountCode: row.float_account_code as string,
-      commissionAccountCode: row.commission_account_code as string,
       dailyLimitKobo: Number(row.daily_limit_kobo),
       lowFloatThresholdKobo: Number(row.low_float_threshold_kobo),
       createdAt: toIso(row.created_at) as string,
@@ -442,6 +441,10 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
     if (criteria.type) {
       params.push(criteria.type);
       where.push(`type = $${params.length}`);
+    }
+    if (criteria.voucherId) {
+      params.push(criteria.voucherId);
+      where.push(`voucher_id = $${params.length}`);
     }
     if (criteria.from) {
       params.push(criteria.from);
