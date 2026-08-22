@@ -97,4 +97,55 @@ describe('WebhookDispatchService', () => {
     service.onModuleInit();
     expect(events.on).toHaveBeenCalledWith('*', expect.any(Function));
   });
+
+  it('uses a stable per-event delivery id so receivers can dedupe re-drives', async () => {
+    const headersSeen: string[] = [];
+    const fetchImpl: WebhookFetch = async (_url, init) => {
+      headersSeen.push(init.headers['x-agric-delivery']);
+      return { status: 200 };
+    };
+    const { service } = makeService([{ eventTypes: ['enrolment.created'] }], fetchImpl);
+    const ev = event('learning.enrolment.created', {});
+    await service.dispatch('enrolment.created', ev);
+    await service.dispatch('enrolment.created', ev);
+    expect(headersSeen).toEqual([`whd_${ev.id}`, `whd_${ev.id}`]);
+  });
+
+  describe('at-least-once dispatch (A4-6)', () => {
+    it('throws and stays unprocessed on a failed delivery, then re-drives to success', async () => {
+      let calls = 0;
+      const fetchImpl: WebhookFetch = async () => {
+        calls += 1;
+        return { status: calls === 1 ? 500 : 200 };
+      };
+      const { service } = makeService([{ eventTypes: ['disbursement.recorded'] }], fetchImpl);
+      const ev = event('partner.disbursement.recorded', { id: 'disb-1' });
+
+      await expect(service.dispatchOnce('disbursement.recorded', ev)).rejects.toThrow(
+        /left unprocessed for sweeper re-drive/
+      );
+      expect(calls).toBe(1);
+
+      // Sweeper re-drive: dedup was never marked, so the delivery is retried.
+      await service.dispatchOnce('disbursement.recorded', ev);
+      expect(calls).toBe(2);
+
+      // Now recorded as processed: further re-drives are skipped.
+      await service.dispatchOnce('disbursement.recorded', ev);
+      expect(calls).toBe(2);
+    });
+
+    it('marks the event processed when there is nothing to deliver', async () => {
+      let calls = 0;
+      const fetchImpl: WebhookFetch = async () => {
+        calls += 1;
+        return { status: 200 };
+      };
+      const { service } = makeService([], fetchImpl);
+      const ev = event('partner.disbursement.recorded', { id: 'disb-2' });
+      await service.dispatchOnce('disbursement.recorded', ev);
+      await service.dispatchOnce('disbursement.recorded', ev);
+      expect(calls).toBe(0);
+    });
+  });
 });

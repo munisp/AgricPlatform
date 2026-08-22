@@ -6,4 +6,5 @@
 #    The quinn QUIC (UDP) code path is neither listened on nor dialed by this platform.
 #  - No fixed upstream release exists as of this writing (@temporalio/core-bridge 1.21.1, latest, still pins 0.11.14).
 #  - Revisit on every @temporalio/* upgrade; remove this ignore once upstream ships quinn-proto >= 0.11.15.
+#  - Expiry (audit-exceptions.json discipline): revisit by 2026-11-10; this ignore must be re-justified or removed then.
 GHSA-4w2j-m93h-cj5j

@@ -302,6 +302,29 @@ describe('AnalyticsProjectorService.project', () => {
     expect(fact).toMatchObject({ orderId: order.id, status: 'confirmed', placedAt: order.createdAt });
   });
 
+  it('leaves a throwing apply unprocessed and retries it on the next run (A4-7)', async () => {
+    const { star, projector, seed } = makeProjector({});
+    seed([EVENTS.userRegistered, EVENTS.listingCreated]);
+    const original = star.upsertDimUser.bind(star);
+    let fail = true;
+    (star as { upsertDimUser: unknown }).upsertDimUser = async (row: Parameters<typeof original>[0]) => {
+      if (fail) throw new Error('mart write unavailable');
+      return original(row);
+    };
+
+    const first = await projector.project();
+    expect(first.failed).toBe(1); // user event apply threw
+    expect(first.applied).toBe(1); // one bad event does not abort the run
+    expect(await star.dimUsers()).toEqual([]);
+
+    fail = false;
+    const second = await projector.project();
+    expect(second.failed).toBe(0);
+    expect(second.applied).toBe(1); // the failed event is retried, not lost
+    expect(second.skipped).toBe(1); // the applied event is dedup-recorded
+    expect(await star.dimUsers()).toHaveLength(1);
+  });
+
   it('skips events whose source entity is missing without failing the run', async () => {
     const { projector, seed } = makeProjector({});
     seed([event('evt-ghost', 'marketplace.order.placed', { orderId: 'order-ghost' }, '2026-08-01T00:00:00.000Z')]);
