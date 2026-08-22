@@ -21,8 +21,9 @@ import {
 import type { EscrowRepository } from '../../database/repositories/escrow.repository.js';
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 import {
+  claimPayoutAttempt,
+  finalizePayoutAttempt,
   hashPayoutPayload,
-  recordPayoutAttempt,
   type EscrowPayoutRepository
 } from '../../database/repositories/payout.repository.js';
 import { ESCROW_PAYOUT_DRIVER, type EscrowPayoutDriverPort } from './payout.driver.js';
@@ -110,6 +111,15 @@ export class EscrowService {
   }
 
   /**
+   * Lookup by provider-verified deposit reference (Stage 24, audit A1-2):
+   * one verified charge may credit exactly one order, so verifyDeposit
+   * consults this before crediting a reference.
+   */
+  async escrowForDepositReference(reference: string): Promise<EscrowRecord | undefined> {
+    return this.escrows.findOne({ depositReference: reference });
+  }
+
+  /**
    * True when deposits/releases must be backed by provider verification:
    * a provider is wired, or the process runs in production (fail closed —
    * declarative payment evidence is a non-production convenience only).
@@ -139,13 +149,18 @@ export class EscrowService {
    *      deposit path — deliberately not boot-fatal.
    *   2. The pending intent ('releasing'/'refunding') is persisted FIRST so a
    *      crash mid-payout leaves a resumable record.
-   *   3. The attempt is recorded under a deterministic idempotency key:
-   *      retries with the same key + payload replay (an already-succeeded
-   *      attempt skips the driver call entirely); the same key with a
-   *      different payload is a 409 (the repo's idempotency contract).
-   *   4. The driver is called; failure leaves the escrow in the pending
-   *      state and the attempt marked 'failed' so a retry converges instead
-   *      of double-paying.
+   *   3. The attempt is CLAIMED under a deterministic idempotency key
+   *      (Stage 24, audit A4-3): exactly one caller holds the 'in_progress'
+   *      claim and drives the payout; a concurrent retry seeing a fresh
+   *      claim is rejected 409 instead of invoking the driver a second
+   *      time; an already-succeeded attempt replays without any driver
+   *      call; the same key with a different payload is a 409 (the repo's
+   *      idempotency contract).
+   *   4. The driver is called by the claim holder only; the guarded
+   *      finalize can never regress 'succeeded' to 'failed'. A driver
+   *      failure leaves the escrow in the pending state and the attempt
+   *      marked 'failed' so a retry re-claims and converges instead of
+   *      double-paying.
    */
   private async executePayoutRail(
     record: EscrowRecord,
@@ -191,17 +206,16 @@ export class EscrowService {
       amountKobo: record.amountKobo
     };
     const now = new Date().toISOString();
-    const attempt = await recordPayoutAttempt(this.payouts, {
+    const claim = await claimPayoutAttempt(this.payouts, {
       id: newId('payout'),
       ...payload,
       idempotencyKey,
       payloadHash: hashPayoutPayload(payload),
       provider: this.payoutDriver.name,
-      status: 'recorded',
       createdAt: now,
       updatedAt: now
     });
-    if (attempt.status === 'succeeded') {
+    if (!claim.claimed) {
       // Replay of a retry after the driver succeeded but the process crashed
       // before the terminal write: never pay twice.
       return current;
@@ -212,18 +226,21 @@ export class EscrowService {
         idempotencyKey,
         depositProviderReference: record.providerReference
       });
-      await this.payouts.update(attempt.id, {
+      await finalizePayoutAttempt(this.payouts, claim.attempt, {
         status: 'succeeded',
-        providerReference: result.providerReference,
-        updatedAt: new Date().toISOString()
+        providerReference: result.providerReference
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.payouts.update(attempt.id, {
+      const finalized = await finalizePayoutAttempt(this.payouts, claim.attempt, {
         status: 'failed',
-        failureReason: message,
-        updatedAt: new Date().toISOString()
+        failureReason: message
       });
+      if (finalized.status === 'succeeded') {
+        // A concurrent claimant's driver call landed first: the payout
+        // happened, so the escrow may proceed — never regress it to failed.
+        return current;
+      }
       await this.audit?.record({
         actorId,
         action: 'marketplace.escrow.payout_failed',
@@ -260,6 +277,13 @@ export class EscrowService {
    * never double-hold. Deposit evidence (the buyer's payment reference and
    * whether a provider verified it) is persisted on the record so the
    * auto-release path can refuse unverified holds.
+   *
+   * Stage 24 (audit A1-1): when verification is required (a provider is
+   * wired, or production), a hold without provider-verified deposit evidence
+   * is REFUSED — an unfunded hold must never exist in a state where any
+   * money-out path could pay it out. The direct POST /orders/:id/escrow
+   * endpoint therefore re-verifies a caller-supplied payment reference
+   * (MarketplaceService.verifyDepositForHold) before calling this.
    */
   async holdForOrder(
     orderId: string,
@@ -273,6 +297,19 @@ export class EscrowService {
     const order = await this.orders.getById(orderId);
     if (order.status === 'cancelled') {
       throw new BadRequestException(`Cannot hold escrow for a cancelled order (${orderId})`);
+    }
+    if (this.verificationRequired() && deposit?.verified !== true) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.hold_blocked_unverified',
+        entityType: 'escrow_record',
+        entityId: orderId,
+        metadata: { orderId, depositReference: deposit?.reference }
+      });
+      throw new ConflictException(
+        `Refusing to hold escrow for order ${orderId} without provider-verified deposit ` +
+          'evidence; supply the payment reference so the deposit can be verified first.'
+      );
     }
     const amountKobo = order.totalNaira * 100;
     if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
@@ -357,7 +394,13 @@ export class EscrowService {
         );
       }
     }
-    return this.applyTransition(record, status, actor.id);
+    // Stage 24 (audit A1-1): the verify-before-credit gate applies to EVERY
+    // money-out transition, including this party-driven path. The single
+    // exception is an admin resolving a DISPUTED escrow (the documented
+    // admin-mediated path for legacy/unverified holds).
+    return this.applyTransition(record, status, actor.id, {
+      allowUnverified: isAdmin && record.status === 'disputed'
+    });
   }
 
   /**
@@ -425,12 +468,27 @@ export class EscrowService {
    * transition machinery. Safe to run repeatedly and concurrently — each
    * record moves exactly once; races against manual transitions surface as
    * conflicts and are skipped (the other transition already won).
+   *
+   * Stage 24 (audit A1-1): when verification is required, an EXPIRED but
+   * never-verified hold is NOT refunded — refunding it would pay out money
+   * that was never deposited. The sweep skips it (audited) and leaves it
+   * for the admin-mediated dispute path.
    */
   async expireHeldEscrows(now: string = new Date().toISOString()): Promise<EscrowRecord[]> {
     const held = await this.escrows.find({ status: 'held' });
     const expired: EscrowRecord[] = [];
     for (const record of held) {
       if (!record.heldUntil || record.heldUntil > now) {
+        continue;
+      }
+      if (this.verificationRequired() && !record.depositVerifiedAt) {
+        await this.audit?.record({
+          actorId: 'system',
+          action: 'marketplace.escrow.expiry_blocked_unverified',
+          entityType: 'escrow_record',
+          entityId: record.id,
+          metadata: { orderId: record.orderId, depositReference: record.depositReference }
+        });
         continue;
       }
       try {
@@ -448,10 +506,33 @@ export class EscrowService {
   private async applyTransition(
     record: EscrowRecord,
     status: EscrowStatus,
-    actorId: string
+    actorId: string,
+    options?: { allowUnverified?: boolean }
   ): Promise<EscrowRecord> {
     let current = record;
     const moneyOut = status === 'released' || status === 'refunded';
+    // Stage 24 (audit A1-1): verify-before-credit on EVERY money-out path —
+    // party-driven transitions, system release/refund, and the expiry sweep
+    // alike. Only the admin-mediated dispute resolution may move money for
+    // an unverified hold (opts.allowUnverified, set by transition()).
+    if (
+      moneyOut &&
+      !options?.allowUnverified &&
+      this.verificationRequired() &&
+      !record.depositVerifiedAt
+    ) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.money_out_blocked_unverified',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId: record.orderId, targetStatus: status, depositReference: record.depositReference }
+      });
+      throw new ConflictException(
+        `Escrow ${record.id} has no provider-verified deposit; refusing ${status}. ` +
+          'Resolve through the admin-mediated dispute path.'
+      );
+    }
     const providerBacked = moneyOut && record.providerReference && this.provider;
     if (moneyOut && this.payoutRequired()) {
       // Stage 23: the disbursement rail owns money-out transitions whenever a
