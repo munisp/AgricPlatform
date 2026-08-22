@@ -431,7 +431,7 @@ describe('pledge / lien', () => {
 
   it('refuses stub-basis collateral registrations for pledges in production (fail closed)', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret');
+    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret-32ch!');
     const liveFeed: WarehouseCertificationFeed = {
       name: 'live',
       check: () => Promise.resolve({ status: 'certified', basis: 'live', reference: 'LIVE-1' })
@@ -448,7 +448,7 @@ describe('pledge / lien', () => {
 
   it('allows live-registered pledges in production', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret');
+    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret-32ch!');
     const liveFeed: WarehouseCertificationFeed = {
       name: 'live',
       check: () => Promise.resolve({ status: 'certified', basis: 'live', reference: 'LIVE-1' })
