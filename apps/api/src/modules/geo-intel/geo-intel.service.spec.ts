@@ -139,6 +139,30 @@ describe('GeoIntelService.assessFloodRisk', () => {
     );
   });
 
+  it('fails closed with 503 in production on the stub driver (audit A3-11)', async () => {
+    // The stub driver serves a deterministic FABRICATED fixture; production
+    // must never serve it (mirrors the weather snapshot and insurance
+    // flood-trigger doctrine). No audit/event side effects on the refusal.
+    process.env.NODE_ENV = 'production';
+    const { service, audit, events } = makeService();
+    await expect(service.assessFloodRisk(actor, { lat: 9, long: 8 })).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    await expect(service.assessFloodRisk(actor, { lat: 9, long: 8 })).rejects.toThrow(
+      /flood-ml sidecar in production/
+    );
+    expect(audit.record).not.toHaveBeenCalled();
+    expect(events.publish).not.toHaveBeenCalled();
+  });
+
+  it('serves the labelled stub fixture outside production (doctrine unchanged)', async () => {
+    process.env.NODE_ENV = 'development';
+    const { service } = makeService();
+    const result = await service.assessFloodRisk(actor, { lat: 9, long: 8 });
+    expect(result.driver).toBe('stub');
+    expect(result.source).toContain('stub-fixture');
+  });
+
   it('fails closed with 503 when the sidecar is unreachable (never silently stubs)', async () => {
     process.env.FLOOD_ML_DRIVER = 'http';
     process.env.FLOOD_ML_URL = 'http://flood-ml:8001';

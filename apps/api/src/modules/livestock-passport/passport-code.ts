@@ -1,4 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_HMAC_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 /**
  * Public passport verification code (wave-livestock-passport). Mirrors the
@@ -85,13 +90,22 @@ export function verifyPassportCode(
   return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(storedSignature, 'hex'));
 }
 
-/** Resolves the signing secret; fails closed when production lacks one. */
+/**
+ * Resolves the signing secret; fails closed when production lacks one.
+ * Production additionally rejects the published development default (its
+ * 43 chars are worthless — it is committed in this repo) and enforces a
+ * length floor (audit A3-2).
+ */
 export function resolvePassportCodeSecret(env: NodeJS.ProcessEnv = process.env): string {
+  assertProductionSecretStrength(env, 'LIVESTOCK_PASSPORT_SECRET', {
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_PASSPORT_CODE_SECRET]
+  });
   const configured = env.LIVESTOCK_PASSPORT_SECRET?.trim();
   if (configured && configured.length >= 16) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
     throw new Error(
       'LIVESTOCK_PASSPORT_SECRET (>= 16 chars) is required in production — refusing to sign livestock passport codes with the development default.'
     );

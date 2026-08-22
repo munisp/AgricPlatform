@@ -18,6 +18,7 @@ import type {
   User
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -507,6 +508,16 @@ export class InsuranceService {
       try {
         if (product.trigger.metric === 'flood_rank') {
           const driver = this.resolveFloodDriver();
+          // Fail closed (mirrors the warehouse deposit basis guard): a stub
+          // flood assessment is a fabricated fixture and must never book real
+          // ledger payouts in production.
+          if (isProduction() && driver.name !== 'http') {
+            throw new ServiceUnavailableException(
+              'Flood trigger evaluation requires the live flood-ml sidecar in production ' +
+                '(FLOOD_ML_DRIVER=http + FLOOD_ML_URL); the deterministic stub driver would ' +
+                'book ledger payouts from fabricated data. Refusing to evaluate.'
+            );
+          }
           const assessment = await driver.assess({
             latitude: plot.centroidLat,
             longitude: plot.centroidLong
@@ -516,6 +527,15 @@ export class InsuranceService {
           basis.weather = 'unavailable'; // not consulted for flood products
         } else {
           const provider = this.resolveWeatherProvider();
+          // Fail closed: stub weather observations are fabricated fixtures and
+          // must never book real ledger payouts in production.
+          if (isProduction() && provider.name !== 'http') {
+            throw new ServiceUnavailableException(
+              'Weather trigger evaluation requires the live weather provider in production ' +
+                '(WEATHER_API_URL + WEATHER_API_KEY); the deterministic stub provider would ' +
+                'book ledger payouts from fabricated data. Refusing to evaluate.'
+            );
+          }
           const series = await provider.observe({
             h3Cell,
             season: policy.season,
@@ -606,6 +626,11 @@ export class InsuranceService {
       await this.proposePayout(actor, policy, persisted.record, report);
       return { policyId: policy.id, h3Cell, status: 'triggered' };
     } catch (error) {
+      // The production stub-provider guard above fails the whole run closed —
+      // never downgrade it to a per-cell 'failed' outcome.
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
       if (isWeatherProviderError(error)) {
         report.unavailable += 1;
         return { ...fallbackCell, status: 'unavailable' };

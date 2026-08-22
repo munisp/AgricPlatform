@@ -6,6 +6,7 @@ import {
   UnauthorizedException
 } from '@nestjs/common';
 import type { FarmPlot, User } from '@agric-platform/shared';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { FarmsService } from '../farms/farms.service.js';
@@ -165,6 +166,19 @@ export class GeoIntelService {
     }
 
     const driver = this.resolveDriver();
+    // Fail closed (audit A3-11, mirrors the insurance flood-trigger guard in
+    // insurance.service.ts and the weather snapshot 503 in
+    // integrations.service.ts): the stub driver returns a deterministic
+    // FABRICATED fixture, and the "never serve fabricated data in
+    // production" doctrine applies to the direct endpoint too — operators
+    // must wire FLOOD_ML_DRIVER=http + FLOOD_ML_URL for live inference.
+    if (isProduction() && driver.name !== 'http') {
+      throw new ServiceUnavailableException(
+        'Flood-risk assessment requires the live flood-ml sidecar in production ' +
+          '(FLOOD_ML_DRIVER=http + FLOOD_ML_URL); the deterministic stub driver would ' +
+          'serve fabricated data. Refusing to assess.'
+      );
+    }
     let assessment: FloodRiskAssessment;
     try {
       assessment = await driver.assess({ latitude, longitude });

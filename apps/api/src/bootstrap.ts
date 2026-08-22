@@ -1,4 +1,5 @@
 import { ValidationPipe } from '@nestjs/common';
+import { isProduction } from './common/auth/auth.config.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
@@ -65,17 +66,19 @@ export function configureApp(app: NestExpressApplication): void {
   app.useGlobalInterceptors(app.get(HttpMetricsInterceptor));
 
   // API documentation is disabled in production unless explicitly enabled.
-  if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_API_DOCS === 'true') {
+  // The OpenAPI JSON route is gated by the SAME predicate (audit A3-6):
+  // serving it unconditionally made the production docs gate cosmetic —
+  // the full route table, DTO schemas, and auth annotations are public
+  // recon. The web developer portal fetches the document at build time,
+  // not from a production runtime.
+  if (!isProduction() || process.env.ENABLE_API_DOCS === 'true') {
     const document = buildOpenApiDocument(app);
     SwaggerModule.setup('api/v1/docs', app, document);
+    const openApiHandler: express.RequestHandler = (_req, res) => {
+      res.json(buildOpenApiDocument(app));
+    };
+    app.getHttpAdapter().getInstance().get('/api/v1/openapi.json', openApiHandler);
   }
-
-  // Wave P: the generated OpenAPI spec is always served as JSON (the web
-  // developer portal regenerates its catalogue from this document).
-  const openApiHandler: express.RequestHandler = (_req, res) => {
-    res.json(buildOpenApiDocument(app));
-  };
-  app.getHttpAdapter().getInstance().get('/api/v1/openapi.json', openApiHandler);
 
   app.enableShutdownHooks();
 }

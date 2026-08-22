@@ -64,6 +64,7 @@ describe('nin-crypto (wave NINVOUCHER)', () => {
   });
 
   it('resolveNinHashSalt accepts a configured salt in production', () => {
-    expect(resolveNinHashSalt({ NODE_ENV: 'production', NIN_HASH_SALT: 'prod-salt' })).toBe('prod-salt');
+    const salt = 'prod-nin-salt-with-32-chars-min!';
+    expect(resolveNinHashSalt({ NODE_ENV: 'production', NIN_HASH_SALT: salt })).toBe(salt);
   });
 });

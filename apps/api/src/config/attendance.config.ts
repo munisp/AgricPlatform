@@ -1,4 +1,8 @@
-import { isProduction } from '../common/auth/auth.config.js';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_HMAC_SECRET_MIN_LENGTH
+} from '../common/auth/auth.config.js';
 
 /**
  * Dev-only fallback signing secret. NEVER acceptable in production — the
@@ -14,11 +18,18 @@ export const DEV_ATTENDANCE_SECRET = 'dev-only-attendance-signing-secret';
  * attendance codes. Outside production a fixed dev-only secret keeps local
  * development and tests deterministic.
  *
- * Operators must provision `ATTENDANCE_SIGNING_SECRET` (>= 16 chars, high
+ * Operators must provision `ATTENDANCE_SIGNING_SECRET` (>= 32 chars, high
  * entropy) via the deployment secret store; the variable is documented here
- * only and intentionally not committed anywhere else.
+ * only and intentionally not committed anywhere else. Production rejects
+ * the published dev-only fallback even when it is explicitly configured
+ * (audit A3-2 — its length passes naive floor checks but its entropy is
+ * zero because it is committed in this repository).
  */
 export function resolveAttendanceSecret(env: NodeJS.ProcessEnv = process.env): string {
+  assertProductionSecretStrength(env, 'ATTENDANCE_SIGNING_SECRET', {
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_ATTENDANCE_SECRET]
+  });
   const secret = env.ATTENDANCE_SIGNING_SECRET;
   if (secret && secret.length >= 16) {
     return secret;

@@ -4,15 +4,23 @@
  * `PARTNER_API_DRIVER`:
  *   - `sandbox` (default outside production): tokens are signed with a
  *     development-only secret when PARTNER_API_SIGNING_SECRET is unset, and
- *     responses are flagged `sandbox: true`.
- *   - `live`: requires PARTNER_API_SIGNING_SECRET; production boots fail
- *     closed without it (assertProductionPartnerApiConfig, wired in main.ts).
+ *     responses are flagged `sandbox: true`. FORBIDDEN in production —
+ *     assertProductionPartnerApiConfig aborts the boot (fail closed).
+ *   - `live`: requires a private PARTNER_API_SIGNING_SECRET (never the
+ *     published development secret); production boots fail closed without it
+ *     (assertProductionPartnerApiConfig, wired in main.ts).
  *
  * Rate limiting: each partner client gets a token bucket of
  * `rate_limit_per_min` requests per 60s window (default 1000). Burst policy:
  * the bucket starts full and refills continuously, so short bursts up to the
  * full minute's allowance are accepted, then throttled to the sustained rate.
  */
+
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_SHARED_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 export interface PartnerApiConfig {
   driver: 'sandbox' | 'live';
@@ -45,13 +53,26 @@ export function loadPartnerApiConfig(env: NodeJS.ProcessEnv = process.env): Part
  * start instead (mirrors assertProductionDriverConfig in integrations).
  */
 export function assertProductionPartnerApiConfig(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.NODE_ENV !== 'production') {
+  if (!isProduction(env)) {
     return;
   }
-  if (env.PARTNER_API_DRIVER === 'live' && !env.PARTNER_API_SIGNING_SECRET) {
+  // Fail closed: the sandbox driver signs partner tokens with the PUBLISHED
+  // development secret (PARTNER_API_DEV_SECRET) when none is configured —
+  // silently accepting it in production would let anyone mint valid partner
+  // tokens. Production requires the live driver, full stop.
+  if (env.PARTNER_API_DRIVER !== 'live') {
     throw new Error(
-      'FATAL: PARTNER_API_DRIVER=live requires PARTNER_API_SIGNING_SECRET so partner ' +
-        'access tokens are signed with a private key. Refusing to start.'
+      'FATAL: NODE_ENV=production requires PARTNER_API_DRIVER=live. The sandbox driver ' +
+        'signs partner access tokens with the published development secret and is forbidden ' +
+        'in production. Refusing to start.'
     );
   }
+  // Partner access tokens are HS256: any observed token is an offline
+  // brute-force oracle for the signing secret, so production enforces a
+  // length floor in addition to rejecting the published development secret
+  // (audit A3-5 — 'abc' was previously accepted).
+  assertProductionSecretStrength(env, 'PARTNER_API_SIGNING_SECRET', {
+    minLength: PRODUCTION_SHARED_SECRET_MIN_LENGTH,
+    publishedDefaults: [PARTNER_API_DEV_SECRET]
+  });
 }

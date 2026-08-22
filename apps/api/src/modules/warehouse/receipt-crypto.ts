@@ -1,4 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_HMAC_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 /**
  * e-WHR signature scheme (wave WAREHOUSE), mirroring the agent-banking
@@ -68,13 +73,22 @@ export function verifyReceiptSignature(
   return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
 }
 
-/** Resolves the signing secret; fails closed when production lacks one. */
+/**
+ * Resolves the signing secret; fails closed when production lacks one.
+ * Production additionally rejects the published development default and
+ * enforces a length floor (audit A3-2/A3-3).
+ */
 export function resolveReceiptSecret(env: NodeJS.ProcessEnv = process.env): string {
+  assertProductionSecretStrength(env, 'WAREHOUSE_RECEIPT_SECRET', {
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_RECEIPT_SECRET]
+  });
   const configured = env.WAREHOUSE_RECEIPT_SECRET?.trim();
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
+    // Unreachable (the strength gate above throws first); defense in depth.
     throw new Error(
       'WAREHOUSE_RECEIPT_SECRET is required in production — refusing to sign receipts with the development default.'
     );

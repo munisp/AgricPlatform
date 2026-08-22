@@ -1,4 +1,9 @@
 import { createHmac } from 'node:crypto';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_HMAC_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 /**
  * NIN handling for the input-subsidy voucher rail (wave NINVOUCHER),
@@ -42,13 +47,23 @@ export function maskNin(nin: string): string {
   return `${'*'.repeat(normalized.length - 3)}${normalized.slice(-3)}`;
 }
 
-/** Resolves the hash salt; fails closed when production lacks one. */
+/**
+ * Resolves the hash salt; fails closed when production lacks one.
+ * Production additionally rejects the published development default and
+ * enforces a length floor (audit A3-2/A3-3) — a short/known pepper leaves
+ * the 11-digit NIN space open to offline dictionary attack.
+ */
 export function resolveNinHashSalt(env: NodeJS.ProcessEnv = process.env): string {
+  assertProductionSecretStrength(env, 'NIN_HASH_SALT', {
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_NIN_HASH_SALT]
+  });
   const configured = env.NIN_HASH_SALT?.trim();
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
+    // Unreachable (the strength gate above throws first); defense in depth.
     throw new Error(
       'NIN_HASH_SALT is required in production — refusing to hash NINs with the development default.'
     );

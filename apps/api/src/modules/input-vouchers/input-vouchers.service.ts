@@ -6,9 +6,11 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional
+  Optional,
+  ServiceUnavailableException
 } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -331,6 +333,17 @@ export class InputVouchersService {
       nin: input.nin,
       fullName: input.fullName
     });
+    // Fail closed (belt-and-braces behind the createIdentityDriver boot ban,
+    // mirroring the warehouse deposit basis guard): a stub-basis verdict is a
+    // publicly computable hash and must never enrol a beneficiary in
+    // production, even if a stub port was injected by hand.
+    if (isProduction() && result.basis !== 'live') {
+      throw new ServiceUnavailableException(
+        'NIN identity verification did not come from the live provider (basis is not live). ' +
+          'Refusing the enrolment in production — configure NIN_DRIVER=live with the licensed ' +
+          'identity vendor credentials.'
+      );
+    }
     if (!result.verified) {
       throw new BadRequestException(
         `NIN verification failed (basis: ${result.basis}). The farmer was NOT enrolled.`

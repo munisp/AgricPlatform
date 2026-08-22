@@ -5,8 +5,12 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
 import { assertProductionAuthConfig } from './common/auth/auth.config.js';
-import { assertProductionDriverConfig } from './modules/integrations/adapters.js';
+import {
+  assertProductionDriverConfig,
+  assertProductionWebhookSecrets
+} from './modules/integrations/adapters.js';
 import { assertProductionPartnerApiConfig } from './modules/partner-api/partner-api.config.js';
+import { assertProductionPhase3WebhookTokens } from './modules/integrations/phase3/phase3.utils.js';
 
 async function bootstrap(): Promise<void> {
   // Fail closed: refuse to boot a production process that cannot verify
@@ -14,7 +18,9 @@ async function bootstrap(): Promise<void> {
   // credentials (docs/security-compliance.md §1/§6).
   assertProductionAuthConfig();
   assertProductionDriverConfig();
+  assertProductionWebhookSecrets();
   assertProductionPartnerApiConfig();
+  assertProductionPhase3WebhookTokens();
 
   // bufferLogs: startup logs are captured until the pino logger is bound.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });

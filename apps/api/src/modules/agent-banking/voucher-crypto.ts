@@ -1,4 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_HMAC_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 /**
  * Offline-voucher signature scheme (wave AGENTBANK). A voucher payload —
@@ -59,13 +64,24 @@ export function verifyVoucherSignature(
   return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
 }
 
-/** Resolves the signing secret; fails closed when production lacks one. */
+/**
+ * Resolves the signing secret; fails closed when production lacks one.
+ * Production additionally rejects the published development default
+ * (zero entropy — it is committed in this repo) and enforces a length
+ * floor (audit A3-2/A3-3).
+ */
 export function resolveVoucherSecret(env: NodeJS.ProcessEnv = process.env): string {
+  assertProductionSecretStrength(env, 'AGENT_VOUCHER_SECRET', {
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_VOUCHER_SECRET]
+  });
   const configured = env.AGENT_VOUCHER_SECRET?.trim();
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
+    // Unreachable (the strength gate above throws first); kept as a
+    // defense-in-depth guard for future refactors.
     throw new Error(
       'AGENT_VOUCHER_SECRET is required in production — refusing to sign vouchers with the development default.'
     );
