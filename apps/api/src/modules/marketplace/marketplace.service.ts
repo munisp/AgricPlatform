@@ -50,6 +50,20 @@ import { InvoiceService } from './invoice.service.js';
 /** Orders at or above this value stay escrow-ready for settlement. */
 const ESCROW_THRESHOLD_NAIRA = 100_000;
 
+/**
+ * Stage 24 (audit A1-8): a listing price must be representable in whole
+ * kobo — priceNaira * 100 a safe integer — otherwise any order total can
+ * strand mid-deposit (status written, escrow hold throwing on the
+ * fractional kobo) with a verified charge orphaned at the provider.
+ */
+export function assertKoboRepresentable(priceNaira: number): void {
+  if (!Number.isSafeInteger(priceNaira * 100)) {
+    throw new BadRequestException(
+      `priceNaira ${priceNaira} is not representable in whole kobo; use at most two decimal places`
+    );
+  }
+}
+
 /** Which order party may drive each transition (admins may drive any of them). */
 type OrderActor = 'buyer' | 'seller';
 
@@ -183,6 +197,7 @@ export class MarketplaceService {
   }
 
   async createListing(input: CreateListingInput): Promise<MarketplaceListing> {
+    assertKoboRepresentable(input.priceNaira);
     const listing: MarketplaceListing = {
       id: newId('listing'),
       sellerId: input.sellerId,
@@ -213,6 +228,9 @@ export class MarketplaceService {
     patch: UpdateListingInput,
     actorId: string
   ): Promise<MarketplaceListing> {
+    if (patch.priceNaira !== undefined) {
+      assertKoboRepresentable(patch.priceNaira);
+    }
     const updated = await this.listings.update(id, patch);
     await this.events.publish('marketplace.listing.updated', { listingId: id }, actorId);
     await this.syncVersioning?.recordChange({
@@ -303,6 +321,17 @@ export class MarketplaceService {
   ): Promise<Order> {
     const order = await this.orders.getById(id);
     if (order.status === status) {
+      // Stage 24 (audit A1-8): a prior deposit_paid attempt may have crashed
+      // between the status write and the escrow hold. Re-drive the idempotent
+      // hold on replay (with freshly re-verified evidence when verification
+      // is required) so a paid order is never stranded without its escrow.
+      if (status === 'deposit_paid' && order.escrowRequired && this.escrow) {
+        const existing = await this.escrow.escrowForOrder(id);
+        if (!existing) {
+          const deposit = await this.verifyDeposit(order, options?.paymentReference, actor.id);
+          await this.escrow.holdForOrder(id, actor.id, deposit);
+        }
+      }
       return order; // idempotent replay of a retry
     }
     const allowed = ORDER_TRANSITIONS[order.status]?.[status];
@@ -396,6 +425,21 @@ export class MarketplaceService {
           'declarative payment claims are not accepted'
       );
     }
+    // Stage 24 (audit A1-2): one verified charge credits exactly one order.
+    // A reference already persisted on ANOTHER order's escrow record is a
+    // pay-once/credit-N attempt — reject it before crediting again. The
+    // same reference on THIS order's escrow is an idempotent replay. The
+    // 049 partial UNIQUE index on deposit_payment_reference closes the
+    // concurrent-first-use race (23505 → 409 on the escrow create).
+    if (this.escrow) {
+      const credited = await this.escrow.escrowForDepositReference(reference);
+      if (credited && credited.orderId !== order.id) {
+        throw new ConflictException(
+          `Payment reference '${reference}' was already credited to order ${credited.orderId}; ` +
+            `one verified charge can credit exactly one order (refusing order ${order.id})`
+        );
+      }
+    }
     if (!this.payments) {
       if (isProduction()) {
         throw new ServiceUnavailableException(
@@ -435,6 +479,26 @@ export class MarketplaceService {
   }
 
   /**
+   * Stage 24 (audit A1-1): evidence for the direct POST /orders/:id/escrow
+   * endpoint. When verification is required, the caller must supply the
+   * payment reference so it can be re-verified with the provider (and
+   * checked for cross-order reuse) before EscrowService will create the
+   * hold; without a provider outside production the declarative hold is a
+   * convenience and no evidence is needed (undefined).
+   */
+  async verifyDepositForHold(
+    orderId: string,
+    paymentReference: string | undefined,
+    actorId: string
+  ): Promise<DepositEvidence | undefined> {
+    if (!this.payments && !isProduction()) {
+      return undefined; // declarative holds are a non-production convenience
+    }
+    const order = await this.orders.getById(orderId);
+    return this.verifyDeposit(order, paymentReference, actorId);
+  }
+
+  /**
    * Completion auto-release gate (Stage 22, audit C2): an escrow-backed
    * order may only complete (releasing escrow and marking the invoice paid)
    * when its deposit reached deposit_paid through the verified path. Runs
@@ -452,7 +516,17 @@ export class MarketplaceService {
       return; // declarative holds are a non-production convenience
     }
     const record = await this.escrow.escrowForOrder(order.id);
-    if (record && (record.status === 'held' || record.status === 'releasing') && !record.depositVerifiedAt) {
+    // Stage 24 (audit A1-8): an escrow-required order with NO escrow record
+    // at all (a stranded deposit_paid whose hold failed, or a legacy row)
+    // must not complete — the verified charge would sit orphaned at the
+    // provider with no escrow to settle it.
+    if (!record) {
+      throw new ConflictException(
+        `Order ${order.id} cannot complete: it requires escrow but no escrow record exists. ` +
+          'Re-drive the deposit_paid transition with the payment reference to create the hold.'
+      );
+    }
+    if ((record.status === 'held' || record.status === 'releasing') && !record.depositVerifiedAt) {
       throw new ConflictException(
         `Order ${order.id} cannot complete: escrow ${record.id} has no provider-verified ` +
           'deposit. Resolve through the admin-mediated path.'
