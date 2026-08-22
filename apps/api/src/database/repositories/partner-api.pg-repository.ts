@@ -127,7 +127,7 @@ function apiKeyCriteriaSql(criteria: ApiKeyCriteria): WhereClause {
 }
 
 function webhookSubscriptionCriteriaSql(criteria: WebhookSubscriptionCriteria): WhereClause {
-  return composeWhere(eq('client_id', criteria.clientId), eq('status'), eq('status', criteria.status));
+  return composeWhere(eq('client_id', criteria.clientId), eq('status', criteria.status));
 }
 
 export class PgPartnerClientRepository
