@@ -178,7 +178,11 @@ const pool = process.env.DATABASE_URL
   ? new pg.Pool({ connectionString: process.env.DATABASE_URL })
   : null;
 
-const CONTRACT_PREFIX = 'contract-payout-';
+// NOTE: deliberately NOT 'contract-*' — pg-repositories.spec.ts cleans up
+// `LIKE 'contract-%'` across shared tables while suites run in parallel, so
+// contract-prefixed rows here would be deleted mid-test (and its escrow
+// DELETE would FK-fail against our payout rows).
+const CONTRACT_PREFIX = 'payoutclaim-';
 
 /**
  * Seeds the FK chain a payout row needs: listing → order → escrow
