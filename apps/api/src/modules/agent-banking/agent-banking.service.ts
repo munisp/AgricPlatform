@@ -580,39 +580,34 @@ export class AgentBankingService {
     const today = new Date().toISOString().slice(0, 10);
     const { from, to } = dayBounds(today);
     const todays = await this.transactions.find({ agentId: agent.id, from, to });
-    const used = todays
-      .filter((tx) => tx.type === 'cash_in' || tx.type === 'cash_out')
-      .reduce((sum, tx) => sum + tx.amountKobo, 0);
+    const used = todays.reduce((sum, tx) => sum + tx.amountKobo, 0);
     if (used + amountKobo > agent.dailyLimitKobo) {
       throw new BadRequestException(
-        `Daily limit exceeded: ${used + amountKobo} kobo would exceed the ${agent.dailyLimitKobo} kobo daily limit`
+        `Agent daily limit exceeded: ${used + amountKobo} kobo would pass the ${agent.dailyLimitKobo} kobo daily limit`
       );
     }
   }
 
-  /**
-   * Accrues commission per the active tariff card (commission.ts):
-   * DR platform:commission_expense / CR agent:<id>:commission_payable.
-   * Idempotent per source transaction (commission:<sourceKey>).
-   */
+  /** Posts the commission accrual entry; returns the accrued kobo. */
   private async accrueCommission(
     agent: AgentRecord,
     type: CommissionableType,
     amountKobo: number,
-    sourceKey: string,
-    sourceId: string,
+    idempotencyKey: string,
+    referenceId: string,
     actorId: string
   ): Promise<number> {
     const commissionKobo = commissionFor(type, amountKobo);
-    if (commissionKobo === 0) {
+    if (commissionKobo <= 0) {
       return 0;
     }
+    await this.ledger.ensureAccount({ code: PLATFORM_COMMISSION_EXPENSE_ACCOUNT, type: 'expense' });
     await this.ledger.postEntry(
       {
-        idempotencyKey: `commission:${sourceKey}`,
+        idempotencyKey: `agent-commission:${idempotencyKey}`,
         referenceType: 'agent_banking_commission',
-        referenceId: sourceId,
-        description: `Commission accrual for agent ${agent.id} (${type})`,
+        referenceId,
+        description: `Agent commission accrual (${type}) for ${agent.id}`,
         postings: [
           { accountCode: PLATFORM_COMMISSION_EXPENSE_ACCOUNT, direction: 'debit', amountKobo: commissionKobo },
           { accountCode: agent.commissionAccountCode, direction: 'credit', amountKobo: commissionKobo }
