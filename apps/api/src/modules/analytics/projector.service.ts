@@ -60,6 +60,8 @@ export interface ProjectionRunResult {
   applied: number;
   /** Events skipped as already processed (dedup ledger hits). */
   skipped: number;
+  /** Events whose apply threw; left UNPROCESSED so the next run retries. */
+  failed: number;
   /** Lagos calendar days whose daily rollup was recomputed. */
   recomputedDates: string[];
   ranAt: string;
@@ -79,9 +81,13 @@ interface ProjectorContext {
  * rollup rows for every touched Lagos calendar day.
  *
  * Idempotency is layered, so catch-up is safe:
- *   1. events.processed_events (EventDedupService) skips redelivered events;
+ *   1. events.processed_events (EventDedupService) records an event only
+ *      AFTER its apply succeeded (mark-after-apply, audit A4-7): a throwing
+ *      apply leaves the event unprocessed and the next run retries it;
  *   2. every write is an upsert keyed by the natural key (order_id,
- *      entry_id, animal_id, user_id, listing_id, metric_date);
+ *      entry_id, animal_id, user_id, listing_id, metric_date), so replaying
+ *      an applied-but-unrecorded event (crash between apply and mark)
+ *      converges to identical rows;
  *   3. mart_daily_metrics is RECOMPUTED from the fact tables, never
  *      incremented — replaying the full outbox history yields identical rows.
  *
@@ -116,6 +122,7 @@ export class AnalyticsProjectorService {
     };
     let applied = 0;
     let skipped = 0;
+    let failed = 0;
     let lastEvent: DomainEvent | undefined;
 
     for (const record of records) {
@@ -123,12 +130,25 @@ export class AnalyticsProjectorService {
       if (!(PROJECTED_EVENT_NAMES as readonly string[]).includes(event.name)) {
         continue;
       }
-      if (!(await this.dedup.once(ANALYTICS_PROJECTOR_CONSUMER, event.id))) {
+      if (await this.dedup.has(ANALYTICS_PROJECTOR_CONSUMER, event.id)) {
         skipped += 1;
         lastEvent = event;
         continue;
       }
-      await this.apply(event, context);
+      try {
+        await this.apply(event, context);
+      } catch (error) {
+        // Do NOT record the event: it stays unprocessed and the next run
+        // retries it (A4-7). One bad event must not abort the whole run.
+        failed += 1;
+        this.logger.warn(
+          `projection of event ${event.id} (${event.name}) failed: ${
+            error instanceof Error ? error.message : String(error)
+          } — left unprocessed for the next run`
+        );
+        continue;
+      }
+      await this.dedup.mark(ANALYTICS_PROJECTOR_CONSUMER, event.id);
       applied += 1;
       lastEvent = event;
     }
@@ -142,9 +162,9 @@ export class AnalyticsProjectorService {
       processedDelta: applied
     });
     this.logger.log(
-      `projection run: scanned=${records.length} applied=${applied} skipped=${skipped} dates=${recomputedDates.length}`
+      `projection run: scanned=${records.length} applied=${applied} skipped=${skipped} failed=${failed} dates=${recomputedDates.length}`
     );
-    return { scanned: records.length, applied, skipped, recomputedDates, ranAt };
+    return { scanned: records.length, applied, skipped, failed, recomputedDates, ranAt };
   }
 
   /** Applies one event to the marts. Missing source entities are skipped
