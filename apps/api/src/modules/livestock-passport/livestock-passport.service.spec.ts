@@ -249,7 +249,7 @@ describe('LivestockPassportService', () => {
 
     it('issues in production when the authority check is live-basis', async () => {
       vi.stubEnv('NODE_ENV', 'production');
-      vi.stubEnv('LIVESTOCK_PASSPORT_SECRET', 'spec-passport-signing-secret');
+      vi.stubEnv('LIVESTOCK_PASSPORT_SECRET', 'spec-passport-signing-secret-32ch');
       const liveAuthority = {
         name: 'http' as const,
         checkTag: vi.fn().mockResolvedValue({
