@@ -109,7 +109,7 @@ describe('OrderOpsService edit', () => {
     const order = await placedVariantOrder(stack, 2);
     await expect(stack.ops.editQuantity(order.id, 3, outsider)).rejects.toThrowError(ForbiddenException);
     await stack.marketplace.setOrderStatus(order.id, 'confirmed', { id: 'user-farmer-2', roles: ['farmer'] });
-    await stack.marketplace.setOrderStatus(order.id, 'deposit_paid', buyer);
+    await stack.marketplace.setOrderStatus(order.id, 'deposit_paid', buyer, { paymentReference: 'test:dep-ops' });
     await stack.marketplace.setOrderStatus(order.id, 'in_fulfilment', { id: 'user-farmer-2', roles: ['farmer'] });
     await expect(stack.ops.editQuantity(order.id, 3, buyer)).rejects.toThrowError(/before fulfilment/);
   });

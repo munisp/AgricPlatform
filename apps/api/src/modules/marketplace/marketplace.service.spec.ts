@@ -1,6 +1,6 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
-import type { User } from '@agric-platform/shared';
+import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryListingRepository } from '../../database/repositories/listing.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
@@ -43,7 +43,11 @@ function makeService() {
 describe('MarketplaceService order state machine', () => {
   it('walks the happy path with actor-scoped transitions', async () => {
     const { marketplace } = makeService();
-    expect((await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer)).status).toBe('deposit_paid');
+    expect(
+      (await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'test:dep-happy'
+      })).status
+    ).toBe('deposit_paid');
     expect((await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller)).status).toBe('in_fulfilment');
     expect((await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller)).status).toBe('delivered');
     expect((await marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer)).status).toBe('completed');
@@ -78,7 +82,11 @@ describe('MarketplaceService order state machine', () => {
       ForbiddenException
     );
     // Admin override still respects valid transitions.
-    expect((await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', admin)).status).toBe('deposit_paid');
+    expect(
+      (await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', admin, {
+        paymentReference: 'test:dep-admin'
+      })).status
+    ).toBe('deposit_paid');
     // Dispute resolution is admin-mediated.
     await marketplace.setOrderStatus('order-buyer-cassava', 'disputed', buyer);
     await expect(marketplace.setOrderStatus('order-buyer-cassava', 'cancelled', buyer)).rejects.toThrowError(
@@ -92,7 +100,9 @@ describe('MarketplaceService order state machine', () => {
     expect((await marketplace.setOrderStatus('order-buyer-cassava', 'confirmed', buyer)).status).toBe('confirmed');
     expect((await events.listOutbox()).filter((e) => e.name === 'marketplace.order.status_changed')).toHaveLength(0);
 
-    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'test:dep-replay'
+    });
     await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer);
     expect((await events.listOutbox()).filter((e) => e.name === 'marketplace.order.status_changed')).toHaveLength(1);
   });
@@ -136,28 +146,36 @@ describe('MarketplaceService oversell protection (funds-integrity wave)', () => 
 });
 
 // Wave P2a: order lifecycle hooks into escrow + invoicing (wired optionally).
+// Hoisted to module scope so the Stage 22 verify-before-credit specs reuse it.
+function makeWiredService(payments?: PaymentProviderPort) {
+  const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const listings = createInMemoryListingRepository();
+  const orders = createInMemoryOrderRepository();
+  const escrow = new EscrowService(events, orders, createInMemoryEscrowRepository(), payments);
+  const invoices = new InvoiceService(
+    events,
+    createInMemoryInvoiceRepository(),
+    orders,
+    listings
+  );
+  const marketplace = new MarketplaceService(
+    events,
+    listings,
+    orders,
+    createInMemoryReviewRepository(),
+    escrow,
+    invoices,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    payments
+  );
+  return { marketplace, escrow, invoices, orders };
+}
+
 describe('MarketplaceService commerce hooks', () => {
-  function makeWiredService() {
-    const events = new DomainEventsService(createInMemoryOutboxRepository());
-    const listings = createInMemoryListingRepository();
-    const orders = createInMemoryOrderRepository();
-    const escrow = new EscrowService(events, orders, createInMemoryEscrowRepository());
-    const invoices = new InvoiceService(
-      events,
-      createInMemoryInvoiceRepository(),
-      orders,
-      listings
-    );
-    const marketplace = new MarketplaceService(
-      events,
-      listings,
-      orders,
-      createInMemoryReviewRepository(),
-      escrow,
-      invoices
-    );
-    return { marketplace, escrow, invoices };
-  }
 
   // Seller of seed listing 'listing-maize-kano'.
   const maizeSeller: Pick<User, 'id' | 'roles'> = { id: 'user-farmer-2', roles: ['farmer'] };
@@ -171,7 +189,7 @@ describe('MarketplaceService commerce hooks', () => {
     expect(invoice?.status).toBe('issued');
     expect(invoice?.totalKobo).toBe(order.totalNaira * 100 + computeVatKobo(order.totalNaira * 100));
 
-    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer);
+    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer, { paymentReference: 'test:dep-inv' });
     const held = await escrow.escrowForOrder(order.id);
     expect(held?.status).toBe('held');
     expect(held?.amountKobo).toBe(order.totalNaira * 100);
@@ -179,7 +197,9 @@ describe('MarketplaceService commerce hooks', () => {
 
   it('releases escrow and marks the invoice paid on completion', async () => {
     const { marketplace, escrow, invoices } = makeWiredService();
-    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'test:dep-rel'
+    });
     expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
     await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
     await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
@@ -203,7 +223,7 @@ describe('MarketplaceService commerce hooks', () => {
     const { marketplace, escrow } = makeWiredService();
     const order = await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
     await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
-    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer);
+    await marketplace.setOrderStatus(order.id, 'deposit_paid', buyer, { paymentReference: 'test:dep-dispute' });
     await marketplace.setOrderStatus(order.id, 'disputed', buyer);
     await marketplace.setOrderStatus(order.id, 'cancelled', admin);
     // Escrow stays disputed (money movement requires admin mediation).
@@ -211,6 +231,139 @@ describe('MarketplaceService commerce hooks', () => {
     expect((await escrow.transition((await escrow.escrowForOrder(order.id))!.id, 'refunded', admin)).status).toBe(
       'refunded'
     );
+  });
+});
+
+// Seed order 'order-buyer-cassava': totalNaira 370_000 → 37_000_000 kobo.
+// Hoisted to module scope so the Stage 24 deposit/hold specs reuse them.
+const ORDER_KOBO = 37_000_000;
+
+function stubPayments(overrides: Partial<{ status: 'success' | 'pending' | 'failed'; amountKobo: number }> = {}) {
+  const calls: string[] = [];
+  const provider: PaymentProviderPort = {
+    name: 'stub-paystack',
+    verify: async (reference) => {
+      calls.push(reference);
+      return {
+        reference,
+        status: overrides.status ?? 'success',
+        amountKobo: overrides.amountKobo ?? ORDER_KOBO,
+        providerReference: `prov:${reference}`
+      };
+    },
+    hold: async () => ({}),
+    release: async () => {},
+    refund: async () => {}
+  };
+  return { provider, calls };
+}
+
+// Stage 22 (audit C2): verify-before-credit for the deposit_paid/escrow path.
+describe('MarketplaceService verify-before-credit (audit C2)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('rejects deposit_paid without a paymentReference', async () => {
+    const { marketplace } = makeWiredService();
+    await expect(marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer)).rejects.toThrowError(
+      BadRequestException
+    );
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, { paymentReference: '  ' })
+    ).rejects.toThrowError(/paymentReference/);
+    // The rejected transition left the order untouched.
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('confirmed');
+  });
+
+  it('verifies the reference with the provider, then transitions and holds escrow', async () => {
+    const { provider, calls } = stubPayments();
+    const { marketplace, escrow } = makeWiredService(provider);
+    const updated = await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'paystack:ref-ok'
+    });
+    expect(updated.status).toBe('deposit_paid');
+    expect(calls).toEqual(['paystack:ref-ok']);
+    const held = await escrow.escrowForOrder('order-buyer-cassava');
+    expect(held?.status).toBe('held');
+    expect(held?.amountKobo).toBe(ORDER_KOBO);
+    expect(held?.depositReference).toBe('paystack:ref-ok');
+    expect(held?.depositVerifiedAt).toBeDefined();
+  });
+
+  it('rejects a verified amount that does not match the order total', async () => {
+    const { provider } = stubPayments({ amountKobo: ORDER_KOBO - 100 });
+    const { marketplace, escrow } = makeWiredService(provider);
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'paystack:ref-short'
+      })
+    ).rejects.toThrowError(/does not match/);
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('confirmed');
+    expect(await escrow.escrowForOrder('order-buyer-cassava')).toBeUndefined();
+  });
+
+  it('rejects deposits the provider does not report as success', async () => {
+    const { provider } = stubPayments({ status: 'pending' });
+    const { marketplace } = makeWiredService(provider);
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'paystack:ref-pending'
+      })
+    ).rejects.toThrowError(BadRequestException);
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('confirmed');
+  });
+
+  it('fails closed in production when no payment provider is configured', async () => {
+    process.env.NODE_ENV = 'production';
+    const { marketplace } = makeWiredService();
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'declared-ref'
+      })
+    ).rejects.toThrowError(ServiceUnavailableException);
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('confirmed');
+  });
+
+  it('allows declarative deposits outside production without a provider, marked unverified', async () => {
+    const { marketplace, escrow } = makeWiredService();
+    const updated = await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'declared-ref'
+    });
+    expect(updated.status).toBe('deposit_paid');
+    const held = await escrow.escrowForOrder('order-buyer-cassava');
+    expect(held?.depositReference).toBe('declared-ref');
+    expect(held?.depositVerifiedAt).toBeUndefined();
+  });
+
+  it('completes and auto-releases escrow for verified deposits', async () => {
+    const { provider } = stubPayments();
+    const { marketplace, escrow } = makeWiredService(provider);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'paystack:ref-ok'
+    });
+    await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer);
+    expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('released');
+  });
+
+  it('blocks completion auto-release for orders whose deposit was never verified', async () => {
+    // Deposit reached declaratively (no provider wired at the time)…
+    const { marketplace, escrow } = makeWiredService();
+    await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'declared-ref'
+    });
+    await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
+    // …then the environment demands verification (production): completion is refused.
+    process.env.NODE_ENV = 'production';
+    await expect(marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer)).rejects.toThrowError(
+      ConflictException
+    );
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('delivered');
+    expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
   });
 });
 
@@ -373,3 +526,158 @@ describe('MarketplaceService certified listing link (G18)', () => {
     expect(created.certifiedListingId).toBeUndefined();
   });
 });
+
+// Stage 24 (audit A1-2): one verified payment reference credits exactly one
+// order. Adopted from the Stage-24 auditor red spec.
+describe('MarketplaceService deposit reference uniqueness (Stage 24, audit A1-2)', () => {
+  const CASSAVA_KOBO = 18_500_000; // listing-cassava-kaduna: ₦185,000/unit
+
+  function cassavaPayments() {
+    const provider: PaymentProviderPort = {
+      name: 'stub-paystack',
+      // The provider truthfully reports the SAME charge as success repeatedly.
+      verify: async (reference) => ({
+        reference,
+        status: 'success' as const,
+        amountKobo: CASSAVA_KOBO,
+        providerReference: `prov:${reference}`
+      }),
+      hold: async () => ({}),
+      release: async () => {},
+      refund: async () => {}
+    };
+    return provider;
+  }
+
+  it('rejects a reference already credited to another order (one charge, one credit)', async () => {
+    const { marketplace, escrow } = makeWiredService(cassavaPayments());
+    const order1 = await marketplace.placeOrder('listing-cassava-kaduna', buyer.id as string, 1);
+    const order2 = await marketplace.placeOrder('listing-cassava-kaduna', buyer.id as string, 1);
+    for (const order of [order1, order2]) {
+      await marketplace.setOrderStatus(order.id, 'confirmed', seller);
+    }
+    // The buyer pays ONCE (₦185,000) and tries to reuse the reference.
+    const SHARED_REFERENCE = 'paystack:ref-paid-once';
+    expect(
+      (
+        await marketplace.setOrderStatus(order1.id, 'deposit_paid', buyer, {
+          paymentReference: SHARED_REFERENCE
+        })
+      ).status
+    ).toBe('deposit_paid');
+    await expect(
+      marketplace.setOrderStatus(order2.id, 'deposit_paid', buyer, {
+        paymentReference: SHARED_REFERENCE
+      })
+    ).rejects.toThrowError(ConflictException);
+    // The rejected order never credited: still confirmed, no escrow held.
+    expect((await marketplace.getOrder(order2.id)).status).toBe('confirmed');
+    expect(await escrow.escrowForOrder(order2.id)).toBeUndefined();
+    // Exactly one escrow carries the reference.
+    const credited = await escrow.escrowForDepositReference(SHARED_REFERENCE);
+    expect(credited?.orderId).toBe(order1.id);
+    // A replay for the SAME order stays idempotent (no false 409).
+    expect(
+      (
+        await marketplace.setOrderStatus(order1.id, 'deposit_paid', buyer, {
+          paymentReference: SHARED_REFERENCE
+        })
+      ).status
+    ).toBe('deposit_paid');
+  });
+});
+
+// Stage 24 (audit A1-8): fractional-kobo prices are rejected at listing
+// write time, and a deposit_paid whose escrow hold crashed is re-drivable.
+describe('MarketplaceService deposit/hold atomicity (Stage 24, audit A1-8)', () => {
+  it('rejects listings whose price is not representable in whole kobo', async () => {
+    const { marketplace } = makeService();
+    await expect(
+      marketplace.createListing({
+        sellerId: seller.id!,
+        kind: 'produce',
+        title: 'Fractional kobo maize',
+        quantity: 10,
+        unit: 'tonnes',
+        priceNaira: 100.005, // ×100 = 10000.4999… kobo — strands deposits
+        location: { state: 'Kano', lga: 'Kano Municipal' }
+      })
+    ).rejects.toThrowError(BadRequestException);
+    // Kobo-representable fractional prices (two decimals) remain valid.
+    const ok = await marketplace.createListing({
+      sellerId: seller.id!,
+      kind: 'produce',
+      title: 'Whole-kobo maize',
+      quantity: 10,
+      unit: 'tonnes',
+      priceNaira: 100.05,
+      location: { state: 'Kano', lga: 'Kano Municipal' }
+    });
+    expect(ok.priceNaira).toBe(100.05);
+  });
+
+  it('re-drives a stranded escrow hold on deposit_paid replay', async () => {
+    const { provider, calls } = stubPayments();
+    const { marketplace, escrow } = makeWiredService(provider);
+    sabotageHoldOnce(escrow);
+
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'paystack:ref-crash'
+      })
+    ).rejects.toThrowError('simulated crash');
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('deposit_paid');
+    expect(await escrow.escrowForOrder('order-buyer-cassava')).toBeUndefined();
+
+    // The deposit_paid replay re-verifies and re-drives the idempotent hold.
+    const replayed = await marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+      paymentReference: 'paystack:ref-crash'
+    });
+    expect(replayed.status).toBe('deposit_paid');
+    const held = await escrow.escrowForOrder('order-buyer-cassava');
+    expect(held?.status).toBe('held');
+    expect(held?.depositReference).toBe('paystack:ref-crash');
+    expect(held?.depositVerifiedAt).toBeDefined();
+    expect(calls).toEqual(['paystack:ref-crash', 'paystack:ref-crash']); // re-verified on replay
+
+    // And now the order completes through the verified path.
+    await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
+    expect(
+      (await marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer)).status
+    ).toBe('completed');
+    expect((await escrow.escrowForOrder('order-buyer-cassava'))?.status).toBe('released');
+  });
+
+  it('blocks completion of an escrow-required order whose hold never landed', async () => {
+    const { provider } = stubPayments();
+    const { marketplace, escrow } = makeWiredService(provider);
+    sabotageHoldOnce(escrow);
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'deposit_paid', buyer, {
+        paymentReference: 'paystack:ref-stranded'
+      })
+    ).rejects.toThrowError('simulated crash');
+    // The verified charge exists but no escrow settles it: completion is
+    // refused instead of paying the seller around the rail.
+    await marketplace.setOrderStatus('order-buyer-cassava', 'in_fulfilment', seller);
+    await marketplace.setOrderStatus('order-buyer-cassava', 'delivered', seller);
+    await expect(
+      marketplace.setOrderStatus('order-buyer-cassava', 'completed', buyer)
+    ).rejects.toThrowError(ConflictException);
+    expect((await marketplace.getOrder('order-buyer-cassava')).status).toBe('delivered');
+  });
+});
+
+/** Sabotages the next holdForOrder call (crash between status write and hold). */
+function sabotageHoldOnce(escrow: EscrowService): void {
+  const original = escrow.holdForOrder.bind(escrow);
+  let failOnce = true;
+  escrow.holdForOrder = (async (...args: Parameters<typeof original>) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error('simulated crash: hold failed after status write');
+    }
+    return original(...args);
+  }) as typeof escrow.holdForOrder;
+}

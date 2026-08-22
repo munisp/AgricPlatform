@@ -1,14 +1,16 @@
 import type pg from 'pg';
-import type { EscrowRecord, Invoice, Shipment } from '@agric-platform/shared';
+import type { EscrowPayout, EscrowRecord, Invoice, Shipment } from '@agric-platform/shared';
 import {
   composeWhere,
   eq,
   PgRepositoryBase,
   type WhereClause
 } from '../pg/pg-repository.base.js';
-import { escrowMapper, invoiceMapper, shipmentMapper } from '../pg/row-mappers.js';
+import { escrowPayoutMapper, escrowRecordMapper } from '../pg/escrow.mapper.js';
+import { invoiceMapper, shipmentMapper } from '../pg/row-mappers.js';
 import type { EscrowCriteria, EscrowRepository } from './escrow.repository.js';
 import type { InvoiceCriteria, InvoiceRepository } from './invoice.repository.js';
+import type { EscrowPayoutCriteria, EscrowPayoutRepository } from './payout.repository.js';
 import type { ShipmentCriteria, ShipmentRepository } from './shipment.repository.js';
 
 /**
@@ -16,7 +18,11 @@ import type { ShipmentCriteria, ShipmentRepository } from './shipment.repository
  * marketplace.invoices + invoice_counters, marketplace.shipments).
  */
 export function escrowCriteriaSql(criteria: EscrowCriteria): WhereClause {
-  return composeWhere(eq('order_id', criteria.orderId), eq('status', criteria.status));
+  return composeWhere(
+    eq('order_id', criteria.orderId),
+    eq('status', criteria.status),
+    eq('deposit_payment_reference', criteria.depositReference)
+  );
 }
 
 export class PgEscrowRepository
@@ -26,7 +32,9 @@ export class PgEscrowRepository
   constructor(pool: pg.Pool) {
     super(pool, {
       table: 'marketplace.escrow_records',
-      mapper: escrowMapper,
+      // Stage 22 (audit C2): wrapper mapper adds the deposit-evidence
+      // columns from migration 045 to the base escrowMapper.
+      mapper: escrowRecordMapper,
       criteria: escrowCriteriaSql
     });
   }
@@ -84,6 +92,37 @@ export class PgShipmentRepository
 
 export function createPgEscrowRepository(pool: pg.Pool): PgEscrowRepository {
   return new PgEscrowRepository(pool);
+}
+
+/**
+ * Stage 23: pg repository for marketplace.escrow_payouts
+ * (infra/postgres/048_escrow_payouts.sql) — recorded payout attempts behind
+ * the escrow payout driver rail.
+ */
+export function escrowPayoutCriteriaSql(criteria: EscrowPayoutCriteria): WhereClause {
+  return composeWhere(
+    eq('escrow_id', criteria.escrowId),
+    eq('order_id', criteria.orderId),
+    eq('idempotency_key', criteria.idempotencyKey),
+    eq('status', criteria.status)
+  );
+}
+
+export class PgEscrowPayoutRepository
+  extends PgRepositoryBase<EscrowPayout, EscrowPayoutCriteria>
+  implements EscrowPayoutRepository
+{
+  constructor(pool: pg.Pool) {
+    super(pool, {
+      table: 'marketplace.escrow_payouts',
+      mapper: escrowPayoutMapper,
+      criteria: escrowPayoutCriteriaSql
+    });
+  }
+}
+
+export function createPgEscrowPayoutRepository(pool: pg.Pool): PgEscrowPayoutRepository {
+  return new PgEscrowPayoutRepository(pool);
 }
 
 export function createPgInvoiceRepository(pool: pg.Pool): PgInvoiceRepository {
