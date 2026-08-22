@@ -60,9 +60,9 @@ describe('assertAtCallbackToken (audit C2-3)', () => {
   });
 
   it('fails closed in production when no token is configured', () => {
-    expect(() => assertAtCallbackToken('anything', {} as NodeJS.ProcessEnv, true)).toThrowError(
-      UnauthorizedException
-    );
+    expect(() =>
+      assertAtCallbackToken('anything', {} as NodeJS.ProcessEnv, true)
+    ).toThrowError(UnauthorizedException);
   });
 
   it('stays open outside production when no token is configured (test/dev posture)', () => {
