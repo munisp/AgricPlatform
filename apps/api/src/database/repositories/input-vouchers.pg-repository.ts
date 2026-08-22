@@ -1,13 +1,18 @@
 import { ConflictException } from '@nestjs/common';
 import type pg from 'pg';
 import type {
+  AllocationTx,
   BeneficiaryCriteria,
   BeneficiaryRecord,
   BeneficiaryRepository,
+  FundingEventRecord,
+  FundingTopUpResult,
   InputVoucherCriteria,
   InputVoucherRecord,
   InputVoucherRepository,
   ProgrammeCriteria,
+  ProgrammeFundingRecord,
+  ProgrammeFundingRepository,
   RedemptionCriteria,
   RedemptionRecord,
   RedemptionRepository,
@@ -94,6 +99,37 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
       ' ORDER BY created_at';
     const result = await this.pool.query(sql, params);
     return result.rows.map((row) => this.fromRow(row));
+  }
+
+  /**
+   * Allocation serialisation (stage 22, audit C2-10): locks the programme row
+   * (SELECT ... FOR UPDATE) inside a transaction for the callback's duration
+   * so a concurrent allocation for the same programme waits until this
+   * check+insert finishes — two 60% allocations can no longer both pass the
+   * budget check. Transaction style mirrors ledger.pg-repository.postEntry.
+   *
+   * Stage 24 (audit A4-2): the callback receives the transaction client so
+   * the conditional float-reserve UPDATE and the voucher INSERT run on THIS
+   * connection — reserve + create commit together or roll back together.
+   * Before this change they autocommitted on other pool connections, so a
+   * post-commit failure could unreserve the backing of a LIVE voucher.
+   */
+  async withAllocationLock<T>(programmeId: string, fn: (tx?: AllocationTx) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM input_vouchers.programmes WHERE id = $1 FOR UPDATE', [
+        programmeId
+      ]);
+      const result = await fn(client as unknown as AllocationTx);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async updateExpected(
@@ -235,9 +271,9 @@ export class PgBeneficiaryRepository implements BeneficiaryRepository {
 export class PgInputVoucherRepository implements InputVoucherRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async create(record: InputVoucherRecord): Promise<InputVoucherRecord> {
+  async create(record: InputVoucherRecord, tx?: AllocationTx): Promise<InputVoucherRecord> {
     try {
-      await this.pool.query(
+      await (tx ?? this.pool).query(
         'INSERT INTO input_vouchers.vouchers (id, programme_id, beneficiary_id, farmer_id, amount_kobo, ' +
           'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at) ' +
           'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
@@ -448,4 +484,183 @@ export function createPgInputVoucherRepository(pool: pg.Pool): PgInputVoucherRep
 
 export function createPgRedemptionRepository(pool: pg.Pool): PgRedemptionRepository {
   return new PgRedemptionRepository(pool);
+}
+
+/**
+ * Funded-float backing store (stage 23, audit C3 —
+ * infra/postgres/046_voucher_programme_funding.sql). The reserve/settle/
+ * release mutations are single conditional statements so concurrent issuers
+ * serialise on the funding row lock and a lost race moves 0 rows instead of
+ * overdrawing the float. Settle/release are marker-keyed: the event insert
+ * (UNIQUE idempotency_key) and the funding UPDATE commit in ONE statement,
+ * so crash-resume replays apply the move exactly once per voucher.
+ */
+export class PgProgrammeFundingRepository implements ProgrammeFundingRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async getFunding(programmeId: string): Promise<ProgrammeFundingRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM input_vouchers.programme_funding WHERE programme_id = $1',
+      [programmeId]
+    );
+    return result.rows[0] ? this.fundingFromRow(result.rows[0]) : undefined;
+  }
+
+  async creditTopUp(event: FundingEventRecord): Promise<FundingTopUpResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'INSERT INTO input_vouchers.programme_funding (programme_id) VALUES ($1) ON CONFLICT DO NOTHING',
+        [event.programmeId]
+      );
+      const inserted = await client.query(
+        'INSERT INTO input_vouchers.programme_funding_events ' +
+          '(id, programme_id, kind, amount_kobo, idempotency_key, reference, created_by, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (idempotency_key) DO NOTHING RETURNING *',
+        [
+          event.id,
+          event.programmeId,
+          event.kind,
+          event.amountKobo,
+          event.idempotencyKey,
+          event.reference ?? null,
+          event.createdBy,
+          event.createdAt
+        ]
+      );
+      let record: FundingEventRecord;
+      let replayed: boolean;
+      if (inserted.rows[0]) {
+        await client.query(
+          'UPDATE input_vouchers.programme_funding SET funded_kobo = funded_kobo + $1, updated_at = now() ' +
+            'WHERE programme_id = $2',
+          [event.amountKobo, event.programmeId]
+        );
+        record = this.eventFromRow(inserted.rows[0]);
+        replayed = false;
+      } else {
+        const existing = await client.query(
+          'SELECT * FROM input_vouchers.programme_funding_events WHERE idempotency_key = $1',
+          [event.idempotencyKey]
+        );
+        const original = existing.rows[0] ? this.eventFromRow(existing.rows[0]) : undefined;
+        // Stage 24 (audit A4-9): same idempotency key + different payload is
+        // a client bug on a money endpoint — 409, never a silent replay
+        // (payout-rail payload-hash doctrine).
+        if (
+          original &&
+          (original.programmeId !== event.programmeId ||
+            original.kind !== event.kind ||
+            original.amountKobo !== event.amountKobo)
+        ) {
+          throw new ConflictException(
+            `Idempotency key '${event.idempotencyKey}' was already used with a different funding payload`
+          );
+        }
+        record = original as FundingEventRecord;
+        replayed = true;
+      }
+      const funding = await client.query(
+        'SELECT * FROM input_vouchers.programme_funding WHERE programme_id = $1',
+        [event.programmeId]
+      );
+      await client.query('COMMIT');
+      return { event: record, funding: this.fundingFromRow(funding.rows[0]), replayed };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async reserve(programmeId: string, amountKobo: number, tx?: AllocationTx): Promise<boolean> {
+    const result = await (tx ?? this.pool).query(
+      'UPDATE input_vouchers.programme_funding ' +
+        'SET reserved_kobo = reserved_kobo + $1, updated_at = now() ' +
+        'WHERE programme_id = $2 AND funded_kobo - reserved_kobo - settled_kobo >= $1 ' +
+        'RETURNING programme_id',
+      [amountKobo, programmeId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async unreserve(programmeId: string, amountKobo: number): Promise<void> {
+    await this.pool.query(
+      'UPDATE input_vouchers.programme_funding ' +
+        'SET reserved_kobo = reserved_kobo - $1, updated_at = now() ' +
+        'WHERE programme_id = $2 AND reserved_kobo >= $1',
+      [amountKobo, programmeId]
+    );
+  }
+
+  async settleReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    await this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'settle');
+  }
+
+  async releaseReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    await this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'release');
+  }
+
+  /**
+   * Marker-first exactly-once move: the marker event inserts ON CONFLICT DO
+   * NOTHING (a concurrent retry blocks then skips), and only the INSERT
+   * winner's UPDATE applies the funding delta. A missing funding row or an
+   * unbacked (legacy) voucher matches nothing — the UPDATE is a no-op and
+   * the reserved/settled totals never go negative.
+   */
+  private async applyMarker(
+    programmeId: string,
+    amountKobo: number,
+    markerKey: string,
+    actorId: string,
+    kind: 'settle' | 'release'
+  ): Promise<void> {
+    const settledSet = kind === 'settle' ? ', settled_kobo = settled_kobo + $3' : '';
+    await this.pool.query(
+      'WITH ins AS (' +
+        'INSERT INTO input_vouchers.programme_funding_events ' +
+        '(id, programme_id, kind, amount_kobo, idempotency_key, created_by, created_at) ' +
+        `VALUES ($1, $2, '${kind}', $3, $4, $5, now()) ` +
+        // Stage 24 (audit A4-10 pg contract): the marker id IS the marker
+        // key, so a conflict can surface on the PRIMARY KEY as well as the
+        // idempotency_key UNIQUE index — a constraint-targeted clause would
+        // let the twin fail with 23505 instead of skipping. Targetless ON
+        // CONFLICT blocks the twin until the winner commits, then skips.
+        'ON CONFLICT DO NOTHING RETURNING id' +
+        ') ' +
+        'UPDATE input_vouchers.programme_funding ' +
+        `SET reserved_kobo = reserved_kobo - $3, updated_at = now()${settledSet} ` +
+        'WHERE programme_id = $2 AND reserved_kobo >= $3 AND EXISTS (SELECT 1 FROM ins)',
+      [markerKey, programmeId, amountKobo, markerKey, actorId]
+    );
+  }
+
+  private fundingFromRow(row: Record<string, unknown>): ProgrammeFundingRecord {
+    return {
+      programmeId: row.programme_id as string,
+      fundedKobo: Number(row.funded_kobo),
+      reservedKobo: Number(row.reserved_kobo),
+      settledKobo: Number(row.settled_kobo),
+      updatedAt: toIso(row.updated_at) as string
+    };
+  }
+
+  private eventFromRow(row: Record<string, unknown>): FundingEventRecord {
+    return {
+      id: row.id as string,
+      programmeId: row.programme_id as string,
+      kind: row.kind as FundingEventRecord['kind'],
+      amountKobo: Number(row.amount_kobo),
+      idempotencyKey: row.idempotency_key as string,
+      reference: (row.reference as string) ?? undefined,
+      createdBy: row.created_by as string,
+      createdAt: toIso(row.created_at) as string
+    };
+  }
+}
+
+export function createPgProgrammeFundingRepository(pool: pg.Pool): PgProgrammeFundingRepository {
+  return new PgProgrammeFundingRepository(pool);
 }

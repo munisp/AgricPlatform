@@ -152,24 +152,29 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async create(record: AgentFloatTopUpRecord): Promise<AgentFloatTopUpRecord> {
-    await this.pool.query(
-      'INSERT INTO agent_banking.float_topups (id, agent_id, amount_kobo, status, requested_by, ' +
-        'decided_by, decided_at, settled_at, ledger_entry_id, rejection_reason, created_at) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-      [
-        record.id,
-        record.agentId,
-        record.amountKobo,
-        record.status,
-        record.requestedBy,
-        record.decidedBy ?? null,
-        record.decidedAt ?? null,
-        record.settledAt ?? null,
-        record.ledgerEntryId ?? null,
-        record.rejectionReason ?? null,
-        record.createdAt
-      ]
-    );
+    try {
+      await this.pool.query(
+        'INSERT INTO agent_banking.float_topups (id, agent_id, amount_kobo, status, requested_by, ' +
+          'decided_by, decided_at, settled_at, ledger_entry_id, rejection_reason, idempotency_key, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        [
+          record.id,
+          record.agentId,
+          record.amountKobo,
+          record.status,
+          record.requestedBy,
+          record.decidedBy ?? null,
+          record.decidedAt ?? null,
+          record.settledAt ?? null,
+          record.ledgerEntryId ?? null,
+          record.rejectionReason ?? null,
+          record.idempotencyKey ?? null,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'A record with these unique values already exists');
+    }
     return record;
   }
 
@@ -177,6 +182,14 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
     const result = await this.pool.query('SELECT * FROM agent_banking.float_topups WHERE id = $1', [
       id
     ]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentFloatTopUpRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM agent_banking.float_topups WHERE idempotency_key = $1',
+      [key]
+    );
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -251,6 +264,7 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
       settledAt: toIso(row.settled_at),
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
       rejectionReason: (row.rejection_reason as string) ?? undefined,
+      idempotencyKey: (row.idempotency_key as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -428,6 +442,10 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
     if (criteria.type) {
       params.push(criteria.type);
       where.push(`type = $${params.length}`);
+    }
+    if (criteria.voucherId) {
+      params.push(criteria.voucherId);
+      where.push(`voucher_id = $${params.length}`);
     }
     if (criteria.from) {
       params.push(criteria.from);

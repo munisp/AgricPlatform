@@ -122,12 +122,19 @@ async function fundPlatformCash(ctx: Awaited<ReturnType<typeof makeService>>, am
   );
 }
 
+let secKeySeq = 0;
+
 async function topUpFloat(
   ctx: Awaited<ReturnType<typeof makeService>>,
   agentId: string,
   amountKobo: number
 ) {
-  const request = await ctx.service.requestTopUp(agentId, amountKobo, ADMIN);
+  secKeySeq += 1;
+  const request = await ctx.service.requestTopUp(
+    agentId,
+    { amountKobo, idempotencyKey: `sec-topup-${secKeySeq}` },
+    ADMIN
+  );
   await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
   return ctx.service.settleTopUp(request.id, ADMIN.id);
 }
@@ -140,7 +147,7 @@ describe('A2 — cross-user isolation on financial resources', () => {
     await expect(
       ctx.service.issueVoucher(
         agentA.id,
-        { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+        { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-1' },
         agentActor(ctx.secondAgentUser)
       )
     ).rejects.toBeInstanceOf(ForbiddenException);
@@ -151,7 +158,7 @@ describe('A2 — cross-user isolation on financial resources', () => {
     const agentA = await activeAgent(ctx, ctx.agentUser);
     const voucher = await ctx.service.issueVoucher(
       agentA.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-2' },
       agentActor(ctx.agentUser)
     );
     await expect(
@@ -164,7 +171,7 @@ describe('A2 — cross-user isolation on financial resources', () => {
     const agent = await activeAgent(ctx, ctx.agentUser);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-3' },
       agentActor(ctx.agentUser)
     );
     await expect(
@@ -182,7 +189,7 @@ describe('A6 — tamper and forgery rejection', () => {
     const agent = await activeAgent(ctx, ctx.agentUser);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-4' },
       agentActor(ctx.agentUser)
     );
     const forged = 'a'.repeat(64);
@@ -196,7 +203,7 @@ describe('A6 — tamper and forgery rejection', () => {
     const agent = await activeAgent(ctx, ctx.agentUser);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-5' },
       agentActor(ctx.agentUser)
     );
     // Attacker re-signs a raised-amount payload — it cannot match the stored signature.
@@ -224,7 +231,7 @@ describe('A6 — tamper and forgery rejection', () => {
     const agent = await activeAgent(ctx, ctx.agentUser);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-6' },
       agentActor(ctx.agentUser)
     );
     await expect(
@@ -258,7 +265,7 @@ describe('A4 / B2 — idempotency and exactly-once payout', () => {
     await topUpFloat(ctx, agent.id, 500_000);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-7' },
       agentActor(ctx.agentUser)
     );
     const first = await ctx.service.redeemVoucher(voucher.id, voucher.signature, {
@@ -325,7 +332,7 @@ describe('D1 — double-entry invariant', () => {
     await topUpFloat(ctx, agent.id, 500_000);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'sec-v-8' },
       agentActor(ctx.agentUser)
     );
     await ctx.service.redeemVoucher(voucher.id, voucher.signature, {

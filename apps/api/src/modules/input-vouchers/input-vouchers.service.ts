@@ -6,13 +6,15 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional
+  Optional,
+  UnprocessableEntityException
 } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY,
   INPUT_VOUCHER_PROGRAMME_REPOSITORY,
   INPUT_VOUCHER_REDEMPTION_REPOSITORY,
   INPUT_VOUCHER_REPOSITORY
@@ -20,8 +22,11 @@ import {
 import type {
   BeneficiaryRecord,
   BeneficiaryRepository,
+  FundingEventRecord,
   InputVoucherRecord,
   InputVoucherRepository,
+  ProgrammeFundingRecord,
+  ProgrammeFundingRepository,
   ProgrammeStatus,
   RedemptionRecord,
   RedemptionRepository,
@@ -82,6 +87,27 @@ export interface AllocateVoucherInput {
   expiresAt?: string;
 }
 
+export interface FundProgrammeInput {
+  amountKobo: number;
+  /**
+   * Mandatory client idempotency key; a replay returns the original top-up
+   * WITHOUT double-crediting the float (mirrors the allocation/top-up
+   * idempotency doctrine from stage 22).
+   */
+  idempotencyKey: string;
+  /** Optional sponsor/disbursement reference for the audit trail. */
+  reference?: string;
+}
+
+export interface ProgrammeFundingView {
+  programmeId: string;
+  fundedKobo: number;
+  reservedKobo: number;
+  settledKobo: number;
+  /** funded - reserved - settled: the maximum further face value issuable. */
+  availableKobo: number;
+}
+
 export interface ProgrammeStateTotals {
   state: string;
   vouchersIssued: number;
@@ -115,10 +141,25 @@ export interface ProgrammeReconciliation {
     /** 0 when the double-entry math ties; non-zero flags an integrity breach. */
     discrepancyKobo: number;
   };
+  /** Funded-float backing state (stage 23, audit C3); zeroed when never topped up. */
+  funding: ProgrammeFundingView;
   generatedAt: string;
 }
 
 export const DEFAULT_VOUCHER_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Bounded-retry probe discipline for crash-safe rollback legs (stage 24,
+ * audit A4-1): 3 attempts with 50–150ms jitter ride out the visibility
+ * window between a twin's committed posting and our 23505.
+ */
+export const LEDGER_PROBE_ATTEMPTS = 3;
+export const LEDGER_PROBE_BASE_DELAY_MS = 50;
+export const LEDGER_PROBE_JITTER_MS = 101;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function assertPositiveKobo(amountKobo: number, field = 'amountKobo'): void {
   if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
@@ -140,6 +181,21 @@ function assertPositiveKobo(amountKobo: number, field = 'amountKobo'): void {
  * So the liability credit balance ALWAYS equals budget - redeemed - released;
  * the reconciliation report asserts that tie.
  *
+ * Race discipline (stage 22, audit C1-6): terminal transitions pass through
+ * pending states (REDEEMING / EXPIRING / VOIDING). The compare-and-set into
+ * the pending state happens BEFORE the ledger posting, so only the CAS
+ * winner ever posts; a retry that finds a pending state resumes
+ * finalization instead of reposting, and a posting failure rolls the claim
+ * back to ISSUED best-effort. Allocation serialises the budget/cap check +
+ * insert under the programme allocation lock (audit C2-10).
+ *
+ * Funded-float backing (stage 23, audit C3): a voucher is only signed when
+ * the programme's funded float can back it. Issuance atomically reserves
+ * face value (`funded - reserved - settled >= amount`, zero rows ⇒ 422 and
+ * NOTHING is persisted); redemption moves reserved → settled exactly once
+ * per voucher (marker-keyed); expiry/void releases the reservation. The
+ * budget-envelope check stays as the allocation-policy cap.
+ *
  * Identity: allocation requires a beneficiary verified through the fail-closed
  * IdentityVerificationPort (stub default, honestly labelled). The plaintext
  * NIN is never persisted — salted HMAC hash + last-3 mask only.
@@ -153,6 +209,7 @@ export class InputVouchersService {
     @Inject(BENEFICIARY_REPOSITORY) private readonly beneficiaries: BeneficiaryRepository,
     @Inject(INPUT_VOUCHER_REPOSITORY) private readonly vouchers: InputVoucherRepository,
     @Inject(INPUT_VOUCHER_REDEMPTION_REPOSITORY) private readonly redemptions: RedemptionRepository,
+    @Inject(INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY) private readonly funding: ProgrammeFundingRepository,
     private readonly ledger: LedgerService,
     private readonly users: UsersService,
     private readonly events: DomainEventsService,
@@ -270,6 +327,75 @@ export class InputVouchersService {
     return updated;
   }
 
+  // ---------------------------------------------------------- funding float
+
+  /**
+   * Tops up the programme's funded float (stage 23, audit C3): money the
+   * sponsor has actually provided, which is what issuance now reserves
+   * against. Idempotent on the mandatory client key — a transport retry
+   * returns the original top-up (`replayed: true`) WITHOUT double-crediting.
+   */
+  async fundProgramme(
+    programmeId: string,
+    input: FundProgrammeInput,
+    actorId: string
+  ): Promise<{ event: FundingEventRecord; funding: ProgrammeFundingView; replayed: boolean }> {
+    await this.getProgramme(programmeId);
+    assertPositiveKobo(input.amountKobo);
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required — funding top-ups must replay safely');
+    }
+    const result = await this.funding.creditTopUp({
+      id: newId('ifev'),
+      programmeId,
+      kind: 'top_up',
+      amountKobo: input.amountKobo,
+      idempotencyKey: input.idempotencyKey.trim(),
+      reference: input.reference?.trim() || undefined,
+      createdBy: actorId,
+      createdAt: new Date().toISOString()
+    });
+    if (!result.replayed) {
+      await this.events.publish(
+        'inputvouchers.programme.funded',
+        { programmeId, amountKobo: input.amountKobo, fundedKobo: result.funding.fundedKobo },
+        actorId
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'inputvouchers.programme.funded',
+        entityType: 'input_vouchers_programme_funding',
+        entityId: programmeId,
+        metadata: { amountKobo: input.amountKobo, reference: input.reference }
+      });
+    }
+    return { event: result.event, funding: this.toFundingView(result.funding), replayed: result.replayed };
+  }
+
+  /** Funded-float view for operators/regulators; zeroed when never topped up. */
+  async getProgrammeFunding(programmeId: string): Promise<ProgrammeFundingView> {
+    await this.getProgramme(programmeId);
+    const funding = await this.funding.getFunding(programmeId);
+    return this.toFundingView(funding, programmeId);
+  }
+
+  private toFundingView(funding: ProgrammeFundingRecord | undefined, programmeId?: string): ProgrammeFundingView {
+    const record = funding ?? {
+      programmeId: programmeId ?? '',
+      fundedKobo: 0,
+      reservedKobo: 0,
+      settledKobo: 0,
+      updatedAt: ''
+    };
+    return {
+      programmeId: record.programmeId,
+      fundedKobo: record.fundedKobo,
+      reservedKobo: record.reservedKobo,
+      settledKobo: record.settledKobo,
+      availableKobo: record.fundedKobo - record.reservedKobo - record.settledKobo
+    };
+  }
+
   /** ACTIVE→CLOSED: blocks new allocations; outstanding vouchers still settle. */
   async closeProgramme(id: string, actorId: string): Promise<SubsidyProgrammeRecord> {
     const programme = await this.getProgramme(id);
@@ -375,7 +501,10 @@ export class InputVouchersService {
    * Allocates a voucher to a verified beneficiary. Idempotent on the client
    * idempotency key (replay returns the original). Enforces the programme
    * allocation rules: ACTIVE status, NIN-verified beneficiary, eligible
-   * state/crop, per-farmer cap and the remaining budget envelope.
+   * state/crop, per-farmer cap, the remaining budget envelope AND the
+   * funded-float backing check (stage 23, audit C3): the face value reserves
+   * atomically against funded money, so an unbacked programme rejects with
+   * 422 and nothing is signed or persisted.
    */
   async allocateVoucher(
     programmeId: string,
@@ -384,6 +513,7 @@ export class InputVouchersService {
   ): Promise<InputVoucherRecord> {
     const replay = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      this.assertAllocationReplayMatches(replay, programmeId, input);
       return replay; // idempotent replay of a transport retry
     }
     const programme = await this.getProgramme(programmeId);
@@ -400,59 +530,141 @@ export class InputVouchersService {
     if (Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
       throw new BadRequestException('expiresAt must be a future ISO-8601 timestamp');
     }
-    // Allocation rules: live obligations (ISSUED + REDEEMED) count against the
-    // per-farmer cap and the budget envelope; EXPIRED/VOIDED released them.
-    const live = (await this.vouchers.find({ programmeId })).filter(
-      (voucher) => voucher.status === 'ISSUED' || voucher.status === 'REDEEMED'
-    );
-    const farmerUsed = live
-      .filter((voucher) => voucher.farmerId === input.farmerId)
-      .reduce((sum, voucher) => sum + voucher.amountKobo, 0);
-    if (farmerUsed + input.amountKobo > programme.perFarmerCapKobo) {
-      throw new BadRequestException(
-        `Per-farmer cap exceeded: ${farmerUsed + input.amountKobo} kobo would pass the ${programme.perFarmerCapKobo} kobo cap`
-      );
-    }
-    const programmeUsed = live.reduce((sum, voucher) => sum + voucher.amountKobo, 0);
-    if (programmeUsed + input.amountKobo > programme.budgetKobo) {
-      throw new BadRequestException(
-        `Programme budget exceeded: ${programmeUsed + input.amountKobo} kobo would pass the ${programme.budgetKobo} kobo envelope`
-      );
-    }
-    try {
-      const record = await this.vouchers.create({
-        id: newId('ivc'),
-        programmeId,
-        beneficiaryId: beneficiary.id,
-        farmerId: input.farmerId,
-        amountKobo: input.amountKobo,
-        status: 'ISSUED',
-        idempotencyKey: input.idempotencyKey,
-        expiresAt,
-        createdAt: new Date().toISOString()
-      });
-      await this.events.publish(
-        'inputvouchers.voucher.allocated',
-        { voucherId: record.id, programmeId, farmerId: input.farmerId, amountKobo: input.amountKobo },
-        actorId
-      );
-      await this.audit?.record({
-        actorId,
-        action: 'inputvouchers.voucher.allocated',
-        entityType: 'input_vouchers_vouchers',
-        entityId: record.id,
-        metadata: { programmeId, farmerId: input.farmerId, amountKobo: input.amountKobo }
-      });
-      return record;
-    } catch (error) {
-      if (error instanceof ConflictException) {
-        // Lost a retry race — the original record is authoritative.
-        const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
-        if (existing) {
-          return existing;
-        }
+    // Allocation rules: live obligations (ISSUED + in-flight REDEEMING +
+    // REDEEMED) count against the per-farmer cap and the budget envelope;
+    // EXPIRED/VOIDED released them. The check+insert runs under the
+    // per-programme allocation lock (pg: SELECT ... FOR UPDATE on the
+    // programme row) so concurrent allocations cannot both pass the budget
+    // check (stage 22, audit C2-10).
+    const record = await this.programmes.withAllocationLock(programmeId, async (tx) => {
+      // Re-check the idempotency key INSIDE the lock: a twin request may
+      // have committed while this one waited on the programme row — replay
+      // it here so we never reserve the float twice for one voucher.
+      const twin = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+      if (twin) {
+        this.assertAllocationReplayMatches(twin, programmeId, input);
+        return twin;
       }
-      throw error;
+      const live = (await this.vouchers.find({ programmeId })).filter(
+        (voucher) =>
+          voucher.status === 'ISSUED' || voucher.status === 'REDEEMING' || voucher.status === 'REDEEMED'
+      );
+      const farmerUsed = live
+        .filter((voucher) => voucher.farmerId === input.farmerId)
+        .reduce((sum, voucher) => sum + voucher.amountKobo, 0);
+      if (farmerUsed + input.amountKobo > programme.perFarmerCapKobo) {
+        throw new BadRequestException(
+          `Per-farmer cap exceeded: ${farmerUsed + input.amountKobo} kobo would pass the ${programme.perFarmerCapKobo} kobo cap`
+        );
+      }
+      const programmeUsed = live.reduce((sum, voucher) => sum + voucher.amountKobo, 0);
+      if (programmeUsed + input.amountKobo > programme.budgetKobo) {
+        throw new BadRequestException(
+          `Programme budget exceeded: ${programmeUsed + input.amountKobo} kobo would pass the ${programme.budgetKobo} kobo envelope`
+        );
+      }
+      // Funded-float backing (stage 23, audit C3): reserve the face value
+      // against actually-funded money BEFORE anything is signed. The
+      // conditional UPDATE moves 0 rows when the float cannot back the
+      // voucher ⇒ 422 and NOTHING is persisted. Stage 24 (audit A4-2): the
+      // reserve and the voucher insert run in the allocation-lock
+      // transaction (`tx`) on pg, so they commit together or roll back
+      // together — a mid-flight failure can no longer strand a reservation
+      // OR free the backing of a committed voucher.
+      const reserved = await this.funding.reserve(programmeId, input.amountKobo, tx);
+      if (!reserved) {
+        throw new UnprocessableEntityException(
+          `Insufficient programme funding: the funded float cannot back another ${input.amountKobo} kobo voucher`
+        );
+      }
+      try {
+        return await this.vouchers.create(
+          {
+            id: newId('ivc'),
+            programmeId,
+            beneficiaryId: beneficiary.id,
+            farmerId: input.farmerId,
+            amountKobo: input.amountKobo,
+            status: 'ISSUED',
+            idempotencyKey: input.idempotencyKey,
+            expiresAt,
+            createdAt: new Date().toISOString()
+          },
+          tx
+        );
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          // Lost a retry race — the original record is authoritative.
+          const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
+          if (existing) {
+            this.assertAllocationReplayMatches(existing, programmeId, input);
+            return existing;
+          }
+        }
+        // Issuance failed after the reservation. Audit A4-2: NEVER unreserve
+        // when the voucher row actually committed under our key — that would
+        // free the backing of a LIVE voucher. On pg the lock transaction
+        // rolls the reservation back with the failed insert (no compensation
+        // needed — and running unreserve on the pool here would decrement
+        // OTHER vouchers' reservations); in-memory compensates explicitly.
+        if (!tx) {
+          const committed = await this.vouchers
+            .findByIdempotencyKey(input.idempotencyKey)
+            .catch(() => undefined);
+          if (!committed) {
+            await this.funding.unreserve(programmeId, input.amountKobo).catch(() => undefined);
+          }
+        }
+        throw error;
+      }
+    });
+    // Post-commit side effects (audit A4-2): publish/audit run AFTER the
+    // reservation+voucher transaction committed, so a failure here can never
+    // trigger the unreserve of a live voucher's backing; a client retry with
+    // the same idempotency key replays the committed voucher above.
+    await this.events.publish(
+      'inputvouchers.voucher.allocated',
+      { voucherId: record.id, programmeId, farmerId: input.farmerId, amountKobo: input.amountKobo },
+      actorId
+    );
+    await this.audit?.record({
+      actorId,
+      action: 'inputvouchers.voucher.allocated',
+      entityType: 'input_vouchers_vouchers',
+      entityId: record.id,
+      metadata: { programmeId, farmerId: input.farmerId, amountKobo: input.amountKobo }
+    });
+    return record;
+  }
+
+  /**
+   * Replay doctrine (stage 24, audit A4-9): the same allocation idempotency
+   * key with a DIFFERENT payload is a client bug on a money endpoint — 409,
+   * never a silent replay of the original voucher (mirrors the payout rail's
+   * payload-hash check and the savings replay 409).
+   */
+  private assertAllocationReplayMatches(
+    record: InputVoucherRecord,
+    programmeId: string,
+    input: AllocateVoucherInput
+  ): void {
+    const mismatches: string[] = [];
+    if (record.programmeId !== programmeId) {
+      mismatches.push('programmeId');
+    }
+    if (record.farmerId !== input.farmerId) {
+      mismatches.push('farmerId');
+    }
+    if (record.amountKobo !== input.amountKobo) {
+      mismatches.push('amountKobo');
+    }
+    if (input.expiresAt && Date.parse(record.expiresAt) !== Date.parse(input.expiresAt)) {
+      mismatches.push('expiresAt');
+    }
+    if (mismatches.length > 0) {
+      throw new ConflictException(
+        `Idempotency key '${input.idempotencyKey}' was already used with a different allocation payload (${mismatches.join(', ')})`
+      );
     }
   }
 
@@ -515,10 +727,16 @@ export class InputVouchersService {
 
   /**
    * Redeems a voucher at an agro-dealer (supplier role) against an invoice
-   * reference. Anti-double-spend: the ledger posting is idempotent on
-   * input-voucher-redemption:<id>, the redemption row carries UNIQUE
-   * voucher_id, and the state machine CAS ISSUED→REDEEMED makes a second
-   * redemption a 409 — a voucher pays out exactly once.
+   * reference. Anti-double-spend (stage 22, audit C1-6 — escrow pending-state
+   * pattern): the voucher CASes ISSUED→REDEEMING BEFORE any ledger posting,
+   * so only the CAS winner ever posts — a concurrent expire/void loses the
+   * same CAS and can no longer double-debit the programme liability. The
+   * posting stays idempotent on input-voucher-redemption:<id>; a retry that
+   * finds REDEEMING with the redemption row already present completes
+   * finalization instead of reposting (replay returns the settled view). On
+   * posting failure the claim rolls back REDEEMING→ISSUED ONLY when the
+   * ledger proves no redemption entry exists (stage 24, audit A4-1/A1-3) —
+   * otherwise REDEEMING stays for the resume path and the caller gets 409.
    */
   async redeemVoucher(
     id: string,
@@ -528,64 +746,106 @@ export class InputVouchersService {
     if (!invoiceRef?.trim()) {
       throw new BadRequestException('invoiceRef is required — redemptions settle against a dealer invoice');
     }
-    const voucher = await this.getVoucher(id);
+    let voucher = await this.getVoucher(id);
     if (voucher.status === 'REDEEMED') {
       throw new ConflictException(`Voucher '${id}' has already been redeemed`);
     }
-    if (voucher.status === 'VOIDED') {
+    if (voucher.status === 'VOIDED' || voucher.status === 'VOIDING') {
       throw new ConflictException(`Voucher '${id}' was voided`);
     }
-    if (voucher.status === 'EXPIRED' || Date.parse(voucher.expiresAt) <= Date.now()) {
-      if (voucher.status === 'ISSUED') {
-        await this.expireIssuedVoucher(voucher, actor.id);
+    if (voucher.status === 'EXPIRED' || voucher.status === 'EXPIRING') {
+      if (voucher.status === 'EXPIRING') {
+        await this.expireIssuedVoucher(voucher, actor.id); // resume a stuck expiry
       }
       throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
     }
+    if (voucher.status === 'ISSUED' && Date.parse(voucher.expiresAt) <= Date.now()) {
+      await this.expireIssuedVoucher(voucher, actor.id);
+      throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
+    }
+    // A REDEEMING voucher resumes below regardless of the expiry clock — the
+    // claim was taken while the voucher was valid and must settle exactly once.
     if (!voucher.distributedAt) {
       throw new BadRequestException(`Voucher '${id}' has not been distributed to the farmer yet`);
     }
-    const replay = await this.redemptions.findByIdempotencyKey(`input-voucher-redemption:${voucher.id}`);
-    if (replay) {
-      // Ledger posting already landed; return the settled view.
-      return { voucher: await this.getVoucher(id), redemption: replay };
+    if (voucher.status === 'ISSUED') {
+      // Claim the redemption FIRST: after this write only this caller (or a
+      // retry resuming the claim) can reach the ledger posting; a concurrent
+      // redeem/expire/void loses the CAS and surfaces as a 409.
+      voucher = await this.vouchers.updateExpected(id, { status: 'REDEEMING' }, { status: 'ISSUED' });
     }
-    const programme = await this.getProgramme(voucher.programmeId);
-    await this.ledger.ensureAccount({
-      code: supplierReceivableAccountCode(actor.id),
-      type: 'liability',
-      ownerId: actor.id
-    });
-    const entry = await this.ledger.postEntry(
-      {
-        idempotencyKey: `input-voucher-redemption:${voucher.id}`,
-        referenceType: 'input_voucher_redemption',
-        referenceId: voucher.id,
-        description: `Subsidy voucher ${voucher.id} redeemed by supplier ${actor.id} (invoice ${invoiceRef.trim()})`,
-        postings: [
-          { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo: voucher.amountKobo },
-          { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit', amountKobo: voucher.amountKobo }
-        ]
-      },
+    const redemptionKey = `input-voucher-redemption:${voucher.id}`;
+    let redemption = await this.redemptions.findByIdempotencyKey(redemptionKey);
+    if (!redemption) {
+      const programme = await this.getProgramme(voucher.programmeId);
+      await this.ledger.ensureAccount({
+        code: supplierReceivableAccountCode(actor.id),
+        type: 'liability',
+        ownerId: actor.id
+      });
+      try {
+        const entry = await this.ledger.postEntry(
+          {
+            idempotencyKey: redemptionKey,
+            referenceType: 'input_voucher_redemption',
+            referenceId: voucher.id,
+            description: `Subsidy voucher ${voucher.id} redeemed by supplier ${actor.id} (invoice ${invoiceRef.trim()})`,
+            postings: [
+              { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo: voucher.amountKobo },
+              { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit', amountKobo: voucher.amountKobo }
+            ]
+          },
+          actor.id
+        );
+        redemption = await this.redemptions.create({
+          id: newId('ired'),
+          voucherId: voucher.id,
+          programmeId: voucher.programmeId,
+          supplierId: actor.id,
+          invoiceRef: invoiceRef.trim(),
+          amountKobo: voucher.amountKobo,
+          idempotencyKey: redemptionKey,
+          ledgerEntryId: entry.id,
+          createdAt: new Date().toISOString()
+        });
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          // A twin request created the redemption row first (UNIQUE
+          // voucher_id) — adopt its record instead of double-settling.
+          // Bounded-retry probe (stage 24, audit A4-1): the twin's row can
+          // commit a beat AFTER its ledger posting already 23505'd us, so a
+          // single lookup would miss and fall into the rollback leg below.
+          redemption = await this.probeRedemptionRow(redemptionKey);
+        }
+        if (!redemption) {
+          // Stage 24 (audit A4-1/A1-3): the claim may roll back to ISSUED
+          // ONLY when the ledger PROVES no redemption entry exists under
+          // this operation's key — otherwise a later void/expire would
+          // debit the liability a SECOND time on top of the committed
+          // posting. When the entry exists (or the probe is inconclusive)
+          // the claim stays REDEEMING for the resume path and the caller
+          // gets a 409.
+          return await this.rollbackClaimIfUnposted(id, 'REDEEMING', redemptionKey, error);
+        }
+      }
+    }
+    // Move the float reservation to settled (stage 23, audit C3). Marker-
+    // keyed per voucher, so a crash-resume or concurrent retry replays as a
+    // no-op instead of double-settling; runs BEFORE the finalize CAS so a
+    // REDEEMED voucher always implies its reservation was settled.
+    await this.funding.settleReserved(
+      voucher.programmeId,
+      voucher.amountKobo,
+      `input-voucher-funding-settle:${voucher.id}`,
       actor.id
     );
-    // Atomic state advance: a concurrent redemption that already flipped the
-    // voucher surfaces as a 409 (its ledger posting replayed via the key).
+    // Finalize: REDEEMING→REDEEMED. A twin that already finalized loses this
+    // CAS and surfaces as a 409 — the voucher pays out exactly once.
     const redeemed = await this.vouchers.updateExpected(
       id,
-      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: entry.id },
-      { status: 'ISSUED' }
+      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: redemption.ledgerEntryId },
+      { status: 'REDEEMING' }
     );
-    const redemption = await this.redemptions.create({
-      id: newId('ired'),
-      voucherId: voucher.id,
-      programmeId: voucher.programmeId,
-      supplierId: actor.id,
-      invoiceRef: invoiceRef.trim(),
-      amountKobo: voucher.amountKobo,
-      idempotencyKey: `input-voucher-redemption:${voucher.id}`,
-      ledgerEntryId: entry.id,
-      createdAt: new Date().toISOString()
-    });
     await this.events.publish(
       'inputvouchers.voucher.redeemed',
       {
@@ -607,17 +867,47 @@ export class InputVouchersService {
     return { voucher: redeemed, redemption };
   }
 
-  /** ISSUED→VOIDED (admin) with encumbrance release back to the budget expense. */
+  /**
+   * ISSUED→VOIDING→VOIDED (admin) with encumbrance release back to the
+   * budget expense. The CAS into VOIDING happens BEFORE the release posting
+   * (stage 22, audit C1-6): a concurrent redemption loses the same CAS, so
+   * the programme liability is debited exactly once. A retry that finds
+   * VOIDING resumes finalization; the release posting is idempotent on
+   * input-voucher-release:<id>.
+   */
   async voidVoucher(id: string, actorId: string): Promise<InputVoucherRecord> {
-    const voucher = await this.getVoucher(id);
-    if (voucher.status !== 'ISSUED') {
+    let voucher = await this.getVoucher(id);
+    if (voucher.status !== 'ISSUED' && voucher.status !== 'VOIDING') {
       throw new ConflictException(`Only ISSUED vouchers can be voided (status is ${voucher.status})`);
     }
-    await this.releaseEncumbrance(voucher, actorId, 'void');
+    // Stage 24 (audit A1-3): never release the encumbrance of a voucher whose
+    // REDEMPTION posting already committed — that would debit the liability
+    // twice (supplier paid AND budget re-credited).
+    await this.assertNoRedemptionPosting(voucher);
+    if (voucher.status === 'ISSUED') {
+      voucher = await this.vouchers.updateExpected(id, { status: 'VOIDING' }, { status: 'ISSUED' });
+    }
+    try {
+      await this.releaseEncumbrance(voucher, actorId, 'void');
+      // Release the float reservation exactly once (stage 23, audit C3) —
+      // marker-keyed so a retry resuming VOIDING never double-releases.
+      await this.funding.releaseReserved(
+        voucher.programmeId,
+        voucher.amountKobo,
+        `input-voucher-funding-release:${voucher.id}`,
+        actorId
+      );
+    } catch (error) {
+      // Stage 24 (audit A4-1): roll the claim back ONLY when the ledger
+      // proves no release entry exists under input-voucher-release:<id>;
+      // a racing twin's committed posting (23505) must leave VOIDING in
+      // place for resume, surfacing 409 — never re-open the voucher.
+      await this.rollbackClaimIfUnposted(id, 'VOIDING', `input-voucher-release:${voucher.id}`, error);
+    }
     const updated = await this.vouchers.updateExpected(
       id,
       { status: 'VOIDED', voidedAt: new Date().toISOString() },
-      { status: 'ISSUED' }
+      { status: 'VOIDING' }
     );
     await this.events.publish(
       'inputvouchers.voucher.voided',
@@ -634,10 +924,10 @@ export class InputVouchersService {
     return updated;
   }
 
-  /** ISSUED→EXPIRED for a voucher past its expiry (admin-triggered sweep step). */
+  /** ISSUED→EXPIRING→EXPIRED for a voucher past its expiry (admin-triggered sweep step). */
   async expireVoucher(id: string, actorId: string): Promise<InputVoucherRecord> {
     const voucher = await this.getVoucher(id);
-    if (voucher.status !== 'ISSUED') {
+    if (voucher.status !== 'ISSUED' && voucher.status !== 'EXPIRING') {
       throw new ConflictException(`Only ISSUED vouchers can expire (status is ${voucher.status})`);
     }
     if (Date.parse(voucher.expiresAt) > Date.now()) {
@@ -646,12 +936,46 @@ export class InputVouchersService {
     return this.expireIssuedVoucher(voucher, actorId);
   }
 
+  /**
+   * Releases the encumbrance through the EXPIRING pending state (stage 22,
+   * audit C1-6): CAS ISSUED→EXPIRING FIRST so only the claimant posts the
+   * release entry, then finalize EXPIRING→EXPIRED. The release posting is
+   * idempotent on input-voucher-release:<id>, so a retry that finds EXPIRING
+   * resumes finalization instead of double-releasing; on posting failure the
+   * claim rolls back EXPIRING→ISSUED only with proof that no release entry
+   * exists (stage 24, audit A4-1) — otherwise EXPIRING stays for resume.
+   */
   private async expireIssuedVoucher(voucher: InputVoucherRecord, actorId: string): Promise<InputVoucherRecord> {
-    await this.releaseEncumbrance(voucher, actorId, 'expiry');
+    // Stage 24 (audit A1-3): never release on top of a committed redemption
+    // posting — that debits the liability twice.
+    await this.assertNoRedemptionPosting(voucher);
+    if (voucher.status === 'ISSUED') {
+      await this.vouchers.updateExpected(voucher.id, { status: 'EXPIRING' }, { status: 'ISSUED' });
+    }
+    try {
+      await this.releaseEncumbrance(voucher, actorId, 'expiry');
+      // Release the float reservation exactly once (stage 23, audit C3) —
+      // marker-keyed so a retry resuming EXPIRING never double-releases.
+      await this.funding.releaseReserved(
+        voucher.programmeId,
+        voucher.amountKobo,
+        `input-voucher-funding-release:${voucher.id}`,
+        actorId
+      );
+    } catch (error) {
+      // Stage 24 (audit A4-1): roll back ONLY with proof that no release
+      // entry exists; otherwise leave EXPIRING for resume and surface 409.
+      await this.rollbackClaimIfUnposted(
+        voucher.id,
+        'EXPIRING',
+        `input-voucher-release:${voucher.id}`,
+        error
+      );
+    }
     const updated = await this.vouchers.updateExpected(
       voucher.id,
       { status: 'EXPIRED' },
-      { status: 'ISSUED' }
+      { status: 'EXPIRING' }
     );
     await this.events.publish(
       'inputvouchers.voucher.expired',
@@ -681,6 +1005,116 @@ export class InputVouchersService {
         ]
       },
       actorId
+    );
+  }
+
+  // ------------------------------------------- crash-safe claim discipline
+
+  /**
+   * Bounded-retry ledger truth probe (stage 24, audit A4-1/A1-3). A racing
+   * twin's commit can become visible a beat AFTER its 23505 reached us, so
+   * one lookup is not proof of absence. Returns:
+   *  - 'found'   — an entry exists under the key (twin committed / our own
+   *                posting actually landed despite the error);
+   *  - 'absent'  — every probe succeeded and found nothing: PROOF no entry
+   *                exists, the only state in which a claim may roll back;
+   *  - 'unknown' — the probe itself could not complete; callers must treat
+   *                this like 'found' (when in doubt, leave the pending state
+   *                for resume and surface 409).
+   */
+  private async probeLedgerEntry(key: string): Promise<{ state: 'found' | 'absent' | 'unknown' }> {
+    let sawFailure = false;
+    for (let attempt = 0; attempt < LEDGER_PROBE_ATTEMPTS; attempt += 1) {
+      try {
+        if (await this.ledger.findEntryByIdempotencyKey(key)) {
+          return { state: 'found' };
+        }
+      } catch {
+        sawFailure = true; // the probe itself failed — we know nothing
+      }
+      if (attempt < LEDGER_PROBE_ATTEMPTS - 1) {
+        await sleep(LEDGER_PROBE_BASE_DELAY_MS + Math.floor(Math.random() * LEDGER_PROBE_JITTER_MS));
+      }
+    }
+    return { state: sawFailure ? 'unknown' : 'absent' };
+  }
+
+  /**
+   * Bounded-retry adoption probe for the redemption row: a twin that beat us
+   * to the ledger insert (23505) writes its redemption row a beat later, so
+   * the single-shot lookup used previously could miss and drop into the
+   * rollback leg while the twin's posting stood (audit A4-1).
+   */
+  private async probeRedemptionRow(key: string): Promise<RedemptionRecord | undefined> {
+    for (let attempt = 0; attempt < LEDGER_PROBE_ATTEMPTS; attempt += 1) {
+      try {
+        const row = await this.redemptions.findByIdempotencyKey(key);
+        if (row) {
+          return row;
+        }
+      } catch {
+        // lookup hiccup — retry within the bound
+      }
+      if (attempt < LEDGER_PROBE_ATTEMPTS - 1) {
+        await sleep(LEDGER_PROBE_BASE_DELAY_MS + Math.floor(Math.random() * LEDGER_PROBE_JITTER_MS));
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Crash-safe claim rollback (stage 24, audit A4-1/A1-3): a failed posting
+   * leg may roll the pending claim (REDEEMING/EXPIRING/VOIDING) back to
+   * ISSUED ONLY when the ledger PROVES no entry exists under the operation's
+   * idempotency key. Rolling back while a twin's (or our own) posting stands
+   * re-opens the voucher to the OTHER spending path and double-debits the
+   * programme liability. When the entry exists or the probe is inconclusive
+   * the claim stays pending — the next call resumes it — and the caller
+   * surfaces a 409 instead of a re-opened voucher.
+   */
+  private async rollbackClaimIfUnposted(
+    voucherId: string,
+    pending: 'REDEEMING' | 'EXPIRING' | 'VOIDING',
+    ledgerKey: string,
+    error: unknown
+  ): Promise<never> {
+    const probe = await this.probeLedgerEntry(ledgerKey);
+    if (probe.state === 'absent') {
+      // Proven: nothing posted under this key — safe to re-open for retry.
+      await this.vouchers
+        .updateExpected(voucherId, { status: 'ISSUED' }, { status: pending })
+        .catch(() => undefined);
+      throw error;
+    }
+    throw new ConflictException(
+      `Voucher '${voucherId}' ${pending.toLowerCase()} posting state is uncertain — the claim stays ${pending} for a safe resume; retry the operation`
+    );
+  }
+
+  /**
+   * Refuses to release the encumbrance of a voucher whose REDEMPTION posting
+   * already exists in the ledger (stage 24, audit A1-3): releasing on top of
+   * it debits the programme liability twice (supplier paid AND budget
+   * re-credited). A stale pending claim (VOIDING/EXPIRING left by the old
+   * rollback leg) is handed back to ISSUED only when the RELEASE posting is
+   * proven absent, so the redemption resume path can settle the voucher
+   * exactly once.
+   */
+  private async assertNoRedemptionPosting(voucher: InputVoucherRecord): Promise<void> {
+    const redemption = await this.probeLedgerEntry(`input-voucher-redemption:${voucher.id}`);
+    if (redemption.state !== 'found') {
+      return;
+    }
+    if (voucher.status === 'VOIDING' || voucher.status === 'EXPIRING') {
+      const release = await this.probeLedgerEntry(`input-voucher-release:${voucher.id}`);
+      if (release.state === 'absent') {
+        await this.vouchers
+          .updateExpected(voucher.id, { status: 'ISSUED' }, { status: voucher.status })
+          .catch(() => undefined);
+      }
+    }
+    throw new ConflictException(
+      `Voucher '${voucher.id}' already has a redemption posting in the ledger — it cannot be released; a redeem retry settles it`
     );
   }
 
@@ -725,6 +1159,7 @@ export class InputVouchersService {
     const balance = await this.ledger.balance(programme.liabilityAccountCode);
     const liabilityKobo = balance.creditsKobo - balance.debitsKobo;
     const expectedLiabilityKobo = programme.budgetKobo - redeemedKobo - releasedKobo;
+    const funding = await this.funding.getFunding(programmeId);
     return {
       programmeId,
       budgetKobo: programme.budgetKobo,
@@ -748,6 +1183,7 @@ export class InputVouchersService {
         expectedLiabilityKobo,
         discrepancyKobo: liabilityKobo - expectedLiabilityKobo
       },
+      funding: this.toFundingView(funding, programmeId),
       generatedAt: new Date().toISOString()
     };
   }
