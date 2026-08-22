@@ -52,11 +52,22 @@ export function genReqId(req: IncomingMessage, res: ServerResponse): string {
   return id;
 }
 
+/**
+ * Logs the request path with the query string REMOVED (Stage 24, audit
+ * A3-4): credentials legitimately ride query params on some routes (the AT
+ * callback `?token=`, the SSE `?access_token=`), and the full URL would
+ * write those secrets into the log pipeline on every request. Query-derived
+ * fields that are safe to log (e.g. masked phone) are picked explicitly.
+ */
+export function redactUrl(url?: string): string | undefined {
+  return url?.split('?')[0];
+}
+
 /** Serializers keep request/response logs low-noise and free of secrets. */
 export const serializers = {
   req: (req: RequestLike) => ({
     method: req.method,
-    url: req.url,
+    url: redactUrl(req.url),
     requestId: req.id,
     phone: maskPhone(req.query?.phone as string | undefined)
   }),
