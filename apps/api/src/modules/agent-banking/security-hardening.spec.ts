@@ -355,9 +355,10 @@ describe('B3 — fail-closed configuration contract', () => {
   });
 
   it('uses the configured secret in production and the labelled dev default otherwise', () => {
+    const liveSecret = 'live-secret-with-32-chars-minimum!';
     expect(
-      resolveVoucherSecret({ NODE_ENV: 'production', AGENT_VOUCHER_SECRET: 'live-secret' })
-    ).toBe('live-secret');
+      resolveVoucherSecret({ NODE_ENV: 'production', AGENT_VOUCHER_SECRET: liveSecret })
+    ).toBe(liveSecret);
     expect(resolveVoucherSecret({ NODE_ENV: 'development' })).toBe(DEV_VOUCHER_SECRET);
     expect(DEV_VOUCHER_SECRET).toContain('INSECURE');
   });
