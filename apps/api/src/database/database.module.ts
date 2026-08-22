@@ -455,6 +455,7 @@ import {
   createPgBuyerGroupMembershipRepository,
   createPgBuyerGroupRepository,
   createPgDraftOrderRepository,
+  createPgListingVariantRepository,
   createPgOrderExtensionRepository,
   createPgPriceListEntryRepository,
   createPgPriceListRepository,
