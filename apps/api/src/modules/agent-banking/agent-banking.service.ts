@@ -55,6 +55,19 @@ export const AGENT_FLOAT_ACCOUNT_PREFIX = 'agent';
 export const PLATFORM_COMMISSION_EXPENSE_ACCOUNT = 'platform:commission_expense';
 export const PLATFORM_CASH_ACCOUNT = 'platform:cash';
 
+/**
+ * Bounded-retry probe discipline for crash-safe rollback legs (stage 24,
+ * audit A1-6): 3 attempts with 50–150ms jitter ride out the visibility
+ * window between a twin's committed posting and our 23505.
+ */
+export const LEDGER_PROBE_ATTEMPTS = 3;
+export const LEDGER_PROBE_BASE_DELAY_MS = 50;
+export const LEDGER_PROBE_JITTER_MS = 101;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function agentFloatAccountCode(agentId: string): string {
   return `agent:${agentId}:float`;
 }
@@ -567,34 +580,39 @@ export class AgentBankingService {
     const today = new Date().toISOString().slice(0, 10);
     const { from, to } = dayBounds(today);
     const todays = await this.transactions.find({ agentId: agent.id, from, to });
-    const used = todays.reduce((sum, tx) => sum + tx.amountKobo, 0);
+    const used = todays
+      .filter((tx) => tx.type === 'cash_in' || tx.type === 'cash_out')
+      .reduce((sum, tx) => sum + tx.amountKobo, 0);
     if (used + amountKobo > agent.dailyLimitKobo) {
       throw new BadRequestException(
-        `Agent daily limit exceeded: ${used + amountKobo} kobo would pass the ${agent.dailyLimitKobo} kobo daily limit`
+        `Daily limit exceeded: ${used + amountKobo} kobo would exceed the ${agent.dailyLimitKobo} kobo daily limit`
       );
     }
   }
 
-  /** Posts the commission accrual entry; returns the accrued kobo. */
+  /**
+   * Accrues commission per the active tariff card (commission.ts):
+   * DR platform:commission_expense / CR agent:<id>:commission_payable.
+   * Idempotent per source transaction (commission:<sourceKey>).
+   */
   private async accrueCommission(
     agent: AgentRecord,
     type: CommissionableType,
     amountKobo: number,
-    idempotencyKey: string,
-    referenceId: string,
+    sourceKey: string,
+    sourceId: string,
     actorId: string
   ): Promise<number> {
     const commissionKobo = commissionFor(type, amountKobo);
-    if (commissionKobo <= 0) {
+    if (commissionKobo === 0) {
       return 0;
     }
-    await this.ledger.ensureAccount({ code: PLATFORM_COMMISSION_EXPENSE_ACCOUNT, type: 'expense' });
     await this.ledger.postEntry(
       {
-        idempotencyKey: `agent-commission:${idempotencyKey}`,
+        idempotencyKey: `commission:${sourceKey}`,
         referenceType: 'agent_banking_commission',
-        referenceId,
-        description: `Agent commission accrual (${type}) for ${agent.id}`,
+        referenceId: sourceId,
+        description: `Commission accrual for agent ${agent.id} (${type})`,
         postings: [
           { accountCode: PLATFORM_COMMISSION_EXPENSE_ACCOUNT, direction: 'debit', amountKobo: commissionKobo },
           { accountCode: agent.commissionAccountCode, direction: 'credit', amountKobo: commissionKobo }
@@ -603,6 +621,56 @@ export class AgentBankingService {
       actorId
     );
     return commissionKobo;
+  }
+
+  // ------------------------------------------- crash-safe claim discipline
+
+  /**
+   * Bounded-retry ledger truth probe (stage 24, audit A1-6/A4-1). A racing
+   * twin's commit can become visible a beat AFTER its 23505 reached us, so
+   * one lookup is not proof of absence. 'absent' means every probe succeeded
+   * and found nothing — the only state in which a claim may roll back;
+   * 'unknown' (the probe itself failed) must be treated like 'found': when
+   * in doubt, leave the pending state for resume and surface 409.
+   */
+  private async probeLedgerEntry(key: string): Promise<'found' | 'absent' | 'unknown'> {
+    let sawFailure = false;
+    for (let attempt = 0; attempt < LEDGER_PROBE_ATTEMPTS; attempt += 1) {
+      try {
+        if (await this.ledger.findEntryByIdempotencyKey(key)) {
+          return 'found';
+        }
+      } catch {
+        sawFailure = true; // the probe itself failed — we know nothing
+      }
+      if (attempt < LEDGER_PROBE_ATTEMPTS - 1) {
+        await sleep(LEDGER_PROBE_BASE_DELAY_MS + Math.floor(Math.random() * LEDGER_PROBE_JITTER_MS));
+      }
+    }
+    return sawFailure ? 'unknown' : 'absent';
+  }
+
+  /**
+   * Bounded-retry adoption probe for the transaction row: a twin that beat
+   * us to the ledger insert (23505) writes its transaction row a beat later,
+   * so a single-shot lookup could miss and drop into the rollback leg while
+   * the twin's payout stands (audit A1-6).
+   */
+  private async probeTransactionRow(key: string): Promise<AgentTransactionRecord | undefined> {
+    for (let attempt = 0; attempt < LEDGER_PROBE_ATTEMPTS; attempt += 1) {
+      try {
+        const row = await this.transactions.findByIdempotencyKey(key);
+        if (row) {
+          return row;
+        }
+      } catch {
+        // lookup hiccup — retry within the bound
+      }
+      if (attempt < LEDGER_PROBE_ATTEMPTS - 1) {
+        await sleep(LEDGER_PROBE_BASE_DELAY_MS + Math.floor(Math.random() * LEDGER_PROBE_JITTER_MS));
+      }
+    }
+    return undefined;
   }
 
   async listTransactions(
@@ -790,17 +858,30 @@ export class AgentBankingService {
       } catch (error) {
         if (error instanceof ConflictException) {
           // A twin request created the transaction row first — adopt its
-          // record instead of double-settling.
-          transaction = await this.transactions.findByIdempotencyKey(redemptionKey);
+          // record instead of double-settling. Bounded-retry probe (stage
+          // 24, audit A1-6/A4-1): the twin's row can commit a beat AFTER
+          // its ledger posting already 23505'd us.
+          transaction = await this.probeTransactionRow(redemptionKey);
         }
         if (!transaction) {
-          // Posting failed: release the claim so the redemption can be
-          // retried. Best-effort — a crash leaves REDEEMING, which the next
-          // call resumes via the transaction-row check above.
-          await this.vouchers
-            .updateExpected(id, { status: 'ISSUED' }, { status: 'REDEEMING' })
-            .catch(() => undefined);
-          throw error;
+          // Stage 24 (audit A1-6): roll the REDEEMING claim back to ISSUED
+          // ONLY when the ledger PROVES no payout entry exists under this
+          // operation's key. Rolling back while the payout posting stands
+          // re-opens a PAID voucher to void — the audit trail would assert
+          // "voided / never paid" while the farmer's wallet keeps the money
+          // and the float debit has no compensating record. When the entry
+          // exists (or the probe is inconclusive) the claim stays REDEEMING
+          // for the resume path and the caller gets a 409.
+          const probe = await this.probeLedgerEntry(redemptionKey);
+          if (probe === 'absent') {
+            await this.vouchers
+              .updateExpected(id, { status: 'ISSUED' }, { status: 'REDEEMING' })
+              .catch(() => undefined);
+            throw error;
+          }
+          throw new ConflictException(
+            `Voucher '${id}' redemption posting state is uncertain — the claim stays REDEEMING for a safe resume; retry the redemption`
+          );
         }
       }
     }
@@ -832,6 +913,16 @@ export class AgentBankingService {
     this.assertAgentAccess(agent, actor);
     if (voucher.status !== 'ISSUED') {
       throw new ConflictException(`Only ISSUED vouchers can be voided (status is ${voucher.status})`);
+    }
+    // Stage 24 (audit A1-6): an ISSUED voucher may still carry a committed
+    // redemption payout (a crash window or a legacy rollback left the claim
+    // re-opened) — voiding on top of it would assert "voided / never paid"
+    // while the farmer's wallet keeps the money and the float debit stands.
+    const redemptionProbe = await this.probeLedgerEntry(`voucher-redemption:${voucher.id}`);
+    if (redemptionProbe === 'found') {
+      throw new ConflictException(
+        `Voucher '${id}' already has a redemption payout in the ledger — it cannot be voided; a redeem retry settles it`
+      );
     }
     const updated = await this.vouchers.updateExpected(id, { status: 'VOIDED' }, { status: 'ISSUED' });
     await this.events.publish('agentbank.voucher.voided', { voucherId: id }, actor.id);
