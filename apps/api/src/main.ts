@@ -10,6 +10,7 @@ import {
   assertProductionWebhookSecrets
 } from './modules/integrations/adapters.js';
 import { assertProductionPartnerApiConfig } from './modules/partner-api/partner-api.config.js';
+import { assertProductionPhase3WebhookTokens } from './modules/integrations/phase3/phase3.utils.js';
 
 async function bootstrap(): Promise<void> {
   // Fail closed: refuse to boot a production process that cannot verify
@@ -19,6 +20,7 @@ async function bootstrap(): Promise<void> {
   assertProductionDriverConfig();
   assertProductionWebhookSecrets();
   assertProductionPartnerApiConfig();
+  assertProductionPhase3WebhookTokens();
 
   // bufferLogs: startup logs are captured until the pino logger is bound.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
