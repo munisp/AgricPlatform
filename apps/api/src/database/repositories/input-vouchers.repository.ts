@@ -168,6 +168,18 @@ export interface FundingTopUpResult {
   replayed: boolean;
 }
 
+/**
+ * Opaque transaction handle scoped to
+ * SubsidyProgrammeRepository.withAllocationLock (stage 24, audit A4-2). The
+ * pg implementation passes the lock-transaction client so the conditional
+ * reserve UPDATE and the voucher INSERT commit — or roll back — TOGETHER
+ * with the programme row lock; the in-memory implementation passes nothing
+ * (its reserve/create steps are already atomic under the promise mutex).
+ */
+export interface AllocationTx {
+  query(text: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount?: number | null }>;
+}
+
 export interface ProgrammeFundingRepository {
   getFunding(programmeId: string): Promise<ProgrammeFundingRecord | undefined>;
   /**
@@ -178,9 +190,11 @@ export interface ProgrammeFundingRepository {
   /**
    * Atomic float reservation (audit C3): a single conditional UPDATE
    * (funded - reserved - settled >= amount); false means the float cannot
-   * back the voucher and NOTHING may be issued.
+   * back the voucher and NOTHING may be issued. Pass the allocation-lock
+   * `tx` (stage 24, audit A4-2) so the reservation commits/rolls back WITH
+   * the voucher insert.
    */
-  reserve(programmeId: string, amountKobo: number): Promise<boolean>;
+  reserve(programmeId: string, amountKobo: number, tx?: AllocationTx): Promise<boolean>;
   /** Compensating release for a reservation whose voucher insert failed. */
   unreserve(programmeId: string, amountKobo: number): Promise<void>;
   /**
@@ -214,20 +228,27 @@ export interface SubsidyProgrammeRepository {
    * per-programme promise mutex (Node is single-threaded, so each awaited
    * step is atomic — the chain closes the check-then-act window).
    */
-  withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T>;
+  withAllocationLock<T>(programmeId: string, fn: (tx?: AllocationTx) => Promise<T>): Promise<T>;
 }
 
 export interface BeneficiaryRepository {
   /** Throws ConflictException on duplicate (programmeId, farmerId) or (programmeId, ninHash). */
   create(record: BeneficiaryRecord): Promise<BeneficiaryRecord>;
   findById(id: string): Promise<BeneficiaryRecord | undefined>;
-  findByProgrammeAndFarmer(programmeId: string, farmerId: string): Promise<BeneficiaryRecord | undefined>;
+  findByProgrammeAndFarmer(
+    programmeId: string,
+    farmerId: string
+  ): Promise<BeneficiaryRecord | undefined>;
   find(criteria: BeneficiaryCriteria): Promise<BeneficiaryRecord[]>;
 }
 
 export interface InputVoucherRepository {
-  /** Throws ConflictException when idempotencyKey already exists. */
-  create(record: InputVoucherRecord): Promise<InputVoucherRecord>;
+  /**
+   * Throws ConflictException when idempotencyKey already exists. Pass the
+   * allocation-lock `tx` (stage 24, audit A4-2) so the insert commits/rolls
+   * back WITH the float reservation.
+   */
+  create(record: InputVoucherRecord, tx?: AllocationTx): Promise<InputVoucherRecord>;
   findById(id: string): Promise<InputVoucherRecord | undefined>;
   findByIdempotencyKey(key: string): Promise<InputVoucherRecord | undefined>;
   find(criteria: InputVoucherCriteria): Promise<InputVoucherRecord[]>;
@@ -292,9 +313,11 @@ export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepos
     return structuredClone(updated);
   }
 
-  async withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T> {
+  async withAllocationLock<T>(programmeId: string, fn: (tx?: AllocationTx) => Promise<T>): Promise<T> {
     // Per-programme promise-chain mutex: mirrors the pg row lock so the
     // budget/cap check + insert serialise in tests exactly as in production.
+    // No tx handle exists in memory (each awaited step is already atomic);
+    // the callback receives `undefined` and compensates failures itself.
     const previous = this.allocationLocks.get(programmeId) ?? Promise.resolve();
     const run = previous.then(() => fn());
     this.allocationLocks.set(
@@ -467,6 +490,17 @@ export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepos
   async creditTopUp(event: FundingEventRecord): Promise<FundingTopUpResult> {
     const replay = this.events.get(event.idempotencyKey);
     if (replay) {
+      // Stage 24 (audit A4-9): same key + different payload is a client bug
+      // on a money endpoint — 409, never a silent replay.
+      if (
+        replay.programmeId !== event.programmeId ||
+        replay.kind !== event.kind ||
+        replay.amountKobo !== event.amountKobo
+      ) {
+        throw new ConflictException(
+          `Idempotency key '${event.idempotencyKey}' was already used with a different funding payload`
+        );
+      }
       return {
         event: { ...replay },
         funding: { ...this.requireFunding(event.programmeId) },
@@ -534,9 +568,11 @@ export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepos
       return; // exactly-once: the marker proves the move already happened
     }
     const current = this.funding.get(programmeId);
-    if (!current || current.reservedKobo < amountKobo) {
-      return; // no backing reservation (legacy voucher) — fail closed, no negative float
-    }
+    // Stage 24 (audit A4-8): record the marker UNCONDITIONALLY, exactly like
+    // the pg CTE (INSERT ... ON CONFLICT DO NOTHING). Recording it even when
+    // the funding move no-ops (legacy/unbacked voucher) keeps a crash-resume
+    // retry from moving ANOTHER voucher's reservation after unrelated
+    // issuance raised reservedKobo >= amount.
     this.events.set(markerKey, {
       id: markerKey,
       programmeId,
@@ -546,6 +582,9 @@ export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepos
       createdBy: actorId,
       createdAt: new Date().toISOString()
     });
+    if (!current || current.reservedKobo < amountKobo) {
+      return; // no backing reservation (legacy voucher) — fail closed, no negative float
+    }
     this.funding.set(programmeId, {
       ...current,
       reservedKobo: current.reservedKobo - amountKobo,
