@@ -1,784 +1,657 @@
-import { Global, Module, type Provider } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import type pg from 'pg';
+import { PgPoolProvider } from './pg/pg-pool.provider.js';
 import {
   ADVISORY_REPOSITORY,
-  AGENT_ACTIVITY_LOG_REPOSITORY,
-  AGENT_ASSIGNMENT_REPOSITORY,
-  AGENT_BANKING_AGENT_REPOSITORY,
-  AGENT_FLOAT_TOPUP_REPOSITORY,
-  AGENT_TRANSACTION_REPOSITORY,
-  AGENT_VOUCHER_REPOSITORY,
-  AGGREGATION_POINT_REPOSITORY,
-  ANALYTICS_MART_REPOSITORY,
-  ANALYTICS_STAR_REPOSITORY,
-  ANIMAL_REPOSITORY,
   ANNOUNCEMENT_REPOSITORY,
-  API_KEY_REPOSITORY,
   APPLICATION_REPOSITORY,
   AUDIT_REPOSITORY,
-  AUTH_SESSION_REPOSITORY,
-  BENEFICIARY_REPOSITORY,
-  BUYER_GROUP_MEMBERSHIP_REPOSITORY,
-  BUYER_GROUP_REPOSITORY,
   CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
   CAMPUS_CLUB_REPOSITORY,
-  CARBON_ESTIMATE_REPOSITORY,
-  CARBON_EVIDENCE_REPOSITORY,
-  CARBON_PLOT_REPOSITORY,
   CERTIFICATE_REPOSITORY,
-  CERTIFIED_LISTING_REPOSITORY,
-  CERTIFIED_WAREHOUSE_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
   CHAPTER_REPOSITORY,
   COHORT_THREAD_POST_REPOSITORY,
   COHORT_THREAD_REPOSITORY,
-  COLD_CHAIN_LOG_REPOSITORY,
-  COMMODITY_LOT_REPOSITORY,
-  COMMODITY_PRICE_REPOSITORY,
-  COMPLIANCE_CONSENT_REPOSITORY,
   CONSENT_REPOSITORY,
   COURSE_REPOSITORY,
+  CREDIT_PROFILE_REPOSITORY,
+  DELETION_REQUEST_REPOSITORY,
+  DELIVERY_LOG_REPOSITORY,
+  DOCUMENT_REPOSITORY,
+  ENROLMENT_REPOSITORY,
+  EVENT_RSVP_REPOSITORY,
+  FORUM_TOPIC_REPOSITORY,
+  JUDGE_ASSIGNMENT_REPOSITORY,
+  JUDGE_SCORE_REPOSITORY,
+  KNOWLEDGE_RESOURCE_REPOSITORY,
+  LISTING_REPOSITORY,
+  MENTOR_REQUEST_REPOSITORY,
+  MILESTONE_PROGRESS_REPOSITORY,
+  NOTIFICATION_PREFERENCE_REPOSITORY,
+  NOTIFICATION_REPOSITORY,
+  OPPORTUNITY_REPOSITORY,
+  ORDER_REPOSITORY,
+  OUTBOX_REPOSITORY,
+  PATHWAY_ENROLMENT_REPOSITORY,
+  PATHWAY_STAGE_REPOSITORY,
+  PATHWAY_TEMPLATE_REPOSITORY,
+  PG_POOL,
+  PODCAST_EPISODE_REPOSITORY,
+  PROFILE_REPOSITORY,
+  PROGRAMME_COHORT_REPOSITORY,
+  PROGRAMME_ENROLMENT_REPOSITORY,
+  PROGRAMME_MILESTONE_REPOSITORY,
+  REVIEW_REPOSITORY,
+  RUBRIC_CRITERION_REPOSITORY,
+  SEARCH_QUERY_REPOSITORY,
+  SERVICE_BOOKING_REPOSITORY,
+  SERVICE_OFFERING_REPOSITORY,
+  SERVICE_REVIEW_REPOSITORY,
+  STAGE_PROGRESS_REPOSITORY,
+  SUPPLIER_REPOSITORY,
+  TOPIC_FLAG_REPOSITORY,
+  USER_REPOSITORY,
+  COMMODITY_PRICE_REPOSITORY,
+  CREDIT_SCORE_REPOSITORY,
+  ESCROW_REPOSITORY,
+  INVOICE_REPOSITORY,
+  LEDGER_ACCOUNT_REPOSITORY,
+  LEDGER_ENTRY_REPOSITORY,
+  LENDER_REPOSITORY,
+  LOAN_APPLICATION_REPOSITORY,
+  REPAYMENT_SCHEDULE_REPOSITORY,
+  SHIPMENT_REPOSITORY,
+  WEBINAR_REGISTRATION_REPOSITORY,
+  WEBINAR_REPOSITORY,
+  EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+  FARM_RECORD_REPOSITORY,
+  IMPORT_BATCH_REPOSITORY,
+  IMPORT_RECORD_REPOSITORY,
+  INBOUND_EVENT_REPOSITORY,
+  RECOMMENDATION_FEEDBACK_REPOSITORY,
+  ANALYTICS_MART_REPOSITORY,
+  WEBHOOK_DEDUPE_STORE,
+  ANALYTICS_STAR_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
+import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
+import { createInMemoryAnnouncementRepository } from './repositories/announcement.repository.js';
+import { createInMemoryApplicationRepository } from './repositories/application.repository.js';
+import { createInMemoryAuditRepository } from './repositories/audit.repository.js';
+import { createInMemoryCertificateRepository } from './repositories/certificate.repository.js';
+import { createInMemoryChapterEventRepository } from './repositories/chapter-event.repository.js';
+import { createInMemoryChapterRepository } from './repositories/chapter.repository.js';
+import {
+  createPgAnnouncementRepository,
+  createPgChapterEventRepository,
+  createPgChapterRepository,
+  createPgEventRsvpRepository
+} from './repositories/chapters.pg-repository.js';
+import { createInMemoryConsentRepository } from './repositories/consent.repository.js';
+import { createInMemoryCourseRepository } from './repositories/course.repository.js';
+import { createInMemoryCreditProfileRepository } from './repositories/credit-profile.repository.js';
+import { createInMemoryDeletionRequestRepository } from './repositories/deletion-request.repository.js';
+import { createInMemoryDeliveryLogRepository } from './repositories/delivery-log.repository.js';
+import { createInMemoryDocumentRepository } from './repositories/document.repository.js';
+import { createInMemoryEnrolmentRepository } from './repositories/enrolment.repository.js';
+import { createInMemoryEventRsvpRepository } from './repositories/event-rsvp.repository.js';
+import { createInMemoryForumTopicRepository } from './repositories/forum-topic.repository.js';
+import {
+  createPgCreditProfileRepository,
+  createPgDocumentRepository
+} from './repositories/finance.pg-repository.js';
+import {
+  createPgCertificateRepository,
+  createPgCourseRepository,
+  createPgEnrolmentRepository
+} from './repositories/learning.pg-repository.js';
+import { createInMemoryListingRepository } from './repositories/listing.repository.js';
+import {
+  createPgListingRepository,
+  createPgOrderRepository,
+  createPgReviewRepository
+} from './repositories/marketplace.pg-repository.js';
+import { createInMemoryMentorRequestRepository } from './repositories/mentor-request.repository.js';
+import { createInMemoryNotificationPreferenceRepository } from './repositories/notification-preference.repository.js';
+import { createInMemoryNotificationRepository } from './repositories/notification.repository.js';
+import {
+  createPgDeliveryLogRepository,
+  createPgNotificationPreferenceRepository,
+  createPgNotificationRepository
+} from './repositories/notifications.pg-repository.js';
+import { createInMemoryOpportunityRepository } from './repositories/opportunity.repository.js';
+import {
+  createPgApplicationRepository,
+  createPgOpportunityRepository
+} from './repositories/opportunities.pg-repository.js';
+import { createInMemoryOrderRepository } from './repositories/order.repository.js';
+import { createInMemoryOutboxRepository } from './repositories/outbox.repository.js';
+import { createInMemoryProfileRepository } from './repositories/profile.repository.js';
+import { createPgProfileRepository } from './repositories/profile.pg-repository.js';
+import {
+  createPgConsentRepository,
+  createPgDeletionRequestRepository
+} from './repositories/privacy.pg-repository.js';
+import {
+  createPgAuditRepository,
+  createPgOutboxRepository
+} from './repositories/core.pg-repository.js';
+import { createInMemoryReviewRepository } from './repositories/review.repository.js';
+import {
+  createPgForumTopicRepository,
+  createPgMentorRequestRepository,
+  createPgTopicFlagRepository
+} from './repositories/community.pg-repository.js';
+import { createInMemoryTopicFlagRepository } from './repositories/topic-flag.repository.js';
+import { createInMemoryUserRepository } from './repositories/user.repository.js';
+import { createPgUserRepository } from './repositories/user.pg-repository.js';
+import { createInMemoryCommodityPriceRepository } from './repositories/commodity-price.repository.js';
+import { createPgCommodityPriceRepository } from './repositories/commodity-price.pg-repository.js';
+// Engagement wave (P2b) repositories.
+import {
+  createInMemoryCampusClubMembershipRepository,
+  createInMemoryCampusClubRepository
+} from './repositories/campus-club.repository.js';
+import {
+  createInMemoryCohortThreadPostRepository,
+  createInMemoryCohortThreadRepository
+} from './repositories/cohort-thread.repository.js';
+import {
+  createInMemoryJudgeAssignmentRepository,
+  createInMemoryJudgeScoreRepository,
+  createInMemoryRubricCriterionRepository
+} from './repositories/judging.repository.js';
+import {
+  createInMemoryKnowledgeResourceRepository,
+  createInMemoryPodcastEpisodeRepository
+} from './repositories/knowledge.repository.js';
+import {
+  createPgKnowledgeResourceRepository,
+  createPgPodcastEpisodeRepository,
+  createPgWebinarRegistrationRepository,
+  createPgWebinarRepository
+} from './repositories/knowledge.pg-repository.js';
+import {
+  createInMemoryPathwayEnrolmentRepository,
+  createInMemoryStageProgressRepository
+} from './repositories/pathway-enrolment.repository.js';
+import {
+  createInMemoryPathwayStageRepository,
+  createInMemoryPathwayTemplateRepository
+} from './repositories/pathway.repository.js';
+import {
+  createPgCampusClubMembershipRepository,
+  createPgCampusClubRepository,
+  createPgPathwayEnrolmentRepository,
+  createPgPathwayStageRepository,
+  createPgPathwayTemplateRepository,
+  createPgStageProgressRepository
+} from './repositories/pathways.pg-repository.js';
+import { createInMemoryProgrammeCohortRepository } from './repositories/programme-cohort.repository.js';
+import { createInMemoryProgrammeEnrolmentRepository } from './repositories/programme-enrolment.repository.js';
+import {
+  createInMemoryMilestoneProgressRepository,
+  createInMemoryProgrammeMilestoneRepository
+} from './repositories/programme-milestone.repository.js';
+import {
+  createPgCohortThreadPostRepository,
+  createPgCohortThreadRepository,
+  createPgJudgeAssignmentRepository,
+  createPgJudgeScoreRepository,
+  createPgMilestoneProgressRepository,
+  createPgProgrammeCohortRepository,
+  createPgProgrammeEnrolmentRepository,
+  createPgProgrammeMilestoneRepository,
+  createPgRubricCriterionRepository
+} from './repositories/programmes.pg-repository.js';
+import { createInMemorySearchQueryRepository } from './repositories/search-query.repository.js';
+import {
+  createPgRecommendationFeedbackRepository,
+  createPgSearchQueryRepository
+} from './repositories/search.pg-repository.js';
+import { createInMemoryRecommendationFeedbackRepository } from './repositories/recommendation-feedback.repository.js';
+import { createInMemoryAnalyticsMartRepository } from './repositories/analytics-mart.repository.js';
+import { createPgAnalyticsMartRepository } from './repositories/analytics-mart.pg-repository.js';
+import { createInMemoryAnalyticsStarRepository } from './repositories/analytics-star.repository.js';
+import { createPgAnalyticsStarRepository } from './repositories/analytics-star.pg-repository.js';
+import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
+import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
+import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
+import {
+  createPgServiceBookingRepository,
+  createPgServiceOfferingRepository,
+  createPgServiceReviewRepository,
+  createPgSupplierRepository
+} from './repositories/services-marketplace.pg-repository.js';
+import { createInMemorySupplierRepository } from './repositories/supplier.repository.js';
+import {
+  createInMemoryEquipmentBookingRepository,
+  createInMemoryEquipmentListingRepository
+} from './repositories/mechanization.repository.js';
+import {
+  createPgEquipmentBookingRepository,
+  createPgEquipmentListingRepository
+} from './repositories/mechanization.pg-repository.js';
+import {
+  createInMemoryWebinarRegistrationRepository,
+  createInMemoryWebinarRepository
+} from './repositories/webinar.repository.js';
+// Commerce & finance wave (P2a) repositories.
+import { createInMemoryEscrowRepository } from './repositories/escrow.repository.js';
+import { createInMemoryInvoiceRepository } from './repositories/invoice.repository.js';
+import { createInMemoryShipmentRepository } from './repositories/shipment.repository.js';
+import {
+  createPgEscrowRepository,
+  createPgInvoiceRepository,
+  createPgShipmentRepository
+} from './repositories/commerce.pg-repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from './repositories/ledger.repository.js';
+import {
+  createPgCreditScoreRepository,
+  createPgLedgerAccountRepository,
+  createPgLedgerEntryRepository
+} from './repositories/ledger.pg-repository.js';
+import { createInMemoryCreditScoreRepository } from './repositories/credit-score.repository.js';
+import { createInMemoryLenderRepository } from './repositories/lender.repository.js';
+import {
+  createInMemoryLoanApplicationRepository,
+  createInMemoryRepaymentScheduleRepository
+} from './repositories/loan.repository.js';
+import {
+  createPgLenderRepository,
+  createPgLoanApplicationRepository,
+  createPgRepaymentScheduleRepository
+} from './repositories/credit.pg-repository.js';
+// Phase-3 federated integration wave (P5a) repositories.
+import {
+  createInMemoryExternalAccountLinkRepository,
+  createInMemoryFarmRecordRepository,
+  createInMemoryImportBatchRepository,
+  createInMemoryImportRecordRepository,
+  createInMemoryInboundEventRepository
+} from './repositories/phase3.repository.js';
+import {
+  createPgExternalAccountLinkRepository,
+  createPgFarmRecordRepository,
+  createPgImportBatchRepository,
+  createPgImportRecordRepository,
+  createPgInboundEventRepository,
+  createPgWebhookDedupeStore
+} from './repositories/phase3.pg-repository.js';
+import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
+// USSD channel + lightweight-channel depth wave (P5b) repositories.
+import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
+import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
+import { createInMemoryPinProfileRepository } from './repositories/pin-profile.repository.js';
+import { createPgPinProfileRepository } from './repositories/pin-profile.pg-repository.js';
+import {
+  PIN_PROFILE_REPOSITORY,
+  USSD_SESSION_REPOSITORY
+} from './persistence.tokens.js';
+// Wave P5d: partner API persistence (additive).
+import {
+  API_KEY_REPOSITORY,
+  PARTNER_CLIENT_REPOSITORY,
+  WEBHOOK_SUBSCRIPTION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryApiKeyRepository,
+  createInMemoryPartnerClientRepository,
+  createInMemoryWebhookSubscriptionRepository
+} from './repositories/partner-api.repository.js';
+import {
+  createPgApiKeyRepository,
+  createPgPartnerClientRepository,
+  createPgWebhookSubscriptionRepository
+} from './repositories/partner-api.pg-repository.js';
+// Wave P6a: IVR voice channel persistence (additive).
+import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
+import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
+// Wave VOICE: voice agronomist persistence (additive).
+import {
+  AGENT_CASE_REPOSITORY,
+  VOICE_SESSION_REPOSITORY,
+  VOICE_TURN_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentCaseRepository,
+  createInMemoryVoiceSessionRepository,
+  createInMemoryVoiceTurnRepository
+} from './repositories/voice.repository.js';
+import {
+  createPgAgentCaseRepository,
+  createPgVoiceSessionRepository,
+  createPgVoiceTurnRepository
+} from './repositories/voice.pg-repository.js';
+// Wave L1a: ALTP livestock core persistence (additive).
+import {
+  ANIMAL_REPOSITORY,
+  LOT_REPOSITORY,
+  OWNERSHIP_TRANSFER_REPOSITORY,
+  PASTORALIST_PROFILE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAnimalRepository,
+  createInMemoryLotRepository,
+  createInMemoryOwnershipTransferRepository,
+  createInMemoryPastoralistProfileRepository
+} from './repositories/livestock.repository.js';
+import {
+  createPgAnimalRepository,
+  createPgLotRepository,
+  createPgOwnershipTransferRepository,
+  createPgPastoralistProfileRepository
+} from './repositories/livestock.pg-repository.js';
+// Wave L1b: ALTP livestock health/traceability persistence (additive).
+import {
+  DISEASE_FLAG_REPOSITORY,
+  HEALTH_RECORD_REPOSITORY,
+  MOVEMENT_PERMIT_REPOSITORY,
+  MOVEMENT_REPOSITORY,
+  RECALL_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryDiseaseFlagRepository,
+  createInMemoryHealthRecordRepository,
+  createInMemoryMovementPermitRepository,
+  createInMemoryMovementRepository,
+  createInMemoryRecallRepository
+} from './repositories/livestock-health.repository.js';
+import {
+  createPgDiseaseFlagRepository,
+  createPgHealthRecordRepository,
+  createPgMovementPermitRepository,
+  createPgMovementRepository,
+  createPgRecallRepository
+} from './repositories/livestock-health.pg-repository.js';
+// Wave L1c: ALTP trade/finance/compliance persistence (additive).
+import {
+  AGGREGATION_POINT_REPOSITORY,
+  CERTIFIED_LISTING_REPOSITORY,
+  COLD_CHAIN_LOG_REPOSITORY,
+  DISBURSEMENT_REPOSITORY,
+  EXPORT_DOCUMENT_REPOSITORY,
+  INSURANCE_CLAIM_REPOSITORY,
+  INSURANCE_POLICY_REPOSITORY,
+  LIEN_REPOSITORY,
+  LIVESTOCK_TRANSFER_GUARD,
+  OFFTAKE_CONTRACT_REPOSITORY,
+  OFFTAKE_TEMPLATE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAggregationPointRepository,
+  createInMemoryCertifiedListingRepository,
+  createInMemoryColdChainLogRepository,
+  createInMemoryDisbursementRepository,
+  createInMemoryExportDocumentRepository,
+  createInMemoryInsuranceClaimRepository,
+  createInMemoryInsurancePolicyRepository,
+  createInMemoryLienRepository,
+  createInMemoryOfftakeContractRepository,
+  createInMemoryOfftakeTemplateRepository,
+  createLienTransferGuard
+} from './repositories/livestock-trade.repository.js';
+import {
+  createPgAggregationPointRepository,
+  createPgCertifiedListingRepository,
+  createPgColdChainLogRepository,
+  createPgDisbursementRepository,
+  createPgExportDocumentRepository,
+  createPgInsuranceClaimRepository,
+  createPgInsurancePolicyRepository,
+  createPgLienRepository,
+  createPgOfftakeContractRepository,
+  createPgOfftakeTemplateRepository
+} from './repositories/livestock-trade.pg-repository.js';
+// Wave P: platform foundation persistence (additive).
+import {
+  AUTH_SESSION_REPOSITORY,
+  FEATURE_FLAG_REPOSITORY,
+  PROCESSED_EVENT_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAuthSessionRepository } from './repositories/auth-session.repository.js';
+import { createPgAuthSessionRepository } from './repositories/auth-session.pg-repository.js';
+import { createInMemoryFeatureFlagRepository } from './repositories/feature-flag.repository.js';
+import { createInMemoryProcessedEventRepository } from './repositories/processed-event.repository.js';
+import {
+  createPgFeatureFlagRepository,
+  createPgProcessedEventRepository
+} from './repositories/platform.pg-repository.js';
+// Wave M: marketplace commerce depth persistence (additive).
+import {
+  BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+  BUYER_GROUP_REPOSITORY,
+  DRAFT_ORDER_REPOSITORY,
+  LISTING_VARIANT_REPOSITORY,
+  ORDER_EXTENSION_REPOSITORY,
+  PRICE_LIST_ENTRY_REPOSITORY,
+  PRICE_LIST_REPOSITORY,
+  PRODUCT_REVIEW_REPOSITORY,
+  PROMOTION_REDEMPTION_REPOSITORY,
+  PROMOTION_REPOSITORY,
+  RETURN_REQUEST_REPOSITORY,
+  SELLER_RATING_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBuyerGroupMembershipRepository,
+  createInMemoryBuyerGroupRepository,
+  createInMemoryDraftOrderRepository,
+  createInMemoryListingVariantRepository,
+  createInMemoryOrderExtensionRepository,
+  createInMemoryPriceListEntryRepository,
+  createInMemoryPriceListRepository,
+  createInMemoryProductReviewRepository,
+  createInMemoryPromotionRedemptionRepository,
+  createInMemoryPromotionRepository,
+  createInMemoryReturnRequestRepository,
+  createInMemorySellerRatingRepository
+} from './repositories/commerce-depth.repository.js';
+import {
+  createPgBuyerGroupMembershipRepository,
+  createPgBuyerGroupRepository,
+  createPgDraftOrderRepository,
+  createPgOrderExtensionRepository,
+  createPgPriceListEntryRepository,
+  createPgPriceListRepository,
+  createPgProductReviewRepository,
+  createPgPromotionRedemptionRepository,
+  createPgPromotionRepository,
+  createPgReturnRequestRepository,
+  createPgSellerRatingRepository
+} from './repositories/commerce-depth.pg-repository.js';
+// Wave COMP: NDPA 2023 compliance tooling persistence (additive).
+import {
+  COMPLIANCE_CONSENT_REPOSITORY,
+  DATA_SUBJECT_REQUEST_REPOSITORY,
+  RETENTION_POLICY_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryComplianceConsentRepository,
+  createInMemoryDataSubjectRequestRepository,
+  createInMemoryRetentionPolicyRepository
+} from './repositories/compliance.repository.js';
+import {
+  createPgComplianceConsentRepository,
+  createPgDataSubjectRequestRepository,
+  createPgRetentionPolicyRepository
+} from './repositories/compliance.pg-repository.js';
+// Wave SYNCSRV: record-level offline sync protocol v1 persistence (additive).
+import {
+  ENTITY_VERSION_REPOSITORY,
+  SYNC_CURSOR_REPOSITORY,
+  SYNC_MUTATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryEntityVersionRepository,
+  createInMemorySyncCursorRepository,
+  createInMemorySyncMutationRepository
+} from './repositories/sync.repository.js';
+import {
+  createPgEntityVersionRepository,
+  createPgSyncCursorRepository,
+  createPgSyncMutationRepository
+} from './repositories/sync.pg-repository.js';
+// Wave FARMS: farms & crop-production persistence (additive).
+import {
+  CROP_PLANTING_REPOSITORY,
+  FARM_EXPENSE_REPOSITORY,
+  FARM_PLOT_REPOSITORY,
+  HARVEST_RECORD_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCropPlantingRepository,
+  createInMemoryFarmExpenseRepository,
+  createInMemoryFarmPlotRepository,
+  createInMemoryHarvestRecordRepository
+} from './repositories/farms.repository.js';
+import {
+  createPgCropPlantingRepository,
+  createPgFarmExpenseRepository,
+  createPgFarmPlotRepository,
+  createPgHarvestRecordRepository
+} from './repositories/farms.pg-repository.js';
+// Wave AGENTS: field-agent (enumerator) persistence (additive).
+import {
+  AGENT_ACTIVITY_LOG_REPOSITORY,
+  AGENT_ASSIGNMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentActivityLogRepository,
+  createInMemoryAgentAssignmentRepository
+} from './repositories/field-agents.repository.js';
+import {
+  createPgAgentActivityLogRepository,
+  createPgAgentAssignmentRepository
+} from './repositories/field-agents.pg-repository.js';
+// Wave GEO: geospatial pack persistence (additive).
+import {
+  GEO_BOUNDARY_REPOSITORY,
+  H3_INDEX_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryGeoBoundaryRepository,
+  createInMemoryH3IndexRepository
+} from './repositories/geo.repository.js';
+import {
+  createPgGeoBoundaryRepository,
+  createPgH3IndexRepository
+} from './repositories/geo.pg-repository.js';
+// Wave CREDIT: microfinance suite persistence (additive).
+import {
   CREDIT_COLLATERAL_REPOSITORY,
   CREDIT_GROUP_MEMBER_REPOSITORY,
   CREDIT_GROUP_REPOSITORY,
   CREDIT_GUARANTOR_REPOSITORY,
   CREDIT_LOAN_REPOSITORY,
   CREDIT_PRODUCT_REPOSITORY,
-  CREDIT_PROFILE_REPOSITORY,
   CREDIT_REPAYMENT_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
-  CREDIT_SCORE_REPOSITORY,
-  CROP_PLANTING_REPOSITORY,
-  CUSTODY_EVENT_REPOSITORY,
-  DATA_SUBJECT_REQUEST_REPOSITORY,
-  DELETION_REQUEST_REPOSITORY,
-  DELIVERY_LOG_REPOSITORY,
-  DISBURSEMENT_REPOSITORY,
-  DISEASE_FLAG_REPOSITORY,
-  DOCUMENT_REPOSITORY,
-  DRAFT_ORDER_REPOSITORY,
-  ENROLMENT_REPOSITORY,
-  ENTITY_VERSION_REPOSITORY,
-  EQUIPMENT_BOOKING_REPOSITORY,
-  EQUIPMENT_LISTING_REPOSITORY,
-  ESCROW_REPOSITORY,
-  EVENT_RSVP_REPOSITORY,
-  EXPORT_DOCUMENT_REPOSITORY,
-  EXTERNAL_ACCOUNT_LINK_REPOSITORY,
-  FARM_EXPENSE_REPOSITORY,
-  FARM_PLOT_REPOSITORY,
-  FARM_RECORD_REPOSITORY,
-  FEATURE_FLAG_REPOSITORY,
-  FORUM_TOPIC_REPOSITORY,
-  GEO_BOUNDARY_REPOSITORY,
   GEO_CREDIT_SHADOW_REPOSITORY,
-  H3_INDEX_REPOSITORY,
-  HARVEST_RECORD_REPOSITORY,
-  HEALTH_RECORD_REPOSITORY,
-  IDEMPOTENCY_STORE,
-  IMPORT_BATCH_REPOSITORY,
-  IMPORT_RECORD_REPOSITORY,
-  INBOUND_EVENT_REPOSITORY,
-  INPUT_VOUCHER_PROGRAMME_REPOSITORY,
-  INPUT_VOUCHER_REDEMPTION_REPOSITORY,
-  INPUT_VOUCHER_REPOSITORY,
-  INSURANCE_CLAIM_REPOSITORY,
-  INSURANCE_POLICY_REPOSITORY,
-  INVOICE_REPOSITORY,
-  IVR_CALL_REPOSITORY,
-  JUDGE_ASSIGNMENT_REPOSITORY,
-  JUDGE_SCORE_REPOSITORY,
-  KEY_VALUE_STORE,
-  KNOWLEDGE_RESOURCE_REPOSITORY,
-  LEDGER_ACCOUNT_REPOSITORY,
-  LEDGER_ENTRY_REPOSITORY,
-  LENDER_REPOSITORY,
-  LIEN_REPOSITORY,
-  LISTING_REPOSITORY,
-  LISTING_VARIANT_REPOSITORY,
-  LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
-  LIVESTOCK_PASSPORT_REPOSITORY,
-  LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
-  LOAN_APPLICATION_REPOSITORY,
-  LOT_PLOT_LINK_REPOSITORY,
-  LOT_REPOSITORY,
-  MENTOR_REQUEST_REPOSITORY,
-  MILESTONE_PROGRESS_REPOSITORY,
-  MOVEMENT_PERMIT_REPOSITORY,
-  MOVEMENT_REPOSITORY,
-  NOTIFICATION_PREFERENCE_REPOSITORY,
-  NOTIFICATION_REPOSITORY,
-  OPPORTUNITY_REPOSITORY,
-  ORDER_EXTENSION_REPOSITORY,
-  ORDER_REPOSITORY,
-  OTP_STORE,
-  OUTBOX_REPOSITORY,
-  OWNERSHIP_TRANSFER_REPOSITORY,
-  PARAMETRIC_PAYOUT_REPOSITORY,
-  PARAMETRIC_POLICY_REPOSITORY,
+  EQUIPMENT_LISTING_REPOSITORY,
+  EQUIPMENT_BOOKING_REPOSITORY,
   PARAMETRIC_PRODUCT_REPOSITORY,
+  PARAMETRIC_POLICY_REPOSITORY,
   PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
-  PARTNER_CLIENT_REPOSITORY,
-  PASTORALIST_PROFILE_REPOSITORY,
-  PATHWAY_ENROLMENT_REPOSITORY,
-  PATHWAY_STAGE_REPOSITORY,
-  PATHWAY_TEMPLATE_REPOSITORY,
-  PG_POOL,
-  PIN_PROFILE_REPOSITORY,
-  PODCAST_EPISODE_REPOSITORY,
-  PRICE_LIST_ENTRY_REPOSITORY,
-  PRICE_LIST_REPOSITORY,
-  PROCESSED_EVENT_REPOSITORY,
-  PRODUCT_REVIEW_REPOSITORY,
-  PROFILE_REPOSITORY,
-  PROGRAMME_COHORT_REPOSITORY,
-  PROGRAMME_ENROLMENT_REPOSITORY,
-  PROGRAMME_MILESTONE_REPOSITORY,
-  PROMOTION_REDEMPTION_REPOSITORY,
-  PROMOTION_REPOSITORY,
-  RECALL_REPOSITORY,
-  RECOMMENDATION_FEEDBACK_REPOSITORY,
-  REDIS_CLIENT,
-  REPAYMENT_SCHEDULE_REPOSITORY,
-  RETENTION_POLICY_REPOSITORY,
-  RETURN_REQUEST_REPOSITORY,
-  REVIEW_REPOSITORY,
-  RUBRIC_CRITERION_REPOSITORY,
-  SEARCH_QUERY_REPOSITORY,
-  SELLER_RATING_REPOSITORY,
-  SERVICE_BOOKING_REPOSITORY,
-  SERVICE_OFFERING_REPOSITORY,
-  SERVICE_REVIEW_REPOSITORY,
-  SHIPMENT_REPOSITORY,
-  STAGE_PROGRESS_REPOSITORY,
-  SUPPLIER_REPOSITORY,
-  SYNC_CURSOR_REPOSITORY,
-  SYNC_MUTATION_REPOSITORY,
-  TOPIC_FLAG_REPOSITORY,
-  TRACEABILITY_SHIPMENT_REPOSITORY,
-  USER_REPOSITORY,
-  USSD_SESSION_REPOSITORY,
-  VSLA_CONTRIBUTION_REPOSITORY,
-  VSLA_CYCLE_REPOSITORY,
+  PARAMETRIC_PAYOUT_REPOSITORY,
+  // Wave VSLACARBON (additive).
   VSLA_GROUP_REPOSITORY,
   VSLA_MEMBER_REPOSITORY,
+  VSLA_CYCLE_REPOSITORY,
+  VSLA_CONTRIBUTION_REPOSITORY,
   VSLA_SHARE_OUT_REPOSITORY,
   VSLA_SHARE_OUT_PLAN_REPOSITORY,
   VSLA_LOAN_REPOSITORY,
   VSLA_LOAN_REPAYMENT_REPOSITORY,
-  CARBON_PLOT_REPOSITORY as CARBON_PLOT_REPOSITORY_TOKEN,
-  WAREHOUSE_DEPOSIT_REPOSITORY,
-  WAREHOUSE_PLEDGE_REPOSITORY,
-  WAREHOUSE_RECEIPT_REPOSITORY,
-  WAREHOUSE_TRANSFER_REPOSITORY,
-  WEBHOOK_DEDUPE_STORE,
-  WEBHOOK_SUBSCRIPTION_REPOSITORY,
-  WEBINAR_REGISTRATION_REPOSITORY,
-  WEBINAR_REPOSITORY
+  CARBON_PLOT_REPOSITORY,
+  CARBON_EVIDENCE_REPOSITORY,
+  CARBON_ESTIMATE_REPOSITORY,
+  // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+  LIVESTOCK_PASSPORT_REPOSITORY,
+  LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+  LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY
 } from './persistence.tokens.js';
-import { RedisModule } from './redis.module.js';
-import { ConfigService } from '../config/config.service.js';
-import {
-  createInMemoryUserRepository,
-  createPgUserRepository
-} from './repositories/user.repository.js';
-import {
-  createInMemoryProfileRepository,
-  createPgProfileRepository
-} from './repositories/profile.repository.js';
-import {
-  createInMemoryConsentRepository,
-  createPgConsentRepository
-} from './repositories/consent.repository.js';
-import {
-  createInMemoryDeletionRequestRepository,
-  createPgDeletionRequestRepository
-} from './repositories/deletion-request.repository.js';
-import {
-  createInMemoryCourseRepository,
-  createPgCourseRepository
-} from './repositories/course.repository.js';
-import {
-  createInMemoryEnrolmentRepository,
-  createPgEnrolmentRepository
-} from './repositories/enrolment.repository.js';
-import {
-  createInMemoryCertificateRepository,
-  createPgCertificateRepository
-} from './repositories/certificate.repository.js';
-import {
-  createInMemoryForumTopicRepository,
-  createPgForumTopicRepository
-} from './repositories/forum.repository.js';
-import {
-  createInMemoryMentorRequestRepository,
-  createPgMentorRequestRepository
-} from './repositories/mentor.repository.js';
-import {
-  createInMemoryTopicFlagRepository,
-  createPgTopicFlagRepository
-} from './repositories/moderation.repository.js';
-import {
-  createInMemoryOpportunityRepository,
-  createPgOpportunityRepository
-} from './repositories/opportunity.repository.js';
-import {
-  createInMemoryApplicationRepository,
-  createPgApplicationRepository
-} from './repositories/application.repository.js';
-import {
-  createInMemoryChapterRepository,
-  createPgChapterRepository
-} from './repositories/chapter.repository.js';
-import {
-  createInMemoryChapterEventRepository,
-  createPgChapterEventRepository
-} from './repositories/chapter-event.repository.js';
-import {
-  createInMemoryEventRsvpRepository,
-  createPgEventRsvpRepository
-} from './repositories/event-rsvp.repository.js';
-import {
-  createInMemoryAnnouncementRepository,
-  createPgAnnouncementRepository
-} from './repositories/announcement.repository.js';
-import {
-  createInMemoryAdvisoryRepository,
-  createPgAdvisoryRepository
-} from './repositories/advisory.repository.js';
-import {
-  createInMemoryListingRepository,
-  createPgListingRepository
-} from './repositories/listing.repository.js';
-import {
-  createInMemoryOrderRepository,
-  createPgOrderRepository
-} from './repositories/order.repository.js';
-import {
-  createInMemoryReviewRepository,
-  createPgReviewRepository
-} from './repositories/review.repository.js';
-import {
-  createInMemoryCreditProfileRepository,
-  createPgCreditProfileRepository
-} from './repositories/credit-profile.repository.js';
-import {
-  createInMemoryDocumentRepository,
-  createPgDocumentRepository
-} from './repositories/document.repository.js';
-import {
-  createInMemoryNotificationRepository,
-  createPgNotificationRepository
-} from './repositories/notification.repository.js';
-import {
-  createInMemoryNotificationPreferenceRepository,
-  createPgNotificationPreferenceRepository
-} from './repositories/notification-preference.repository.js';
-import {
-  createInMemoryDeliveryLogRepository,
-  createPgDeliveryLogRepository
-} from './repositories/delivery-log.repository.js';
-import {
-  createInMemoryAuditRepository,
-  createPgAuditRepository
-} from './repositories/audit.repository.js';
-import {
-  createInMemoryOutboxRepository,
-  createPgOutboxRepository
-} from './repositories/outbox.repository.js';
-import {
-  createInMemoryCommodityPriceRepository,
-  createPgCommodityPriceRepository
-} from './repositories/commodity-price.repository.js';
-import {
-  createInMemorySupplierRepository,
-  createPgSupplierRepository
-} from './repositories/supplier.repository.js';
-import {
-  createInMemoryServiceOfferingRepository,
-  createPgServiceOfferingRepository
-} from './repositories/service-offering.repository.js';
-import {
-  createInMemoryServiceBookingRepository,
-  createPgServiceBookingRepository
-} from './repositories/service-booking.repository.js';
-import {
-  createInMemoryServiceReviewRepository,
-  createPgServiceReviewRepository
-} from './repositories/service-review.repository.js';
-import {
-  createInMemoryProgrammeCohortRepository,
-  createPgProgrammeCohortRepository
-} from './repositories/programme-cohort.repository.js';
-import {
-  createInMemoryProgrammeEnrolmentRepository,
-  createPgProgrammeEnrolmentRepository
-} from './repositories/programme-enrolment.repository.js';
-import {
-  createInMemoryProgrammeMilestoneRepository,
-  createPgProgrammeMilestoneRepository
-} from './repositories/programme-milestone.repository.js';
-import {
-  createInMemoryMilestoneProgressRepository,
-  createPgMilestoneProgressRepository
-} from './repositories/milestone-progress.repository.js';
-import {
-  createInMemoryRubricCriterionRepository,
-  createPgRubricCriterionRepository
-} from './repositories/rubric-criterion.repository.js';
-import {
-  createInMemoryJudgeAssignmentRepository,
-  createPgJudgeAssignmentRepository
-} from './repositories/judge-assignment.repository.js';
-import {
-  createInMemoryJudgeScoreRepository,
-  createPgJudgeScoreRepository
-} from './repositories/judge-score.repository.js';
-import {
-  createInMemoryCohortThreadRepository,
-  createPgCohortThreadRepository
-} from './repositories/cohort-thread.repository.js';
-import {
-  createInMemoryCohortThreadPostRepository,
-  createPgCohortThreadPostRepository
-} from './repositories/cohort-thread-post.repository.js';
-import {
-  createInMemoryPathwayTemplateRepository,
-  createPgPathwayTemplateRepository
-} from './repositories/pathway-template.repository.js';
-import {
-  createInMemoryPathwayStageRepository,
-  createPgPathwayStageRepository
-} from './repositories/pathway-stage.repository.js';
-import {
-  createInMemoryPathwayEnrolmentRepository,
-  createPgPathwayEnrolmentRepository
-} from './repositories/pathway-enrolment.repository.js';
-import {
-  createInMemoryStageProgressRepository,
-  createPgStageProgressRepository
-} from './repositories/stage-progress.repository.js';
-import {
-  createInMemoryCampusClubRepository,
-  createPgCampusClubRepository
-} from './repositories/campus-club.repository.js';
-import {
-  createInMemoryCampusClubMembershipRepository,
-  createPgCampusClubMembershipRepository
-} from './repositories/campus-club-membership.repository.js';
-import {
-  createInMemoryKnowledgeResourceRepository,
-  createPgKnowledgeResourceRepository
-} from './repositories/knowledge-resource.repository.js';
-import {
-  createInMemoryPodcastEpisodeRepository,
-  createPgPodcastEpisodeRepository
-} from './repositories/podcast-episode.repository.js';
-import {
-  createInMemoryWebinarRepository,
-  createPgWebinarRepository
-} from './repositories/webinar.repository.js';
-import {
-  createInMemoryWebinarRegistrationRepository,
-  createPgWebinarRegistrationRepository
-} from './repositories/webinar-registration.repository.js';
-import {
-  createInMemorySearchQueryRepository,
-  createPgSearchQueryRepository
-} from './repositories/search-query.repository.js';
-import {
-  createInMemoryRecommendationFeedbackRepository,
-  createPgRecommendationFeedbackRepository
-} from './repositories/recommendation-feedback.repository.js';
-import {
-  createInMemoryAnalyticsMartRepository,
-  createPgAnalyticsMartRepository
-} from './repositories/analytics-mart.repository.js';
-import {
-  createInMemoryEscrowRepository,
-  createPgEscrowRepository
-} from './repositories/escrow.repository.js';
-import {
-  createInMemoryInvoiceRepository,
-  createPgInvoiceRepository
-} from './repositories/invoice.repository.js';
-import {
-  createInMemoryShipmentRepository,
-  createPgShipmentRepository
-} from './repositories/shipment.repository.js';
-import {
-  createInMemoryLedgerAccountRepository,
-  createPgLedgerAccountRepository
-} from './repositories/ledger.repository.js';
-import {
-  createInMemoryLedgerEntryRepository,
-  createPgLedgerEntryRepository
-} from './repositories/ledger.repository.js';
-import {
-  createInMemoryCreditScoreRepository,
-  createPgCreditScoreRepository
-} from './repositories/credit-score.repository.js';
-import {
-  createInMemoryLenderRepository,
-  createPgLenderRepository
-} from './repositories/lender.repository.js';
-import {
-  createInMemoryLoanApplicationRepository,
-  createPgLoanApplicationRepository
-} from './repositories/loan-application.repository.js';
-import {
-  createInMemoryRepaymentScheduleRepository,
-  createPgRepaymentScheduleRepository
-} from './repositories/repayment-schedule.repository.js';
-import {
-  createInMemoryExternalAccountLinkRepository,
-  createPgExternalAccountLinkRepository
-} from './repositories/external-account-link.repository.js';
-import {
-  createInMemoryFarmRecordRepository,
-  createPgFarmRecordRepository
-} from './repositories/farm-record.repository.js';
-import {
-  createInMemoryImportBatchRepository,
-  createPgImportBatchRepository
-} from './repositories/import-batch.repository.js';
-import {
-  createInMemoryImportRecordRepository,
-  createPgImportRecordRepository
-} from './repositories/import-record.repository.js';
-import {
-  createInMemoryInboundEventRepository,
-  createPgInboundEventRepository
-} from './repositories/inbound-event.repository.js';
-import {
-  createInMemoryUssdSessionRepository,
-  createPgUssdSessionRepository
-} from './repositories/ussd-session.repository.js';
-import {
-  createInMemoryPinProfileRepository,
-  createPgPinProfileRepository
-} from './repositories/pin-profile.repository.js';
-import {
-  createInMemoryPartnerClientRepository,
-  createPgPartnerClientRepository
-} from './repositories/partner-client.repository.js';
-import {
-  createInMemoryApiKeyRepository,
-  createPgApiKeyRepository
-} from './repositories/api-key.repository.js';
-import {
-  createInMemoryWebhookSubscriptionRepository,
-  createPgWebhookSubscriptionRepository
-} from './repositories/webhook-subscription.repository.js';
-import {
-  createInMemoryIvrCallRepository,
-  createPgIvrCallRepository
-} from './repositories/ivr-call.repository.js';
-import {
-  createInMemoryAnimalRepository,
-  createPgAnimalRepository
-} from './repositories/animal.repository.js';
-import {
-  createInMemoryLotRepository,
-  createPgLotRepository
-} from './repositories/lot.repository.js';
-import {
-  createInMemoryOwnershipTransferRepository,
-  createPgOwnershipTransferRepository
-} from './repositories/ownership-transfer.repository.js';
-import {
-  createInMemoryPastoralistProfileRepository,
-  createPgPastoralistProfileRepository
-} from './repositories/pastoralist-profile.repository.js';
-import {
-  createInMemoryCertifiedListingRepository,
-  createPgCertifiedListingRepository
-} from './repositories/certified-listing.repository.js';
-import {
-  createInMemoryOfftakeTemplateRepository,
-  createPgOfftakeTemplateRepository
-} from './repositories/offtake-template.repository.js';
-import {
-  createInMemoryOfftakeContractRepository,
-  createPgOfftakeContractRepository
-} from './repositories/offtake-contract.repository.js';
-import {
-  createInMemoryExportDocumentRepository,
-  createPgExportDocumentRepository
-} from './repositories/export-document.repository.js';
-import {
-  createInMemoryLienRepository,
-  createPgLienRepository
-} from './repositories/lien.repository.js';
-import {
-  createInMemoryInsurancePolicyRepository,
-  createPgInsurancePolicyRepository
-} from './repositories/insurance-policy.repository.js';
-import {
-  createInMemoryInsuranceClaimRepository,
-  createPgInsuranceClaimRepository
-} from './repositories/insurance-claim.repository.js';
-import {
-  createInMemoryDisbursementRepository,
-  createPgDisbursementRepository
-} from './repositories/disbursement.repository.js';
-import {
-  createInMemoryAggregationPointRepository,
-  createPgAggregationPointRepository
-} from './repositories/aggregation-point.repository.js';
-import {
-  createInMemoryColdChainLogRepository,
-  createPgColdChainLogRepository
-} from './repositories/cold-chain-log.repository.js';
-import {
-  createInMemoryHealthRecordRepository,
-  createPgHealthRecordRepository
-} from './repositories/health-record.repository.js';
-import {
-  createInMemoryMovementRepository,
-  createPgMovementRepository
-} from './repositories/movement.repository.js';
-import {
-  createInMemoryMovementPermitRepository,
-  createPgMovementPermitRepository
-} from './repositories/movement-permit.repository.js';
-import {
-  createInMemoryRecallRepository,
-  createPgRecallRepository
-} from './repositories/recall.repository.js';
-import {
-  createInMemoryDiseaseFlagRepository,
-  createPgDiseaseFlagRepository
-} from './repositories/disease-flag.repository.js';
-import {
-  createInMemoryListingVariantRepository,
-  createPgListingVariantRepository
-} from './repositories/listing-variant.repository.js';
-import {
-  createInMemoryBuyerGroupRepository,
-  createPgBuyerGroupRepository
-} from './repositories/buyer-group.repository.js';
-import {
-  createInMemoryBuyerGroupMembershipRepository,
-  createPgBuyerGroupMembershipRepository
-} from './repositories/buyer-group-membership.repository.js';
-import {
-  createInMemoryPriceListRepository,
-  createPgPriceListRepository
-} from './repositories/price-list.repository.js';
-import {
-  createInMemoryPriceListEntryRepository,
-  createPgPriceListEntryRepository
-} from './repositories/price-list-entry.repository.js';
-import {
-  createInMemoryPromotionRepository,
-  createPgPromotionRepository
-} from './repositories/promotion.repository.js';
-import {
-  createInMemoryPromotionRedemptionRepository,
-  createPgPromotionRedemptionRepository
-} from './repositories/promotion-redemption.repository.js';
-import {
-  createInMemoryOrderExtensionRepository,
-  createPgOrderExtensionRepository
-} from './repositories/order-extension.repository.js';
-import {
-  createInMemoryReturnRequestRepository,
-  createPgReturnRequestRepository
-} from './repositories/return-request.repository.js';
-import {
-  createInMemoryDraftOrderRepository,
-  createPgDraftOrderRepository
-} from './repositories/draft-order.repository.js';
-import {
-  createInMemoryProductReviewRepository,
-  createPgProductReviewRepository
-} from './repositories/product-review.repository.js';
-import {
-  createInMemorySellerRatingRepository,
-  createPgSellerRatingRepository
-} from './repositories/seller-rating.repository.js';
-import {
-  createInMemoryAuthSessionRepository,
-  createPgAuthSessionRepository
-} from './repositories/auth-session.repository.js';
-import {
-  createInMemoryFeatureFlagRepository,
-  createPgFeatureFlagRepository
-} from './repositories/feature-flag.repository.js';
-import {
-  createInMemoryProcessedEventRepository,
-  createPgProcessedEventRepository
-} from './repositories/processed-event.repository.js';
-import {
-  createInMemoryAnalyticsStarRepository,
-  createPgAnalyticsStarRepository
-} from './repositories/analytics-star.repository.js';
-import {
-  createInMemoryComplianceConsentRepository,
-  createPgComplianceConsentRepository
-} from './repositories/compliance-consent.repository.js';
-import {
-  createInMemoryDataSubjectRequestRepository,
-  createPgDataSubjectRequestRepository
-} from './repositories/data-subject-request.repository.js';
-import {
-  createInMemoryRetentionPolicyRepository,
-  createPgRetentionPolicyRepository
-} from './repositories/retention-policy.repository.js';
-import {
-  createInMemoryEntityVersionRepository,
-  createPgEntityVersionRepository
-} from './repositories/entity-version.repository.js';
-import {
-  createInMemorySyncCursorRepository,
-  createPgSyncCursorRepository
-} from './repositories/sync-cursor.repository.js';
-import {
-  createInMemorySyncMutationRepository,
-  createPgSyncMutationRepository
-} from './repositories/sync-mutation.repository.js';
-import {
-  createInMemoryFarmPlotRepository,
-  createPgFarmPlotRepository
-} from './repositories/farm-plot.repository.js';
-import {
-  createInMemoryCropPlantingRepository,
-  createPgCropPlantingRepository
-} from './repositories/crop-planting.repository.js';
-import {
-  createInMemoryHarvestRecordRepository,
-  createPgHarvestRecordRepository
-} from './repositories/harvest-record.repository.js';
-import {
-  createInMemoryFarmExpenseRepository,
-  createPgFarmExpenseRepository
-} from './repositories/farm-expense.repository.js';
-import {
-  createInMemoryAgentAssignmentRepository,
-  createPgAgentAssignmentRepository
-} from './repositories/agent-assignment.repository.js';
-import {
-  createInMemoryAgentActivityLogRepository,
-  createPgAgentActivityLogRepository
-} from './repositories/agent-activity-log.repository.js';
-import {
-  createInMemoryH3IndexRepository,
-  createPgH3IndexRepository
-} from './repositories/h3-index.repository.js';
-import {
-  createInMemoryGeoBoundaryRepository,
-  createPgGeoBoundaryRepository
-} from './repositories/geo-boundary.repository.js';
-import {
-  createInMemoryVoiceSessionRepository,
-  createPgVoiceSessionRepository
-} from './repositories/voice-session.repository.js';
-import {
-  createInMemoryVoiceTurnRepository,
-  createPgVoiceTurnRepository
-} from './repositories/voice-turn.repository.js';
-import {
-  createInMemoryAgentCaseRepository,
-  createPgAgentCaseRepository
-} from './repositories/agent-case.repository.js';
-import {
-  createInMemoryCreditProductRepository,
-  createPgCreditProductRepository
-} from './repositories/credit-product.repository.js';
-import {
-  createInMemoryCreditLoanRepository,
-  createPgCreditLoanRepository
-} from './repositories/credit-loan.repository.js';
-import {
-  createInMemoryCreditRepaymentRepository,
-  createPgCreditRepaymentRepository
-} from './repositories/credit-repayment.repository.js';
 import {
   createInMemoryCreditCollateralRepository,
-  createPgCreditCollateralRepository
-} from './repositories/credit-collateral.repository.js';
-import {
-  createInMemoryCreditGuarantorRepository,
-  createPgCreditGuarantorRepository
-} from './repositories/credit-guarantor.repository.js';
-import {
-  createInMemoryCreditGroupRepository,
-  createPgCreditGroupRepository
-} from './repositories/credit-group.repository.js';
-import {
   createInMemoryCreditGroupMemberRepository,
-  createPgCreditGroupMemberRepository
-} from './repositories/credit-group-member.repository.js';
-import {
+  createInMemoryCreditGroupRepository,
+  createInMemoryCreditGuarantorRepository,
+  createInMemoryCreditLoanRepository,
+  createInMemoryCreditProductRepository,
+  createInMemoryCreditRepaymentRepository,
   createInMemoryCreditSavingsAccountRepository,
-  createPgCreditSavingsAccountRepository
-} from './repositories/credit-savings-account.repository.js';
+  createInMemoryCreditSavingsTransactionRepository
+} from './repositories/credit-suite.repository.js';
 import {
-  createInMemoryCreditSavingsTransactionRepository,
+  createPgCreditCollateralRepository,
+  createPgCreditGroupMemberRepository,
+  createPgCreditGroupRepository,
+  createPgCreditGuarantorRepository,
+  createPgCreditLoanRepository,
+  createPgCreditProductRepository,
+  createPgCreditRepaymentRepository,
+  createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
-} from './repositories/credit-savings-transaction.repository.js';
+} from './repositories/credit-suite.pg-repository.js';
+// Wave EUDR: traceability passport persistence (additive).
+import {
+  COMMODITY_LOT_REPOSITORY,
+  CUSTODY_EVENT_REPOSITORY,
+  LOT_PLOT_LINK_REPOSITORY,
+  TRACEABILITY_SHIPMENT_REPOSITORY
+} from './persistence.tokens.js';
 import {
   createInMemoryCommodityLotRepository,
-  createPgCommodityLotRepository
-} from './repositories/commodity-lot.repository.js';
-import {
   createInMemoryCustodyEventRepository,
-  createPgCustodyEventRepository
-} from './repositories/custody-event.repository.js';
-import {
   createInMemoryLotPlotLinkRepository,
-  createPgLotPlotLinkRepository
-} from './repositories/lot-plot-link.repository.js';
+  createInMemoryTraceabilityShipmentRepository
+} from './repositories/traceability.repository.js';
 import {
-  createInMemoryTraceabilityShipmentRepository,
+  createPgCommodityLotRepository,
+  createPgCustodyEventRepository,
+  createPgLotPlotLinkRepository,
   createPgTraceabilityShipmentRepository
-} from './repositories/traceability-shipment.repository.js';
+} from './repositories/traceability.pg-repository.js';
+import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
+import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// Wave AGENTBANK: agent banking persistence (additive).
 import {
-  createInMemoryGeoCreditShadowRepository,
-  createPgGeoCreditShadowRepository
-} from './repositories/geo-credit-shadow.repository.js';
+  AGENT_BANKING_AGENT_REPOSITORY,
+  AGENT_FLOAT_TOPUP_REPOSITORY,
+  AGENT_TRANSACTION_REPOSITORY,
+  AGENT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
 import {
   createInMemoryAgentBankingAgentRepository,
-  createPgAgentBankingAgentRepository
-} from './repositories/agent-banking.repository.js';
-import {
-  createInMemoryAgentFloatTopupRepository,
-  createPgAgentFloatTopupRepository
-} from './repositories/agent-banking.repository.js';
-import {
-  createInMemoryAgentVoucherRepository,
-  createPgAgentVoucherRepository
-} from './repositories/agent-banking.repository.js';
-import {
+  createInMemoryAgentFloatTopUpRepository,
   createInMemoryAgentTransactionRepository,
-  createPgAgentTransactionRepository
+  createInMemoryAgentVoucherRepository
 } from './repositories/agent-banking.repository.js';
 import {
-  createInMemoryEquipmentListingRepository,
-  createPgEquipmentListingRepository
-} from './repositories/equipment-listing.repository.js';
-import {
-  createInMemoryEquipmentBookingRepository,
-  createPgEquipmentBookingRepository
-} from './repositories/equipment-booking.repository.js';
+  createPgAgentBankingAgentRepository,
+  createPgAgentFloatTopUpRepository,
+  createPgAgentTransactionRepository,
+  createPgAgentVoucherRepository
+} from './repositories/agent-banking.pg-repository.js';
+// Wave-INSURANCE (additive): parametric insurance rail repositories.
 import {
   createInMemoryParametricProductRepository,
-  createPgParametricProductRepository
-} from './repositories/parametric-product.repository.js';
-import {
   createInMemoryParametricPolicyRepository,
-  createPgParametricPolicyRepository
-} from './repositories/parametric-policy.repository.js';
-import {
   createInMemoryParametricTriggerEventRepository,
-  createPgParametricTriggerEventRepository
-} from './repositories/parametric-trigger-event.repository.js';
+  createInMemoryParametricPayoutRepository
+} from './repositories/insurance.repository.js';
 import {
-  createInMemoryParametricPayoutRepository,
+  createPgParametricProductRepository,
+  createPgParametricPolicyRepository,
+  createPgParametricTriggerEventRepository,
   createPgParametricPayoutRepository
-} from './repositories/parametric-payout.repository.js';
+} from './repositories/insurance.pg-repository.js';
+// Wave VSLACARBON (additive): VSLA groups + carbon MRV repositories.
 import {
   createInMemoryVslaGroupRepository,
   createInMemoryVslaMemberRepository,
@@ -805,93 +678,83 @@ import {
   createPgCarbonEvidenceRepository,
   createPgCarbonEstimateRepository
 } from './repositories/vsla-carbon.pg-repository.js';
+// Wave LIVESTOCK-PASSPORT (additive): digital livestock passport repositories.
 import {
   createInMemoryLivestockPassportRepository,
-  createPgLivestockPassportRepository
+  createInMemoryPassportEventRepository,
+  createInMemoryPassportTransferRepository
 } from './repositories/livestock-passport.repository.js';
 import {
-  createInMemoryLivestockPassportEventRepository,
-  createPgLivestockPassportEventRepository
-} from './repositories/livestock-passport-event.repository.js';
+  createPgLivestockPassportRepository,
+  createPgPassportEventRepository,
+  createPgPassportTransferRepository
+} from './repositories/livestock-passport.pg-repository.js';
+// Wave NINVOUCHER (additive): input subsidy e-voucher persistence.
 import {
-  createInMemoryLivestockPassportTransferRepository,
-  createPgLivestockPassportTransferRepository
-} from './repositories/livestock-passport-transfer.repository.js';
-import {
-  createInMemoryInputVoucherProgrammeRepository,
-  createPgInputVoucherProgrammeRepository
-} from './repositories/input-voucher-programme.repository.js';
+  BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+  INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+  INPUT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
 import {
   createInMemoryBeneficiaryRepository,
-  createPgBeneficiaryRepository
-} from './repositories/beneficiary.repository.js';
-import {
   createInMemoryInputVoucherRepository,
-  createPgInputVoucherRepository
-} from './repositories/input-voucher.repository.js';
+  createInMemoryRedemptionRepository,
+  createInMemorySubsidyProgrammeRepository
+} from './repositories/input-vouchers.repository.js';
 import {
-  createInMemoryInputVoucherRedemptionRepository,
-  createPgInputVoucherRedemptionRepository
-} from './repositories/input-voucher-redemption.repository.js';
+  createPgBeneficiaryRepository,
+  createPgInputVoucherRepository,
+  createPgRedemptionRepository,
+  createPgSubsidyProgrammeRepository
+} from './repositories/input-vouchers.pg-repository.js';
+// Wave WAREHOUSE (additive): electronic warehouse receipts persistence.
+import {
+  CERTIFIED_WAREHOUSE_REPOSITORY,
+  WAREHOUSE_DEPOSIT_REPOSITORY,
+  WAREHOUSE_RECEIPT_REPOSITORY,
+  WAREHOUSE_PLEDGE_REPOSITORY,
+  WAREHOUSE_TRANSFER_REPOSITORY
+} from './persistence.tokens.js';
 import {
   createInMemoryCertifiedWarehouseRepository,
-  createPgCertifiedWarehouseRepository
-} from './repositories/certified-warehouse.repository.js';
-import {
   createInMemoryWarehouseDepositRepository,
-  createPgWarehouseDepositRepository
-} from './repositories/warehouse-deposit.repository.js';
-import {
   createInMemoryWarehouseReceiptRepository,
-  createPgWarehouseReceiptRepository
-} from './repositories/warehouse-receipt.repository.js';
-import {
   createInMemoryWarehousePledgeRepository,
-  createPgWarehousePledgeRepository
-} from './repositories/warehouse-pledge.repository.js';
+  createInMemoryWarehouseTransferRepository
+} from './repositories/warehouse.repository.js';
 import {
-  createInMemoryWarehouseTransferRepository,
+  createPgCertifiedWarehouseRepository,
+  createPgWarehouseDepositRepository,
+  createPgWarehouseReceiptRepository,
+  createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
-} from './repositories/warehouse-transfer.repository.js';
+} from './repositories/warehouse.pg-repository.js';
 
 /**
- * Global persistence module: provides the pg.Pool when DATABASE_URL is set,
- * otherwise every repository falls back to the in-memory implementation so
- * the API can boot for local development and unit tests. Swapping backends
- * is a config change, not a code change.
+ * Global persistence module. Repository tokens resolve to the pg
+ * implementations when PG_POOL is live (DATABASE_URL configured) and to the
+ * in-memory implementations otherwise. Services depend only on the port
+ * interfaces.
  */
 @Global()
 @Module({
-  imports: [RedisModule],
   providers: [
-    {
-      provide: PG_POOL,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService): pg.Pool | null => {
-        return config.createPgPool();
-      }
-    },
-    {
-      provide: IDEMPOTENCY_STORE,
-      inject: [REDIS_CLIENT],
-      useFactory: (redis: unknown) => redis // placeholder, overridden by RedisModule exports
-    },
+    PgPoolProvider,
+    { provide: PG_POOL, useFactory: (provider: PgPoolProvider) => provider.pool, inject: [PgPoolProvider] },
     {
       provide: USER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgUserRepository(pool) : createInMemoryUserRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgUserRepository(pool) : createInMemoryUserRepository()),
       inject: [PG_POOL]
     },
     {
       provide: PROFILE_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgProfileRepository(pool) : createInMemoryProfileRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgProfileRepository(pool) : createInMemoryProfileRepository()),
       inject: [PG_POOL]
     },
     {
       provide: CONSENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgConsentRepository(pool) : createInMemoryConsentRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgConsentRepository(pool) : createInMemoryConsentRepository()),
       inject: [PG_POOL]
     },
     {
@@ -902,15 +765,18 @@ import {
     },
     {
       provide: COURSE_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgCourseRepository(pool) : createInMemoryCourseRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgCourseRepository(pool) : createInMemoryCourseRepository()),
       inject: [PG_POOL]
     },
     {
       provide: ENROLMENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgEnrolmentRepository(pool) : createInMemoryEnrolmentRepository(),
-      inject: [PG_POOL]
+      useFactory: (pool: pg.Pool | null, certificates: unknown) =>
+        pool
+          ? createPgEnrolmentRepository(pool)
+          : createInMemoryEnrolmentRepository(
+              certificates as Parameters<typeof createInMemoryEnrolmentRepository>[0]
+            ),
+      inject: [PG_POOL, CERTIFICATE_REPOSITORY]
     },
     {
       provide: CERTIFICATE_REPOSITORY,
@@ -944,14 +810,17 @@ import {
     },
     {
       provide: APPLICATION_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgApplicationRepository(pool) : createInMemoryApplicationRepository(),
-      inject: [PG_POOL]
+      useFactory: (pool: pg.Pool | null, opportunities: unknown) =>
+        pool
+          ? createPgApplicationRepository(pool)
+          : createInMemoryApplicationRepository(
+              opportunities as Parameters<typeof createInMemoryApplicationRepository>[0]
+            ),
+      inject: [PG_POOL, OPPORTUNITY_REPOSITORY]
     },
     {
       provide: CHAPTER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgChapterRepository(pool) : createInMemoryChapterRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgChapterRepository(pool) : createInMemoryChapterRepository()),
       inject: [PG_POOL]
     },
     {
@@ -962,9 +831,13 @@ import {
     },
     {
       provide: EVENT_RSVP_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgEventRsvpRepository(pool) : createInMemoryEventRsvpRepository(),
-      inject: [PG_POOL]
+      useFactory: (pool: pg.Pool | null, events: unknown) =>
+        pool
+          ? createPgEventRsvpRepository(pool)
+          : createInMemoryEventRsvpRepository(
+              events as Parameters<typeof createInMemoryEventRsvpRepository>[0]
+            ),
+      inject: [PG_POOL, CHAPTER_EVENT_REPOSITORY]
     },
     {
       provide: ANNOUNCEMENT_REPOSITORY,
@@ -980,20 +853,22 @@ import {
     },
     {
       provide: LISTING_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgListingRepository(pool) : createInMemoryListingRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgListingRepository(pool) : createInMemoryListingRepository()),
       inject: [PG_POOL]
     },
     {
       provide: ORDER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgOrderRepository(pool) : createInMemoryOrderRepository(),
-      inject: [PG_POOL]
+      // In-memory mode attaches the listing repository so placeOrder can
+      // decrement stock with the same compare-and-set guard as the pg path.
+      useFactory: (pool: pg.Pool | null, listings: unknown) =>
+        pool
+          ? createPgOrderRepository(pool)
+          : createInMemoryOrderRepository(listings as Parameters<typeof createInMemoryOrderRepository>[0]),
+      inject: [PG_POOL, LISTING_REPOSITORY]
     },
     {
       provide: REVIEW_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgReviewRepository(pool) : createInMemoryReviewRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgReviewRepository(pool) : createInMemoryReviewRepository()),
       inject: [PG_POOL]
     },
     {
@@ -1010,16 +885,18 @@ import {
     },
     {
       provide: NOTIFICATION_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgNotificationRepository(pool) : createInMemoryNotificationRepository(),
-      inject: [PG_POOL]
+      useFactory: (pool: pg.Pool | null, deliveryLog: unknown) =>
+        pool
+          ? createPgNotificationRepository(pool)
+          : createInMemoryNotificationRepository(
+              deliveryLog as Parameters<typeof createInMemoryNotificationRepository>[0]
+            ),
+      inject: [PG_POOL, DELIVERY_LOG_REPOSITORY]
     },
     {
       provide: NOTIFICATION_PREFERENCE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgNotificationPreferenceRepository(pool)
-          : createInMemoryNotificationPreferenceRepository(),
+        pool ? createPgNotificationPreferenceRepository(pool) : createInMemoryNotificationPreferenceRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1030,14 +907,12 @@ import {
     },
     {
       provide: AUDIT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAuditRepository(pool) : createInMemoryAuditRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgAuditRepository(pool) : createInMemoryAuditRepository()),
       inject: [PG_POOL]
     },
     {
       provide: OUTBOX_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository()),
       inject: [PG_POOL]
     },
     {
@@ -1046,10 +921,10 @@ import {
         pool ? createPgCommodityPriceRepository(pool) : createInMemoryCommodityPriceRepository(),
       inject: [PG_POOL]
     },
+    // Engagement wave (P2b) providers.
     {
       provide: SUPPLIER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgSupplierRepository(pool) : createInMemorySupplierRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgSupplierRepository(pool) : createInMemorySupplierRepository()),
       inject: [PG_POOL]
     },
     {
@@ -1079,25 +954,19 @@ import {
     {
       provide: PROGRAMME_ENROLMENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgProgrammeEnrolmentRepository(pool)
-          : createInMemoryProgrammeEnrolmentRepository(),
+        pool ? createPgProgrammeEnrolmentRepository(pool) : createInMemoryProgrammeEnrolmentRepository(),
       inject: [PG_POOL]
     },
     {
       provide: PROGRAMME_MILESTONE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgProgrammeMilestoneRepository(pool)
-          : createInMemoryProgrammeMilestoneRepository(),
+        pool ? createPgProgrammeMilestoneRepository(pool) : createInMemoryProgrammeMilestoneRepository(),
       inject: [PG_POOL]
     },
     {
       provide: MILESTONE_PROGRESS_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgMilestoneProgressRepository(pool)
-          : createInMemoryMilestoneProgressRepository(),
+        pool ? createPgMilestoneProgressRepository(pool) : createInMemoryMilestoneProgressRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1127,9 +996,7 @@ import {
     {
       provide: COHORT_THREAD_POST_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgCohortThreadPostRepository(pool)
-          : createInMemoryCohortThreadPostRepository(),
+        pool ? createPgCohortThreadPostRepository(pool) : createInMemoryCohortThreadPostRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1165,17 +1032,13 @@ import {
     {
       provide: CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgCampusClubMembershipRepository(pool)
-          : createInMemoryCampusClubMembershipRepository(),
+        pool ? createPgCampusClubMembershipRepository(pool) : createInMemoryCampusClubMembershipRepository(),
       inject: [PG_POOL]
     },
     {
       provide: KNOWLEDGE_RESOURCE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgKnowledgeResourceRepository(pool)
-          : createInMemoryKnowledgeResourceRepository(),
+        pool ? createPgKnowledgeResourceRepository(pool) : createInMemoryKnowledgeResourceRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1186,16 +1049,13 @@ import {
     },
     {
       provide: WEBINAR_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgWebinarRepository(pool) : createInMemoryWebinarRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgWebinarRepository(pool) : createInMemoryWebinarRepository()),
       inject: [PG_POOL]
     },
     {
       provide: WEBINAR_REGISTRATION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgWebinarRegistrationRepository(pool)
-          : createInMemoryWebinarRegistrationRepository(),
+        pool ? createPgWebinarRegistrationRepository(pool) : createInMemoryWebinarRegistrationRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1204,36 +1064,20 @@ import {
         pool ? createPgSearchQueryRepository(pool) : createInMemorySearchQueryRepository(),
       inject: [PG_POOL]
     },
-    {
-      provide: RECOMMENDATION_FEEDBACK_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgRecommendationFeedbackRepository(pool)
-          : createInMemoryRecommendationFeedbackRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: ANALYTICS_MART_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
-      inject: [PG_POOL]
-    },
+    // Commerce & finance wave (P2a) providers.
     {
       provide: ESCROW_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
       inject: [PG_POOL]
     },
     {
       provide: INVOICE_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgInvoiceRepository(pool) : createInMemoryInvoiceRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgInvoiceRepository(pool) : createInMemoryInvoiceRepository()),
       inject: [PG_POOL]
     },
     {
       provide: SHIPMENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgShipmentRepository(pool) : createInMemoryShipmentRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgShipmentRepository(pool) : createInMemoryShipmentRepository()),
       inject: [PG_POOL]
     },
     {
@@ -1256,8 +1100,7 @@ import {
     },
     {
       provide: LENDER_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgLenderRepository(pool) : createInMemoryLenderRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLenderRepository(pool) : createInMemoryLenderRepository()),
       inject: [PG_POOL]
     },
     {
@@ -1269,17 +1112,14 @@ import {
     {
       provide: REPAYMENT_SCHEDULE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgRepaymentScheduleRepository(pool)
-          : createInMemoryRepaymentScheduleRepository(),
+        pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
       inject: [PG_POOL]
     },
+    // Phase-3 federated integration wave (P5a) providers.
     {
       provide: EXTERNAL_ACCOUNT_LINK_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgExternalAccountLinkRepository(pool)
-          : createInMemoryExternalAccountLinkRepository(),
+        pool ? createPgExternalAccountLinkRepository(pool) : createInMemoryExternalAccountLinkRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1307,6 +1147,16 @@ import {
       inject: [PG_POOL]
     },
     {
+      // Durable provider-webhook dedupe (funds-integrity wave): pg mode
+      // persists receipts in integrations.inbound_events; in-memory mode
+      // keeps the bounded replay cache for development.
+      provide: WEBHOOK_DEDUPE_STORE,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWebhookDedupeStore(pool) : createInMemoryWebhookDedupeStore(),
+      inject: [PG_POOL]
+    },
+    // USSD channel + lightweight-channel depth wave (P5b) providers.
+    {
       provide: USSD_SESSION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgUssdSessionRepository(pool) : createInMemoryUssdSessionRepository(),
@@ -1318,6 +1168,30 @@ import {
         pool ? createPgPinProfileRepository(pool) : createInMemoryPinProfileRepository(),
       inject: [PG_POOL]
     },
+    // Wave P5c: recommendation feedback events.
+    {
+      provide: RECOMMENDATION_FEEDBACK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgRecommendationFeedbackRepository(pool)
+          : createInMemoryRecommendationFeedbackRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5c: lakehouse-ready analytics data marts.
+    {
+      provide: ANALYTICS_MART_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave B: analytics star-schema marts (analytics schema, migration 019).
+    {
+      provide: ANALYTICS_STAR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsStarRepository(pool) : createInMemoryAnalyticsStarRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5d: partner API repositories (appended; see partner-api module).
     {
       provide: PARTNER_CLIENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1338,102 +1212,42 @@ import {
           : createInMemoryWebhookSubscriptionRepository(),
       inject: [PG_POOL]
     },
+    // Wave P6a: IVR voice channel (appended).
     {
       provide: IVR_CALL_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgIvrCallRepository(pool) : createInMemoryIvrCallRepository(),
       inject: [PG_POOL]
     },
-    {
-      provide: ANIMAL_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAnimalRepository(pool) : createInMemoryAnimalRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: LOT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgLotRepository(pool) : createInMemoryLotRepository(),
-      inject: [PG_POOL]
-    },
+    // Wave L1a: ALTP livestock core (appended).
     {
       provide: OWNERSHIP_TRANSFER_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOwnershipTransferRepository(pool) : createInMemoryOwnershipTransferRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ANIMAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transfers: unknown) =>
         pool
-          ? createPgOwnershipTransferRepository(pool)
-          : createInMemoryOwnershipTransferRepository(),
+          ? createPgAnimalRepository(pool)
+          : createInMemoryAnimalRepository(
+              transfers as Parameters<typeof createInMemoryAnimalRepository>[0]
+            ),
+      inject: [PG_POOL, OWNERSHIP_TRANSFER_REPOSITORY]
+    },
+    {
+      provide: LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLotRepository(pool) : createInMemoryLotRepository()),
       inject: [PG_POOL]
     },
     {
       provide: PASTORALIST_PROFILE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgPastoralistProfileRepository(pool)
-          : createInMemoryPastoralistProfileRepository(),
+        pool ? createPgPastoralistProfileRepository(pool) : createInMemoryPastoralistProfileRepository(),
       inject: [PG_POOL]
     },
-    {
-      provide: CERTIFIED_LISTING_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgCertifiedListingRepository(pool) : createInMemoryCertifiedListingRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: OFFTAKE_TEMPLATE_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgOfftakeTemplateRepository(pool) : createInMemoryOfftakeTemplateRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: OFFTAKE_CONTRACT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgOfftakeContractRepository(pool) : createInMemoryOfftakeContractRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: EXPORT_DOCUMENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgExportDocumentRepository(pool) : createInMemoryExportDocumentRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: LIEN_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgLienRepository(pool) : createInMemoryLienRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: INSURANCE_POLICY_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgInsurancePolicyRepository(pool) : createInMemoryInsurancePolicyRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: INSURANCE_CLAIM_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgInsuranceClaimRepository(pool) : createInMemoryInsuranceClaimRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: DISBURSEMENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgDisbursementRepository(pool) : createInMemoryDisbursementRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: AGGREGATION_POINT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgAggregationPointRepository(pool)
-          : createInMemoryAggregationPointRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: COLD_CHAIN_LOG_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgColdChainLogRepository(pool) : createInMemoryColdChainLogRepository(),
-      inject: [PG_POOL]
-    },
+    // Wave L1b: ALTP livestock health/traceability (appended).
     {
       provide: HEALTH_RECORD_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1464,6 +1278,95 @@ import {
         pool ? createPgDiseaseFlagRepository(pool) : createInMemoryDiseaseFlagRepository(),
       inject: [PG_POOL]
     },
+    // Wave L1c: ALTP trade/finance/compliance (appended).
+    {
+      provide: CERTIFIED_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedListingRepository(pool) : createInMemoryCertifiedListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_TEMPLATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeTemplateRepository(pool) : createInMemoryOfftakeTemplateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_CONTRACT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeContractRepository(pool) : createInMemoryOfftakeContractRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EXPORT_DOCUMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgExportDocumentRepository(pool) : createInMemoryExportDocumentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIEN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLienRepository(pool) : createInMemoryLienRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsurancePolicyRepository(pool) : createInMemoryInsurancePolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_CLAIM_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsuranceClaimRepository(pool) : createInMemoryInsuranceClaimRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DISBURSEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDisbursementRepository(pool) : createInMemoryDisbursementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGGREGATION_POINT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAggregationPointRepository(pool) : createInMemoryAggregationPointRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COLD_CHAIN_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgColdChainLogRepository(pool) : createInMemoryColdChainLogRepository(),
+      inject: [PG_POOL]
+    },
+    // Lien-backed transfer guard consulted (optionally) by
+    // LivestockService.transferAnimal; registered here so the livestock core
+    // module resolves it without importing the trade module (no cycle).
+    {
+      provide: LIVESTOCK_TRANSFER_GUARD,
+      useFactory: (liens: unknown) =>
+        createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
+      inject: [LIEN_REPOSITORY]
+    },
+    // Wave P: platform foundation (appended).
+    {
+      provide: AUTH_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAuthSessionRepository(pool) : createInMemoryAuthSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FEATURE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFeatureFlagRepository(pool) : createInMemoryFeatureFlagRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROCESSED_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProcessedEventRepository(pool) : createInMemoryProcessedEventRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave M: marketplace commerce depth providers (additive).
     {
       provide: LISTING_VARIANT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1479,9 +1382,7 @@ import {
     {
       provide: BUYER_GROUP_MEMBERSHIP_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgBuyerGroupMembershipRepository(pool)
-          : createInMemoryBuyerGroupMembershipRepository(),
+        pool ? createPgBuyerGroupMembershipRepository(pool) : createInMemoryBuyerGroupMembershipRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1505,9 +1406,7 @@ import {
     {
       provide: PROMOTION_REDEMPTION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgPromotionRedemptionRepository(pool)
-          : createInMemoryPromotionRedemptionRepository(),
+        pool ? createPgPromotionRedemptionRepository(pool) : createInMemoryPromotionRedemptionRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1540,44 +1439,17 @@ import {
         pool ? createPgSellerRatingRepository(pool) : createInMemorySellerRatingRepository(),
       inject: [PG_POOL]
     },
-    {
-      provide: AUTH_SESSION_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAuthSessionRepository(pool) : createInMemoryAuthSessionRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: FEATURE_FLAG_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgFeatureFlagRepository(pool) : createInMemoryFeatureFlagRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: PROCESSED_EVENT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgProcessedEventRepository(pool) : createInMemoryProcessedEventRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: ANALYTICS_STAR_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAnalyticsStarRepository(pool) : createInMemoryAnalyticsStarRepository(),
-      inject: [PG_POOL]
-    },
+    // Wave COMP: NDPA 2023 compliance tooling providers (additive).
     {
       provide: COMPLIANCE_CONSENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgComplianceConsentRepository(pool)
-          : createInMemoryComplianceConsentRepository(),
+        pool ? createPgComplianceConsentRepository(pool) : createInMemoryComplianceConsentRepository(),
       inject: [PG_POOL]
     },
     {
       provide: DATA_SUBJECT_REQUEST_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgDataSubjectRequestRepository(pool)
-          : createInMemoryDataSubjectRequestRepository(),
+        pool ? createPgDataSubjectRequestRepository(pool) : createInMemoryDataSubjectRequestRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1586,6 +1458,7 @@ import {
         pool ? createPgRetentionPolicyRepository(pool) : createInMemoryRetentionPolicyRepository(),
       inject: [PG_POOL]
     },
+    // Wave SYNCSRV: record-level offline sync protocol v1 (additive).
     {
       provide: ENTITY_VERSION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1604,6 +1477,7 @@ import {
         pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
       inject: [PG_POOL]
     },
+    // Wave FARMS: farms & crop-production (appended).
     {
       provide: FARM_PLOT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1628,6 +1502,7 @@ import {
         pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
       inject: [PG_POOL]
     },
+    // Wave AGENTS: field-agent (enumerator) providers (additive).
     {
       provide: AGENT_ASSIGNMENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1637,11 +1512,10 @@ import {
     {
       provide: AGENT_ACTIVITY_LOG_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgAgentActivityLogRepository(pool)
-          : createInMemoryAgentActivityLogRepository(),
+        pool ? createPgAgentActivityLogRepository(pool) : createInMemoryAgentActivityLogRepository(),
       inject: [PG_POOL]
     },
+    // Wave GEO: geospatial pack providers (additive).
     {
       provide: H3_INDEX_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1654,24 +1528,9 @@ import {
         pool ? createPgGeoBoundaryRepository(pool) : createInMemoryGeoBoundaryRepository(),
       inject: [PG_POOL]
     },
-    {
-      provide: VOICE_SESSION_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgVoiceSessionRepository(pool) : createInMemoryVoiceSessionRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: VOICE_TURN_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgVoiceTurnRepository(pool) : createInMemoryVoiceTurnRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: AGENT_CASE_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
-      inject: [PG_POOL]
-    },
+    // Wave CREDIT: microfinance suite providers (additive). The in-memory
+    // savings account repo shares the transaction store so guarded
+    // balance+transaction bodies stay atomic in unit tests.
     {
       provide: CREDIT_PRODUCT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1711,17 +1570,7 @@ import {
     {
       provide: CREDIT_GROUP_MEMBER_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgCreditGroupMemberRepository(pool)
-          : createInMemoryCreditGroupMemberRepository(),
-      inject: [PG_POOL]
-    },
-    {
-      provide: CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgCreditSavingsAccountRepository(pool)
-          : createInMemoryCreditSavingsAccountRepository(),
+        pool ? createPgCreditGroupMemberRepository(pool) : createInMemoryCreditGroupMemberRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1732,6 +1581,17 @@ import {
           : createInMemoryCreditSavingsTransactionRepository(),
       inject: [PG_POOL]
     },
+    {
+      provide: CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transactions: unknown) =>
+        pool
+          ? createPgCreditSavingsAccountRepository(pool)
+          : createInMemoryCreditSavingsAccountRepository(
+              transactions as Parameters<typeof createInMemoryCreditSavingsAccountRepository>[0]
+            ),
+      inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
+    },
+    // Wave EUDR: traceability passport providers (additive).
     {
       provide: COMMODITY_LOT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1758,24 +1618,43 @@ import {
           : createInMemoryTraceabilityShipmentRepository(),
       inject: [PG_POOL]
     },
+    // Wave VOICE: voice agronomist repositories (appended).
+    {
+      provide: VOICE_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceSessionRepository(pool) : createInMemoryVoiceSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOICE_TURN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceTurnRepository(pool) : createInMemoryVoiceTurnRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
     {
       provide: GEO_CREDIT_SHADOW_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
       inject: [PG_POOL]
     },
+    // Wave AGENTBANK (additive): agent banking (float, top-ups, vouchers, tx log).
     {
       provide: AGENT_BANKING_AGENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgAgentBankingAgentRepository(pool)
-          : createInMemoryAgentBankingAgentRepository(),
+        pool ? createPgAgentBankingAgentRepository(pool) : createInMemoryAgentBankingAgentRepository(),
       inject: [PG_POOL]
     },
     {
       provide: AGENT_FLOAT_TOPUP_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgAgentFloatTopupRepository(pool) : createInMemoryAgentFloatTopupRepository(),
+        pool ? createPgAgentFloatTopUpRepository(pool) : createInMemoryAgentFloatTopUpRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1790,6 +1669,7 @@ import {
         pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
       inject: [PG_POOL]
     },
+    // Wave MECHANIZATION (additive): equipment hire marketplace.
     {
       provide: EQUIPMENT_LISTING_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1802,12 +1682,11 @@ import {
         pool ? createPgEquipmentBookingRepository(pool) : createInMemoryEquipmentBookingRepository(),
       inject: [PG_POOL]
     },
+    // Wave-INSURANCE (additive): parametric insurance rail.
     {
       provide: PARAMETRIC_PRODUCT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgParametricProductRepository(pool)
-          : createInMemoryParametricProductRepository(),
+        pool ? createPgParametricProductRepository(pool) : createInMemoryParametricProductRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1830,6 +1709,7 @@ import {
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
     },
+    // Wave VSLACARBON (additive): VSLA groups + carbon MRV.
     {
       provide: VSLA_GROUP_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1877,9 +1757,7 @@ import {
     {
       provide: VSLA_LOAN_REPAYMENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgVslaLoanRepaymentRepository(pool)
-          : createInMemoryVslaLoanRepaymentRepository(),
+        pool ? createPgVslaLoanRepaymentRepository(pool) : createInMemoryVslaLoanRepaymentRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1900,6 +1778,7 @@ import {
         pool ? createPgCarbonEstimateRepository(pool) : createInMemoryCarbonEstimateRepository(),
       inject: [PG_POOL]
     },
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
     {
       provide: LIVESTOCK_PASSPORT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1911,25 +1790,22 @@ import {
     {
       provide: LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgLivestockPassportEventRepository(pool)
-          : createInMemoryLivestockPassportEventRepository(),
+        pool ? createPgPassportEventRepository(pool) : createInMemoryPassportEventRepository(),
       inject: [PG_POOL]
     },
     {
       provide: LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool
-          ? createPgLivestockPassportTransferRepository(pool)
-          : createInMemoryLivestockPassportTransferRepository(),
+          ? createPgPassportTransferRepository(pool)
+          : createInMemoryPassportTransferRepository(),
       inject: [PG_POOL]
     },
+    // Wave NINVOUCHER (additive): input subsidy e-vouchers.
     {
       provide: INPUT_VOUCHER_PROGRAMME_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgInputVoucherProgrammeRepository(pool)
-          : createInMemoryInputVoucherProgrammeRepository(),
+        pool ? createPgSubsidyProgrammeRepository(pool) : createInMemorySubsidyProgrammeRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1947,17 +1823,14 @@ import {
     {
       provide: INPUT_VOUCHER_REDEMPTION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgInputVoucherRedemptionRepository(pool)
-          : createInMemoryInputVoucherRedemptionRepository(),
+        pool ? createPgRedemptionRepository(pool) : createInMemoryRedemptionRepository(),
       inject: [PG_POOL]
     },
+    // Wave WAREHOUSE (additive): electronic warehouse receipts.
     {
       provide: CERTIFIED_WAREHOUSE_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgCertifiedWarehouseRepository(pool)
-          : createInMemoryCertifiedWarehouseRepository(),
+        pool ? createPgCertifiedWarehouseRepository(pool) : createInMemoryCertifiedWarehouseRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1981,15 +1854,12 @@ import {
     {
       provide: WAREHOUSE_TRANSFER_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
-        pool
-          ? createPgWarehouseTransferRepository(pool)
-          : createInMemoryWarehouseTransferRepository(),
+        pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
     }
-  ] satisfies Provider[],
+  ],
   exports: [
     PG_POOL,
-    IDEMPOTENCY_STORE,
     USER_REPOSITORY,
     PROFILE_REPOSITORY,
     CONSENT_REPOSITORY,
@@ -2042,24 +1912,25 @@ import {
     WEBINAR_REPOSITORY,
     WEBINAR_REGISTRATION_REPOSITORY,
     SEARCH_QUERY_REPOSITORY,
-    RECOMMENDATION_FEEDBACK_REPOSITORY,
-    ANALYTICS_MART_REPOSITORY,
+    CREDIT_SCORE_REPOSITORY,
     ESCROW_REPOSITORY,
     INVOICE_REPOSITORY,
-    SHIPMENT_REPOSITORY,
     LEDGER_ACCOUNT_REPOSITORY,
     LEDGER_ENTRY_REPOSITORY,
-    CREDIT_SCORE_REPOSITORY,
     LENDER_REPOSITORY,
     LOAN_APPLICATION_REPOSITORY,
     REPAYMENT_SCHEDULE_REPOSITORY,
+    SHIPMENT_REPOSITORY,
     EXTERNAL_ACCOUNT_LINK_REPOSITORY,
     FARM_RECORD_REPOSITORY,
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
+    WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
     PIN_PROFILE_REPOSITORY,
+    RECOMMENDATION_FEEDBACK_REPOSITORY,
+    ANALYTICS_MART_REPOSITORY,
     PARTNER_CLIENT_REPOSITORY,
     API_KEY_REPOSITORY,
     WEBHOOK_SUBSCRIPTION_REPOSITORY,
@@ -2068,6 +1939,11 @@ import {
     LOT_REPOSITORY,
     OWNERSHIP_TRANSFER_REPOSITORY,
     PASTORALIST_PROFILE_REPOSITORY,
+    HEALTH_RECORD_REPOSITORY,
+    MOVEMENT_REPOSITORY,
+    MOVEMENT_PERMIT_REPOSITORY,
+    RECALL_REPOSITORY,
+    DISEASE_FLAG_REPOSITORY,
     CERTIFIED_LISTING_REPOSITORY,
     OFFTAKE_TEMPLATE_REPOSITORY,
     OFFTAKE_CONTRACT_REPOSITORY,
@@ -2078,11 +1954,7 @@ import {
     DISBURSEMENT_REPOSITORY,
     AGGREGATION_POINT_REPOSITORY,
     COLD_CHAIN_LOG_REPOSITORY,
-    HEALTH_RECORD_REPOSITORY,
-    MOVEMENT_REPOSITORY,
-    MOVEMENT_PERMIT_REPOSITORY,
-    RECALL_REPOSITORY,
-    DISEASE_FLAG_REPOSITORY,
+    LIVESTOCK_TRANSFER_GUARD,
     LISTING_VARIANT_REPOSITORY,
     BUYER_GROUP_REPOSITORY,
     BUYER_GROUP_MEMBERSHIP_REPOSITORY,
@@ -2113,9 +1985,6 @@ import {
     AGENT_ACTIVITY_LOG_REPOSITORY,
     H3_INDEX_REPOSITORY,
     GEO_BOUNDARY_REPOSITORY,
-    VOICE_SESSION_REPOSITORY,
-    VOICE_TURN_REPOSITORY,
-    AGENT_CASE_REPOSITORY,
     CREDIT_PRODUCT_REPOSITORY,
     CREDIT_LOAN_REPOSITORY,
     CREDIT_REPAYMENT_REPOSITORY,
@@ -2129,6 +1998,9 @@ import {
     CUSTODY_EVENT_REPOSITORY,
     LOT_PLOT_LINK_REPOSITORY,
     TRACEABILITY_SHIPMENT_REPOSITORY,
+    VOICE_SESSION_REPOSITORY,
+    VOICE_TURN_REPOSITORY,
+    AGENT_CASE_REPOSITORY,
     GEO_CREDIT_SHADOW_REPOSITORY,
     AGENT_BANKING_AGENT_REPOSITORY,
     AGENT_FLOAT_TOPUP_REPOSITORY,
@@ -2149,13 +2021,14 @@ import {
     VSLA_SHARE_OUT_PLAN_REPOSITORY,
     VSLA_LOAN_REPOSITORY,
     VSLA_LOAN_REPAYMENT_REPOSITORY,
-    CARBON_PLOT_REPOSITORY_TOKEN,
+    CARBON_PLOT_REPOSITORY,
     CARBON_EVIDENCE_REPOSITORY,
     CARBON_ESTIMATE_REPOSITORY,
-    // Wave LIVESTOCK-PASSPORT (additive).
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
     LIVESTOCK_PASSPORT_REPOSITORY,
     LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
     LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
+    // Wave NINVOUCHER (additive).
     INPUT_VOUCHER_PROGRAMME_REPOSITORY,
     BENEFICIARY_REPOSITORY,
     INPUT_VOUCHER_REPOSITORY,
