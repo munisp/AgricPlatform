@@ -11,17 +11,88 @@ const SCRUB_KEYS = new Set([
   'phone',
   'code',
   'devcode',
-  'token'
+  'token',
+  // Audit A3-9: newer credential fields that previously leaked through.
+  'x-at-callback-token',
+  'verif-hash',
+  'x-webhook-signature',
+  'x-paystack-signature',
+  'secret',
+  'password',
+  'apikey',
+  'api-key',
+  'nin'
 ]);
+
+/**
+ * Best-effort scrub of credential material embedded in free-text strings
+ * (audit A3-9): exception message strings — e.g. ProviderHttpError bodies,
+ * which may echo request credentials — pass through object-key filtering
+ * untouched, so `key=value` / `key: value` / `?token=...` fragments naming
+ * a scrub key are redacted inside the string itself.
+ */
+/**
+ * Best-effort scrub of credential material embedded in free-text strings
+ * (audit A3-9): exception message strings — e.g. ProviderHttpError bodies,
+ * which may echo request credentials — pass through object-key filtering
+ * untouched, so `key=value` / `key: value` / `?token=...` fragments naming
+ * a scrub key are redacted inside the string itself. JSON-quoted pairs
+ * ("token":"...") are redacted wholesale so spaced/quoted values cannot
+ * leak past a bare-value pattern.
+ */
+const SCRUB_KEY_NAMES =
+  'authorization|cookie|x-api-key|api[-_]?key|phone|devcode|token|x-at-callback-token|verif-hash|x-webhook-signature|x-paystack-signature|secret|password|nin';
+const SCRUB_JSON_PAIR_PATTERN = new RegExp(
+  `("(?:${SCRUB_KEY_NAMES})"\\s*:\\s*")([^"]*)(")`,
+  'gi'
+);
+const SCRUB_BARE_PAIR_PATTERN = new RegExp(
+  `\\b(${SCRUB_KEY_NAMES})\\b(\\s*[=:]\\s*["']?)([^\\s&"']+)`,
+  'gi'
+);
+
+function scrubString(value: string): string {
+  return value
+    .replace(SCRUB_JSON_PAIR_PATTERN, '$1[redacted]$3')
+    .replace(SCRUB_BARE_PAIR_PATTERN, '$1$2[redacted]');
+}
+
+/**
+ * Key fragments that mark a field as credential-bearing even under a
+ * compound name (signingSecret, apiKey, csrfToken, ninHash, ...). Exact
+ * matching alone misses these (audit A3-9).
+ */
+const SCRUB_KEY_FRAGMENTS = [
+  'secret',
+  'password',
+  'token',
+  'apikey',
+  'api-key',
+  'api_key',
+  'verif-hash',
+  'signature',
+  'nin'
+];
+
+function isScrubKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SCRUB_KEYS.has(lower) || SCRUB_KEY_FRAGMENTS.some((fragment) => lower.includes(fragment));
+}
 
 /**
  * Best-effort deep scrub of secrets/PII from a Sentry event before it leaves
  * the process (observability plan §A.4): auth headers, phone numbers, OTP
- * fields, tokens. Nested objects and arrays are walked; unknown shapes are
- * left untouched.
+ * fields, tokens. Nested objects and arrays are walked; string values are
+ * pattern-scrubbed; unknown shapes are left untouched.
  */
 export function scrubSentryEvent<T>(value: T, depth = 0): T {
-  if (depth > 8 || value === null || typeof value !== 'object') {
+  if (depth > 8 || value === null || value === undefined) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return scrubString(value) as T;
+  }
+  if (typeof value !== 'object') {
     return value;
   }
   if (Array.isArray(value)) {
@@ -30,7 +101,7 @@ export function scrubSentryEvent<T>(value: T, depth = 0): T {
   const source = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(source)) {
-    out[key] = SCRUB_KEYS.has(key.toLowerCase()) ? '[redacted]' : scrubSentryEvent(entry, depth + 1);
+    out[key] = isScrubKey(key) ? '[redacted]' : scrubSentryEvent(entry, depth + 1);
   }
   return out as T;
 }
