@@ -14,7 +14,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import type { ProgrammeMrvReport } from './vsla-carbon.service.js';
 import {
@@ -104,12 +104,16 @@ export class VslaCarbonController {
   }
 
   @Get('groups')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'List VSLA groups (privileged roles see all; members see their own).' })
   async listGroups(@CurrentUser() actor: User | null) {
     return { data: await this.service.listGroups(requireActor(actor)) };
   }
 
   @Get('groups/:id')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'VSLA group detail.' })
   async getGroup(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -117,6 +121,8 @@ export class VslaCarbonController {
   }
 
   @Get('groups/:id/members')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Group membership roster.' })
   async listMembers(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -150,6 +156,8 @@ export class VslaCarbonController {
   }
 
   @Get('groups/:id/cycles')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'List savings cycles for a group.' })
   async listCycles(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -171,6 +179,8 @@ export class VslaCarbonController {
   }
 
   @Get('cycles/:id/contributions')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Contributions recorded in a cycle.' })
   async listContributions(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -188,6 +198,8 @@ export class VslaCarbonController {
   }
 
   @Get('cycles/:id/share-out')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Share-out payout rows recorded at cycle close.' })
   async getShareOut(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -211,6 +223,8 @@ export class VslaCarbonController {
   }
 
   @Get('groups/:id/loans')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Internal loans issued by the group.' })
   async listLoans(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -230,6 +244,8 @@ export class VslaCarbonController {
   }
 
   @Get('loans/:id/repayments')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Repayments recorded against a loan.' })
   async listRepayments(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -249,6 +265,8 @@ export class VslaCarbonController {
   }
 
   @Get('plots')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'List carbon plots (optionally filtered by groupId).' })
   async listPlots(@Query('groupId') groupId: string | undefined, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -256,6 +274,8 @@ export class VslaCarbonController {
   }
 
   @Get('plots/:id')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Carbon plot detail.' })
   async getPlot(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -280,6 +300,8 @@ export class VslaCarbonController {
   }
 
   @Get('plots/:id/evidence')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Seasonal evidence for a plot (basis flags stored verbatim).' })
   async listEvidence(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -307,6 +329,8 @@ export class VslaCarbonController {
   }
 
   @Get('plots/:id/estimates')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'Persisted carbon estimates for a plot (basis: estimate).' })
   async listEstimates(@Param('id') id: string, @CurrentUser() actor: User | null) {
     requireActor(actor);
@@ -314,6 +338,8 @@ export class VslaCarbonController {
   }
 
   @Get('coefficients')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({
     summary: 'Versioned carbon ESTIMATE coefficient table with citations (not a carbon standard methodology).'
   })
@@ -323,6 +349,8 @@ export class VslaCarbonController {
   }
 
   @Get('ndvi/status')
+  @UseGuards(RolesGuard)
+  @Authenticated()
   @ApiOperation({ summary: 'NDVI provider status (stub default; live crop-ml sidecar when configured).' })
   async ndviStatus(@CurrentUser() actor: User | null) {
     requireActor(actor);
