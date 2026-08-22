@@ -192,6 +192,15 @@ export class LedgerService {
     return entry;
   }
 
+  /**
+   * Lookup by idempotency key WITHOUT throwing (stage 24, audit A4-1/A1-3):
+   * crash-safe rollback legs must be able to PROVE whether a posting
+   * committed under an operation's key before deciding to re-open a claim.
+   */
+  async findEntryByIdempotencyKey(key: string): Promise<LedgerJournalEntry | undefined> {
+    return this.entries.findByIdempotencyKey(key);
+  }
+
   async listEntries(criteria: LedgerEntryCriteria): Promise<LedgerJournalEntry[]> {
     return this.entries.find(criteria);
   }
