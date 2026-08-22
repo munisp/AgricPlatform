@@ -16,7 +16,11 @@
  * full minute's allowance are accepted, then throttled to the sustained rate.
  */
 
-import { isProduction } from '../../common/auth/auth.config.js';
+import {
+  assertProductionSecretStrength,
+  isProduction,
+  PRODUCTION_SHARED_SECRET_MIN_LENGTH
+} from '../../common/auth/auth.config.js';
 
 export interface PartnerApiConfig {
   driver: 'sandbox' | 'live';
@@ -63,14 +67,12 @@ export function assertProductionPartnerApiConfig(env: NodeJS.ProcessEnv = proces
         'in production. Refusing to start.'
     );
   }
-  if (
-    !env.PARTNER_API_SIGNING_SECRET ||
-    env.PARTNER_API_SIGNING_SECRET === PARTNER_API_DEV_SECRET
-  ) {
-    throw new Error(
-      'FATAL: PARTNER_API_DRIVER=live requires PARTNER_API_SIGNING_SECRET so partner ' +
-        'access tokens are signed with a private key (not the published development ' +
-        'secret). Refusing to start.'
-    );
-  }
+  // Partner access tokens are HS256: any observed token is an offline
+  // brute-force oracle for the signing secret, so production enforces a
+  // length floor in addition to rejecting the published development secret
+  // (audit A3-5 — 'abc' was previously accepted).
+  assertProductionSecretStrength(env, 'PARTNER_API_SIGNING_SECRET', {
+    minLength: PRODUCTION_SHARED_SECRET_MIN_LENGTH,
+    publishedDefaults: [PARTNER_API_DEV_SECRET]
+  });
 }
