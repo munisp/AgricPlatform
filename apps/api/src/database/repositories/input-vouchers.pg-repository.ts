@@ -1,5 +1,5 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
-import pg from 'pg';
+import { ConflictException } from '@nestjs/common';
+import type pg from 'pg';
 import type {
   AllocationTx,
   BeneficiaryCriteria,
@@ -21,36 +21,36 @@ import type {
 } from './input-vouchers.repository.js';
 
 /**
- * PostgreSQL adapters for the input_vouchers schema (migration 035 — and the
- * stage-23 funded-float tables, migration 046). JSONB columns hold the
- * eligible-state/crop lists; all money columns are bigint kobo.
- *
- * Concurrency contract (stage 22 audit wave):
- *  - updateExpected is a compare-and-set UPDATE ... WHERE id AND <expected>
- *    and throws ConflictException when 0 rows match, so interleaved state
- *    transitions surface as 409 instead of last-write-wins (C2-9).
- *  - withAllocationLock holds SELECT ... FOR UPDATE on the programme row for
- *    the callback's duration, serialising concurrent allocations (C2-10).
- *  - vouchers.idempotency_key / redemptions.voucher_id are UNIQUE; insert
- *    conflicts map 23505 → 409 so retries never double-issue/double-redeem.
- *  - programme_funding moves are single conditional UPDATEs (stage 23, C3);
- *    settle/release are data-modifying CTEs keyed on marker events so a
- *    crash-resume replay applies exactly once.
+ * PostgreSQL implementations over the input_vouchers schema
+ * (infra/postgres/035_input_vouchers.sql). Compare-and-set updates compile
+ * `expected` into WHERE fragments so a lost race updates 0 rows → 409,
+ * mirroring the in-memory repositories used in unit tests. jsonb columns
+ * (eligible_states / eligible_crops) are serialised explicitly — node-pg
+ * would otherwise encode JS arrays as Postgres array literals, which do
+ * not cast to jsonb.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-type Row = Record<string, any>;
-
-function toIso(value: unknown): string {
-  if (value instanceof Date) {
-    return value.toISOString();
+function assertPgUnique(error: unknown, message: string): never {
+  if ((error as { code?: string }).code === '23505') {
+    throw new ConflictException(message);
   }
-  return String(value);
+  throw error;
 }
 
-function toIsoOrUndefined(value: unknown): string | undefined {
-  return value === null || value === undefined ? undefined : toIso(value);
+function toIso(value: unknown): string | undefined {
+  return value === null || value === undefined
+    ? undefined
+    : new Date(value as string).toISOString();
+}
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(String);
+  }
+  if (typeof value === 'string') {
+    return JSON.parse(value) as string[];
+  }
+  return [];
 }
 
 export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository {
@@ -58,8 +58,9 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
 
   async create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord> {
     await this.pool.query(
-      'INSERT INTO input_vouchers.programmes (id, name, sponsor, description, status, per_farmer_cap_kobo, ' +
-        'budget_kobo, eligible_states, eligible_crops, liability_account_code, created_by, created_at, updated_at) ' +
+      'INSERT INTO input_vouchers.programmes (id, name, sponsor, description, status, ' +
+        'per_farmer_cap_kobo, budget_kobo, eligible_states, eligible_crops, ' +
+        'liability_account_code, created_by, created_at, updated_at) ' +
         'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
       [
         record.id,
@@ -77,7 +78,7 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
         record.updatedAt
       ]
     );
-    return structuredClone(record);
+    return record;
   }
 
   async findById(id: string): Promise<SubsidyProgrammeRecord | undefined> {
@@ -86,60 +87,18 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
   }
 
   async find(criteria: ProgrammeCriteria): Promise<SubsidyProgrammeRecord[]> {
-    const clauses: string[] = [];
+    const where: string[] = [];
     const params: unknown[] = [];
     if (criteria.status) {
       params.push(criteria.status);
-      clauses.push(`status = $${params.length}`);
+      where.push(`status = $${params.length}`);
     }
-    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const result = await this.pool.query(
-      `SELECT * FROM input_vouchers.programmes${where} ORDER BY created_at`,
-      params
-    );
-    return result.rows.map((row: Row) => this.fromRow(row));
-  }
-
-  async updateExpected(
-    id: string,
-    patch: Partial<SubsidyProgrammeRecord>,
-    expected: Partial<SubsidyProgrammeRecord>
-  ): Promise<SubsidyProgrammeRecord> {
-    const sets: string[] = [];
-    const wheres: string[] = ['id = $1'];
-    const params: unknown[] = [id];
-    const column = this.columnMap();
-    for (const [key, value] of Object.entries(patch)) {
-      const col = column[key];
-      if (!col) {
-        continue;
-      }
-      params.push(col.jsonb ? JSON.stringify(value) : value);
-      sets.push(`${col.name} = $${params.length}`);
-    }
-    for (const [key, value] of Object.entries(expected)) {
-      const col = column[key];
-      if (!col) {
-        continue;
-      }
-      params.push(value);
-      wheres.push(`${col.name} = $${params.length}`);
-    }
-    if (sets.length === 0) {
-      const current = await this.findById(id);
-      if (!current) {
-        throw new NotFoundException(`Programme '${id}' not found`);
-      }
-      return current;
-    }
-    const result = await this.pool.query(
-      `UPDATE input_vouchers.programmes SET ${sets.join(', ')} WHERE ${wheres.join(' AND ')} RETURNING *`,
-      params
-    );
-    if (result.rowCount === 0) {
-      throw new ConflictException(`Programme '${id}' changed concurrently; reload and retry`);
-    }
-    return this.fromRow(result.rows[0]);
+    const sql =
+      'SELECT * FROM input_vouchers.programmes' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY created_at';
+    const result = await this.pool.query(sql, params);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
   /**
@@ -173,36 +132,54 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
     }
   }
 
-  private columnMap(): Record<string, { name: string; jsonb?: boolean }> {
-    return {
-      name: { name: 'name' },
-      sponsor: { name: 'sponsor' },
-      description: { name: 'description' },
-      status: { name: 'status' },
-      perFarmerCapKobo: { name: 'per_farmer_cap_kobo' },
-      budgetKobo: { name: 'budget_kobo' },
-      eligibleStates: { name: 'eligible_states', jsonb: true },
-      eligibleCrops: { name: 'eligible_crops', jsonb: true },
-      liabilityAccountCode: { name: 'liability_account_code' },
-      updatedAt: { name: 'updated_at' }
-    };
+  async updateExpected(
+    id: string,
+    patch: Partial<SubsidyProgrammeRecord>,
+    expected: Partial<SubsidyProgrammeRecord>
+  ): Promise<SubsidyProgrammeRecord> {
+    const columns: Record<string, string> = { status: 'status', updatedAt: 'updated_at' };
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in patch) {
+        params.push(patch[key as keyof SubsidyProgrammeRecord]);
+        sets.push(`${column} = $${params.length}`);
+      }
+    }
+    const where: string[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in expected) {
+        params.push(expected[key as keyof SubsidyProgrammeRecord]);
+        where.push(`${column} = $${params.length}`);
+      }
+    }
+    const result = await this.pool.query(
+      `UPDATE input_vouchers.programmes SET ${sets.join(', ')} WHERE id = $1` +
+        (where.length > 0 ? ` AND ${where.join(' AND ')}` : ''),
+      params
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new ConflictException(`Programme '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = await this.findById(id);
+    return updated as SubsidyProgrammeRecord;
   }
 
-  private fromRow(row: Row): SubsidyProgrammeRecord {
+  private fromRow(row: Record<string, unknown>): SubsidyProgrammeRecord {
     return {
-      id: row.id,
-      name: row.name,
-      sponsor: row.sponsor,
-      description: row.description ?? undefined,
-      status: row.status,
+      id: row.id as string,
+      name: row.name as string,
+      sponsor: row.sponsor as string,
+      description: (row.description as string) ?? undefined,
+      status: row.status as SubsidyProgrammeRecord['status'],
       perFarmerCapKobo: Number(row.per_farmer_cap_kobo),
       budgetKobo: Number(row.budget_kobo),
-      eligibleStates: row.eligible_states ?? [],
-      eligibleCrops: row.eligible_crops ?? [],
-      liabilityAccountCode: row.liability_account_code,
-      createdBy: row.created_by,
-      createdAt: toIso(row.created_at),
-      updatedAt: toIso(row.updated_at)
+      eligibleStates: toStringArray(row.eligible_states),
+      eligibleCrops: toStringArray(row.eligible_crops),
+      liabilityAccountCode: row.liability_account_code as string,
+      createdBy: row.created_by as string,
+      createdAt: toIso(row.created_at) as string,
+      updatedAt: toIso(row.updated_at) as string
     };
   }
 }
@@ -231,9 +208,9 @@ export class PgBeneficiaryRepository implements BeneficiaryRepository {
         ]
       );
     } catch (error) {
-      this.rethrowUnique(error, 'This farmer or NIN is already enrolled in the programme');
+      assertPgUnique(error, 'This farmer or NIN is already enrolled in the programme');
     }
-    return structuredClone(record);
+    return record;
   }
 
   async findById(id: string): Promise<BeneficiaryRecord | undefined> {
@@ -253,44 +230,40 @@ export class PgBeneficiaryRepository implements BeneficiaryRepository {
   }
 
   async find(criteria: BeneficiaryCriteria): Promise<BeneficiaryRecord[]> {
-    const clauses: string[] = [];
+    const where: string[] = [];
     const params: unknown[] = [];
     if (criteria.programmeId) {
       params.push(criteria.programmeId);
-      clauses.push(`programme_id = $${params.length}`);
+      where.push(`programme_id = $${params.length}`);
     }
     if (criteria.farmerId) {
       params.push(criteria.farmerId);
-      clauses.push(`farmer_id = $${params.length}`);
+      where.push(`farmer_id = $${params.length}`);
     }
-    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const result = await this.pool.query(
-      `SELECT * FROM input_vouchers.beneficiaries${where} ORDER BY created_at`,
-      params
-    );
-    return result.rows.map((row: Row) => this.fromRow(row));
+    const sql =
+      'SELECT * FROM input_vouchers.beneficiaries' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY created_at';
+    const result = await this.pool.query(sql, params);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
-  private rethrowUnique(error: unknown, message: string): never {
-    if ((error as { code?: string }).code === '23505') {
-      throw new ConflictException(message);
-    }
-    throw error;
-  }
-
-  private fromRow(row: Row): BeneficiaryRecord {
+  private fromRow(row: Record<string, unknown>): BeneficiaryRecord {
     return {
-      id: row.id,
-      programmeId: row.programme_id,
-      farmerId: row.farmer_id,
-      ninHash: row.nin_hash,
-      ninMask: row.nin_mask,
-      verificationBasis: row.verification_basis,
-      nameMatchScore: row.name_match_score === null ? undefined : Number(row.name_match_score),
-      state: row.state ?? undefined,
-      primaryCrop: row.primary_crop ?? undefined,
-      verifiedAt: toIso(row.verified_at),
-      createdAt: toIso(row.created_at)
+      id: row.id as string,
+      programmeId: row.programme_id as string,
+      farmerId: row.farmer_id as string,
+      ninHash: row.nin_hash as string,
+      ninMask: row.nin_mask as string,
+      verificationBasis: row.verification_basis as BeneficiaryRecord['verificationBasis'],
+      nameMatchScore:
+        row.name_match_score === null || row.name_match_score === undefined
+          ? undefined
+          : Number(row.name_match_score),
+      state: (row.state as string) ?? undefined,
+      primaryCrop: (row.primary_crop as string) ?? undefined,
+      verifiedAt: toIso(row.verified_at) as string,
+      createdAt: toIso(row.created_at) as string
     };
   }
 }
@@ -321,12 +294,9 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
         ]
       );
     } catch (error) {
-      if ((error as { code?: string }).code === '23505') {
-        throw new ConflictException('A record with these unique values already exists');
-      }
-      throw error;
+      assertPgUnique(error, 'A record with these unique values already exists');
     }
-    return structuredClone(record);
+    return record;
   }
 
   async findById(id: string): Promise<InputVoucherRecord | undefined> {
@@ -335,37 +305,38 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
   }
 
   async findByIdempotencyKey(key: string): Promise<InputVoucherRecord | undefined> {
-    const result = await this.pool.query('SELECT * FROM input_vouchers.vouchers WHERE idempotency_key = $1', [
-      key
-    ]);
+    const result = await this.pool.query(
+      'SELECT * FROM input_vouchers.vouchers WHERE idempotency_key = $1',
+      [key]
+    );
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
   async find(criteria: InputVoucherCriteria): Promise<InputVoucherRecord[]> {
-    const clauses: string[] = [];
+    const where: string[] = [];
     const params: unknown[] = [];
     if (criteria.programmeId) {
       params.push(criteria.programmeId);
-      clauses.push(`programme_id = $${params.length}`);
+      where.push(`programme_id = $${params.length}`);
     }
     if (criteria.beneficiaryId) {
       params.push(criteria.beneficiaryId);
-      clauses.push(`beneficiary_id = $${params.length}`);
+      where.push(`beneficiary_id = $${params.length}`);
     }
     if (criteria.farmerId) {
       params.push(criteria.farmerId);
-      clauses.push(`farmer_id = $${params.length}`);
+      where.push(`farmer_id = $${params.length}`);
     }
     if (criteria.status) {
       params.push(criteria.status);
-      clauses.push(`status = $${params.length}`);
+      where.push(`status = $${params.length}`);
     }
-    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const result = await this.pool.query(
-      `SELECT * FROM input_vouchers.vouchers${where} ORDER BY created_at`,
-      params
-    );
-    return result.rows.map((row: Row) => this.fromRow(row));
+    const sql =
+      'SELECT * FROM input_vouchers.vouchers' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY created_at';
+    const result = await this.pool.query(sql, params);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
   async updateExpected(
@@ -373,68 +344,55 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     patch: Partial<InputVoucherRecord>,
     expected: Partial<InputVoucherRecord>
   ): Promise<InputVoucherRecord> {
-    const sets: string[] = [];
-    const wheres: string[] = ['id = $1'];
-    const params: unknown[] = [id];
-    const column = this.columnMap();
-    for (const [key, value] of Object.entries(patch)) {
-      const col = column[key];
-      if (!col) {
-        continue;
-      }
-      params.push(value);
-      sets.push(`${col} = $${params.length}`);
-    }
-    for (const [key, value] of Object.entries(expected)) {
-      const col = column[key];
-      if (!col) {
-        continue;
-      }
-      params.push(value);
-      wheres.push(`${col} = $${params.length}`);
-    }
-    if (sets.length === 0) {
-      const current = await this.findById(id);
-      if (!current) {
-        throw new NotFoundException(`Voucher '${id}' not found`);
-      }
-      return current;
-    }
-    const result = await this.pool.query(
-      `UPDATE input_vouchers.vouchers SET ${sets.join(', ')} WHERE ${wheres.join(' AND ')} RETURNING *`,
-      params
-    );
-    if (result.rowCount === 0) {
-      throw new ConflictException(`Voucher '${id}' changed concurrently; reload and retry`);
-    }
-    return this.fromRow(result.rows[0]);
-  }
-
-  private columnMap(): Record<string, string> {
-    return {
+    const columns: Record<string, string> = {
       status: 'status',
       distributedAt: 'distributed_at',
       redeemedAt: 'redeemed_at',
       voidedAt: 'voided_at',
       ledgerEntryId: 'ledger_entry_id'
     };
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in patch) {
+        params.push(patch[key as keyof InputVoucherRecord] ?? null);
+        sets.push(`${column} = $${params.length}`);
+      }
+    }
+    const where: string[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in expected) {
+        params.push(expected[key as keyof InputVoucherRecord] ?? null);
+        where.push(`${column} = $${params.length}`);
+      }
+    }
+    const result = await this.pool.query(
+      `UPDATE input_vouchers.vouchers SET ${sets.join(', ')} WHERE id = $1` +
+        (where.length > 0 ? ` AND ${where.join(' AND ')}` : ''),
+      params
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new ConflictException(`Voucher '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = await this.findById(id);
+    return updated as InputVoucherRecord;
   }
 
-  private fromRow(row: Row): InputVoucherRecord {
+  private fromRow(row: Record<string, unknown>): InputVoucherRecord {
     return {
-      id: row.id,
-      programmeId: row.programme_id,
-      beneficiaryId: row.beneficiary_id,
-      farmerId: row.farmer_id,
+      id: row.id as string,
+      programmeId: row.programme_id as string,
+      beneficiaryId: row.beneficiary_id as string,
+      farmerId: row.farmer_id as string,
       amountKobo: Number(row.amount_kobo),
-      status: row.status,
-      idempotencyKey: row.idempotency_key,
-      expiresAt: toIso(row.expires_at),
-      distributedAt: toIsoOrUndefined(row.distributed_at),
-      redeemedAt: toIsoOrUndefined(row.redeemed_at),
-      voidedAt: toIsoOrUndefined(row.voided_at),
-      ledgerEntryId: row.ledger_entry_id ?? undefined,
-      createdAt: toIso(row.created_at)
+      status: row.status as InputVoucherRecord['status'],
+      idempotencyKey: row.idempotency_key as string,
+      expiresAt: toIso(row.expires_at) as string,
+      distributedAt: toIso(row.distributed_at),
+      redeemedAt: toIso(row.redeemed_at),
+      voidedAt: toIso(row.voided_at),
+      ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
+      createdAt: toIso(row.created_at) as string
     };
   }
 }
@@ -461,15 +419,9 @@ export class PgRedemptionRepository implements RedemptionRepository {
         ]
       );
     } catch (error) {
-      if ((error as { code?: string }).code === '23505') {
-        if (String((error as { constraint?: string }).constraint).includes('voucher_id')) {
-          throw new ConflictException(`Voucher '${record.voucherId}' has already been redeemed`);
-        }
-        throw new ConflictException('A record with these unique values already exists');
-      }
-      throw error;
+      assertPgUnique(error, `Voucher '${record.voucherId}' has already been redeemed`);
     }
-    return structuredClone(record);
+    return record;
   }
 
   async findByIdempotencyKey(key: string): Promise<RedemptionRecord | undefined> {
@@ -481,51 +433,67 @@ export class PgRedemptionRepository implements RedemptionRepository {
   }
 
   async find(criteria: RedemptionCriteria): Promise<RedemptionRecord[]> {
-    const clauses: string[] = [];
+    const where: string[] = [];
     const params: unknown[] = [];
     if (criteria.voucherId) {
       params.push(criteria.voucherId);
-      clauses.push(`voucher_id = $${params.length}`);
+      where.push(`voucher_id = $${params.length}`);
     }
     if (criteria.programmeId) {
       params.push(criteria.programmeId);
-      clauses.push(`programme_id = $${params.length}`);
+      where.push(`programme_id = $${params.length}`);
     }
     if (criteria.supplierId) {
       params.push(criteria.supplierId);
-      clauses.push(`supplier_id = $${params.length}`);
+      where.push(`supplier_id = $${params.length}`);
     }
-    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const result = await this.pool.query(
-      `SELECT * FROM input_vouchers.redemptions${where} ORDER BY created_at`,
-      params
-    );
-    return result.rows.map((row: Row) => this.fromRow(row));
+    const sql =
+      'SELECT * FROM input_vouchers.redemptions' +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY created_at';
+    const result = await this.pool.query(sql, params);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
-  private fromRow(row: Row): RedemptionRecord {
+  private fromRow(row: Record<string, unknown>): RedemptionRecord {
     return {
-      id: row.id,
-      voucherId: row.voucher_id,
-      programmeId: row.programme_id,
-      supplierId: row.supplier_id,
-      invoiceRef: row.invoice_ref,
+      id: row.id as string,
+      voucherId: row.voucher_id as string,
+      programmeId: row.programme_id as string,
+      supplierId: row.supplier_id as string,
+      invoiceRef: row.invoice_ref as string,
       amountKobo: Number(row.amount_kobo),
-      idempotencyKey: row.idempotency_key,
-      ledgerEntryId: row.ledger_entry_id,
-      createdAt: toIso(row.created_at)
+      idempotencyKey: row.idempotency_key as string,
+      ledgerEntryId: row.ledger_entry_id as string,
+      createdAt: toIso(row.created_at) as string
     };
   }
 }
 
+export function createPgSubsidyProgrammeRepository(pool: pg.Pool): PgSubsidyProgrammeRepository {
+  return new PgSubsidyProgrammeRepository(pool);
+}
+
+export function createPgBeneficiaryRepository(pool: pg.Pool): PgBeneficiaryRepository {
+  return new PgBeneficiaryRepository(pool);
+}
+
+export function createPgInputVoucherRepository(pool: pg.Pool): PgInputVoucherRepository {
+  return new PgInputVoucherRepository(pool);
+}
+
+export function createPgRedemptionRepository(pool: pg.Pool): PgRedemptionRepository {
+  return new PgRedemptionRepository(pool);
+}
+
 /**
- * pg funded-float store (stage 23, audit C3). Every move is ONE statement:
- *  - reserve: conditional UPDATE that moves 0 rows when the float cannot
-    * back the voucher (the row lock on programme_funding serialises racers);
- *  - settle/release: data-modifying CTEs that INSERT the marker event first
- *   (ON CONFLICT idempotency_key ⇒ the loser moves NOTHING) and only then
- *   apply the funding move — exactly-once per voucher under crash-resume
- *   and concurrent retry, with no read-then-write window.
+ * Funded-float backing store (stage 23, audit C3 —
+ * infra/postgres/046_voucher_programme_funding.sql). The reserve/settle/
+ * release mutations are single conditional statements so concurrent issuers
+ * serialise on the funding row lock and a lost race moves 0 rows instead of
+ * overdrawing the float. Settle/release are marker-keyed: the event insert
+ * (UNIQUE idempotency_key) and the funding UPDATE commit in ONE statement,
+ * so crash-resume replays apply the move exactly once per voucher.
  */
 export class PgProgrammeFundingRepository implements ProgrammeFundingRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -535,13 +503,17 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
       'SELECT * FROM input_vouchers.programme_funding WHERE programme_id = $1',
       [programmeId]
     );
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+    return result.rows[0] ? this.fundingFromRow(result.rows[0]) : undefined;
   }
 
   async creditTopUp(event: FundingEventRecord): Promise<FundingTopUpResult> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(
+        'INSERT INTO input_vouchers.programme_funding (programme_id) VALUES ($1) ON CONFLICT DO NOTHING',
+        [event.programmeId]
+      );
       const inserted = await client.query(
         'INSERT INTO input_vouchers.programme_funding_events ' +
           '(id, programme_id, kind, amount_kobo, idempotency_key, reference, created_by, created_at) ' +
@@ -560,6 +532,11 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
       let record: FundingEventRecord;
       let replayed: boolean;
       if (inserted.rows[0]) {
+        await client.query(
+          'UPDATE input_vouchers.programme_funding SET funded_kobo = funded_kobo + $1, updated_at = now() ' +
+            'WHERE programme_id = $2',
+          [event.amountKobo, event.programmeId]
+        );
         record = this.eventFromRow(inserted.rows[0]);
         replayed = false;
       } else {
@@ -584,26 +561,12 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
         record = original as FundingEventRecord;
         replayed = true;
       }
-      let funding: ProgrammeFundingRecord;
-      if (!replayed) {
-        // INSERT the funding row on first top-up; credit on later ones.
-        const upserted = await client.query(
-          'INSERT INTO input_vouchers.programme_funding (programme_id, funded_kobo, reserved_kobo, settled_kobo, updated_at) ' +
-            'VALUES ($1, $2, 0, 0, now()) ' +
-            'ON CONFLICT (programme_id) DO UPDATE SET funded_kobo = input_vouchers.programme_funding.funded_kobo + $2, updated_at = now() ' +
-            'RETURNING *',
-          [event.programmeId, event.amountKobo]
-        );
-        funding = this.fromRow(upserted.rows[0]);
-      } else {
-        const current = await client.query(
-          'SELECT * FROM input_vouchers.programme_funding WHERE programme_id = $1',
-          [event.programmeId]
-        );
-        funding = this.fromRow(current.rows[0]);
-      }
+      const funding = await client.query(
+        'SELECT * FROM input_vouchers.programme_funding WHERE programme_id = $1',
+        [event.programmeId]
+      );
       await client.query('COMMIT');
-      return { event: record, funding, replayed };
+      return { event: record, funding: this.fundingFromRow(funding.rows[0]), replayed };
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -641,13 +604,11 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
   }
 
   /**
-   * One-statement exactly-once marker + move. The marker INSERT wins or
-   * no-ops; the funding UPDATE fires only for the row that won the insert,
-   * so a concurrent duplicate (or a crash-resume replay after the commit)
-   * moves nothing. The funding move itself is conditional on the backing
-   * reservation still existing (legacy pre-046 vouchers have none — the
-   * marker still records the attempt, matching the idempotent-no-op
-   * semantics the in-memory adapter documents).
+   * Marker-first exactly-once move: the marker event inserts ON CONFLICT DO
+   * NOTHING (a concurrent retry blocks then skips), and only the INSERT
+   * winner's UPDATE applies the funding delta. A missing funding row or an
+   * unbacked (legacy) voucher matches nothing — the UPDATE is a no-op and
+   * the reserved/settled totals never go negative.
    */
   private async applyMarker(
     programmeId: string,
@@ -656,11 +617,11 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
     actorId: string,
     kind: 'settle' | 'release'
   ): Promise<void> {
-    const settleDelta = kind === 'settle' ? amountKobo : 0;
+    const settledSet = kind === 'settle' ? ', settled_kobo = settled_kobo + $3' : '';
     await this.pool.query(
-      'WITH ins AS ( ' +
+      'WITH ins AS (' +
         'INSERT INTO input_vouchers.programme_funding_events ' +
-        '(id, programme_id, kind, amount_kobo, idempotency_key, reference, created_by, created_at) ' +
+        '(id, programme_id, kind, amount_kobo, idempotency_key, created_by, created_at) ' +
         `VALUES ($1, $2, '${kind}', $3, $4, $5, now()) ` +
         // Stage 24 (audit A4-10 pg contract): the marker id IS the marker
         // key, so a conflict can surface on the PRIMARY KEY as well as the
@@ -669,52 +630,35 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
         // CONFLICT blocks the twin until the winner commits, then skips.
         'ON CONFLICT DO NOTHING RETURNING id' +
         ') ' +
-        'UPDATE input_vouchers.programme_funding f ' +
-        'SET reserved_kobo = f.reserved_kobo - $3, settled_kobo = f.settled_kobo + $6, updated_at = now() ' +
-        'FROM ins ' +
-        'WHERE f.programme_id = $2 AND f.reserved_kobo >= $3',
-      [markerKey, programmeId, amountKobo, markerKey, actorId, settleDelta]
+        'UPDATE input_vouchers.programme_funding ' +
+        `SET reserved_kobo = reserved_kobo - $3, updated_at = now()${settledSet} ` +
+        'WHERE programme_id = $2 AND reserved_kobo >= $3 AND EXISTS (SELECT 1 FROM ins)',
+      [markerKey, programmeId, amountKobo, markerKey, actorId]
     );
   }
 
-  private fromRow(row: Row): ProgrammeFundingRecord {
+  private fundingFromRow(row: Record<string, unknown>): ProgrammeFundingRecord {
     return {
-      programmeId: row.programme_id,
+      programmeId: row.programme_id as string,
       fundedKobo: Number(row.funded_kobo),
       reservedKobo: Number(row.reserved_kobo),
       settledKobo: Number(row.settled_kobo),
-      updatedAt: toIso(row.updated_at)
+      updatedAt: toIso(row.updated_at) as string
     };
   }
 
-  private eventFromRow(row: Row): FundingEventRecord {
+  private eventFromRow(row: Record<string, unknown>): FundingEventRecord {
     return {
-      id: row.id,
-      programmeId: row.programme_id,
-      kind: row.kind,
+      id: row.id as string,
+      programmeId: row.programme_id as string,
+      kind: row.kind as FundingEventRecord['kind'],
       amountKobo: Number(row.amount_kobo),
-      idempotencyKey: row.idempotency_key,
-      reference: row.reference ?? undefined,
-      createdBy: row.created_by,
-      createdAt: toIso(row.created_at)
+      idempotencyKey: row.idempotency_key as string,
+      reference: (row.reference as string) ?? undefined,
+      createdBy: row.created_by as string,
+      createdAt: toIso(row.created_at) as string
     };
   }
-}
-
-export function createPgSubsidyProgrammeRepository(pool: pg.Pool): PgSubsidyProgrammeRepository {
-  return new PgSubsidyProgrammeRepository(pool);
-}
-
-export function createPgBeneficiaryRepository(pool: pg.Pool): PgBeneficiaryRepository {
-  return new PgBeneficiaryRepository(pool);
-}
-
-export function createPgInputVoucherRepository(pool: pg.Pool): PgInputVoucherRepository {
-  return new PgInputVoucherRepository(pool);
-}
-
-export function createPgRedemptionRepository(pool: pg.Pool): PgRedemptionRepository {
-  return new PgRedemptionRepository(pool);
 }
 
 export function createPgProgrammeFundingRepository(pool: pg.Pool): PgProgrammeFundingRepository {
