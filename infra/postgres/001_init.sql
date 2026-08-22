@@ -798,7 +798,6 @@ CREATE TABLE IF NOT EXISTS integrations.webhook_deliveries (
     UNIQUE (endpoint_id, external_id)
 );
 
-
 -- ---------------------------------------------------------------------------
 -- events: domain event outbox (transactional outbox pattern)
 -- ---------------------------------------------------------------------------
