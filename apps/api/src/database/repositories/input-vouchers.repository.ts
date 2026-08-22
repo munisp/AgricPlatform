@@ -235,10 +235,7 @@ export interface BeneficiaryRepository {
   /** Throws ConflictException on duplicate (programmeId, farmerId) or (programmeId, ninHash). */
   create(record: BeneficiaryRecord): Promise<BeneficiaryRecord>;
   findById(id: string): Promise<BeneficiaryRecord | undefined>;
-  findByProgrammeAndFarmer(
-    programmeId: string,
-    farmerId: string
-  ): Promise<BeneficiaryRecord | undefined>;
+  findByProgrammeAndFarmer(programmeId: string, farmerId: string): Promise<BeneficiaryRecord | undefined>;
   find(criteria: BeneficiaryCriteria): Promise<BeneficiaryRecord[]>;
 }
 
