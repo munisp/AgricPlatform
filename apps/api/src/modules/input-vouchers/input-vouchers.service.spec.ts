@@ -1171,3 +1171,314 @@ describe('InputVouchersService — stage-23 funded-float backing (audit C3)', ()
     expect(funding.settledKobo).toBe(100_000);
   });
 });
+
+describe('InputVouchersService — stage-24 crash-safe rollback + replay doctrine (audit A4-1/A4-2/A4-8/A4-9, A1-3)', () => {
+  async function ledgerKeys(ctx: Ctx, prefix: string): Promise<string[]> {
+    const entries = await ctx.ledger.listEntries({});
+    return entries.filter((entry) => entry.idempotencyKey.startsWith(prefix)).map((entry) => entry.idempotencyKey);
+  }
+
+  /** Posts the redemption entry directly, simulating a committed-but-unrecorded redemption. */
+  async function postRedemptionEntry(ctx: Ctx, liabilityAccountCode: string, voucherId: string, amountKobo: number) {
+    await ctx.ledger.ensureAccount({
+      code: supplierReceivableAccountCode(ctx.supplier.id),
+      type: 'liability',
+      ownerId: ctx.supplier.id
+    });
+    return ctx.ledger.postEntry(
+      {
+        idempotencyKey: `input-voucher-redemption:${voucherId}`,
+        referenceType: 'input_voucher_redemption',
+        referenceId: voucherId,
+        description: 'committed redemption without its operational row',
+        postings: [
+          { accountCode: liabilityAccountCode, direction: 'debit', amountKobo },
+          { accountCode: supplierReceivableAccountCode(ctx.supplier.id), direction: 'credit', amountKobo }
+        ]
+      },
+      ctx.supplier.id
+    );
+  }
+
+  it('A1-3: a redemption whose row insert fails after the posting does NOT re-open the voucher — resume settles it exactly once', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, { perFarmerCapKobo: 1_000_000, budgetKobo: 1_000_000 });
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 400_000, 'alloc-a1-3');
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+
+    // Crash AFTER the ledger posting commits but BEFORE the redemption row.
+    const originalCreate = ctx.redemptions.create.bind(ctx.redemptions);
+    let failOnce = true;
+    ctx.redemptions.create = (async (record: Parameters<typeof originalCreate>[0]) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('simulated crash: redemption row insert failed after posting');
+      }
+      return originalCreate(record);
+    }) as typeof ctx.redemptions.create;
+
+    // The claim must NOT roll back to ISSUED: the posting committed. The
+    // caller gets a 409 and the voucher stays REDEEMING for resume.
+    await expect(ctx.service.redeemVoucher(voucher.id, 'INV-1', supplierActor)).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMING');
+
+    // A void can no longer spend the same encumbrance a second way.
+    await expect(ctx.service.voidVoucher(voucher.id, ADMIN.id)).rejects.toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMING');
+
+    // The resume path replays the committed posting, writes the row and
+    // finalizes — exactly one liability debit, one supplier credit.
+    const retried = await ctx.service.redeemVoucher(voucher.id, 'INV-1', supplierActor);
+    expect(retried.voucher.status).toBe('REDEEMED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(0);
+    const liability = await ctx.ledger.balance(programme.liabilityAccountCode);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(600_000); // 1M − 400k, once
+    const supplierBalance = await ctx.ledger.balance(supplierReceivableAccountCode(ctx.supplier.id));
+    expect(supplierBalance.creditsKobo).toBe(400_000);
+    const recon = await ctx.service.reconciliation(programme.id);
+    expect(recon.ledger.discrepancyKobo).toBe(0);
+    expect(recon.totals.redeemedCount).toBe(1);
+  });
+
+  it('A4-1: racing resume twins — the loser of the ledger insert never re-opens the voucher; exactly one posting stands', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000, 'alloc-a4-1');
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    // Crash window: claim held, nothing posted yet, no redemption row.
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+    // Widen the posting window so both twins enter the posting leg.
+    const original = ctx.ledger.postEntry.bind(ctx.ledger);
+    ctx.ledger.postEntry = (async (input: Parameters<LedgerService['postEntry']>[0], actorId: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return original(input, actorId);
+    }) as LedgerService['postEntry'];
+    const [first, second] = await Promise.allSettled([
+      ctx.service.redeemVoucher(voucher.id, 'INV-TWIN', supplierActor),
+      ctx.service.redeemVoucher(voucher.id, 'INV-TWIN', supplierActor)
+    ]);
+    const outcomes = [first, second];
+    expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const loser = outcomes.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    // The loser converges on a 409 (adopted the twin's row but lost the
+    // finalize CAS) — critically it NEVER rolled the claim back to ISSUED.
+    expect(loser.reason).toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect((await ctx.redemptions.find({ voucherId: voucher.id }))).toHaveLength(1);
+    const liability = await ctx.ledger.balance(programme.liabilityAccountCode);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(programme.budgetKobo - 100_000);
+  });
+
+  it('A1-3 legacy state: an ISSUED voucher with a committed redemption posting cannot be voided — redeem-resume settles it', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000, 'alloc-legacy');
+    const supplierActor: ActorRef = { id: ctx.supplier.id, roles: ['supplier'] };
+    // The OLD rollback leg left exactly this state: ISSUED with the
+    // redemption entry committed and no redemption row.
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+    await postRedemptionEntry(ctx, programme.liabilityAccountCode, voucher.id, 100_000);
+    await ctx.vouchers.updateExpected(voucher.id, { status: 'ISSUED' }, { status: 'REDEEMING' });
+
+    await expect(ctx.service.voidVoucher(voucher.id, ADMIN.id)).rejects.toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED');
+    await expect(ctx.service.expireVoucher(voucher.id, ADMIN.id)).rejects.toBeInstanceOf(BadRequestException); // not expired yet
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(0);
+
+    const settled = await ctx.service.redeemVoucher(voucher.id, 'INV-LEGACY', supplierActor);
+    expect(settled.voucher.status).toBe('REDEEMED');
+    expect(await ledgerKeys(ctx, `input-voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    const liability = await ctx.ledger.balance(programme.liabilityAccountCode);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(programme.budgetKobo - 100_000);
+    const recon = await ctx.service.reconciliation(programme.id);
+    expect(recon.ledger.discrepancyKobo).toBe(0);
+  });
+
+  it('A4-1 rollback leg still works when NOTHING posted: a failed void release re-opens ISSUED and a retry succeeds', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await allocatedVoucher(ctx, programme.id, ctx.farmer.id, 100_000, 'alloc-void-fail');
+    const original = ctx.ledger.postEntry.bind(ctx.ledger);
+    ctx.ledger.postEntry = (async () => {
+      throw new Error('ledger unavailable');
+    }) as LedgerService['postEntry'];
+    await expect(ctx.service.voidVoucher(voucher.id, ADMIN.id)).rejects.toThrow('ledger unavailable');
+    // Probe proved no release entry exists → the claim rolled back.
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED');
+    ctx.ledger.postEntry = original;
+    const retried = await ctx.service.voidVoucher(voucher.id, ADMIN.id);
+    expect(retried.status).toBe('VOIDED');
+    expect(await ledgerKeys(ctx, `input-voucher-release:${voucher.id}`)).toHaveLength(1);
+  });
+
+  it('A4-2: a post-commit failure (outbox hiccup) does NOT unreserve a live voucher — the float still backs it', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, {
+      perFarmerCapKobo: 400_000,
+      budgetKobo: 400_000,
+      fundKobo: 200_000
+    });
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const originalPublish = ctx.events.publish.bind(ctx.events);
+    let failPublish = true;
+    ctx.events.publish = (async (name: string, payload: unknown, actorId?: string) => {
+      if (failPublish && name === 'inputvouchers.voucher.allocated') {
+        failPublish = false;
+        throw new Error('simulated outbox hiccup AFTER commit');
+      }
+      return originalPublish(name, payload, actorId);
+    }) as typeof ctx.events.publish;
+
+    await expect(
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmer.id, amountKobo: 200_000, idempotencyKey: 'alloc-a4-2' },
+        ADMIN.id
+      )
+    ).rejects.toThrow('simulated outbox hiccup');
+
+    // The voucher committed and its reservation MUST stand (pre-fix the
+    // catch released it, defeating the funded-float backing).
+    const live = await ctx.vouchers.findByIdempotencyKey('alloc-a4-2');
+    expect(live?.status).toBe('ISSUED');
+    const funding = await ctx.service.getProgrammeFunding(programme.id);
+    expect(funding.reservedKobo).toBe(200_000);
+    expect(funding.availableKobo).toBe(0);
+    // A second voucher cannot re-reserve the same money.
+    await expect(
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmer.id, amountKobo: 200_000, idempotencyKey: 'alloc-a4-2-b' },
+        ADMIN.id
+      )
+    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    // A same-key retry replays the committed voucher (and republishes).
+    const replay = await ctx.service.allocateVoucher(
+      programme.id,
+      { farmerId: ctx.farmer.id, amountKobo: 200_000, idempotencyKey: 'alloc-a4-2' },
+      ADMIN.id
+    );
+    expect(replay.id).toBe(live?.id);
+  });
+
+  it('A4-2: a FAILED voucher insert still compensates the reservation (in-memory) — no float leak', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, { fundKobo: 200_000 });
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const originalCreate = ctx.vouchers.create.bind(ctx.vouchers);
+    let failOnce = true;
+    ctx.vouchers.create = (async (record: Parameters<typeof originalCreate>[0]) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('simulated insert failure');
+      }
+      return originalCreate(record);
+    }) as typeof ctx.vouchers.create;
+    await expect(
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'alloc-leak-1' },
+        ADMIN.id
+      )
+    ).rejects.toThrow('simulated insert failure');
+    const funding = await ctx.service.getProgrammeFunding(programme.id);
+    expect(funding.reservedKobo).toBe(0); // compensated — nothing leaks
+    expect(await ctx.service.listVouchers({ programmeId: programme.id })).toHaveLength(0);
+    // The retry with the same key issues cleanly against the restored float.
+    const retried = await ctx.service.allocateVoucher(
+      programme.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'alloc-leak-1' },
+      ADMIN.id
+    );
+    expect(retried.status).toBe('ISSUED');
+    expect((await ctx.service.getProgrammeFunding(programme.id)).reservedKobo).toBe(100_000);
+  });
+
+  it('A4-9: allocation replay with the same key but a DIFFERENT payload is a 409, not a silent replay', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx);
+    await enrol(ctx, ctx.farmer.id, programme.id);
+    const voucher = await ctx.service.allocateVoucher(
+      programme.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'replay-key-1' },
+      ADMIN.id
+    );
+    // Same payload → replay returns the original.
+    const replay = await ctx.service.allocateVoucher(
+      programme.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'replay-key-1' },
+      ADMIN.id
+    );
+    expect(replay.id).toBe(voucher.id);
+    // Mutated retries → 409 (payout-rail payload doctrine).
+    await expect(
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmer.id, amountKobo: 150_000, idempotencyKey: 'replay-key-1' },
+        ADMIN.id
+      )
+    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      ctx.service.allocateVoucher(
+        programme.id,
+        { farmerId: ctx.farmerTwo.id, amountKobo: 100_000, idempotencyKey: 'replay-key-1' },
+        ADMIN.id
+      )
+    ).rejects.toBeInstanceOf(ConflictException);
+    // Nothing extra issued.
+    expect(await ctx.service.listVouchers({ programmeId: programme.id })).toHaveLength(1);
+    expect((await ctx.service.getProgrammeFunding(programme.id)).reservedKobo).toBe(100_000);
+  });
+
+  it('A4-9: funding top-up replay with the same key but a different amount is a 409', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, { fundKobo: 0 });
+    const first = await ctx.service.fundProgramme(
+      programme.id,
+      { amountKobo: 100_000, idempotencyKey: 'fund-replay-1' },
+      ADMIN.id
+    );
+    expect(first.replayed).toBe(false);
+    await expect(
+      ctx.service.fundProgramme(programme.id, { amountKobo: 250_000, idempotencyKey: 'fund-replay-1' }, ADMIN.id)
+    ).rejects.toBeInstanceOf(ConflictException);
+    // Same payload still replays without double-crediting.
+    const replay = await ctx.service.fundProgramme(
+      programme.id,
+      { amountKobo: 100_000, idempotencyKey: 'fund-replay-1' },
+      ADMIN.id
+    );
+    expect(replay.replayed).toBe(true);
+    expect((await ctx.service.getProgrammeFunding(programme.id)).fundedKobo).toBe(100_000);
+  });
+
+  it('A4-8: the in-memory marker is recorded on the legacy no-op path — a later retry cannot move ANOTHER voucher\u2019s reservation', async () => {
+    const ctx = await makeService();
+    const programme = await activeProgramme(ctx, { fundKobo: 0 });
+    const marker = 'input-voucher-funding-release:legacy-voucher-1';
+    const settleMarker = 'input-voucher-funding-settle:legacy-voucher-2';
+    // Legacy vouchers (pre-046): settle/release no-op against the unfunded
+    // float — but must RECORD the marker, exactly like the pg CTE.
+    await ctx.funding.releaseReserved(programme.id, 100_000, marker, ADMIN.id);
+    await ctx.funding.settleReserved(programme.id, 50_000, settleMarker, ADMIN.id);
+    // Unrelated activity: top-up + a new voucher's reservation.
+    await ctx.service.fundProgramme(programme.id, { amountKobo: 200_000, idempotencyKey: 'fund-a4-8' }, ADMIN.id);
+    await ctx.funding.reserve(programme.id, 100_000);
+    // Crash-resume retries of the LEGACY markers must not move the new
+    // voucher's reservation (pre-fix they did — no marker was stored on the
+    // no-op path, so the retry found reservedKobo >= amount and moved it).
+    await ctx.funding.releaseReserved(programme.id, 100_000, marker, ADMIN.id);
+    await ctx.funding.settleReserved(programme.id, 50_000, settleMarker, ADMIN.id);
+    const funding = await ctx.funding.getFunding(programme.id);
+    expect(funding?.reservedKobo).toBe(100_000);
+    expect(funding?.settledKobo).toBe(0);
+  });
+});
