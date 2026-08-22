@@ -86,10 +86,40 @@ function bookingInput(overrides: Record<string, unknown> = {}) {
   return { farmerId: farmer.id, ...PLOT, areaHa: 2, ...SEP_WINDOW, ...overrides };
 }
 
-async function walkToConfirmed(service: MechanizationService, listingId: string) {
+async function walkToConfirmed(
+  { service, ledger }: ReturnType<typeof makeService>,
+  listingId: string
+) {
   const booking = await service.requestBooking(listingId, bookingInput());
-  await service.quoteBooking(booking.id, owner);
+  const quoted = await service.quoteBooking(booking.id, owner);
+  await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
   return service.confirmBooking(booking.id, farmer);
+}
+
+/**
+ * Funds a farmer wallet through the ledger (Stage 24, audit A1-5): the
+ * booking hold is solvency-guarded, so tests must fund the wallet exactly
+ * like a real cash-in would before confirming a booking.
+ */
+let fundCounter = 0;
+async function fundWallet(ledger: LedgerService, farmerId: string, amountKobo: number) {
+  const fundingSource = 'platform:mech_wallet_funding';
+  await ledger.ensureAccount({ code: fundingSource, type: 'asset' });
+  await ledger.ensureAccount({ code: walletAccount(farmerId), type: 'liability', ownerId: farmerId });
+  fundCounter += 1;
+  return ledger.postEntry(
+    {
+      idempotencyKey: `mech-test-fund:${fundCounter}`,
+      referenceType: 'test_wallet_funding',
+      referenceId: farmerId,
+      description: `Test wallet funding for ${farmerId}`,
+      postings: [
+        { accountCode: walletAccount(farmerId), direction: 'debit', amountKobo },
+        { accountCode: fundingSource, direction: 'credit', amountKobo }
+      ]
+    },
+    'test'
+  );
 }
 
 describe('listings', () => {
@@ -208,12 +238,14 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
     expect(quoted.quote?.seasonalMultiplier).toBe(1.05);
     expect(quoted.quote?.totalKobo).toBe(5_250_000);
 
+    await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
     const confirmed = await service.confirmBooking(booking.id, farmer);
     expect(confirmed.status).toBe('confirmed');
     expect(confirmed.holdEntryId).toBeTruthy();
-    // Hold posted: farmer wallet −total, holds account +total.
+    // Hold posted against the funded wallet: farmer wallet drawn to zero,
+    // holds account +total.
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(5_250_000);
-    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(-5_250_000);
+    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(0);
 
     await service.startService(booking.id, owner);
     // First completion confirmation only records the timestamp.
@@ -235,7 +267,8 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
     const { service, ledger } = makeService();
     const listing = await makeActiveListing(service);
     const booking = await service.requestBooking(listing.id, bookingInput());
-    await service.quoteBooking(booking.id, owner);
+    const quoted = await service.quoteBooking(booking.id, owner);
+    await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
     await service.confirmBooking(booking.id, farmer);
     const replay = await service.confirmBooking(booking.id, farmer);
     expect(replay.status).toBe('confirmed');
@@ -246,15 +279,50 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(5_250_000);
   });
 
-  it('owner cancels after confirm → 100% refund to the farmer', async () => {
+  it('Stage 24 (audit A1-5): a zero-balance farmer cannot confirm — no negative wallet, owner never credited', async () => {
     const { service, ledger } = makeService();
     const listing = await makeActiveListing(service);
-    const booking = await walkToConfirmed(service, listing.id);
+    const booking = await service.requestBooking(listing.id, bookingInput());
+    const quoted = await service.quoteBooking(booking.id, owner);
+    // The farmer NEVER funded member:user-farmer:wallet — no top-up exists.
+    await expect(service.confirmBooking(booking.id, farmer)).rejects.toBeInstanceOf(
+      BadRequestException
+    );
+    // The booking stays resumable ('quoted') and NOTHING moved: no hold, no
+    // negative farmer wallet, nothing for the owner to cash out.
+    expect((await service.getBooking(booking.id)).status).toBe('quoted');
+    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(0);
+    expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(0);
+    // Funding the wallet exactly like a cash-in makes the retry succeed.
+    await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
+    expect((await service.confirmBooking(booking.id, farmer)).status).toBe('confirmed');
+    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(0);
+    expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(quoted.quote!.totalKobo);
+    // And a partial wallet still cannot overdraw.
+    const stack2 = makeService();
+    const listing2 = await makeActiveListing(stack2.service);
+    const b2 = await stack2.service.requestBooking(listing2.id, bookingInput());
+    const q2 = await stack2.service.quoteBooking(b2.id, owner);
+    await fundWallet(stack2.ledger, farmer.id, q2.quote!.totalKobo - 100);
+    await expect(stack2.service.confirmBooking(b2.id, farmer)).rejects.toBeInstanceOf(
+      BadRequestException
+    );
+    expect((await stack2.ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(
+      q2.quote!.totalKobo - 100
+    );
+  });
+
+  it('owner cancels after confirm → 100% refund to the farmer', async () => {
+    const stack = makeService();
+    const { service, ledger } = stack;
+    const listing = await makeActiveListing(service);
+    const booking = await walkToConfirmed(stack, listing.id);
     const cancelled = await service.cancelBooking(booking.id, owner, 'breakdown');
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.cancelledBy).toBe('owner');
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(0);
-    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(0);
+    // The farmer funded the hold and got every kobo back.
+    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(5_250_000);
     expect((await ledger.balance(walletAccount(owner.id))).balanceKobo).toBe(0);
   });
 
@@ -269,14 +337,16 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
       bookingInput({ windowStart: start, windowEnd: end })
     );
     await service.quoteBooking(booking.id, owner);
+    const quote = (await service.getBooking(booking.id)).quote!;
+    await fundWallet(ledger, farmer.id, quote.totalKobo);
     await service.confirmBooking(booking.id, farmer);
-    const total = (await service.getBooking(booking.id)).quote!.totalKobo;
+    const total = quote.totalKobo;
     const expected = cancellationSplit(total, 'farmer', start, Date.now());
     expect(expected.rule).toBe('farmer_very_late_cancel_70_30');
     await service.cancelBooking(booking.id, farmer);
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(0);
     expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(
-      -total + expected.refundToFarmerKobo
+      expected.refundToFarmerKobo
     );
     expect((await ledger.balance(walletAccount(owner.id))).balanceKobo).toBe(
       expected.compensationToOwnerKobo
@@ -284,9 +354,10 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
   });
 
   it('dispute freezes the hold; admin resolution pays 100% either way', async () => {
-    const { service, ledger } = makeService();
+    const stack = makeService();
+    const { service, ledger } = stack;
     const listing = await makeActiveListing(service);
-    const booking = await walkToConfirmed(service, listing.id);
+    const booking = await walkToConfirmed(stack, listing.id);
     await service.startService(booking.id, owner);
     const disputed = await service.disputeBooking(booking.id, farmer, 'area not fully covered');
     expect(disputed.status).toBe('disputed');
@@ -299,7 +370,7 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
     const resolved = await service.resolveDispute(booking.id, 'refund_farmer', admin);
     expect(resolved.status).toBe('cancelled');
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(0);
-    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(0);
+    expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(5_250_000);
   });
 
   it('auto-complete finishes in_service bookings past window end + grace and pays the owner', async () => {
@@ -313,6 +384,8 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
       })
     );
     await service.quoteBooking(booking.id, owner);
+    const bookedQuote = (await service.getBooking(booking.id)).quote!;
+    await fundWallet(ledger, farmer.id, bookedQuote.totalKobo);
     await service.confirmBooking(booking.id, farmer);
     await service.startService(booking.id, owner);
     // Before grace expiry: nothing.
@@ -365,13 +438,15 @@ describe('state machine + party guards', () => {
   });
 
   it('only the farmer may rate, and only completed bookings', async () => {
-    const { service } = makeService();
+    const { service, ledger } = makeService();
     const listing = await makeActiveListing(service);
     const booking = await service.requestBooking(listing.id, bookingInput());
     await expect(service.rateBooking(booking.id, farmer, 5)).rejects.toBeInstanceOf(
       BadRequestException
     );
     await service.quoteBooking(booking.id, owner);
+    const bookedQuote = (await service.getBooking(booking.id)).quote!;
+    await fundWallet(ledger, farmer.id, bookedQuote.totalKobo);
     await service.confirmBooking(booking.id, farmer);
     await service.startService(booking.id, owner);
     await service.confirmCompletion(booking.id, farmer);
@@ -384,7 +459,8 @@ describe('state machine + party guards', () => {
 
 describe('scheduling conflicts (409 + deterministic suggestions)', () => {
   it('rejects a confirming booking whose buffered window clashes, with suggestions', async () => {
-    const { service } = makeService();
+    const stack = makeService();
+    const { service } = stack;
     const listing = await makeActiveListing(service);
     // B: requested + quoted FIRST for 12:30–16:30 (before A holds the
     // schedule, so quoting succeeds; only confirmed/in_service bookings
@@ -400,7 +476,7 @@ describe('scheduling conflicts (409 + deterministic suggestions)', () => {
     await service.quoteBooking(b.id, owner);
     // A: 08:00–12:00 now confirmed — its buffered window leaves only a
     // ~37 min two-buffer gap requirement that B's 30 min gap violates.
-    await walkToConfirmed(service, listing.id);
+    await walkToConfirmed(stack, listing.id);
     const error = await service.confirmBooking(b.id, farmer2).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ConflictException);
     const body = (error as ConflictException).getResponse() as {
@@ -417,9 +493,10 @@ describe('scheduling conflicts (409 + deterministic suggestions)', () => {
   });
 
   it('accepts a booking whose gap clears both travel buffers', async () => {
-    const { service } = makeService();
+    const stack = makeService();
+    const { service, ledger } = stack;
     const listing = await makeActiveListing(service);
-    await walkToConfirmed(service, listing.id);
+    await walkToConfirmed(stack, listing.id);
     // B starts 1 h after A ends — more than the ~37 min combined buffer.
     const b = await service.requestBooking(
       listing.id,
@@ -429,16 +506,18 @@ describe('scheduling conflicts (409 + deterministic suggestions)', () => {
         windowEnd: '2026-09-10T17:00:00.000Z'
       })
     );
-    await service.quoteBooking(b.id, owner);
+    const bQuoted = await service.quoteBooking(b.id, owner);
+    await fundWallet(ledger, farmer2.id, bQuoted.quote!.totalKobo);
     expect((await service.confirmBooking(b.id, farmer2)).status).toBe('confirmed');
   });
 });
 
 describe('utilization stats (derived, not stored)', () => {
   it('rolls up booked hours, cleared revenue and completion rate', async () => {
-    const { service } = makeService();
+    const stack = makeService();
+    const { service } = stack;
     const listing = await makeActiveListing(service);
-    const booking = await walkToConfirmed(service, listing.id);
+    const booking = await walkToConfirmed(stack, listing.id);
     await service.startService(booking.id, owner);
     await service.confirmCompletion(booking.id, farmer);
     await service.confirmCompletion(booking.id, owner);
