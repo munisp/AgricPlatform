@@ -68,7 +68,7 @@ services:
     networks: [agric]
 
   meilisearch:
-    image: getmeili/meilisearch:v1.51
+    image: getmeili/meilisearch:v1.53
     container_name: agric-meilisearch
     environment:
       MEILI_ENV: development
