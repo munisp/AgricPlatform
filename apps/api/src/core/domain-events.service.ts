@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { newId } from '../common/async-repository.js';
+import { TelemetryService } from '../common/telemetry/telemetry.service.js';
 import { OUTBOX_REPOSITORY } from '../database/persistence.tokens.js';
 import type { OutboxRepository } from '../database/repositories/outbox.repository.js';
 import { EVENT_BUS, type EventBus } from './events/event-bus.driver.js';
@@ -16,6 +17,15 @@ export interface DomainEvent<T = unknown> {
 
 const EVENT_NAME_PATTERN = /^[a-z_]+\.[a-z_]+\.[a-z_]+$/;
 
+/** messaging.* attributes for the in-process consumer-handler telemetry. */
+function fanOutSpanAttributes(eventName: string): Record<string, string> {
+  return {
+    'messaging.system': 'in-process-eventemitter',
+    'messaging.operation.name': 'process',
+    'messaging.event.name': eventName
+  };
+}
+
 /**
  * Domain event outbox. The outbox persists through the injected
  * OutboxRepository (in-memory by default, events.outbox in PostgreSQL);
@@ -28,10 +38,17 @@ export class DomainEventsService {
   private readonly logger = new Logger(DomainEventsService.name);
   private readonly emitter = new EventEmitter();
 
+  private readonly telemetry: TelemetryService;
+
   constructor(
     @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
-    @Optional() @Inject(EVENT_BUS) private readonly bus?: EventBus
-  ) {}
+    @Optional() @Inject(EVENT_BUS) private readonly bus?: EventBus,
+    @Optional() telemetry?: TelemetryService
+  ) {
+    // No-op-safe fallback for direct construction (unit tests): with the
+    // SDK disabled every helper is a near-free no-op and never throws.
+    this.telemetry = telemetry ?? new TelemetryService();
+  }
 
   async publish<T>(name: string, payload: T, actorId?: string): Promise<DomainEvent<T>> {
     const event = this.build(name, payload, actorId);
@@ -70,7 +87,15 @@ export class DomainEventsService {
     if (this.bus && this.bus.name !== 'stub') {
       await this.bus.publish(event as DomainEvent);
     }
-    this.fanOut(event);
+    // Stage 25.2: consumer-handler span around the listener fan-out (the
+    // in-process consume side of the event bus). withSpan records and
+    // re-throws listener failures unchanged, so throwing-listener semantics
+    // are preserved exactly.
+    await this.telemetry.withSpan(
+      'eventbus.handler',
+      fanOutSpanAttributes(event.name),
+      () => this.fanOut(event)
+    );
     // Deterministic publish marking on the non-transactional path (the
     // transactional path's post-commit emit marks fire-and-forget).
     await this.markPublished(event.id);
@@ -106,8 +131,25 @@ export class DomainEventsService {
 
   private fanOut<T>(event: DomainEvent<T>): void {
     this.logger.log(`event ${event.name} (${event.id})`);
-    this.emitter.emit(event.name, event);
-    this.emitter.emit('*', event);
+    // Stage 25.2: consumer-handler duration + failure counters. Kept
+    // synchronous (no span here) so a throwing listener still throws
+    // synchronously out of emit(), exactly as before; persist() adds the
+    // span around this call on the async path.
+    const attributes = fanOutSpanAttributes(event.name);
+    const started = performance.now();
+    try {
+      this.emitter.emit(event.name, event);
+      this.emitter.emit('*', event);
+    } catch (error) {
+      this.telemetry.increment('eventbus.handler.failures', 1, attributes);
+      throw error;
+    } finally {
+      this.telemetry.record(
+        'eventbus.handler.duration',
+        performance.now() - started,
+        attributes
+      );
+    }
   }
 
   /**

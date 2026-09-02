@@ -102,3 +102,92 @@ describe('env helpers', () => {
     expect(missingEnv({ A: '1' }, ['A', 'B', 'C'])).toEqual(['B', 'C']);
   });
 });
+
+describe('httpRequest telemetry (Stage 25.2)', () => {
+  async function withSpiedTelemetry(run: () => Promise<unknown>) {
+    const { TelemetryService } = await import('../../../common/telemetry/telemetry.service.js');
+    const calls = { withSpan: [] as unknown[][], increment: [] as unknown[][], record: [] as unknown[][] };
+    const withSpanSpy = vi
+      .spyOn(TelemetryService.prototype, 'withSpan')
+      .mockImplementation(function (this: unknown, name, attrs, fn) {
+        calls.withSpan.push([name, attrs]);
+        return Promise.resolve(fn());
+      });
+    const incrementSpy = vi
+      .spyOn(TelemetryService.prototype, 'increment')
+      .mockImplementation((...args) => {
+        calls.increment.push(args);
+      });
+    const recordSpy = vi
+      .spyOn(TelemetryService.prototype, 'record')
+      .mockImplementation((...args) => {
+        calls.record.push(args);
+      });
+    try {
+      await run();
+    } finally {
+      withSpanSpy.mockRestore();
+      incrementSpy.mockRestore();
+      recordSpy.mockRestore();
+    }
+    return calls;
+  }
+
+  it('wraps each call in a span with provider/method/host/path attrs (query stripped)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ok: true })));
+    const calls = await withSpiedTelemetry(() =>
+      httpRequest('termii', 'https://api.termii.com/sms/send?api_key=SECRET&to=%2B234', {
+        body: { a: 1 }
+      })
+    );
+    expect(calls.withSpan[0][0]).toBe('provider.http POST');
+    const attrs = calls.withSpan[0][1] as Record<string, string>;
+    expect(attrs['provider.name']).toBe('termii');
+    expect(attrs['http.request.method']).toBe('POST');
+    expect(attrs['server.address']).toBe('api.termii.com');
+    expect(attrs['url.path']).toBe('/sms/send');
+    // A3-4/A3-7 doctrine: no query string, no tokens anywhere in attributes.
+    expect(JSON.stringify(attrs)).not.toContain('SECRET');
+    expect(JSON.stringify(attrs)).not.toContain('api_key');
+    expect(JSON.stringify(attrs)).not.toContain('%2B234');
+    expect(calls.record[0][0]).toBe('provider.http.duration');
+    expect((calls.record[0][2] as Record<string, string>)['http.response.status_class']).toBe(
+      '2xx'
+    );
+  });
+
+  it('counts errors with the status class on non-2xx responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('down', { status: 502 })));
+    const calls = await withSpiedTelemetry(() =>
+      httpJson('paystack', 'https://api.paystack.co/charge').catch((e: unknown) => e)
+    );
+    expect(calls.increment[0][0]).toBe('provider.http.errors');
+    expect(
+      (calls.increment[0][2] as Record<string, string>)['http.response.status_class']
+    ).toBe('5xx');
+    expect(
+      (calls.record[0][2] as Record<string, string>)['http.response.status_class']
+    ).toBe('5xx');
+  });
+
+  it('counts transport failures with the transport class', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+    const calls = await withSpiedTelemetry(() =>
+      httpJson('down', 'https://example.com').catch((e: unknown) => e)
+    );
+    expect(calls.increment[0][0]).toBe('provider.http.errors');
+    expect(
+      (calls.increment[0][2] as Record<string, string>)['http.response.status_class']
+    ).toBe('transport');
+  });
+
+  it('omits URL attributes entirely when the URL is unparseable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('invalid URL')));
+    const calls = await withSpiedTelemetry(() =>
+      httpJson('x', 'not a url').catch((e: unknown) => e)
+    );
+    const attrs = calls.withSpan[0][1] as Record<string, string>;
+    expect(attrs['server.address']).toBeUndefined();
+    expect(attrs['url.path']).toBeUndefined();
+  });
+});

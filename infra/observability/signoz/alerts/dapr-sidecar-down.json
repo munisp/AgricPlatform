@@ -1,0 +1,39 @@
+{
+  "alert": "dapr-sidecar-down",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "up{job=\"dapr-sidecar\"} == 0",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 0.5,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "dapr",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "A Dapr sidecar scrape target is down",
+    "description": "Dapr sidecars expose :9090/metrics (components/dapr-fluvio-mojaloop.md). INERT until W3's dapr services and the dapr-sidecar scrape job exist \u2014 kept as a template.\n\nNOTE: Requires the dapr-sidecar scrape job; without it this rule evaluates on an empty vector and never fires."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "critical",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

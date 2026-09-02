@@ -1,0 +1,22 @@
+# Dapr state store backed by the existing Redis instance
+# (compose service agric-redis, :6379, appendonly dev instance, no password).
+# Dev-only: the stack Redis has no auth; production deployments must use a
+# secretKeyRef-backed redisPassword and TLS.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: agric-statestore
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: "redis:6379"
+    - name: redisPassword
+      value: ""
+    - name: enableTLS
+      value: "false"
+    # Key prefix so Dapr state never collides with the platform's own
+    # ioredis usage (cache, idempotency, OTP stores).
+    - name: keyPrefix
+      value: "name"

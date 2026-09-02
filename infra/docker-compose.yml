@@ -3,6 +3,10 @@
 #   docker compose -f infra/docker-compose.yml up -d postgres redis keycloak meilisearch
 #   docker compose -f infra/docker-compose.yml --profile integrations up -d   # adds Moodle, Discourse, Directus
 #   docker compose -f infra/docker-compose.yml --profile apps up -d           # builds and runs web + api
+#   docker compose -f infra/docker-compose.yml --profile apps --profile dapr up -d   # + Dapr sidecars
+#   docker compose -f infra/docker-compose.yml --profile fluvio up -d         # Fluvio streaming cluster
+#   docker compose -f infra/docker-compose.yml --profile mojaloop up -d       # Mojaloop Testing Toolkit (hub emulator)
+#   docker compose -f infra/docker-compose.yml --profile geolibre up -d --build  # GeoLibre web GIS on :8300
 # All credentials below are LOCAL-ONLY development defaults. Never reuse them outside local dev.
 
 services:
@@ -124,6 +128,24 @@ services:
       # "flood-ml" profile; requires Sentinel Hub credentials on flood-ml.
       # FLOOD_ML_DRIVER: http
       # FLOOD_ML_URL: http://flood-ml:8001
+      # Dapr sidecar (OPTIONAL, profile: dapr). The api-dapr container joins
+      # this service's network namespace, so the API reaches Dapr on
+      # localhost. No Dapr SDK is wired into the API yet — the sidecar is
+      # additive (pub/sub + state via HTTP) and fails nothing when absent.
+      # DAPR_HTTP_ENDPOINT: http://localhost:3500
+      # DAPR_GRPC_ENDPOINT: localhost:50001
+      # Mojaloop (OPTIONAL, profile: mojaloop). Dev default targets the
+      # Testing Toolkit as a hub-emulator counterparty (MOJALOOP_DRIVER=
+      # simulator). The four MOJALOOP_* endpoint vars below are the contract
+      # for the live adapter (MOJALOOP_DRIVER=live, another wave); for the
+      # full switch deployed via Helm see infra/k8s/mojaloop/README.md and
+      # infra/mojaloop/README.md.
+      # MOJALOOP_DRIVER: simulator
+      # MOJALOOP_SIM_URL: http://mojaloop-ttk:4040
+      # MOJALOOP_ALS_ENDPOINT: http://mojaloop-als:4002
+      # MOJALOOP_QUOTING_ENDPOINT: http://mojaloop-quoting:4002
+      # MOJALOOP_TRANSFERS_ENDPOINT: http://mojaloop-ml-api-adapter:4002
+      # MOJALOOP_DFSP_ID: agricdfsp
     ports:
       - "3001:3001"
     depends_on:
@@ -654,7 +676,439 @@ services:
       S3A_SECRET_KEY: local-lakehouse-secret
     networks: [agric]
 
+  # ==========================================================================
+  # Wave stage25 optional platform components — NONE start by default. All
+  # images are pinned (no 'latest'); all credentials are LOCAL-ONLY.
+  # ==========================================================================
+
+  # ---- Dapr (profile: dapr) ----
+  # Dapr placement service + daprd sidecars for agric-api and agric-event-gw.
+  # The sidecars join the app container's network namespace (network_mode:
+  # service:...) so app<->sidecar traffic stays on localhost, matching Dapr
+  # semantics. Components live in infra/dapr/components/ (pub/sub -> redpanda,
+  # state store -> redis); runtime config (OTel tracing to otel-collector:4317,
+  # Prometheus metrics on :9090) in infra/dapr/config.yaml.
+  # Requires: --profile apps --profile dapr (api-dapr attaches to api) and/or
+  # --profile event-gw --profile dapr (event-gw-dapr attaches to event-gw).
+  # NOTE on healthchecks: daprio/* images are distroless (no shell, no wget/
+  # nc), so the checks below are exec-liveness only. Real readiness is
+  # GET :3501/v1.0/healthz on each sidecar — probe that from the
+  # observability layer instead.
+  dapr-placement:
+    profiles: ["dapr"]
+    image: daprio/placement:1.18.3
+    container_name: agric-dapr-placement
+    ports:
+      - "50005:50005"
+    healthcheck:
+      test: ["CMD", "/placement", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    networks: [agric]
+
+  api-dapr:
+    profiles: ["dapr"]
+    image: daprio/daprd:1.18.3
+    container_name: agric-api-dapr
+    command:
+      - /daprd
+      - --app-id=agric-api
+      - --app-port=3001
+      - --app-protocol=http
+      - --placement-host-address=dapr-placement:50005
+      - --components-path=/components
+      - --config=/config/config.yaml
+      - --log-level=info
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/config.yaml:/config/config.yaml:ro
+    depends_on:
+      - api
+      - dapr-placement
+    healthcheck:
+      test: ["CMD", "/daprd", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    # Shares the api container's network namespace: Dapr HTTP :3500, gRPC
+    # :50001, health :3501 and metrics :9090 are reachable as localhost:*
+    # from api, and as agric-api:* from other compose services.
+    network_mode: "service:api"
+
+  event-gw-dapr:
+    profiles: ["dapr"]
+    image: daprio/daprd:1.18.3
+    container_name: agric-event-gw-dapr
+    command:
+      - /daprd
+      - --app-id=agric-event-gw
+      - --app-port=8090
+      - --app-protocol=http
+      - --placement-host-address=dapr-placement:50005
+      - --components-path=/components
+      - --config=/config/config.yaml
+      - --log-level=info
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/config.yaml:/config/config.yaml:ro
+    depends_on:
+      - event-gw
+      - dapr-placement
+    healthcheck:
+      test: ["CMD", "/daprd", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    network_mode: "service:event-gw"
+
+  # ---- Fluvio streaming (profile: fluvio) ----
+  # Single-SCU dev cluster following the official docker-compose example
+  # (fluvio repo examples/docker-compose), pinned to the v0.18.1 platform
+  # release instead of the moving ':stable' tag. No API driver consumes
+  # Fluvio yet — this is standalone infrastructure for streaming workloads.
+  # Layout: SC public API :9003 (clients), SC internal :9004 (SPU link),
+  # SPU public :9010 (produce/consume), SPU private :9011 (SC->SPU).
+  fluvio-sc:
+    profiles: ["fluvio"]
+    image: infinyon/fluvio:v0.18.1
+    container_name: agric-fluvio-sc
+    hostname: fluvio-sc
+    command: ["./fluvio-run", "sc", "--local", "/fluvio/metadata"]
+    environment:
+      RUST_LOG: info
+    ports:
+      - "9003:9003"
+    volumes:
+      - fluvio-metadata:/fluvio/metadata
+    healthcheck:
+      # infinyon/fluvio is alpine-based: busybox nc is available.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9003"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks: [agric]
+
+  fluvio-sc-setup:
+    profiles: ["fluvio"]
+    image: alpine:3.21
+    container_name: agric-fluvio-sc-setup
+    # One-shot job (no healthcheck — exits 0 on success, like
+    # tigerbeetle-init): downloads the PINNED v0.18.1 CLI (sha256-verified
+    # against the GitHub release asset digest) and registers the SPU.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        wget -q -O /tmp/fluvio.zip https://github.com/fluvio-community/fluvio/releases/download/v0.18.1/fluvio-x86_64-unknown-linux-musl.zip
+        echo "1b2e016749b6c5a5e7805505e34a8f26d36f3f01112e5cf8d5e39eddbdaa2be  /tmp/fluvio.zip" | sha256sum -c -
+        unzip -o /tmp/fluvio.zip -d /tmp
+        chmod +x /tmp/fluvio
+        /tmp/fluvio profile add docker fluvio-sc:9003 docker
+        /tmp/fluvio cluster spu register --id 5001 -p localhost:9010 --private-server fluvio-spu:9011
+        /tmp/fluvio topic create agric-events --if-not-exists 2>/dev/null || /tmp/fluvio topic create agric-events || true
+        echo "fluvio cluster ready (SC fluvio-sc:9003, SPU 5001 registered)"
+    depends_on:
+      fluvio-sc:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    networks: [agric]
+
+  fluvio-spu:
+    profiles: ["fluvio"]
+    image: infinyon/fluvio:v0.18.1
+    container_name: agric-fluvio-spu
+    hostname: fluvio-spu
+    command:
+      - ./fluvio-run
+      - spu
+      - -i
+      - "5001"
+      - -p
+      - fluvio-spu:9010
+      - -v
+      - fluvio-spu:9011
+      - --sc-addr
+      - fluvio-sc:9004
+      - --log-base-dir
+      - /fluvio/data
+    environment:
+      RUST_LOG: info
+    ports:
+      - "9010:9010" # SPU public (produce/consume, redirected from SC)
+      - "9011:9011" # SPU private (SC control plane)
+    volumes:
+      - fluvio-data:/fluvio/data
+    depends_on:
+      fluvio-sc:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9011"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    networks: [agric]
+
+  # ---- Mojaloop testing toolkit (profile: mojaloop) ----
+  # INTEGRATION-GRADE DEV PATH: the full Mojaloop switch (ALS, quoting,
+  # transaction-requests, ml-api-adapter, central-ledger + MySQL/Kafka) is
+  # deployed via the official Helm chart — see infra/k8s/mojaloop/ and
+  # infra/mojaloop/README.md for why compose is NOT used for the switch.
+  # What runs here is the official Testing Toolkit pair, which emulates the
+  # hub side of the FSPIOP contract for our adapter (MOJALOOP_DRIVER=
+  # simulator, MOJALOOP_SIM_URL=http://mojaloop-ttk:4040 on the api service)
+  # and serves as the simulator counterparty for TTK test collections.
+  mojaloop-ttk:
+    profiles: ["mojaloop"]
+    image: mojaloop/ml-testing-toolkit:v18.19.1
+    container_name: agric-mojaloop-ttk
+    ports:
+      - "4040:4040" # FSPIOP API surface (adapter target)
+      - "5050:5050" # admin/report API consumed by the UI
+    healthcheck:
+      # node-alpine image: no curl/wget; probe the FSPIOP listener over TCP.
+      test:
+        - CMD
+        - node
+        - -e
+        - require("net").connect(4040,"127.0.0.1").on("connect",()=>process.exit(0)).on("error",()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    networks: [agric]
+
+  mojaloop-ttk-ui:
+    profiles: ["mojaloop"]
+    image: mojaloop/ml-testing-toolkit-ui:v16.7.4
+    container_name: agric-mojaloop-ttk-ui
+    environment:
+      # Browser-side URL (the UI is static; start.sh substitutes these), so
+      # it must be host-reachable, not the in-compose service name.
+      API_BASE_URL: http://localhost:5050
+      AUTH_ENABLED: "false"
+    ports:
+      - "6060:6060"
+    depends_on:
+      mojaloop-ttk:
+        condition: service_healthy
+    healthcheck:
+      # nginx:alpine base: busybox wget is available.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:6060/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    networks: [agric]
+
+  # ---- GeoLibre web GIS (profile: geolibre) ----
+  # Builds the upstream GeoLibre web bundle (Tauri/React/MapLibre/DuckDB-WASM)
+  # from PINNED tag v2.8.0 (commit verified inside the Dockerfile) and serves
+  # it with nginx on :8300. Offline/air-gapped alternative:
+  # infra/geolibre/fetch.sh + GEOLIBRE_SOURCE=local. See infra/geolibre/README.md.
+  geolibre:
+    profiles: ["geolibre"]
+    build:
+      context: ./geolibre
+      dockerfile: Dockerfile
+      args:
+        GEOLIBRE_SOURCE: ${GEOLIBRE_SOURCE:-remote}
+    image: agricplatform/geolibre:2.8.0
+    container_name: agric-geolibre
+    ports:
+      - "8300:8300"
+    healthcheck:
+      # nginx:alpine base: busybox wget; /healthz is defined in nginx.conf.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8300/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    networks: [agric]
+
+  # ---- Observability hub (profile: observability) ----
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.113.0
+    container_name: agric-otel-collector
+    command: ["--config=/etc/otelcol/otel-collector-config.yaml"]
+    environment:
+      POSTGRES_USER: agric
+      POSTGRES_PASSWORD: agric            # dev placeholder — secret store in prod
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-development}
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol/otel-collector-config.yaml:ro
+      - appsec-logs:/var/log/openappsec/nano_agent:ro   # openappsec filelog
+    ports:
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "9464:9464"    # prometheus re-export
+      - "13133:13133"  # health_check extension
+    depends_on:
+      - signoz-otel-collector
+    restart: unless-stopped
+    networks: [agric]
+
+  # ---- SigNoz stack (profile: observability) ----
+  signoz-zookeeper:
+    profiles: ["observability"]
+    image: bitnami/zookeeper:3.7.1
+    container_name: agric-signoz-zookeeper
+    environment:
+      ZOO_SERVER_ID: "1"
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+      ZOO_AUTOPURGE_INTERVAL: "1"
+    volumes: [signoz-zookeeper-data:/bitnami]
+    networks: [agric]
+
+  signoz-clickhouse:
+    profiles: ["observability"]
+    image: clickhouse/clickhouse-server:24.1.2-alpine
+    container_name: agric-signoz-clickhouse
+    depends_on: [signoz-zookeeper]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes: [signoz-clickhouse-data:/var/lib/clickhouse]
+    networks: [agric]
+
+  signoz-otel-collector-migrator:
+    profiles: ["observability"]
+    image: signoz/signoz-schema-migrator:0.111.13
+    container_name: agric-signoz-migrator
+    command: ["--dsn=tcp://signoz-clickhouse:9000"]
+    depends_on:
+      signoz-clickhouse: {condition: service_healthy}
+    networks: [agric]
+
+  signoz-otel-collector:
+    profiles: ["observability"]
+    image: signoz/signoz-otel-collector:0.111.13
+    container_name: agric-signoz-otel-collector
+    # default image config receives OTLP on 4317/4318 and writes clickhouse
+    command: ["--config=/etc/otel-collector-config.yaml", "--feature-gates=-pkg.translator.prometheus.NormalizeName"]
+    environment:
+      OTEL_RESOURCE_ATTRIBUTES: host.name=agric-signoz,os.type=linux
+      LOW_CARDINAL_EXCEPTION_GROUPING: "false"
+    depends_on:
+      signoz-clickhouse: {condition: service_healthy}
+      signoz-otel-collector-migrator: {condition: service_completed_successfully}
+    restart: on-failure
+    networks: [agric]
+
+  signoz-query-service:
+    profiles: ["observability"]
+    image: signoz/query-service:0.55.0
+    container_name: agric-signoz-query-service
+    command: ["-config=/root/config/prometheus.yml"]
+    volumes:
+      - signoz-data:/var/lib/signoz
+    environment:
+      ClickHouseUrl: tcp://signoz-clickhouse:9000/?database=signoz_traces
+      ALERTMANAGER_API_PREFIX: http://signoz-alertmanager:9093/api/
+      SIGNOZ_LOCAL_DB_PATH: /var/lib/signoz/signoz.db
+      STORAGE: clickhouse
+      GODEBUG: netdns=go
+      TELEMETRY_ENABLED: "true"
+      DEPLOYMENT_TYPE: docker-standalone
+      # SMTP for email notification channels (dev placeholders):
+      SMTP_ENABLED: "false"
+      # SMTP_HOST: smtp.example.com
+      # SMTP_PORT: "587"
+      # SMTP_FROM: signoz@agric-platform.example.com
+      # SMTP_AUTH_USERNAME: REPLACE_WITH_SMTP_USERNAME
+      # SMTP_AUTH_PASSWORD: REPLACE_WITH_SMTP_PASSWORD
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      signoz-clickhouse: {condition: service_healthy}
+      signoz-otel-collector-migrator: {condition: service_completed_successfully}
+    restart: on-failure
+    networks: [agric]
+
+  signoz-alertmanager:
+    profiles: ["observability"]
+    image: signoz/alertmanager:0.23.5
+    container_name: agric-signoz-alertmanager
+    command:
+      - --queryService.url=http://signoz-query-service:8085
+      - --storage.path=/data
+    volumes: [signoz-alertmanager-data:/data]
+    depends_on:
+      signoz-query-service: {condition: service_healthy}
+    restart: on-failure
+    networks: [agric]
+
+  signoz-frontend:
+    profiles: ["observability"]
+    image: signoz/frontend:0.55.0
+    container_name: agric-signoz-frontend
+    ports: ["3301:3301"]
+    depends_on:
+      - signoz-alertmanager
+      - signoz-query-service
+    restart: on-failure
+    networks: [agric]
+
 volumes:
+  signoz-zookeeper-data:
+  signoz-clickhouse-data:
+  signoz-data:
+  signoz-alertmanager-data:
   postgres-data:
   event-gw-spool:
   redis-data:
@@ -668,6 +1122,8 @@ volumes:
   opensearch-data:
   tigerbeetle-data:
   apisix-etcd-data:
+  fluvio-metadata:
+  fluvio-data:
   appsec-conf:
   appsec-data:
   appsec-logs:

@@ -1,0 +1,25 @@
+# Dapr pub/sub component backed by the existing Redpanda broker
+# (compose profile: redpanda, container agric-redpanda, PLAINTEXT on :9092).
+# Used by the daprd sidecars for agric-api and agric-event-gw when the
+# "dapr" compose profile is enabled. Dev-only: no auth/TLS, matching the
+# redpanda service's PLAINTEXT dev-container config.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: agric-pubsub
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+    - name: brokers
+      value: "redpanda:9092"
+    - name: consumerGroup
+      value: "agric-platform"
+    - name: clientID
+      value: "agric-dapr"
+    # Redpanda dev container has no auth/TLS.
+    - name: authType
+      value: "none"
+    # Keep the platform's topic prefix convention (KAFKA_TOPIC_PREFIX default
+    # "agric.domain") visible to Dapr consumers; Dapr subscribes per-topic,
+    # so applications pass full topic names e.g. "agric.domain.loan".

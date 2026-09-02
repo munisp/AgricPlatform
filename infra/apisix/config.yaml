@@ -9,3 +9,21 @@ deployment:
 apisix:
   node_listen: 9080
   enable_admin: false
+  # Enable the opentelemetry + prometheus plugins (stage 25). APISIX >= 3.x
+  # ships them compiled in; they must be listed here to be usable from
+  # declarative routes. NOTE: declaring `plugins:` replaces APISIX's default
+  # allowlist — it must therefore also re-list every plugin the routes use
+  # (limit-count, key-auth).
+plugin_attr:
+  # Prometheus export endpoint (scraped by the hub collector job `apisix`).
+  prometheus:
+    export_addr:
+      ip: 0.0.0.0
+      port: 9091
+    export_uri: /apisix/prometheus/metrics
+    metric_prefix: apisix_
+plugins:
+  - limit-count
+  - key-auth
+  - opentelemetry
+  - prometheus

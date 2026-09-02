@@ -1,0 +1,39 @@
+{
+  "alert": "mojaloop-transfer-failures",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "10m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "sum(increase(mojaloop_transfers_failed_total[10m]))",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 0.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "payments/mojaloop",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "Mojaloop transfer failures (any > 0 in 10m)",
+    "description": "FSPIOP transfer failures from the API-side mojaloop driver (W2). Works off API metrics even if the mojaloop server scrapes are not deployed.\n\nNOTE: Metric name is the W2 driver contract placeholder \u2014 verify the shipped name."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "critical",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

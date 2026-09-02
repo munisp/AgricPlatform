@@ -1,0 +1,24 @@
+# Minimal values for the official Fluvio app chart (fluvio-app), pinned to
+# platform release v0.18.1 — same version as the compose services
+# (infinyon/fluvio:v0.18.1). See README.md for how to obtain the chart.
+#
+# The chart's full key reference lives upstream in the pinned source:
+#   https://github.com/fluvio-community/fluvio/tree/v0.18.1/k8-util/helm/fluvio-app
+# Only dev-sized overrides are set here; everything else stays chart-default.
+
+image:
+  # Keep runtime pinned; the chart default may track a different version.
+  tag: v0.18.1
+
+# Single SC (streaming controller) pod, ClusterIP — clients inside the
+# cluster reach it on :9003, matching the compose layout.
+sc:
+  service:
+    type: ClusterIP
+
+# Single SPU (dev). Raise replicas + add storage class for real workloads.
+spu:
+  replicas: 1
+
+# Dev namespaces: install with --namespace agric-platform (or a dedicated
+# fluvio namespace) — the chart creates fluvio-sys CRDs separately first.

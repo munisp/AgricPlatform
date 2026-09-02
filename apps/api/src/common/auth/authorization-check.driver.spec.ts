@@ -107,3 +107,96 @@ describe('PermifyAuthorizationCheck (REST proof for credit_loan read)', () => {
     ).rejects.toBeInstanceOf(ProviderHttpError);
   });
 });
+
+/** Records TelemetryService calls; withSpan executes fn like the real thing. */
+function fakeTelemetry() {
+  return {
+    withSpan: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()),
+    increment: vi.fn(),
+    record: vi.fn()
+  };
+}
+
+describe('PermifyAuthorizationCheck telemetry (Stage 25.2)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const fetchMock = () => fetch as unknown as ReturnType<typeof vi.fn>;
+  const loan = { type: 'credit_loan' as const, id: 'loan-1', ownerId: 'user-1' };
+
+  function permifyWith(telemetry: ReturnType<typeof fakeTelemetry>) {
+    return new PermifyAuthorizationCheck('http://permify:3476', {
+      tenantId: 'agric',
+      telemetry: telemetry as never
+    });
+  }
+
+  it('wraps checks in a span with relation/subject-type attrs and no PII', async () => {
+    fetchMock().mockResolvedValue(
+      new Response(JSON.stringify({ can: 'RESULT_ALLOWED' }), { status: 200 })
+    );
+    const telemetry = fakeTelemetry();
+    await permifyWith(telemetry).can({ userId: 'user-1', roles: ['farmer'] }, 'read', loan);
+    expect(telemetry.withSpan).toHaveBeenCalledWith(
+      'permify.check',
+      expect.objectContaining({
+        'permify.relation': 'read',
+        'permify.subject_type': 'user',
+        'permify.resource_type': 'credit_loan',
+        'permify.tenant': 'agric'
+      }),
+      expect.any(Function)
+    );
+    const attrs = JSON.stringify(telemetry.withSpan.mock.calls[0][1]);
+    expect(attrs).not.toContain('user-1');
+    expect(attrs).not.toContain('loan-1');
+    expect(telemetry.record).toHaveBeenCalledWith(
+      'permify.check.duration',
+      expect.any(Number),
+      expect.objectContaining({ 'permify.relation': 'read' })
+    );
+  });
+
+  it('counts denies on permify.check.denied without counting an error', async () => {
+    fetchMock().mockResolvedValue(
+      new Response(JSON.stringify({ can: 'RESULT_DENIED' }), { status: 200 })
+    );
+    const telemetry = fakeTelemetry();
+    await expect(
+      permifyWith(telemetry).can({ userId: 'user-2', roles: ['farmer'] }, 'read', loan)
+    ).resolves.toBe(false);
+    expect(telemetry.increment).toHaveBeenCalledWith(
+      'permify.check.denied',
+      1,
+      expect.objectContaining({ 'permify.relation': 'read' })
+    );
+    expect(telemetry.increment).not.toHaveBeenCalledWith(
+      'permify.check.errors',
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('counts transport/HTTP failures and still throws (fail closed)', async () => {
+    fetchMock().mockResolvedValue(new Response('unavailable', { status: 503 }));
+    const telemetry = fakeTelemetry();
+    await expect(
+      permifyWith(telemetry).can({ userId: 'user-1', roles: ['farmer'] }, 'read', loan)
+    ).rejects.toBeInstanceOf(ProviderHttpError);
+    expect(telemetry.increment).toHaveBeenCalledWith(
+      'permify.check.errors',
+      1,
+      expect.objectContaining({ 'permify.relation': 'read' })
+    );
+    expect(telemetry.record).toHaveBeenCalledWith(
+      'permify.check.duration',
+      expect.any(Number),
+      expect.anything()
+    );
+  });
+});

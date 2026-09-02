@@ -19,25 +19,63 @@ const apiOrigin = (() => {
 })();
 
 /**
+ * Basemap tile origin for the /map geoportal (NEXT_PUBLIC_MAP_TILES, OSM by
+ * default). Parsed leniently: an invalid/relative template simply adds no
+ * extra origin (the map then fails closed with its own error panel).
+ */
+const mapTileOrigin = (() => {
+  try {
+    return new URL(
+      process.env.NEXT_PUBLIC_MAP_TILES ??
+        'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+    ).origin;
+  } catch {
+    return null;
+  }
+})();
+
+/**
+ * DuckDB-WASM asset origin for the geoportal's on-demand spatial queries
+ * (NEXT_PUBLIC_DUCKDB_CDN; jsDelivr default, matching duckdb-wasm's own
+ * bundle URLs). Only reached when a user runs a spatial query — the engine
+ * is never in the page bundle.
+ */
+const duckdbCdnOrigin = (() => {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_DUCKDB_CDN ?? 'https://cdn.jsdelivr.net').origin;
+  } catch {
+    return 'https://cdn.jsdelivr.net';
+  }
+})();
+
+/**
  * Baseline Content Security Policy.
- * - 'self' everywhere by default; the API origin is the only extra connect-src.
+ * - 'self' everywhere by default; the API origin is the only extra connect-src
+ *   (plus the two geoportal origins below).
  * - script-src allows 'unsafe-inline' because the App Router embeds its
  *   hydration/flight payload in inline scripts (`self.__next_f.push(...)`);
  *   a static 'self'-only policy silently blocks hydration of any route with
  *   a suspense boundary (the page never leaves its loading.tsx fallback).
  *   Upgrade path: per-request nonce CSP via middleware + 'strict-dynamic'.
  * - style-src allows 'unsafe-inline' because the app uses style attributes.
+ * - img-src gains the basemap tile origin (+ blob: for MapLibre's decoded
+ *   tile bitmaps) — tiles are the only remote images.
+ * - worker-src gains blob: for MapLibre's bundled worker and the geoportal's
+ *   DuckDB-WASM worker (fetched as text from the CDN, then instantiated from
+ *   a same-origin blob — no cross-origin Worker constructor, no script-src
+ *   relaxation).
+ * - connect-src gains the tile origin and the DuckDB asset origin.
  * - NO 'unsafe-eval' anywhere.
  */
 const contentSecurityPolicy = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  `img-src 'self' data: blob:${mapTileOrigin ? ` ${mapTileOrigin}` : ''}`,
   "font-src 'self'",
-  `connect-src 'self' ${apiOrigin}`,
+  `connect-src 'self' ${apiOrigin}${mapTileOrigin ? ` ${mapTileOrigin}` : ''} ${duckdbCdnOrigin}`,
   "manifest-src 'self'",
-  "worker-src 'self'",
+  "worker-src 'self' blob:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'"

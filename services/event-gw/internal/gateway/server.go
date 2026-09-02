@@ -44,11 +44,18 @@ func NewServer(cfg *Config, fanout *Fanout, metrics *Metrics, logger *log.Logger
 
 // Routes builds the HTTP mux (Go 1.22 method+pattern routing).
 func (s *Server) Routes() http.Handler {
+	return s.RoutesWithTelemetry(nil)
+}
+
+// RoutesWithTelemetry builds the HTTP mux, wrapping each route with an OTel
+// server span named by its route template when telemetry is enabled. A nil
+// (or disabled) Telemetry returns the plain mux — identical to Routes().
+func (s *Server) RoutesWithTelemetry(t *Telemetry) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhooks/{provider}", s.handleWebhook)
-	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	mux.HandleFunc("GET /readyz", s.handleReadyz)
-	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.Handle("POST /webhooks/{provider}", t.WrapRoute("POST /webhooks/{provider}", http.HandlerFunc(s.handleWebhook)))
+	mux.Handle("GET /healthz", t.WrapRoute("GET /healthz", http.HandlerFunc(s.handleHealthz)))
+	mux.Handle("GET /readyz", t.WrapRoute("GET /readyz", http.HandlerFunc(s.handleReadyz)))
+	mux.Handle("GET /metrics", t.WrapRoute("GET /metrics", http.HandlerFunc(s.handleMetrics)))
 	return mux
 }
 

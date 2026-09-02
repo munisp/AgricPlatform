@@ -1,0 +1,39 @@
+{
+  "alert": "agric-api-error-rate",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "100 * sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 2.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "api",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "API 5xx error rate above 2% (5m)",
+    "description": "Series: http_requests_total from agric-api (prom-client via /api/v1/metrics, re-exported by the hub collector on :9464 and OTLP'd to SigNoz). Mirrors alerts.yml AgricApiHigh5xxRate but tighter (2%/5m)."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "critical",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

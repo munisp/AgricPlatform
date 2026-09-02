@@ -1,4 +1,10 @@
 import 'reflect-metadata';
+// FIRST import: starts the OpenTelemetry SDK before AppModule (and therefore
+// pg/ioredis/kafkajs/express) is evaluated, so auto-instrumentation can hook
+// those modules at load. initTelemetry() never throws — telemetry is
+// observability, not a money path; a missing collector must not block boot.
+import './common/telemetry/telemetry.boot.js';
+import { initTelemetry } from './common/telemetry/telemetry.sdk.js';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger } from 'nestjs-pino';
@@ -9,6 +15,10 @@ import { assertProductionDriverConfig } from './modules/integrations/adapters.js
 import { assertProductionPartnerApiConfig } from './modules/partner-api/partner-api.config.js';
 
 async function bootstrap(): Promise<void> {
+  // First statement: telemetry init (already performed by the boot import
+  // above; this is an idempotent safeguard). No boot-fatal OTEL_* assertions
+  // by design — absence of a collector must never block boot.
+  initTelemetry();
   // Fail closed: refuse to boot a production process that cannot verify
   // bearer tokens or that runs non-stub integration drivers without
   // credentials (docs/security-compliance.md §1/§6).

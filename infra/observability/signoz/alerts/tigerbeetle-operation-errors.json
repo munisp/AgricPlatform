@@ -1,0 +1,39 @@
+{
+  "alert": "tigerbeetle-operation-errors",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "sum(increase(tigerbeetle_operations_total{result=\"error\"}[5m]))",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 0.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "critical",
+    "component": "finance/ledger",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "TigerBeetle operation errors (any > 0 in 5m)",
+    "description": "TigerBeetle has NO native telemetry (components/tigerbeetle.md); this alert consumes driver-layer spans/metrics from tigerbeetle.driver.ts (W1).\n\nNOTE: Metric name tigerbeetle_operations_total{result} is the W1 driver contract \u2014 verify the shipped name."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "critical",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

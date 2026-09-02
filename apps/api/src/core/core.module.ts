@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { OidcService } from '../common/auth/oidc.service.js';
 import { ErrorTrackingService } from '../common/error-tracking/error-tracking.service.js';
+import { TelemetryService } from '../common/telemetry/telemetry.service.js';
 import {
   AUTHORIZATION_CHECK,
   createAuthorizationCheck
@@ -34,14 +35,20 @@ import {
     ErrorTrackingService,
     EventDedupService,
     OutboxSweeperService,
-    { provide: EVENT_BUS, useFactory: () => createEventBus(process.env) },
+    {
+      provide: EVENT_BUS,
+      useFactory: (telemetry: TelemetryService) => createEventBus(process.env, telemetry),
+      inject: [TelemetryService]
+    },
     {
       provide: WORKFLOW_ORCHESTRATOR,
       useFactory: () => createWorkflowOrchestrator(process.env)
     },
     {
       provide: AUTHORIZATION_CHECK,
-      useFactory: () => createAuthorizationCheck(process.env)
+      useFactory: (telemetry: TelemetryService) =>
+        createAuthorizationCheck(process.env, telemetry),
+      inject: [TelemetryService]
     }
   ],
   exports: [

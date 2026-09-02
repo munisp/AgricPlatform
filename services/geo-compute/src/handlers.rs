@@ -5,13 +5,47 @@ use crate::config::{Config, Mode};
 use crate::error::{ApiError, ValidatedJson};
 use crate::geo::{self, GeoPoint};
 use crate::{h3ops, stub};
-use axum::extract::State;
+use axum::extract::{MatchedPath, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
+use tower_http::trace::TraceLayer;
+
+/// OpenTelemetry server span for one request (picked up by the
+/// `tracing-opentelemetry` layer when OTel is enabled; a plain tracing span
+/// otherwise — fully no-op-safe). Named by the axum route template so span
+/// names stay low-cardinality; `tenant.id` comes from the inbound
+/// `x-tenant-id` header when present.
+fn make_request_span(req: &axum::http::Request<axum::body::Body>) -> tracing::Span {
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_else(|| req.uri().path().to_owned());
+    let tenant = req
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let span = tracing::info_span!(
+        "http.request",
+        "otel.kind" = "server",
+        "otel.status_code" = tracing::field::Empty,
+        "http.request.method" = %req.method(),
+        "http.route" = %route,
+        "url.path" = %req.uri().path(),
+        "http.response.status_code" = tracing::field::Empty,
+        "tenant.id" = tracing::field::Empty,
+    );
+    if let Some(tenant) = tenant {
+        span.record("tenant.id", tenant);
+    }
+    span
+}
 
 /// Resolved h3o crate version (from Cargo.lock via build.rs).
 pub const H3O_VERSION: &str = env!("GEOCOMPUTE_H3O_VERSION");
@@ -39,6 +73,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/geo/h3/compact", post(h3_compact))
         .route("/v1/geo/polygon/metrics", post(polygon_metrics))
         .route("/v1/geo/geofence/batch", post(geofence_batch))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(make_request_span)
+                .on_response(
+                    |resp: &axum::http::Response<axum::body::Body>, _latency: std::time::Duration, span: &tracing::Span| {
+                        span.record("http.response.status_code", resp.status().as_u16());
+                    },
+                ),
+        )
         .with_state(state)
 }
 

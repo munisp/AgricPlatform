@@ -89,6 +89,26 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/insurance/portfolio",
+        "summary": "Insurer portfolio aggregates (scope: insurance:read).",
+        "auth": "client-credentials",
+        "scopes": [
+          "insurance:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/insurance/trigger-events",
+        "summary": "All trigger events with evidence payloads + basis flags (scope: insurance:read).",
+        "auth": "client-credentials",
+        "scopes": [
+          "insurance:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/members/{userId}/profile",
         "summary": "Consented member profile lookup",
         "auth": "client-credentials",

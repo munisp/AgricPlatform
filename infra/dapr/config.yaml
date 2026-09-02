@@ -1,0 +1,28 @@
+# Dapr runtime configuration for the compose sidecars (--config flag).
+# Tracing exports OTLP/gRPC to the wave-observability OpenTelemetry collector
+# (service `otel-collector`, owned by the observability coder — see the
+# compose snippet in W3's report if it is not merged yet). The endpoint is
+# inert-but-logged if the collector is absent; daprd starts regardless.
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: agric-dapr-config
+spec:
+  tracing:
+    # Dev default: trace everything. Production overlays should lower this
+    # (e.g. "0.1") via a patched Configuration.
+    samplingRate: "1"
+    stdout: true
+    otel:
+      endpointAddress: "otel-collector:4317"
+      isSecure: false
+      protocol: grpc
+  # Prometheus-format metrics on every sidecar (default port 9090):
+  # scrape target note for infra/observability/prometheus.yml:
+  #   - job_name: dapr-sidecars
+  #     static_configs: [{targets: [api-dapr:9090, event-gw-dapr:9090]}]
+  metric:
+    enabled: "true"
+  logging:
+    apiLogging:
+      enabled: false
