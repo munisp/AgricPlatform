@@ -1,0 +1,15 @@
+{
+  "name": "slack-agric-oncall",
+  "type": "slack",
+  "data": {
+    "slack_config": {
+      "send_resolved": true,
+      "api_url": "https://hooks.slack.com/services/REPLACE_WITH_SLACK_WORKSPACE/REPLACE_WITH_CHANNEL_ID/REPLACE_WITH_SLACK_WEBHOOK_SECRET",
+      "channel": "#agric-oncall",
+      "title": "[{{ .Status }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})",
+      "text": "*{{ .CommonAnnotations.summary }}*\n{{ .CommonAnnotations.description }}\nComponent: {{ .CommonLabels.component }} | Tenant: {{ .CommonLabels.tenant_id }}\n<{{ .RuleURL }}|Open in SigNoz>",
+      "username": "signoz-alertmanager"
+    }
+  },
+  "_comment": "DEV PLACEHOLDER: api_url is a Slack incoming-webhook URL \u2014 replace all REPLACE_WITH_* segments from the secret store. Channel name must match preferredChannels in alerts/*.json."
+}

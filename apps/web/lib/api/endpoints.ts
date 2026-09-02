@@ -4768,6 +4768,17 @@ export function fetchCarbonEstimates(plotId: string): Promise<{ data: CarbonEsti
   return apiFetch(`/vsla-carbon/plots/${encodeURIComponent(plotId)}/estimates`);
 }
 
+/** NDVI provider status — mirrors apps/api vsla-carbon.controller GET ndvi/status. */
+export interface NdviProviderStatus {
+  configured: boolean;
+  healthy: boolean;
+  detail: string;
+}
+
+export function fetchCarbonNdviStatus(): Promise<{ data: NdviProviderStatus }> {
+  return apiFetch('/vsla-carbon/ndvi/status');
+}
+
 export function fetchGroupMrvReport(groupId: string): Promise<{ data: GroupMrvReport }> {
   return apiFetch(`/vsla-carbon/reports/group/${encodeURIComponent(groupId)}`);
 }

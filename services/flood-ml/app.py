@@ -64,6 +64,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# OpenTelemetry: no-op-safe (never fatal, collector may be absent).
+try:
+    from telemetry import setup_telemetry
+    otel_shutdown = setup_telemetry(app, service_name="flood-ml")
+except ImportError as e:
+    print(f"Warning: Could not import telemetry module: {e}")
+
 # Initialize Redis client for caching (optional dependency)
 redis_client = None
 REDIS_AVAILABLE = False

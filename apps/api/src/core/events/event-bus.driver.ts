@@ -15,7 +15,9 @@ import {
   ProviderRequestError,
   requireEnv
 } from '../../modules/integrations/drivers/http.js';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import type { DomainEvent } from '../domain-events.service.js';
+import { FluvioEventBus } from './fluvio-event-bus.driver.js';
 
 /** DI token for the selected EventBus driver. */
 export const EVENT_BUS = Symbol('EVENT_BUS');
@@ -34,7 +36,7 @@ export interface EventBusDriverStatus {
 }
 
 export interface EventBus {
-  readonly name: 'stub' | 'kafka';
+  readonly name: 'stub' | 'kafka' | 'fluvio';
   /** Publishes an already-persisted domain event to the external bus. */
   publish(event: DomainEvent): Promise<void>;
   status(): Promise<EventBusDriverStatus>;
@@ -110,14 +112,20 @@ export class KafkaEventBus implements EventBus {
   private connected = false;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly telemetry: TelemetryService;
 
   constructor(
     private readonly brokers: string[],
     private readonly options: {
       topicPrefix?: string;
       producerFactory?: KafkaProducerFactory;
+      telemetry?: TelemetryService;
     } = {}
-  ) {}
+  ) {
+    // No-op-safe fallback when built outside Nest DI (tests): with the SDK
+    // disabled every TelemetryService helper is a near-free no-op.
+    this.telemetry = options.telemetry ?? new TelemetryService();
+  }
 
   get topicPrefix(): string {
     const prefix = this.options.topicPrefix?.trim();
@@ -130,20 +138,48 @@ export class KafkaEventBus implements EventBus {
   }
 
   async publish(event: DomainEvent): Promise<void> {
-    this.assertCircuitClosed();
+    // Stage 25.2: producer span with messaging.* semantic conventions.
+    // kafkajs auto-instrumentation (loaded by telemetry.sdk) already traces
+    // the raw producer send; this span wraps OUR publish operation (connect
+    // + send + circuit handling) and carries the event taxonomy, so the two
+    // nest rather than double-count. No payload/key attributes — event
+    // payloads are tenant data. Partition is broker-assigned (kafkajs
+    // default partitioner), so no partition attribute is stamped here.
+    const topic = this.topicFor(event.name);
+    const spanAttributes = {
+      'messaging.system': 'kafka',
+      'messaging.operation.name': 'publish',
+      'messaging.destination.name': topic,
+      'messaging.event.name': event.name
+    };
+    const started = performance.now();
     try {
-      const producer = await this.ensureProducer();
-      await producer.send({
-        topic: this.topicFor(event.name),
-        messages: [{ key: event.id, value: JSON.stringify(event) }]
+      await this.telemetry.withSpan('event-bus.publish', spanAttributes, async () => {
+        this.assertCircuitClosed();
+        try {
+          const producer = await this.ensureProducer();
+          await producer.send({
+            topic,
+            messages: [{ key: event.id, value: JSON.stringify(event) }]
+          });
+          this.recordSuccess();
+        } catch (error) {
+          this.recordFailure();
+          if (error instanceof ProviderRequestError) {
+            throw error;
+          }
+          throw new ProviderRequestError('kafka', 'network', error);
+        }
       });
-      this.recordSuccess();
     } catch (error) {
-      this.recordFailure();
-      if (error instanceof ProviderRequestError) {
-        throw error;
-      }
-      throw new ProviderRequestError('kafka', 'network', error);
+      this.telemetry.increment('event-bus.publish.errors', 1, spanAttributes);
+      throw error;
+    } finally {
+      this.telemetry.record(
+        'event-bus.publish.duration',
+        performance.now() - started,
+        spanAttributes
+      );
     }
   }
 
@@ -219,10 +255,14 @@ export { ProviderConfigError, ProviderRequestError };
  * Builds the configured driver. Default is the stub (current in-process
  * behaviour); EVENT_BUS_DRIVER=kafka requires KAFKA_BROKERS
  * (comma-separated host:port list) and fails closed with
- * ProviderConfigError otherwise — so boot aborts instead of silently
- * running without a bus.
+ * ProviderConfigError otherwise; EVENT_BUS_DRIVER=fluvio requires
+ * FLUVIO_ENDPOINT (host:port) and fails closed the same way — so boot
+ * aborts instead of silently running without a bus.
  */
-export function createEventBus(env: NodeJS.ProcessEnv = process.env): EventBus {
+export function createEventBus(
+  env: NodeJS.ProcessEnv = process.env,
+  telemetry?: TelemetryService
+): EventBus {
   const flag = (env.EVENT_BUS_DRIVER ?? 'stub').toLowerCase();
   if (flag === 'kafka') {
     const brokers = requireEnv('kafka', env, ['KAFKA_BROKERS'])
@@ -232,7 +272,17 @@ export function createEventBus(env: NodeJS.ProcessEnv = process.env): EventBus {
     if (brokers.length === 0) {
       throw new ProviderConfigError('kafka', ['KAFKA_BROKERS']);
     }
-    return new KafkaEventBus(brokers, { topicPrefix: env.KAFKA_TOPIC_PREFIX });
+    return new KafkaEventBus(brokers, { topicPrefix: env.KAFKA_TOPIC_PREFIX, telemetry });
+  }
+  if (flag === 'fluvio') {
+    const endpoint = requireEnv('fluvio', env, ['FLUVIO_ENDPOINT']).trim();
+    if (endpoint.length === 0) {
+      throw new ProviderConfigError('fluvio', ['FLUVIO_ENDPOINT']);
+    }
+    return new FluvioEventBus(endpoint, {
+      topicPrefix: env.FLUVIO_TOPIC_PREFIX,
+      telemetry
+    });
   }
   return new StubEventBus();
 }

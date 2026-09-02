@@ -5,9 +5,45 @@
  * problems raise ProviderConfigError (fail closed), provider responses raise
  * ProviderHttpError, and transport/timeout failures raise
  * ProviderRequestError so callers can distinguish the failure classes.
+ *
+ * Stage 25.2: each outbound request is wrapped in a TelemetryService span
+ * with provider + route attributes. REDACTION DOCTRINE (A3-4/A3-7): span
+ * and metric attributes carry ONLY the provider name, HTTP method, host and
+ * the query-stripped URL path — never the query string, headers, body or
+ * any token-bearing URL segment. Telemetry is fail-safe: it never changes
+ * error behaviour of the request path.
  */
 
+import { TelemetryService } from '../../../common/telemetry/telemetry.service.js';
+
 export const PROVIDER_TIMEOUT_MS = 5000;
+
+/**
+ * Telemetry for the provider HTTP seam. httpRequest/httpJson are free
+ * functions (no DI), so a module-level TelemetryService is used; with the
+ * SDK disabled every helper is a near-free no-op and never throws.
+ */
+const providerHttpTelemetry = new TelemetryService();
+
+/** URL parts safe for telemetry: host + pathname only, query/hash stripped. */
+function safeUrlAttributes(url: string): Record<string, string> {
+  try {
+    const parsed = new URL(url);
+    return {
+      'server.address': parsed.hostname,
+      'url.path': parsed.pathname
+    };
+  } catch {
+    // Unparseable URL (a fetch failure will follow anyway): emit nothing
+    // rather than risk leaking a token-bearing string into attributes.
+    return {};
+  }
+}
+
+/** HTTP status class label ('2xx'..'5xx') for metrics attributes. */
+function statusClass(status: number): string {
+  return `${Math.floor(status / 100)}xx`;
+}
 
 /** The driver flag demands a live provider but required env vars are absent. */
 export class ProviderConfigError extends Error {
@@ -79,6 +115,51 @@ export async function httpRequest(
   url: string,
   options: HttpRequestOptions = {}
 ): Promise<HttpResponse> {
+  // Stage 25.2: one span per outbound provider call. Attributes are the
+  // provider name, method, host and query-stripped path only — no tokens,
+  // no query strings, no bodies (A3-4/A3-7 redaction doctrine).
+  const method = options.method ?? (options.body !== undefined || options.form ? 'POST' : 'GET');
+  const spanAttributes: Record<string, string> = {
+    'provider.name': provider,
+    'http.request.method': method,
+    ...safeUrlAttributes(url)
+  };
+  const started = performance.now();
+  try {
+    const response = await providerHttpTelemetry.withSpan(
+      `provider.http ${method}`,
+      spanAttributes,
+      () => performRequest(provider, url, options, method)
+    );
+    providerHttpTelemetry.record('provider.http.duration', performance.now() - started, {
+      ...spanAttributes,
+      'http.response.status_class': statusClass(response.status)
+    });
+    return response;
+  } catch (error) {
+    // ProviderHttpError carries the upstream status class; anything else is
+    // a transport/timeout failure with no response at all.
+    const failureClass =
+      error instanceof ProviderHttpError ? statusClass(error.status) : 'transport';
+    providerHttpTelemetry.increment('provider.http.errors', 1, {
+      ...spanAttributes,
+      'http.response.status_class': failureClass
+    });
+    providerHttpTelemetry.record('provider.http.duration', performance.now() - started, {
+      ...spanAttributes,
+      'http.response.status_class': failureClass
+    });
+    throw error;
+  }
+}
+
+/** The bare fetch exchange with timeout and uniform error mapping. */
+async function performRequest(
+  provider: string,
+  url: string,
+  options: HttpRequestOptions,
+  method: string
+): Promise<HttpResponse> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? PROVIDER_TIMEOUT_MS);
   const headers: Record<string, string> = { ...options.headers };
@@ -95,7 +176,7 @@ export async function httpRequest(
   let response: Response;
   try {
     response = await fetch(url, {
-      method: options.method ?? (body !== undefined ? 'POST' : 'GET'),
+      method,
       headers,
       body,
       signal: controller.signal

@@ -1,0 +1,65 @@
+# Values for the official Mojaloop umbrella chart — INTEGRATION-GRADE
+# dev/staging switch for AgricPlatform's Mojaloop adapter.
+#
+#   helm repo add mojaloop http://mojaloop.io/helm/repo/
+#   helm upgrade --install moja mojaloop/mojaloop --version 17.2.0 \
+#     -n agric-mojaloop --create-namespace -f infra/k8s/mojaloop/values.yaml
+#
+# Pinned to chart 17.2.0. App versions shipped by this chart (from its
+# Chart.yaml appVersion): account-lookup-service v17.15.2, quoting-service
+# v17.14.3, transaction-requests-service v14.4.7, ml-api-adapter v16.9.2,
+# central-ledger v19.12.7, central-settlement v17.3.3, mojaloop-simulator
+# v15.5.3, ml-testing-toolkit v18.19.1 (+ ui v16.7.4).
+# Backend data stores (MySQL, Kafka, MongoDB, Redis) come from the companion
+# `example-mojaloop-backend` chart — see README.md. Dependency keys below
+# match the chart's Chart.yaml conditions exactly (verified at tag v17.2.0).
+
+# --- Core switch services required by the AgricPlatform adapter -----------
+# (FSPIOP Discovery / Quoting / Transfers phases)
+account-lookup-service:
+  enabled: true
+quoting-service:
+  enabled: true
+transaction-requests-service:
+  enabled: true
+ml-api-adapter:
+  enabled: true
+centralledger:
+  enabled: true
+centralsettlement:
+  enabled: true
+als-msisdn-oracle:
+  enabled: true # default oracle for MSISDN party resolution
+
+# --- Simulator counterparties ----------------------------------------------
+# Testing Toolkit (hub emulator + test collections; the UI ships inside this
+# chart) and the Mojaloop simulator (payer/payee DFSPs) so dev can run the
+# golden-path collection end-to-end without our adapter in the loop.
+ml-testing-toolkit:
+  enabled: true
+mojaloop-simulator:
+  enabled: true
+mojaloop-ttk-simulators:
+  enabled: false # only needed for sdk-scheme-adapter / bulk flows
+simulator:
+  enabled: false # legacy path simulator; TTK + mojaloop-simulator suffice
+
+# Golden-path provisioning + validation tests (run via `helm test moja`).
+ml-ttk-test-setup:
+  tests:
+    enabled: true
+ml-ttk-test-val-gp:
+  tests:
+    enabled: true
+
+# --- Out of scope for the current adapter — keep the dev footprint small ---
+mojaloop-bulk:
+  enabled: false
+thirdparty:
+  enabled: false
+inter-scheme-proxy-adapter:
+  enabled: false
+connection-manager:
+  enabled: false # no m2m/PKI onboarding in dev; enable for staging hardening
+iam:
+  enabled: false # Ory stack; enable when wiring SSO for switch admin UIs

@@ -639,6 +639,73 @@ export const en = {
     legend: 'Darker means more farms',
     offlineNotice: 'Live data unavailable — showing saved reference data.'
   },
+  // GeoPortal (wave W6): farm-plot map portal on the GeoLibre stack
+  // (MapLibre GL + DuckDB-WASM) — route /map, components/geoportal/.
+  geoportal: {
+    kicker: 'Geospatial',
+    title: 'Farm plot map',
+    description:
+      'Farm plot boundaries and carbon MRV plots on an interactive map. Click a plot for details, filter by state or practice, and run a spatial query over what you see.',
+    mapTitle: 'Plots and boundaries',
+    sourceFarm: 'Farm plot',
+    sourceCarbon: 'Carbon MRV plot',
+    partialError: '{source} could not be loaded — the map shows the remaining live data.',
+    empty: 'No plots to show yet.',
+    emptyHint:
+      'Register a farm plot on the Farms page or a carbon plot under VSLA & Carbon MRV, then return here.',
+    mapErrorTitle: 'The map could not start',
+    mapErrorHint:
+      'Your browser or device does not support WebGL, which the interactive map needs. Plot lists on the Farms page still work.',
+    ndvi: {
+      live: 'NDVI status: live satellite model connected.',
+      stub: 'NDVI status: satellite model not connected — NDVI values shown are stub data.'
+    },
+    filters: {
+      title: 'Plot filters',
+      state: 'State',
+      practice: 'Crop / practice',
+      allStates: 'All states',
+      allPractices: 'All practices',
+      results: 'Showing {shown} of {total} plots'
+    },
+    detail: {
+      title: 'Plot details',
+      close: 'Close plot details',
+      plotId: 'Plot ID',
+      area: 'Area',
+      areaValue: '{hectares} ha',
+      state: 'State / LGA',
+      practice: 'Practice',
+      status: 'Status',
+      h3: 'H3 cell (res 9)',
+      boundaryPolygon: 'walked/H3 boundary shown',
+      boundaryCentroid: 'no boundary on record — centroid marker only',
+      carbonEstimate: 'Estimated CO₂e stored',
+      carbonEstimateValue: '{tonnes} t CO₂e · season {season}',
+      estimateBasis: 'estimate — not verification-grade',
+      noEstimate: 'No carbon estimate recorded for this plot yet.',
+      ndviStatus: 'Latest NDVI evidence',
+      ndviScore: 'health score {score}',
+      ndviLive: 'Source: live satellite model.',
+      ndviStub: 'Source: stub provider (not satellite-derived).',
+      noNdvi: 'No NDVI-linked evidence for this plot yet.',
+      crops: 'Current crops',
+      noCrops: 'No plantings recorded for this plot yet.'
+    },
+    spatial: {
+      drawBox: 'Draw query box',
+      cancelDraw: 'Cancel drawing',
+      run: 'Run spatial query',
+      running: 'Querying…',
+      clear: 'Clear selection',
+      drawHint: 'Draw a box, then run the query to select the plots inside it (in-browser DuckDB-WASM SQL).',
+      drawHintActive: 'Click two opposite corners of the query box on the map.',
+      boxReady: 'Query box ready — run the spatial query to select plots inside it.',
+      results: '{count} plots inside the query box',
+      builtinNote: '(computed with the built-in filter — DuckDB engine unavailable)',
+      useBuiltin: 'Run with the built-in filter instead'
+    }
+  },
   // Wave ML (union-append): flood-risk card (optional flood-ml sidecar).
   floodRisk: {
     kicker: 'Flood risk',

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { LearningModule } from '../learning/learning.module.js';
 import {
   LEDGER_BACKEND,
@@ -24,7 +25,12 @@ import { LoanService } from './loan.service.js';
     // Wave FABRIC: ledger-backend driver port (stub = Postgres ledger
     // authoritative; tigerbeetle proof-of-port, legal-gated OFF by default,
     // fail-closed when selected without its envs).
-    { provide: LEDGER_BACKEND, useFactory: () => createLedgerBackendDriver(process.env) }
+    {
+      provide: LEDGER_BACKEND,
+      useFactory: (telemetry: TelemetryService) =>
+        createLedgerBackendDriver(process.env, telemetry),
+      inject: [TelemetryService]
+    }
   ],
   exports: [FinanceService, LedgerService, CreditService, LoanService, LEDGER_BACKEND]
 })

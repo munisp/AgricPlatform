@@ -1,0 +1,39 @@
+{
+  "alert": "redis-memory-high",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "100 * redis_memory_used / redis_memory_max",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 85.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "redis",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "Redis memory above 85% of maxmemory (5m)",
+    "description": "From the collector's redis receiver (redis.memory.used / redis.memory.max). Requires a maxmemory setting on the redis server; the dev compose redis has none, in which case redis_memory_max is 0 and this rule stays silent \u2014 set maxmemory or rewrite against redis_memory_used_bytes absolute thresholds."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "warning",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { COMMODITY_PRICE_PROVIDER } from '../../database/persistence.tokens.js';
 import { FinanceModule } from '../finance/finance.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
@@ -33,8 +34,13 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
     // Wave P: pluggable commodity-price provider (fail-closed by default).
     { provide: COMMODITY_PRICE_PROVIDER, useFactory: () => createCommodityPriceProvider() },
     // Wave FABRIC: Mojaloop payment-interop adapter (stub default; the
-    // simulator driver is fail-closed without MOJALOOP_SIM_URL).
-    { provide: MOJALOOP_ADAPTER, useFactory: () => createMojaloopAdapter(process.env) }
+    // simulator driver is fail-closed without MOJALOOP_SIM_URL, the live
+    // FSPIOP driver fail-closed without the ALS/quoting/transfer endpoints).
+    {
+      provide: MOJALOOP_ADAPTER,
+      useFactory: (telemetry: TelemetryService) => createMojaloopAdapter(process.env, telemetry),
+      inject: [TelemetryService]
+    }
   ],
   exports: [IntegrationsService, COMMODITY_PRICE_PROVIDER, MOJALOOP_ADAPTER]
 })

@@ -1,0 +1,20 @@
+{
+  "name": "email-agric-ops",
+  "type": "email",
+  "data": {
+    "email_config": {
+      "send_resolved": true,
+      "to": "agric-ops-alerts@example.com",
+      "from": "signoz@agric-platform.example.com",
+      "smarthost": "smtp.example.com:587",
+      "hello": "signoz.agric-platform.example.com",
+      "auth_username": "REPLACE_WITH_SMTP_USERNAME",
+      "auth_password": "REPLACE_WITH_SMTP_PASSWORD",
+      "require_tls": true,
+      "headers": {
+        "subject": "[SigNoz] {{ .CommonLabels.alertname }} \u2014 {{ .Status }}"
+      }
+    }
+  },
+  "_comment": "DEV PLACEHOLDER: SMTP relay credentials + addresses must come from the secret store. SigNoz email channels require the query-service SMTP env (SMTP_ENABLED etc.) to be configured on the signoz stack \u2014 see ../README.md compose snippet."
+}

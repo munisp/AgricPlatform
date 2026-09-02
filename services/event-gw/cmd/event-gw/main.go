@@ -47,13 +47,16 @@ func main() {
 	fanout := gateway.NewFanout(cfg, breaker, spool, metrics, logger)
 	srv := gateway.NewServer(cfg, fanout, metrics, logger)
 
+	// OpenTelemetry: no-op-safe (never fatal, collector may be absent).
+	telemetry := gateway.InitTelemetry(context.Background(), gateway.LoadTelemetryConfig(os.Getenv), logger)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	srv.StartBackground(ctx)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           srv.Routes(),
+		Handler:           srv.RoutesWithTelemetry(telemetry),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -76,6 +79,9 @@ func main() {
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			logger.Printf("ERROR: graceful shutdown failed: %v", err)
 			os.Exit(1)
+		}
+		if err := telemetry.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("WARNING: OpenTelemetry flush on shutdown failed: %v", err)
 		}
 		logger.Println("stopped")
 	case err := <-errCh:

@@ -1,0 +1,23 @@
+# Dapr Configuration: OTLP tracing to the wave-observability collector plus
+# Prometheus metrics. Mirrors infra/dapr/config.yaml (compose). The collector
+# endpoint here assumes the observability overlay installs otel-collector in
+# the agric-platform namespace (same as OTEL_EXPORTER_OTLP_ENDPOINT in
+# infra/k8s/config.yaml); adjust the host if it lands in another namespace
+# (e.g. otel-collector.observability.svc.cluster.local:4317).
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: agric-dapr-config
+  namespace: agric-platform
+spec:
+  tracing:
+    samplingRate: "1" # dev default; patch down (e.g. "0.1") in staging/prod
+    otel:
+      endpointAddress: "otel-collector:4317"
+      isSecure: false
+      protocol: grpc
+  metric:
+    enabled: "true" # sidecars expose Prometheus metrics on :9090
+  logging:
+    apiLogging:
+      enabled: false

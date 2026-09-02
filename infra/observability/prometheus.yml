@@ -45,6 +45,36 @@ scrape_configs:
     # Scrape failures surface via the standard `up` metric; alerts.yml
     # pages when the API is down or the scrape credential stops working.
 
+  # Hub OpenTelemetry Collector re-export (stage 25). The collector
+  # (otel-collector-config.yaml, prometheus exporter on :9464) re-exposes
+  # every metric it receives — OTLP push from apps/keycloak/apisix plus the
+  # postgresql/redis/kafkametrics receivers and its own scrape jobs — so this
+  # Prometheus keeps working even for push-only sources. No auth: the
+  # exporter binds inside the platform network only; front it with network
+  # policy rather than credentials.
+  - job_name: otel-collector
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - otel-collector:9464
+        labels:
+          service: otel-collector
+          environment: production
+
+  # Dapr sidecar metrics (W3): each sidecar exposes /metrics on :9090.
+  # Scrape port is tentative per W3 — confirm against the dapr configuration
+  # (infra/k8s/dapr/configuration.yaml) once sidecars are live.
+  - job_name: dapr-sidecars
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - agric-api:9090
+          - agric-event-gw:9090
+        labels:
+          environment: production
+
   # Optional blackbox readiness probe (requires the blackbox exporter):
   # - job_name: agric-api-ready
   #   metrics_path: /probe

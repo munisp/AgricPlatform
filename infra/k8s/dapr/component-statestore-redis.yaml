@@ -1,0 +1,29 @@
+# Dapr Component: state store backed by the platform Redis.
+# Mirrors infra/dapr/components/statestore-redis.yaml (compose, where the
+# service is `redis:6379`).
+# HONEST GAP: the current K8s base (infra/k8s/kustomization.yaml) does NOT
+# deploy Redis or Redpanda — only web/api/config. The redisHost below is the
+# assumed in-cluster DNS name for a Redis Service named `redis` in
+# agric-platform; adjust once the data-tier wave provides real manifests
+# (or point at an external/cache service). Dev cluster has no Redis password;
+# production must switch redisPassword to a secretKeyRef and enable TLS.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: agric-statestore
+  namespace: agric-platform
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+    - name: redisHost
+      value: "redis.agric-platform.svc.cluster.local:6379"
+    - name: redisPassword
+      value: ""
+    - name: enableTLS
+      value: "false"
+    - name: keyPrefix
+      value: "name"
+  scopes:
+    - agric-api
+    - agric-event-gw
