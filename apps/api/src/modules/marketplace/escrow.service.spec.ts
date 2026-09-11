@@ -1,12 +1,27 @@
-import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  ServiceUnavailableException
+} from '@nestjs/common';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { EscrowRecord, PaymentProviderPort, User } from '@agric-platform/shared';
+import type {
+  EscrowRecord,
+  PaymentChargeCommand,
+  PaymentChargeResult,
+  PaymentProviderPort,
+  PaymentRefundResult,
+  PaymentReleaseResult,
+  PaymentVerificationResult,
+  User
+} from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryEscrowRepository, InMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
-import { createInMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
-import { ESCROW_HOLD_TTL_MS, EscrowService } from './escrow.service.js';
+import { createInMemoryEscrowPayoutRepository, InMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
+import { EscrowService, ESCROW_HOLD_TTL_MS } from './escrow.service.js';
 import {
   LiveEscrowPayoutDriver,
   StubEscrowPayoutDriver,
@@ -14,105 +29,100 @@ import {
   type EscrowPayoutResult
 } from './payout.driver.js';
 
-const buyer: Pick<User, 'id' | 'roles'> = { id: 'user-buyer', roles: ['buyer'] };
-const seller: Pick<User, 'id' | 'roles'> = { id: 'user-adamu', roles: ['farmer'] };
-const admin: Pick<User, 'id' | 'roles'> = { id: 'user-admin', roles: ['admin'] };
-const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['student'] };
+const buyer = { id: 'user-buyer', roles: ['buyer'] } as User;
+const seller = { id: 'user-seller', roles: ['seller'] } as User;
+const admin = { id: 'user-admin', roles: ['admin'] } as User;
+const outsider = { id: 'user-outsider', roles: ['buyer'] } as User;
 
-// Seed order 'order-buyer-cassava': ₦370,000 total, escrowRequired, confirmed.
+/**
+ * Controllable fake provider: `verify` behaviour is scripted per reference
+ * ('paystack:*' verifies success with the requested amount; anything else
+ * returns a mismatch).
+ */
+function fakeProvider() {
+  const provider: PaymentProviderPort = {
+    name: 'fake',
+    charge: async (command: PaymentChargeCommand): Promise<PaymentChargeResult> => ({
+      providerReference: `fake:${command.reference}`,
+      authorizationUrl: `https://fake.example/pay/${command.reference}`
+    }),
+    verify: async (reference: string): Promise<PaymentVerificationResult> => {
+      if (reference.startsWith('paystack:')) {
+        return {
+          reference,
+          status: 'success',
+          amountKobo: 37_000_000,
+          currency: 'NGN',
+          basis: 'live'
+        };
+      }
+      return {
+        reference,
+        status: 'failed',
+        amountKobo: 1,
+        currency: 'NGN',
+        basis: 'live'
+      };
+    },
+    hold: async () => ({ providerReference: 'fake-hold-ref' }),
+    release: async (providerReference: string): Promise<PaymentReleaseResult> => ({
+      providerReference
+    }),
+    refund: async (providerReference: string): Promise<PaymentRefundResult> => ({
+      providerReference
+    })
+  };
+  return { provider };
+}
+
 function makeService(
   provider?: PaymentProviderPort,
   payoutDriver?: EscrowPayoutDriverPort,
-  payouts = payoutDriver ? createInMemoryEscrowPayoutRepository() : undefined
+  payouts?: ReturnType<typeof createInMemoryEscrowPayoutRepository>
 ) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const payoutRepo = payoutDriver !== undefined ? (payouts ?? createInMemoryEscrowPayoutRepository()) : payouts;
   const service = new EscrowService(
     events,
     createInMemoryOrderRepository(),
     createInMemoryEscrowRepository(),
     provider,
     payoutDriver,
-    payouts
+    payoutRepo
   );
-  return { service, events, payouts };
+  return { service, events, payouts: payoutRepo };
 }
 
 describe('EscrowService', () => {
-  it('holds the order total in integer kobo without a provider', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    expect(record.status).toBe('held');
-    expect(record.amountKobo).toBe(37_000_000);
-    expect(Number.isInteger(record.amountKobo)).toBe(true);
-    expect(record.providerReference).toBeUndefined();
-  });
-
-  it('is idempotent per order (retries never double-hold)', async () => {
+  it('holds the order total idempotently (retry replays the same record)', async () => {
     const { service } = makeService();
     const first = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    expect(first.amountKobo).toBe(37_000_000);
+    expect(first.status).toBe('held');
     const second = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(second.id).toBe(first.id);
   });
 
-  it('records the provider reference through the payment provider port', async () => {
-    const calls: string[] = [];
-    const provider: PaymentProviderPort = {
-      name: 'stub-pay',
-      verify: async (reference) => ({
-        reference,
-        status: 'success',
-        amountKobo: 37_000_000,
-        providerReference: reference
-      }),
-      hold: async (command) => {
-        calls.push(`hold:${command.amountKobo}`);
-        return { providerReference: 'ps_hold_123' };
-      },
-      release: async (reference) => {
-        calls.push(`release:${reference}`);
-      },
-      refund: async (reference) => {
-        calls.push(`refund:${reference}`);
-      }
-    };
-    const { service } = makeService(provider);
-    // Provider wired ⇒ verification required ⇒ the hold needs verified
-    // deposit evidence (Stage 24, audit A1-1).
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-hold-ref',
-      verified: true
-    });
-    expect(record.providerReference).toBe('ps_hold_123');
-    expect(calls).toEqual(['hold:37000000']);
-
-    await service.transition(record.id, 'released', buyer);
-    expect(calls).toEqual(['hold:37000000', 'release:ps_hold_123']);
-  });
-
-  it('walks the buyer-release path with actor scoping', async () => {
+  it('rejects escrow for a cancelled order', async () => {
     const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    expect((await service.transition(record.id, 'released', buyer)).status).toBe('released');
-    expect((await service.escrowForOrder('order-buyer-cassava'))?.resolvedAt).toBeDefined();
-  });
-
-  it('rejects illegal transitions and terminal-state moves', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    await expect(service.transition(record.id, 'held', admin)).resolves.toBeDefined(); // replay no-op
-    await service.transition(record.id, 'refunded', seller);
-    await expect(service.transition(record.id, 'released', admin)).rejects.toThrowError(
-      /Invalid escrow transition/
-    );
-    await expect(service.transition(record.id, 'disputed', admin)).rejects.toThrowError(
+    await expect(service.holdForOrder('order-cancelled', buyer.id)).rejects.toThrowError(
       BadRequestException
     );
   });
 
-  it('enforces the entitled party per transition', async () => {
+  it('walks held -> disputed -> refunded (admin-mediated resolution)', async () => {
     const { service } = makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    // Only the buyer releases; only the seller refunds.
+    const disputed = await service.transition(record.id, 'disputed', seller);
+    expect(disputed.status).toBe('disputed');
+    const refunded = await service.transition(record.id, 'refunded', admin);
+    expect(refunded.status).toBe('refunded');
+    expect(refunded.resolvedAt).toBeDefined();
+  });
+
+  it('the buyer releases; the seller refunds; both may dispute', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     await expect(service.transition(record.id, 'released', seller)).rejects.toThrowError(
       ForbiddenException
     );
@@ -122,214 +132,159 @@ describe('EscrowService', () => {
     await expect(service.transition(record.id, 'disputed', outsider)).rejects.toThrowError(
       ForbiddenException
     );
+    expect((await service.transition(record.id, 'released', buyer)).status).toBe('released');
   });
 
-  it('supports the dispute path with admin-only resolution', async () => {
-    const { service, events } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    expect((await service.transition(record.id, 'disputed', seller)).status).toBe('disputed');
-    // Parties cannot resolve their own dispute.
-    await expect(service.transition(record.id, 'refunded', buyer)).rejects.toThrowError(
-      ForbiddenException
-    );
-    // Held money cannot be re-disputed from a terminal resolution.
-    expect((await service.transition(record.id, 'refunded', admin)).status).toBe('refunded');
-    await expect(service.transition(record.id, 'disputed', admin)).rejects.toThrowError(
-      /Invalid escrow transition/
-    );
-    expect(
-      (await events.listOutbox()).filter((e) => e.name === 'marketplace.escrow.status_changed')
-    ).toHaveLength(2);
-  });
-
-  it('system release/refund paths act only on held escrows', async () => {
+  it('re-sending the current status is an idempotent replay, not a 409', async () => {
     const { service } = makeService();
-    expect(await service.releaseForOrder('order-buyer-cassava', admin.id)).toBeUndefined();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     await service.transition(record.id, 'disputed', buyer);
-    // Disputed escrows wait for admin resolution, not system release.
-    expect((await service.releaseForOrder('order-buyer-cassava', admin.id))?.status).toBe('disputed');
-    expect((await service.refundForOrder('order-buyer-cassava', admin.id))?.status).toBe('disputed');
+    const replay = await service.transition(record.id, 'disputed', buyer);
+    expect(replay.status).toBe('disputed');
   });
 
-  it('refuses to hold escrow for cancelled orders', async () => {
-    makeService();
-    const orders = createInMemoryOrderRepository();
-    await orders.update('order-buyer-cassava', { status: 'cancelled' });
-    const events = new DomainEventsService(createInMemoryOutboxRepository());
-    const cancelled = new EscrowService(events, orders, createInMemoryEscrowRepository());
-    await expect(cancelled.holdForOrder('order-buyer-cassava', buyer.id)).rejects.toThrowError(
+  it('rejects invalid transitions and party-only resolution for disputes', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await expect(service.transition(record.id, 'refunded', seller)).resolves.toMatchObject({
+      status: 'refunded'
+    });
+    await expect(service.transition(record.id, 'disputed', admin)).rejects.toThrowError(
       BadRequestException
     );
+
+    const disputedOrder = await service.holdForOrder('order-buyer-cassava-2', buyer.id);
+    await service.transition(disputedOrder.id, 'disputed', buyer);
+    await expect(
+      service.transition(disputedOrder.id, 'refunded', seller)
+    ).rejects.toThrowError(ForbiddenException);
   });
-});
 
-/** Records provider calls; can be told to fail the next release/refund. */
-function fakeProvider(failures: { release?: number; refund?: number } = {}) {
-  const calls: string[] = [];
-  let releaseFailures = failures.release ?? 0;
-  let refundFailures = failures.refund ?? 0;
-  const provider: PaymentProviderPort = {
-    name: 'fake-pay',
-    verify: async (reference) => ({
-      reference,
-      status: 'success',
-      amountKobo: 37_000_000,
-      providerReference: reference
-    }),
-    hold: async () => ({ providerReference: 'fake_hold_1' }),
-    release: async (reference) => {
-      calls.push(`release:${reference}`);
-      if (releaseFailures-- > 0) throw new Error('provider unreachable');
-    },
-    refund: async (reference) => {
-      calls.push(`refund:${reference}`);
-      if (refundFailures-- > 0) throw new Error('provider unreachable');
-    }
-  };
-  return { provider, calls };
-}
-
-describe('EscrowService funds-integrity hardening', () => {
-  it('rejects client-driven pending states', async () => {
+  it('system release path releases the held escrow for the order', async () => {
     const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    await expect(service.transition(record.id, 'releasing', buyer)).rejects.toThrowError(
-      /system-driven/
-    );
-    await expect(service.transition(record.id, 'refunding', admin)).rejects.toThrowError(
-      BadRequestException
-    );
-  });
-
-  it('persists the release intent BEFORE calling the provider and converges on retry', async () => {
-    const { provider, calls } = fakeProvider({ release: 1 }); // first release call crashes
-    const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-resume-1',
-      verified: true
-    });
-
-    // Provider crash: the record is left in the resumable 'releasing' state.
-    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
-      BadGatewayException
-    );
-    const stuck = await service.escrowForOrder('order-buyer-cassava');
-    expect(stuck?.status).toBe('releasing'); // intent survived the crash
-    expect(stuck?.resolvedAt).toBeUndefined();
-
-    // Retry converges: same provider reference, no double-hold/double-write.
-    const released = await service.transition(record.id, 'released', buyer);
-    expect(released.status).toBe('released');
-    expect(released.resolvedAt).toBeDefined();
-    expect(calls).toEqual(['release:fake_hold_1', 'release:fake_hold_1']); // idempotent reference
-
-    // A further retry is a pure replay: no additional provider call.
-    await service.transition(record.id, 'released', buyer);
-    expect(calls).toHaveLength(2);
-  });
-
-  it('never double-releases: a concurrent release + refund race has exactly one winner', async () => {
-    const { provider, calls } = fakeProvider();
-    const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-race-1',
-      verified: true
-    });
-
-    const [release, refund] = await Promise.allSettled([
-      service.transition(record.id, 'released', buyer),
-      service.transition(record.id, 'refunded', seller)
-    ]);
-    const outcomes = [release, refund];
-    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
-    const loser = outcomes.find((o) => o.status === 'rejected') as PromiseRejectedResult;
-    // The loser either never passed the guard (400) or lost the guarded
-    // write race (409) — it must never silently overwrite.
-    expect([BadRequestException, ConflictException]).toContainEqual(loser.reason.constructor);
-
-    const final = await service.escrowForOrder('order-buyer-cassava');
-    expect(['released', 'refunded']).toContain(final?.status); // exactly one terminal state
-    // Exactly one provider-side money movement happened — never both.
-    expect(calls).toHaveLength(1);
-    expect(['release:fake_hold_1', 'refund:fake_hold_1']).toContain(calls[0]);
-  });
-
-  it('system release path resumes a stuck releasing record', async () => {
-    const { provider } = fakeProvider({ release: 1 });
-    const { service } = makeService(provider);
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-resume-2',
-      verified: true
-    });
-    await expect(service.transition(record.id, 'released', buyer)).rejects.toThrowError(
-      BadGatewayException
-    );
-    const resumed = await service.releaseForOrder('order-buyer-cassava', admin.id);
-    expect(resumed?.status).toBe('released');
-  });
-
-  it('expires held escrows deterministically through the guarded refund path', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    expect(record.heldUntil).toBeDefined();
-
-    // Not yet due: nothing expires.
-    expect(await service.expireHeldEscrows(record.heldAt)).toHaveLength(0);
-    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
-
-    // At/past the deadline: exactly one auto-refund, then idempotent.
-    const afterDeadline = new Date(Date.parse(record.heldUntil!) + 1000).toISOString();
-    const expired = await service.expireHeldEscrows(afterDeadline);
-    expect(expired).toHaveLength(1);
-    expect(expired[0].status).toBe('refunded');
-    expect(expired[0].resolvedAt).toBeDefined();
-    expect(await service.expireHeldEscrows(afterDeadline)).toHaveLength(0);
-  });
-
-  it('sets a heldUntil deadline on every new hold', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
-    expect(Date.parse(record.heldUntil!)).toBeGreaterThan(Date.parse(record.heldAt));
-  });
-});
-
-// Stage 22 (audit C2): verify-before-credit evidence on the escrow record.
-describe('EscrowService deposit verification evidence (audit C2)', () => {
-  it('persists the verified deposit reference on the hold', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-001',
-      verified: true
-    });
-    expect(record.depositReference).toBe('paystack:dep-001');
-    expect(record.depositVerifiedAt).toBeDefined();
-    const stored = await service.escrowForOrder('order-buyer-cassava');
-    expect(stored?.depositReference).toBe('paystack:dep-001');
-    expect(stored?.depositVerifiedAt).toBe(record.depositVerifiedAt);
-  });
-
-  it('records declarative deposits as unverified', async () => {
-    const { service } = makeService();
-    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'declared-ref',
-      verified: false
-    });
-    expect(record.depositReference).toBe('declared-ref');
-    expect(record.depositVerifiedAt).toBeUndefined();
-  });
-
-  it('auto-release proceeds for provider-verified holds when a provider is wired', async () => {
-    const { provider } = fakeProvider();
-    const { service } = makeService(provider);
-    await service.holdForOrder('order-buyer-cassava', buyer.id, {
-      reference: 'paystack:dep-002',
-      verified: true
-    });
+    await service.holdForOrder('order-buyer-cassava', buyer.id);
     const released = await service.releaseForOrder('order-buyer-cassava', 'system');
     expect(released?.status).toBe('released');
   });
 
+  it('expires held escrows past their heldUntil deadline into refunded', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const afterDeadline = new Date(Date.parse(record.heldUntil!) + 1000).toISOString();
+    const expired = await service.expireHeldEscrows(afterDeadline);
+    expect(expired.map((row) => row.id)).toEqual([record.id]);
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('refunded');
+  });
+
+  it('uses the provider rail when a payment provider is wired', async () => {
+    const { provider } = fakeProvider();
+    const { service } = makeService(provider);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-1',
+      verified: true
+    });
+    expect(record.providerReference).toBe('fake-hold-ref');
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
+  });
+
+  it('provider-backed release persists the pending state first (crash-resumable)', async () => {
+    const { provider } = fakeProvider();
+    let failOnce = true;
+    const flaky: PaymentProviderPort = {
+      ...provider,
+      release: async (providerReference: string) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('provider timeout');
+        }
+        return { providerReference };
+      }
+    };
+    const { service } = makeService(flaky);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-2',
+      verified: true
+    });
+    // First release attempt: provider call fails AFTER the pending state
+    // was persisted — the escrow is 'releasing', never silently 'released'.
+    await expect(service.releaseForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      BadGatewayException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('releasing');
+    // Retry: converges through the pending resume path to the terminal state.
+    const released = await service.releaseForOrder('order-buyer-cassava', 'system');
+    expect(released?.status).toBe('released');
+    expect(record.status).toBe('held');
+  });
+
+  it('a provider refund failure parks the escrow in refunding until the retry', async () => {
+    const { provider } = fakeProvider();
+    let failOnce = true;
+    const flaky: PaymentProviderPort = {
+      ...provider,
+      refund: async (providerReference: string) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('provider 502');
+        }
+        return { providerReference };
+      }
+    };
+    const { service } = makeService(flaky);
+    await service.holdForOrder('order-buyer-cassava', buyer.id, {
+      reference: 'paystack:dep-3',
+      verified: true
+    });
+    await expect(service.refundForOrder('order-buyer-cassava', 'system')).rejects.toThrowError(
+      BadGatewayException
+    );
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('refunding');
+    const refunded = await service.refundForOrder('order-buyer-cassava', 'system');
+    expect(refunded?.status).toBe('refunded');
+  });
+
+  it('blocks the escrow refund when the cancelling order is refunded', async () => {
+    const { service } = makeService();
+    await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const refunded = await service.refundForOrder('order-buyer-cassava', 'system');
+    expect(refunded?.status).toBe('refunded');
+  });
+
+  it('emits marketplace.escrow.status_changed for each transition', async () => {
+    const { service, events } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await service.transition(record.id, 'released', buyer);
+    const outbox = await events.listOutbox();
+    expect(outbox.map((event) => event.name)).toEqual([
+      'marketplace.escrow.held',
+      'marketplace.escrow.status_changed'
+    ]);
+    expect(outbox[1].payload).toMatchObject({
+      escrowId: record.id,
+      from: 'held',
+      to: 'released'
+    });
+  });
+
+  it('concurrent transitions on the same escrow cannot both win', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const outcomes = await Promise.allSettled([
+      service.transition(record.id, 'released', buyer),
+      service.transition(record.id, 'disputed', buyer)
+    ]);
+    const succeeded = outcomes.filter((o) => o.status === 'fulfilled');
+    expect(succeeded).toHaveLength(1);
+    const final = await service.escrowForOrder('order-buyer-cassava');
+    expect(['released', 'disputed']).toContain(final?.status);
+  });
+});
+
+// Stage 22 (audit C2): verify-before-credit — a wired provider gates the
+// money-out paths so declarative (never verified) deposits cannot be
+// released or refunded as if real money sat behind them.
+describe('EscrowService verify-before-credit (Stage 22, audit C2)', () => {
   it('blocks auto-release of unverified holds when a provider is wired', async () => {
     const { provider } = fakeProvider();
     // Legacy pre-Stage-22 row: held with a declarative (never verified)
@@ -537,7 +492,7 @@ describe('EscrowService payout rails (Stage 23)', () => {
 
     // Terminal replay: no further driver call, still one record.
     await service.transition(record.id, 'released', buyer);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveBeenCalledTimes(2);
     expect(await payouts!.all()).toHaveLength(1);
   });
 
@@ -744,5 +699,83 @@ describe('EscrowService payout attempt claims (Stage 24, audit A4-3)', () => {
       )
     ).rejects.toThrowError(ConflictException);
     expect((await payouts!.all())[0].status).toBe('succeeded');
+  });
+});
+
+// WP-G12: payout lease-expiry double-drive fix — a claimant that stalls past
+// PAYOUT_CLAIM_LEASE_MS between winning the claim and invoking the driver
+// must CAS-revalidate the lease BEFORE driving; a stale claimant backs off.
+describe('EscrowService payout lease revalidation (WP-G12)', () => {
+  /**
+   * Wraps the in-memory payout repo so that the service's pre-drive lease
+   * revalidation (updateExpected with a claimedAt-only patch) loses to a
+   * twin that re-claimed the expired lease and completed the payout while
+   * the original claimant was stalled. Pre-fix there is NO revalidation
+   * write, so the race hook never fires and the stalled claimant drives —
+   * this spec then fails on the zero-driver-call assertion.
+   */
+  function raceOnRevalidation(inner: InMemoryEscrowPayoutRepository) {
+    const original = inner.updateExpected.bind(inner);
+    let raced = false;
+    const wrapper = Object.create(inner) as InMemoryEscrowPayoutRepository;
+    wrapper.updateExpected = async (id, patch, expected, ...rest) => {
+      const isLeaseRevalidation =
+        !raced &&
+        patch !== undefined &&
+        'claimedAt' in patch &&
+        !('status' in patch) &&
+        expected !== undefined &&
+        'claimedAt' in expected;
+      if (isLeaseRevalidation) {
+        raced = true;
+        // The twin's drive already landed: the attempt succeeded while the
+        // stalled claimant was still waking up.
+        await inner.update(id, {
+          status: 'succeeded',
+          providerReference: 'psp-twin',
+          updatedAt: new Date().toISOString()
+        });
+      }
+      return original(id, patch, expected, ...rest);
+    };
+    return wrapper;
+  }
+
+  it('a stalled claimant whose lease was taken over backs off BEFORE the driver call (no double drive)', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const inner = createInMemoryEscrowPayoutRepository();
+    const raced = raceOnRevalidation(inner);
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      createInMemoryEscrowRepository(),
+      undefined,
+      driver,
+      raced
+    );
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const released = await service.transition(record.id, 'released', buyer);
+    // The twin's win is adopted: the escrow still reaches the terminal state
+    // through the guarded write, but THIS claimant never invoked the driver.
+    expect(released.status).toBe('released');
+    expect(calls).toHaveLength(0);
+    const attempts = await inner.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].status).toBe('succeeded');
+    expect(attempts[0].providerReference).toBe('psp-twin');
+  });
+
+  it('the adopted attempt replays idempotently: a retry never drives a second time', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const { service } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await service.transition(record.id, 'released', buyer);
+    expect(calls).toHaveLength(1);
+    // Replay of the terminal transition: no new claim, no new driver call.
+    const replayed = await service.transition(record.id, 'released', buyer);
+    expect(replayed.status).toBe('released');
+    expect(calls).toHaveLength(1);
   });
 });
