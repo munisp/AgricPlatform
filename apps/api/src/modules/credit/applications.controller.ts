@@ -10,17 +10,24 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { CREDIT_LOAN_STATUSES, type CreditLoanStatus, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { RequiresFeature } from '../../common/feature-flags/feature-flag.decorator.js';
+import { FeatureFlagGuard } from '../../common/feature-flags/feature-flag.guard.js';
 import {
   CreditService,
   type AddCollateralInput,
   type ApplyForGroupLoanInput,
   type ApplyForLoanInput
 } from './credit.service.js';
+import {
+  SEASONAL_REPAYMENT_FLAG,
+  SeasonalScheduleService,
+  type PreviewSeasonalScheduleInput
+} from './seasonal-schedule.service.js';
 
 class ApplyDto implements ApplyForLoanInput {
   @IsString()
@@ -57,6 +64,44 @@ class InviteGuarantorDto {
   guarantorUserId!: string;
 }
 
+class PreviewSeasonalScheduleDto implements PreviewSeasonalScheduleInput {
+  @IsOptional()
+  @IsString()
+  plotId?: string;
+
+  @IsOptional()
+  @IsString()
+  crop?: string;
+
+  @IsOptional()
+  @IsString()
+  plantingDate?: string;
+
+  @IsOptional()
+  @IsString()
+  harvestWindowStart?: string;
+
+  @IsOptional()
+  @IsString()
+  harvestWindowEnd?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(3)
+  harvestInstallments?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  harvestWindowDays?: number;
+}
+
+class AcceptSeasonalScheduleDto {
+  @IsString()
+  scheduleId!: string;
+}
+
 class ListLoansQuery {
   @IsOptional()
   @IsIn(CREDIT_LOAN_STATUSES)
@@ -86,7 +131,10 @@ function requireActor(actor: User | null): User {
 @ApiTags('credit')
 @Controller('credit/applications')
 export class CreditApplicationsController {
-  constructor(private readonly credit: CreditService) {}
+  constructor(
+    private readonly credit: CreditService,
+    private readonly seasonal: SeasonalScheduleService
+  ) {}
 
   @Post()
   @UseGuards(RolesGuard)
@@ -195,6 +243,55 @@ export class CreditApplicationsController {
   @ApiOperation({ summary: 'Repayment schedule with read-time late marking (party)' })
   async schedule(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.credit.getSchedule(id, requireActor(actor)) };
+  }
+
+  /* ---------------------------------- seasonal schedules (SeasonSync) -- */
+
+  @Get(':id/seasonal-schedules')
+  @UseGuards(RolesGuard, FeatureFlagGuard)
+  @Authenticated()
+  @RequiresFeature(SEASONAL_REPAYMENT_FLAG)
+  @ApiOperation({
+    summary: 'List pinned seasonal schedule versions for a loan (party; flag seasonal-repayment)'
+  })
+  async seasonalSchedules(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.seasonal.listForLoan(id, requireActor(actor)) };
+  }
+
+  @Post(':id/seasonal-schedule/preview')
+  @UseGuards(RolesGuard, FeatureFlagGuard)
+  @Roles('admin', 'lender')
+  @RequiresFeature(SEASONAL_REPAYMENT_FLAG)
+  @ApiOperation({
+    summary:
+      'Preview a harvest-linked repayment schedule (admin|lender; flag seasonal-repayment). ' +
+      'Calendar comes from the borrower plot’s growing planting or explicit capture; ' +
+      '422 CROP_CALENDAR_REQUIRED when neither exists.'
+  })
+  async previewSeasonalSchedule(
+    @Param('id') id: string,
+    @Body() dto: PreviewSeasonalScheduleDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.seasonal.preview(id, dto, requireActor(actor)) };
+  }
+
+  @Post(':id/accept-schedule')
+  @UseGuards(RolesGuard, FeatureFlagGuard)
+  @Roles('admin', 'lender')
+  @RequiresFeature(SEASONAL_REPAYMENT_FLAG)
+  @ApiOperation({
+    summary:
+      'Accept a previewed seasonal schedule (admin|lender; flag seasonal-repayment): ' +
+      'replaces the approved loan’s pending equal installments with the pinned seasonal ' +
+      'installments. Idempotent on replay; 409 on concurrent accept or stale terms.'
+  })
+  async acceptSeasonalSchedule(
+    @Param('id') id: string,
+    @Body() dto: AcceptSeasonalScheduleDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.seasonal.accept(id, dto.scheduleId, requireActor(actor)) };
   }
 
   @Post(':id/repayments/:sequence/pay')
