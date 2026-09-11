@@ -387,3 +387,68 @@ describe('UssdController callback token gate (audit C2-3)', () => {
     });
   });
 });
+
+describe('UssdService planting-window pulse pull (Stage 27, innovation 4)', () => {
+  const session = { sessionId: 'sess-pulse', phoneNumber: '+234801', text: '' };
+
+  function buildWithPulse(
+    pulse: { previewForUser: (userId: string) => Promise<unknown> },
+    flagEnabled: boolean
+  ) {
+    const users = new UsersService(createInMemoryUserRepository());
+    const opportunities = { all: async () => OPPORTUNITIES } as unknown as OpportunitiesService;
+    const learning = {
+      allCourses: async () => COURSES,
+      enrol: vi.fn(async () => ({ id: 'enrol-1' }))
+    } as unknown as LearningService;
+    const flags = { isEnabled: vi.fn(async () => flagEnabled) };
+    return {
+      users,
+      service: new UssdService(
+        users,
+        opportunities,
+        learning,
+        createInMemoryUssdSessionRepository(),
+        createInMemoryCommodityPriceRepository(PRICES),
+        ENABLED_ENV,
+        pulse as never,
+        flags as never
+      ),
+      flags
+    };
+  }
+
+  it('serves the pre-rendered advisory over the menu when the flag is on', async () => {
+    const { service, users } = buildWithPulse(
+      {
+        previewForUser: async () => ({
+          available: true,
+          message: 'AgricPlatform: Plant maize on plot North field between 2 Jun and 16 Jun.'
+        })
+      },
+      true
+    );
+    await users.create({ phone: '+234801', fullName: 'Ada Farmer', roles: ['farmer'], preferredLanguage: 'en' });
+    await service.handleCallback({ ...session, text: '' });
+    const turn = await service.handleCallback({ ...session, text: '5' });
+    expect(turn).toContain('Plant maize on plot North field');
+  });
+
+  it('answers honestly when the flag is off (no pulse data gathered)', async () => {
+    const previewForUser = vi.fn();
+    const { service, users, flags } = buildWithPulse({ previewForUser }, false);
+    await users.create({ phone: '+234801', fullName: 'Ada Farmer', roles: ['farmer'], preferredLanguage: 'en' });
+    await service.handleCallback({ ...session, text: '' });
+    const turn = await service.handleCallback({ ...session, text: '5' });
+    expect(turn).toContain('unavailable');
+    expect(flags.isEnabled).toHaveBeenCalled();
+    expect(previewForUser).not.toHaveBeenCalled();
+  });
+
+  it('prompts unregistered phones to subscribe instead of fabricating a window', async () => {
+    const { service } = buildWithPulse({ previewForUser: vi.fn() }, true);
+    await service.handleCallback({ ...session, text: '' });
+    const turn = await service.handleCallback({ ...session, text: '5' });
+    expect(turn).toContain('No planting advisory subscription');
+  });
+});
