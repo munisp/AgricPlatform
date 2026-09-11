@@ -3,6 +3,7 @@ import type pg from 'pg';
 import { ESCROW_PAYOUT_REPOSITORY, PG_POOL } from '../../database/persistence.tokens.js';
 import { createPgEscrowPayoutRepository } from '../../database/repositories/commerce.pg-repository.js';
 import { createInMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
+import { FinanceModule } from '../finance/finance.module.js';
 import { SyncModule } from '../sync/sync.module.js';
 import { CommerceController } from './commerce.controller.js';
 import { EscrowService, PAYMENT_PROVIDER } from './escrow.service.js';
@@ -16,7 +17,10 @@ import { createEscrowPayoutDriver, ESCROW_PAYOUT_DRIVER } from './payout.driver.
 @Module({
   // Wave SYNCSRV: SyncModule provides the (optional) version-bump hook for
   // listing writes. SyncModule imports no feature modules, so no cycle.
-  imports: [SyncModule],
+  // Stage 27 (WP-G13): FinanceModule provides LedgerService so escrow
+  // holds/releases post their double-entry legs; FinanceModule does not
+  // import this module, so no cycle.
+  imports: [SyncModule, FinanceModule],
   controllers: [MarketplaceController, CommerceController],
   providers: [
     MarketplaceService,
