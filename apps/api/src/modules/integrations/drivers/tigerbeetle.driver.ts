@@ -12,6 +12,7 @@
  * fallback. Amounts are integer kobo, matching the ledger invariant of no
  * floats.
  */
+import { randomBytes } from 'node:crypto';
 import { TelemetryService } from '../../../common/telemetry/telemetry.service.js';
 import { ProviderConfigError, ProviderRequestError } from './http.js';
 
@@ -28,7 +29,13 @@ export const TIGERBEETLE_DEFAULT_LEDGER = 1;
 export const TIGERBEETLE_DEFAULT_TRANSFER_CODE = 1;
 
 export interface LedgerTransferInput {
-  /** Caller idempotency handle (decimal string; generated when omitted). */
+  /**
+   * Caller idempotency handle (decimal-string u128). WP-G13: must be
+   * collision-resistant — derive it from a UUIDv7/ULID or the caller's
+   * idempotency key. Values that look like a raw Date.now() epoch-millis
+   * timestamp HARD-FAIL (see assertCollisionResistantTransferId). When
+   * omitted the driver generates a UUIDv7-based u128.
+   */
   transferId?: string;
   /** TigerBeetle account ids as decimal strings (u128). */
   debitAccountId: string;
@@ -36,6 +43,13 @@ export interface LedgerTransferInput {
   /** Integer kobo — never a float. */
   amountKobo: number;
   reference: string;
+}
+
+/** Posted balances of one backend account (consistency checker, WP-G13). */
+export interface LedgerBackendAccountBalance {
+  accountId: string;
+  debitsPostedKobo: number;
+  creditsPostedKobo: number;
 }
 
 export interface LedgerTransferResult {
@@ -56,6 +70,83 @@ export interface LedgerBackendDriver {
   readonly name: 'stub' | 'tigerbeetle';
   postTransfer(input: LedgerTransferInput): Promise<LedgerTransferResult>;
   status(): Promise<LedgerBackendStatus>;
+  /**
+   * Optional (WP-G13 pg↔TB consistency checker): posted debit/credit totals
+   * per account id, aligned with the input order (undefined for accounts the
+   * backend does not know). The stub moves no money and omits this; the
+   * checker fails visible when the tigerbeetle driver is selected but cannot
+   * answer balance lookups.
+   */
+  lookupAccountBalances?(
+    accountIds: readonly string[]
+  ): Promise<Array<LedgerBackendAccountBalance | undefined>>;
+}
+
+/* -------------------------------------------------------------------------
+ * WP-G13 (Stage 27, ledger hardening): collision-resistant transfer ids.
+ *
+ * TigerBeetle deduplicates transfers by id — a reused id silently replays
+ * the FIRST transfer, so a weak id source corrupts money movement without
+ * an error. The pre-WP-G13 fallback derived the id from Date.now(), which
+ * collides across concurrent callers on the same millisecond. The driver
+ * now (a) generates a UUIDv7-based u128 when the caller supplies nothing
+ * (millisecond-ordered AND randomised — collision-resistant), and (b)
+ * hard-fails any supplied id that looks like a raw Date.now() epoch-millis
+ * value. Math.random-derived decimal ids cannot be detected reliably and
+ * are rejected only by policy: never derive ids from Math.random.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Epoch-millis lookalike range: [2001-09-09, 2286-11-20). A 13-digit
+ * decimal id in this range is overwhelmingly likely to be a raw
+ * Date.now() value (caller-managed small ids are far below it,
+ * UUID/ULID-derived u128s far above it).
+ */
+const EPOCH_MILLIS_LOOKALIKE_MIN = 1_000_000_000_000n;
+const EPOCH_MILLIS_LOOKALIKE_MAX = 10_000_000_000_000n;
+
+/**
+ * Generates a collision-resistant transfer id as a decimal-string u128:
+ * a UUIDv7 (48-bit epoch-millis prefix + version/variant + 74 random bits)
+ * converted to a single 128-bit integer. Time-ordered like TigerBeetle's
+ * own id() helper, without depending on the SDK at validation time.
+ */
+export function generateTransferId(nowMs: number = Date.now()): string {
+  const bytes = randomBytes(16);
+  const ms = BigInt(nowMs) & 0xffffffffffffn; // 48-bit millisecond timestamp
+  for (let shift = 40n, index = 0; index < 6; shift -= 8n, index += 1) {
+    bytes[index] = Number((ms >> shift) & 0xffn);
+  }
+  bytes[6] = 0x70 | (bytes[6] & 0x0f); // version 7
+  bytes[8] = 0x80 | (bytes[8] & 0x3f); // RFC 4122 variant
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return BigInt(`0x${hex}`).toString(10);
+}
+
+/**
+ * Hard-fails transfer ids that are not collision-resistant (WP-G13).
+ * Validates the decimal-u128 shape, rejects TigerBeetle's null id (0), and
+ * rejects values in the Date.now() epoch-millis lookalike range. Throws a
+ * plain Error (caller bug — never trips the circuit breaker).
+ */
+export function assertCollisionResistantTransferId(transferId: string): void {
+  if (!/^[0-9]+$/.test(transferId)) {
+    throw new Error(
+      `TigerBeetle transferId must be a decimal-string u128, got '${transferId.slice(0, 40)}'`
+    );
+  }
+  const value = BigInt(transferId);
+  if (value === 0n) {
+    throw new Error("TigerBeetle transferId must be non-zero (0 is TigerBeetle's null id)");
+  }
+  if (value >= EPOCH_MILLIS_LOOKALIKE_MIN && value < EPOCH_MILLIS_LOOKALIKE_MAX) {
+    throw new Error(
+      `TigerBeetle transferId '${transferId}' looks like a raw Date.now() epoch-millis value — ` +
+        'not collision-resistant across concurrent callers (a reused id silently replays the ' +
+        "FIRST transfer). Supply a UUIDv7/ULID-derived id or the caller's idempotency key, " +
+        'or omit transferId to have the driver generate one.'
+    );
+  }
 }
 
 /** Deterministic 32-bit FNV-1a hash so stub output is stable per input. */
@@ -104,6 +195,8 @@ export class StubLedgerBackendDriver implements LedgerBackendDriver {
 /** Minimal client surface (tigerbeetle-node Client subset) for lazy import + fakes. */
 export interface TigerBeetleClientLike {
   createTransfers(batch: Array<Record<string, unknown>>): Promise<Array<{ index: number; result: number | string }>>;
+  /** WP-G13 consistency checker: posted account balances (sparse — unknown ids omitted). */
+  lookupAccounts?(ids: bigint[]): Promise<Array<Record<string, unknown>>>;
   destroy(): void;
 }
 
@@ -111,7 +204,7 @@ export type TigerBeetleClientFactory = () => Promise<TigerBeetleClientLike>;
 
 /** Parses a decimal-string u128 field; throws a plain Error when invalid. */
 function toU128(value: string, field: string): bigint {
-  if (!/^\d+$/.test(value)) {
+  if (!/^[0-9]+$/.test(value)) {
     throw new Error(
       `TigerBeetle ${field} must be a decimal-string u128, got '${value.slice(0, 40)}'`
     );
@@ -165,7 +258,12 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
     // errors (plain Error), not broker failures, so they never trip the
     // breaker. Validation also stays OUTSIDE the telemetry span — the
     // duration histogram measures TigerBeetle operations, not caller bugs.
-    const transferId = input.transferId ?? String(Date.now());
+    // WP-G13: the id is NEVER derived from Date.now() — an omitted id gets
+    // a collision-resistant UUIDv7-based u128, and a supplied id that looks
+    // like epoch millis hard-fails (a reused id silently replays the first
+    // transfer, so weak id generation corrupts money movement silently).
+    const transferId = input.transferId ?? generateTransferId();
+    assertCollisionResistantTransferId(transferId);
     const transfer = {
       id: toU128(transferId, 'transferId'),
       debit_account_id: toU128(input.debitAccountId, 'debitAccountId'),
@@ -230,6 +328,52 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
     }
   }
 
+  /**
+   * Posted account balances for the pg↔TB consistency checker (WP-G13).
+   * Same circuit-breaker doctrine as postTransfer; result rows are aligned
+   * with the requested ids (undefined where the cluster has no account).
+   */
+  async lookupAccountBalances(
+    accountIds: readonly string[]
+  ): Promise<Array<LedgerBackendAccountBalance | undefined>> {
+    const ids = accountIds.map((accountId) => toU128(accountId, 'accountId'));
+    this.assertCircuitClosed();
+    try {
+      const client = await this.ensureClient();
+      if (typeof client.lookupAccounts !== 'function') {
+        throw new ProviderRequestError(
+          'tigerbeetle',
+          'network',
+          new Error('the configured TigerBeetle client does not support lookupAccounts')
+        );
+      }
+      const found = await client.lookupAccounts(ids);
+      this.recordSuccess();
+      const byId = new Map<string, Record<string, unknown>>();
+      for (const account of found) {
+        const id = account.id;
+        byId.set(typeof id === 'bigint' ? id.toString(10) : String(id), account);
+      }
+      return accountIds.map((accountId) => {
+        const account = byId.get(accountId);
+        if (!account) {
+          return undefined;
+        }
+        return {
+          accountId,
+          debitsPostedKobo: Number(account.debits_posted ?? 0),
+          creditsPostedKobo: Number(account.credits_posted ?? 0)
+        };
+      });
+    } catch (error) {
+      this.recordFailure();
+      if (error instanceof ProviderRequestError) {
+        throw error;
+      }
+      throw new ProviderRequestError('tigerbeetle', 'network', error);
+    }
+  }
+
   status(): Promise<LedgerBackendStatus> {
     return Promise.resolve({
       configured: true,
@@ -241,8 +385,7 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
   }
 
   /** Visible for tests: whether the circuit breaker is currently open. */
-  get circuitOpen(): boolean {
-    return (
+  get circuitOpen(): boolean {    return (
       this.consecutiveFailures >= LEDGER_CIRCUIT_THRESHOLD &&
       Date.now() < this.circuitOpenUntil
     );
