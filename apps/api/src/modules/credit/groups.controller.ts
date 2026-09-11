@@ -54,9 +54,9 @@ export class CreditGroupsController {
   @Get()
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'List credit groups' })
-  async list() {
-    return { data: await this.groups.listGroups() };
+  @ApiOperation({ summary: 'List credit groups (membership-scoped; reviewers see all)' })
+  async list(@CurrentUser() actor: User | null) {
+    return { data: await this.groups.listGroups(requireActor(actor)) };
   }
 
   @Get('mine')
@@ -70,9 +70,9 @@ export class CreditGroupsController {
   @Get(':id')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Group detail with members' })
-  async get(@Param('id') id: string) {
-    return { data: await this.groups.getGroup(id) };
+  @ApiOperation({ summary: 'Group detail with members (members or reviewers only)' })
+  async get(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.groups.getGroup(id, requireActor(actor)) };
   }
 
   @Post(':id/join')
