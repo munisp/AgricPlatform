@@ -1,0 +1,67 @@
+# Escrow expiry sweeper CronJob (WP-G12). NOT part of any kustomization:
+# review and apply deliberately once a cluster exists.
+#
+#   kubectl apply -f infra/k8s/cronjobs/escrow-expiry-sweeper.yaml
+#
+# Drives POST /admin/sweeps/escrow-expiry: auto-refunds held escrows past
+# their heldUntil deadline and resumes stuck release/refund drives through
+# the guarded escrow service semantics (CAS + recorded payout rail +
+# exactly-once markers). Idempotent; concurrencyPolicy Forbid plus SKIP
+# LOCKED batch selection keep overlapping passes safe no-ops.
+#
+# Auth: SWEEPER_ADMIN_TOKEN must be an admin OIDC JWT (provisioned as the
+# SWEEPER_ADMIN_TOKEN key of the agric-secrets Secret — see
+# infra/k8s/secrets-provisioning.md). Without it the API answers 401 and the
+# job FAILS LOUDLY (never a silent skip).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: escrow-expiry-sweeper
+  namespace: agric-platform
+spec:
+  schedule: "*/5 * * * *" # every 5 minutes
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: escrow-expiry-sweeper
+            app.kubernetes.io/part-of: agric-platform
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: trigger
+              image: ghcr.io/PLACEHOLDER_ORG/agric-api:0.1.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: API_BASE_URL
+                  value: "http://api.agric-platform.svc.cluster.local/api/v1"
+                - name: SWEEPER_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: agric-secrets
+                      key: SWEEPER_ADMIN_TOKEN
+                      optional: true
+              command: ["/bin/sh", "-c"]
+              args:
+                - wget -q -T 30 -O- --header="Authorization: Bearer ${SWEEPER_ADMIN_TOKEN:-}" --post-data='' "${API_BASE_URL}/admin/sweeps/escrow-expiry"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
