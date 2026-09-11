@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { createInMemoryWebhookSubscriptionRepository } from '../../database/repositories/partner-api.repository.js';
@@ -37,16 +37,53 @@ function accountLink(userId: string, id = `link-${userId}`): ExternalAccountLink
   };
 }
 
+interface TestApplication {
+  id: string;
+  userId: string;
+  partnerId: string;
+  status: string;
+}
+
+interface TestProgramme {
+  id: string;
+  partnerId?: string;
+}
+
+const DEFAULT_APPLICATIONS: TestApplication[] = [
+  { id: 'app-1', userId: 'user-a', partnerId: 'partner-1', status: 'submitted' },
+  { id: 'app-2', userId: 'user-b', partnerId: 'partner-1', status: 'successful' },
+  { id: 'app-3', userId: 'user-a', partnerId: 'partner-1', status: 'successful' }
+];
+
+const DEFAULT_PROGRAMMES: TestProgramme[] = [
+  { id: 'opp-1', partnerId: 'partner-1' },
+  { id: 'opp-2', partnerId: 'partner-1' }
+];
+
 function makeService(
-  options: { consents?: ConsentRecord[]; links?: ExternalAccountLink[] } = {}
+  options: {
+    consents?: ConsentRecord[];
+    links?: ExternalAccountLink[];
+    applications?: TestApplication[];
+    programmes?: TestProgramme[];
+  } = {}
 ) {
+  const applications = options.applications ?? DEFAULT_APPLICATIONS;
+  const programmes = options.programmes ?? DEFAULT_PROGRAMMES;
   const opportunities = {
-    applicationsForPartner: vi.fn(async () => [
-      { id: 'app-1', userId: 'user-a', status: 'submitted' },
-      { id: 'app-2', userId: 'user-b', status: 'successful' },
-      { id: 'app-3', userId: 'user-a', status: 'successful' }
-    ]),
-    opportunitiesForPartner: vi.fn(async () => [{ id: 'opp-1' }, { id: 'opp-2' }])
+    applicationsForPartner: vi.fn(async (partnerId: string) =>
+      applications.filter((application) => application.partnerId === partnerId)
+    ),
+    opportunitiesForPartner: vi.fn(async (partnerId: string) =>
+      programmes.filter((programme) => programme.partnerId === partnerId)
+    ),
+    get: vi.fn(async (id: string) => {
+      const programme = programmes.find((candidate) => candidate.id === id);
+      if (!programme) {
+        throw new NotFoundException(`Resource with id '${id}' not found`);
+      }
+      return programme;
+    })
   };
   const learning = {
     enrolmentsForUser: vi.fn(async (userId: string) => [
@@ -177,6 +214,7 @@ describe('PartnerApiService', () => {
       links: [accountLink('user-a')]
     });
     const result = await service.recordFarmDataPush(
+      'partner-1',
       'user-a',
       { assets: [{ type: 'asset--land', name: 'Plot 4' }] },
       'pc_test'
@@ -204,6 +242,7 @@ describe('PartnerApiService', () => {
   it('ledgers farm-data pushes with a pending-link marker when unlinked', async () => {
     const { service, events, farmRecords, inboundEvents } = makeService();
     const result = await service.recordFarmDataPush(
+      'partner-1',
       'user-b',
       { logs: [{ type: 'log--harvest' }] },
       'pc_test'
@@ -231,12 +270,195 @@ describe('PartnerApiService', () => {
   });
 
   it('ignores revoked links and ledgers the push as pending-link', async () => {
+    // user-b is in partner-1 scope via app-2; the revoked link exercises the
+    // pending-link path (WP-G22 made out-of-scope subjects a 404 instead).
     const { service, farmRecords } = makeService({
-      links: [{ ...accountLink('user-c'), revokedAt: new Date().toISOString() }]
+      links: [{ ...accountLink('user-b'), revokedAt: new Date().toISOString() }]
     });
-    const result = await service.recordFarmDataPush('user-c', { assets: [] }, 'pc_test');
+    const result = await service.recordFarmDataPush('partner-1', 'user-b', { assets: [] }, 'pc_test');
     expect(result.pendingLink).toBe(true);
     expect(await farmRecords.count({})).toBe(0);
+  });
+
+  describe('write-path tenant binding (Stage 27, WP-G22)', () => {
+    it('records a disbursement against an own programme and audits actor/subject', async () => {
+      const { service, audit } = makeService();
+      const recorded = await service.recordDisbursement(
+        'partner-1',
+        { userId: 'user-a', amountNgn: 50_000, programmeId: 'opp-1' },
+        'pc_test'
+      );
+      expect(recorded.programmeId).toBe('opp-1');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'pc_test',
+          action: 'partner.disbursement.recorded',
+          entityType: 'disbursement',
+          entityId: recorded.id,
+          metadata: { partnerId: 'partner-1', amountNgn: 50_000 }
+        })
+      );
+    });
+
+    it('accepts a disbursement against an unassigned (claimable) programme', async () => {
+      const { service } = makeService({
+        programmes: [...DEFAULT_PROGRAMMES, { id: 'opp-open' }]
+      });
+      const recorded = await service.recordDisbursement(
+        'partner-1',
+        { userId: 'user-a', amountNgn: 10_000, programmeId: 'opp-open' },
+        'pc_test'
+      );
+      expect(recorded.programmeId).toBe('opp-open');
+    });
+
+    it("rejects a disbursement against another partner's programme, indistinguishable from nonexistent (404)", async () => {
+      const { service, events } = makeService({
+        programmes: [...DEFAULT_PROGRAMMES, { id: 'opp-foreign', partnerId: 'partner-2' }]
+      });
+      const foreign = await service
+        .recordDisbursement(
+          'partner-1',
+          { userId: 'user-a', amountNgn: 10_000, programmeId: 'opp-foreign' },
+          'pc_test'
+        )
+        .catch((error: unknown) => error);
+      const nonexistent = await service
+        .recordDisbursement(
+          'partner-1',
+          { userId: 'user-a', amountNgn: 10_000, programmeId: 'opp-ghost' },
+          'pc_test'
+        )
+        .catch((error: unknown) => error);
+      expect(foreign).toBeInstanceOf(NotFoundException);
+      expect(nonexistent).toBeInstanceOf(NotFoundException);
+      expect((foreign as NotFoundException).getStatus()).toBe(404);
+      expect((foreign as NotFoundException).message).toBe(
+        (nonexistent as NotFoundException).message.replace('opp-ghost', 'opp-foreign')
+      );
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('enrols an application-bound member and audits actor/subject', async () => {
+      const { service, audit } = makeService();
+      const recorded = await service.recordEnrolment(
+        'partner-1',
+        { userId: 'user-a', programmeId: 'opp-1' },
+        'pc_test'
+      );
+      expect(recorded.userId).toBe('user-a');
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'pc_test',
+          action: 'partner.enrolment.recorded',
+          entityType: 'partner_enrolment',
+          entityId: recorded.id,
+          metadata: { partnerId: 'partner-1', programmeId: 'opp-1' }
+        })
+      );
+    });
+
+    it('enrols a consent-bound member without an application (explicit consent record)', async () => {
+      const { service, events } = makeService({ consents: [consent('user-c')] });
+      const recorded = await service.recordEnrolment(
+        'partner-1',
+        { userId: 'user-c', programmeId: 'opp-1' },
+        'pc_test'
+      );
+      expect(recorded.userId).toBe('user-c');
+      expect(events.publish).toHaveBeenCalledWith(
+        'partner.enrolment.recorded',
+        expect.objectContaining({ userId: 'user-c' }),
+        'pc_test'
+      );
+    });
+
+    it('rejects enrolling a member outside the partner scope, indistinguishable from nonexistent (404)', async () => {
+      const { service, events } = makeService();
+      const unbound = await service
+        .recordEnrolment('partner-1', { userId: 'user-c', programmeId: 'opp-1' }, 'pc_test')
+        .catch((error: unknown) => error);
+      const ghost = await service
+        .recordEnrolment('partner-1', { userId: 'user-ghost', programmeId: 'opp-1' }, 'pc_test')
+        .catch((error: unknown) => error);
+      expect(unbound).toBeInstanceOf(NotFoundException);
+      expect(ghost).toBeInstanceOf(NotFoundException);
+      expect((unbound as NotFoundException).message).toBe(
+        (ghost as NotFoundException).message.replace('user-ghost', 'user-c')
+      );
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cross-partner enrolment programme, indistinguishable from nonexistent (404)', async () => {
+      const { service } = makeService({
+        programmes: [...DEFAULT_PROGRAMMES, { id: 'opp-foreign', partnerId: 'partner-2' }]
+      });
+      const foreign = await service
+        .recordEnrolment('partner-1', { userId: 'user-a', programmeId: 'opp-foreign' }, 'pc_test')
+        .catch((error: unknown) => error);
+      const nonexistent = await service
+        .recordEnrolment('partner-1', { userId: 'user-a', programmeId: 'opp-ghost' }, 'pc_test')
+        .catch((error: unknown) => error);
+      expect(foreign).toBeInstanceOf(NotFoundException);
+      expect(nonexistent).toBeInstanceOf(NotFoundException);
+      expect((foreign as NotFoundException).message).toBe(
+        (nonexistent as NotFoundException).message.replace('opp-ghost', 'opp-foreign')
+      );
+    });
+
+    it('accepts farm data for an application-bound subject and audits actor=client, subject=user', async () => {
+      const { service, audit } = makeService({ links: [accountLink('user-a')] });
+      const result = await service.recordFarmDataPush(
+        'partner-1',
+        'user-a',
+        { assets: [] },
+        'pc_test'
+      );
+      expect(result.linked).toBe(true);
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'pc_test',
+          action: 'partner.farm_data.received',
+          entityType: 'user',
+          entityId: 'user-a',
+          metadata: { partnerId: 'partner-1', linked: true }
+        })
+      );
+    });
+
+    it('accepts farm data for a consent-bound subject without an application', async () => {
+      const { service } = makeService({
+        consents: [consent('user-c')],
+        links: [accountLink('user-c')]
+      });
+      const result = await service.recordFarmDataPush(
+        'partner-1',
+        'user-c',
+        { assets: [] },
+        'pc_test'
+      );
+      expect(result.accepted).toBe(true);
+      expect(result.linked).toBe(true);
+    });
+
+    it('rejects farm data for an out-of-scope subject, indistinguishable from nonexistent (404), with no side effects', async () => {
+      const { service, events, audit, farmRecords, inboundEvents } = makeService();
+      const crossPartner = await service
+        .recordFarmDataPush('partner-2', 'user-a', { assets: [] }, 'pc_other')
+        .catch((error: unknown) => error);
+      const ghost = await service
+        .recordFarmDataPush('partner-2', 'user-ghost', { assets: [] }, 'pc_other')
+        .catch((error: unknown) => error);
+      expect(crossPartner).toBeInstanceOf(NotFoundException);
+      expect(ghost).toBeInstanceOf(NotFoundException);
+      expect((crossPartner as NotFoundException).message).toBe(
+        (ghost as NotFoundException).message.replace('user-ghost', 'user-a')
+      );
+      expect(events.publish).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(await farmRecords.count({})).toBe(0);
+      expect(await inboundEvents.count({})).toBe(0);
+    });
   });
 
   it('creates webhook subscriptions and never echoes secrets on list', async () => {
