@@ -4,7 +4,14 @@
  * that result contract so the module can swap to Meilisearch without
  * changing its public response shape. Self-hosted Meilisearch needs no
  * third-party credentials (MEILISEARCH_HOST; MEILISEARCH_API_KEY optional).
+ *
+ * Stage 27 (WP-G10): the driver tracks last error class / last success
+ * timestamp for the status() accessor (readiness registry), and callers
+ * map ProviderHttpError/ProviderRequestError to 503 ServiceUnavailable —
+ * never 500 (see modules/search/search.controller.ts). Requests already
+ * run under the shared provider HTTP seam's 5s AbortController timeout.
  */
+import { DriverHealthTracker, type DriverHealthFields } from './driver-health.js';
 import { httpJson, requireEnv } from './http.js';
 
 /** Mirrors SearchResult in modules/search/search.service.ts. */
@@ -43,6 +50,15 @@ export interface SearchProvider {
   suggest(query: string, limit?: number): Promise<string[]>;
   indexDocuments(documents: SearchIndexDocument[]): Promise<void>;
   removeDocument(id: string): Promise<void>;
+  /** WP-G10 status accessor for the readiness registry. */
+  status(): Promise<SearchDriverStatus>;
+}
+
+/** Status report for the readiness registry (WP-G10). */
+export interface SearchDriverStatus extends DriverHealthFields {
+  configured: boolean;
+  healthy: boolean;
+  detail: string;
 }
 
 const DEFAULT_INDEX_UID = 'agric-platform';
@@ -62,6 +78,8 @@ interface MeiliSearchResponse {
 
 export class MeilisearchSearchProvider implements SearchProvider {
   readonly name = 'meilisearch';
+
+  private readonly tracker = new DriverHealthTracker();
 
   constructor(
     private readonly host: string,
@@ -85,15 +103,17 @@ export class MeilisearchSearchProvider implements SearchProvider {
     if (options.state) {
       filters.push(`state = '${options.state}'`);
     }
-    const response = await httpJson<MeiliSearchResponse>(this.name, this.indexUrl('/search'), {
-      headers: this.headers(),
-      body: {
-        q: query,
-        limit: options.limit ?? 20,
-        ...(filters.length ? { filter: filters.join(' AND ') } : {}),
-        showRankingScore: true
-      }
-    });
+    const response = await this.track(() =>
+      httpJson<MeiliSearchResponse>(this.name, this.indexUrl('/search'), {
+        headers: this.headers(),
+        body: {
+          q: query,
+          limit: options.limit ?? 20,
+          ...(filters.length ? { filter: filters.join(' AND ') } : {}),
+          showRankingScore: true
+        }
+      })
+    );
     return (response.hits ?? [])
       .filter((hit) => hit.id && hit.title)
       .map((hit) => ({
@@ -114,17 +134,52 @@ export class MeilisearchSearchProvider implements SearchProvider {
     if (documents.length === 0) {
       return;
     }
-    await httpJson(this.name, this.indexUrl('/documents'), {
-      headers: this.headers(),
-      body: documents
-    });
+    await this.track(() =>
+      httpJson(this.name, this.indexUrl('/documents'), {
+        headers: this.headers(),
+        body: documents
+      })
+    );
   }
 
   async removeDocument(id: string): Promise<void> {
-    await httpJson(this.name, this.indexUrl(`/documents/${encodeURIComponent(id)}`), {
-      method: 'DELETE',
-      headers: this.headers()
+    await this.track(() =>
+      httpJson(this.name, this.indexUrl(`/documents/${encodeURIComponent(id)}`), {
+        method: 'DELETE',
+        headers: this.headers()
+      })
+    );
+  }
+
+  /**
+   * WP-G10 status accessor: no breaker on this driver (the shared HTTP
+   * seam owns the 5s timeout); last error class / last success timestamp
+   * come from the health tracker. Reachability is verified at call time —
+   * query failures surface as ProviderHttpError/ProviderRequestError and
+   * callers answer 503, never 500.
+   */
+  status(): Promise<SearchDriverStatus> {
+    return Promise.resolve({
+      configured: true,
+      healthy: true,
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
+      detail:
+        `Meilisearch configured at ${this.host} (index ${this.indexUid}); ` +
+        'reachability is verified at call time under the shared 5s provider timeout.'
     });
+  }
+
+  /** Tracks last error class / last success for the status() accessor. */
+  private async track<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      const result = await call();
+      this.tracker.recordSuccess();
+      return result;
+    } catch (error) {
+      this.tracker.recordError(error);
+      throw error;
+    }
   }
 }
 
