@@ -115,4 +115,3 @@ export class InMemoryPinProfileRepository implements PinProfileRepository {
 export function createInMemoryPinProfileRepository(): InMemoryPinProfileRepository {
   return new InMemoryPinProfileRepository();
 }
-

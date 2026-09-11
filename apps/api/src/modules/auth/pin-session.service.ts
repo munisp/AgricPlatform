@@ -147,4 +147,3 @@ export class PinSessionService {
     return this.auth.issueSessionFor(userId);
   }
 }
-

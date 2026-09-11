@@ -118,4 +118,3 @@ export class PgPinProfileRepository implements PinProfileRepository {
 export function createPgPinProfileRepository(pool: pg.Pool): PgPinProfileRepository {
   return new PgPinProfileRepository(pool);
 }
-
