@@ -208,6 +208,10 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
 
+// Stage-27 Innovation 14: Cooperative Score — versioned, append-only
+// institution credit readiness (credit.coop_scores, migration 072).
+export const COOP_SCORE_REPOSITORY = Symbol('COOP_SCORE_REPOSITORY');
+
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
 // migration 032. Money movement stays in the finance ledger; these tables
