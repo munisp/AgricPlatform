@@ -137,7 +137,6 @@ export const DISEASE_FLAG_REPOSITORY = Symbol('DISEASE_FLAG_REPOSITORY');
 // buyer groups, order extensions, returns, draft orders, reviews/ratings).
 export const LISTING_VARIANT_REPOSITORY = Symbol('LISTING_VARIANT_REPOSITORY');
 export const BUYER_GROUP_REPOSITORY = Symbol('BUYER_GROUP_REPOSITORY');
-export const BUYER_GROUP_MEMBERSHIP_REPOSITORY = Symbol('BUYER_GROUP_MEMBERSHIP_REPOSITORY');
 export const PRICE_LIST_REPOSITORY = Symbol('PRICE_LIST_REPOSITORY');
 export const PRICE_LIST_ENTRY_REPOSITORY = Symbol('PRICE_LIST_ENTRY_REPOSITORY');
 export const PROMOTION_REPOSITORY = Symbol('PROMOTION_REPOSITORY');
@@ -275,3 +274,8 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Stage 27 / Innovation 8: Receipt LTV Guardian — collateral positions +
+// append-only LTV observation log (warehouse schema, migration 066). The
+// outstanding balance is read from the finance ledger, never stored here.
+export const COLLATERAL_POSITION_REPOSITORY = Symbol('COLLATERAL_POSITION_REPOSITORY');
+export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
