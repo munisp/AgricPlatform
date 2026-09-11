@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   cellToBoundary,
   cellToLatLng,
+  cellToParent,
   getResolution,
   gridDisk,
   isValidCell,
@@ -86,6 +87,21 @@ export class H3Service {
       ring.push([...first]);
     }
     return { type: 'Polygon', coordinates: [ring] };
+  }
+
+  /**
+   * Ancestor cell at a coarser resolution (cellToParent). Used by Chapter
+   * Map to test whether a res 5/6 service area covers a res-7 member cell.
+   */
+  parentAt(cell: string, resolution: number): string {
+    this.assertCell(cell);
+    if (!Number.isInteger(resolution) || resolution < 0 || resolution > 15) {
+      throw new BadRequestException('resolution must be an integer between 0 and 15');
+    }
+    if (resolution > getResolution(cell)) {
+      throw new BadRequestException('parent resolution must not exceed the cell resolution');
+    }
+    return cellToParent(cell, resolution);
   }
 
   resolutionOf(cell: string): number {
