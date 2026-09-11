@@ -275,3 +275,7 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Stage 27 Batch 1 (innovation 4): Planting-Window Pulse — per-plot advisory
+// subscriptions + dispatch log (advisory schema, migration 058). No money
+// movement; operational records with basis honesty labelling only.
+export const ADVISORY_PULSE_REPOSITORY = Symbol('ADVISORY_PULSE_REPOSITORY');
