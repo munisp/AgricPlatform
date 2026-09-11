@@ -134,10 +134,10 @@ export interface Course {
 
 export interface Enrolment {
   id: string;
-  userId: string;
   courseId: string;
+  userId: string;
   progressPercent: number;
-  status: 'enrolled' | 'in_progress' | 'completed' | 'dropped';
+  status: 'enrolled' | 'in_progress' | 'completed';
   enrolledAt: string;
   completedAt?: string;
 }
@@ -187,8 +187,8 @@ export interface Opportunity {
 
 export interface OpportunityApplication {
   id: string;
-  userId: string;
   opportunityId: string;
+  userId: string;
   status: ApplicationStatus;
   submittedAt: string;
   notes?: string;
@@ -740,7 +740,7 @@ export interface AgentAssignment {
   targetCount: number;
   completedCount: number;
   status: AgentAssignmentStatus;
-  dueAt: string;
+  dueAt?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
