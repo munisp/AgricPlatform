@@ -26,6 +26,13 @@ import {
   hashPayoutPayload,
   type EscrowPayoutRepository
 } from '../../database/repositories/payout.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
+import {
+  ESCROW_HOLDS_LIABILITY_ACCOUNT,
+  ESCROW_PROVIDER_FLOAT_ACCOUNT,
+  escrowLegPostingInput,
+  type EscrowLedgerLeg
+} from './escrow-ledger.js';
 import { ESCROW_PAYOUT_DRIVER, type EscrowPayoutDriverPort } from './payout.driver.js';
 
 /**
@@ -103,8 +110,85 @@ export class EscrowService {
     @Optional() @Inject(PAYMENT_PROVIDER) private readonly provider?: PaymentProviderPort,
     @Optional() @Inject(ESCROW_PAYOUT_DRIVER) private readonly payoutDriver?: EscrowPayoutDriverPort,
     @Optional() @Inject(ESCROW_PAYOUT_REPOSITORY) private readonly payouts?: EscrowPayoutRepository,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    /**
+     * WP-G13 (Stage 27, ledger hardening): when wired (always in the Nest
+     * module graph), every hold and money-out transition also posts its
+     * balanced double-entry leg (see escrow-ledger.ts). Optional ONLY for
+     * direct unit-test construction; production fails closed without it.
+     */
+    @Optional() private readonly ledger?: LedgerService
   ) {}
+
+  /**
+   * True when escrow transitions must also post their double-entry ledger
+   * legs (WP-G13): a ledger is wired, or the process runs in production
+   * (fail closed — an off-ledger escrow is a non-production convenience
+   * only, same doctrine as verificationRequired/payoutRequired).
+   */
+  private escrowLedgerRequired(): boolean {
+    return isProduction();
+  }
+
+  /**
+   * Fail-closed availability check (WP-G13): in production an escrow money
+   * path must have the ledger wired BEFORE any state persists — an
+   * off-ledger hold/release must never exist. Audited on refusal.
+   */
+  private async assertEscrowLedgerAvailable(
+    leg: EscrowLedgerLeg,
+    recordRef: { id: string; orderId?: string },
+    actorId: string
+  ): Promise<void> {
+    if (this.ledger || !this.escrowLedgerRequired()) {
+      return;
+    }
+    await this.audit?.record({
+      actorId,
+      action: 'marketplace.escrow.ledger_unavailable',
+      entityType: 'escrow_record',
+      entityId: recordRef.id,
+      metadata: { orderId: recordRef.orderId, leg, production: true }
+    });
+    throw new ServiceUnavailableException(
+      `Escrow ledger leg '${leg}' cannot be posted: no ledger is wired (production fails closed). ` +
+        `Refusing to move escrow ${recordRef.id} off-ledger — nothing was recorded or posted.`
+    );
+  }
+
+  /**
+   * Posts one escrow ledger leg (WP-G13; see escrow-ledger.ts). Idempotent
+   * per (escrow, leg) via the deterministic idempotency key, so transition
+   * retries, replay branches and the reconciliation repair sweep converge
+   * instead of double-posting. A posting failure surfaces honestly (the
+   * reconciliation job then reports the missing leg as drift until repaired).
+   */
+  private async postEscrowLedgerLeg(
+    record: EscrowRecord,
+    leg: EscrowLedgerLeg,
+    actorId: string
+  ): Promise<void> {
+    if (!this.ledger) {
+      // Reached only outside production (the availability check above fires
+      // first on the money paths) — direct unit construction convenience.
+      return;
+    }
+    await this.ledger.ensureAccount({ code: ESCROW_PROVIDER_FLOAT_ACCOUNT, type: 'asset' });
+    await this.ledger.ensureAccount({ code: ESCROW_HOLDS_LIABILITY_ACCOUNT, type: 'liability' });
+    await this.ledger.postEntry(escrowLegPostingInput(record, leg), actorId);
+  }
+
+  /**
+   * Posts every leg the record's current state requires (hold always; the
+   * money-out leg for terminal states). All legs are idempotency-keyed, so
+   * this is the safe replay/repair path.
+   */
+  private async ensureEscrowLedgerLegs(record: EscrowRecord, actorId: string): Promise<void> {
+    await this.postEscrowLedgerLeg(record, 'hold', actorId);
+    if (record.status === 'released' || record.status === 'refunded') {
+      await this.postEscrowLedgerLeg(record, record.status, actorId);
+    }
+  }
 
   async escrowForOrder(orderId: string): Promise<EscrowRecord | undefined> {
     return this.escrows.findOne({ orderId });
@@ -292,8 +376,15 @@ export class EscrowService {
   ): Promise<EscrowRecord> {
     const existing = await this.escrowForOrder(orderId);
     if (existing) {
+      // WP-G13: a replayed hold re-ensures the ledger leg (idempotent), so a
+      // retry after a posting failure converges instead of staying off-ledger.
+      await this.ensureEscrowLedgerLegs(existing, actorId);
       return existing;
     }
+    // WP-G13: refuse BEFORE persisting anything when the ledger leg cannot
+    // be posted (production without a wired ledger — never through the Nest
+    // module graph, which always provides one).
+    await this.assertEscrowLedgerAvailable('hold', { id: orderId, orderId }, actorId);
     const order = await this.orders.getById(orderId);
     if (order.status === 'cancelled') {
       throw new BadRequestException(`Cannot hold escrow for a cancelled order (${orderId})`);
@@ -338,6 +429,11 @@ export class EscrowService {
       heldUntil: new Date(heldAt.getTime() + ESCROW_HOLD_TTL_MS).toISOString()
     };
     const created = await this.escrows.create(record);
+    // WP-G13: the hold is a double-entry liability (DR provider float, CR
+    // holds liability). Posted right after the record persists; on failure
+    // the request fails honestly and a retry replays through the
+    // existing-record branch above, which re-ensures the leg.
+    await this.postEscrowLedgerLeg(created, 'hold', actorId);
     await this.audit?.record({
       actorId,
       action: 'marketplace.escrow.held',
@@ -375,6 +471,9 @@ export class EscrowService {
     }
     const record = await this.escrows.getById(id);
     if (record.status === status) {
+      // WP-G13: a terminal replay re-ensures the ledger legs (idempotent),
+      // so a retry after a leg-posting failure converges from this path too.
+      await this.ensureEscrowLedgerLegs(record, actor.id);
       return record; // idempotent replay of a retry
     }
     const allowed = ESCROW_TRANSITIONS[record.status]?.[status];
@@ -511,6 +610,15 @@ export class EscrowService {
   ): Promise<EscrowRecord> {
     let current = record;
     const moneyOut = status === 'released' || status === 'refunded';
+    if (moneyOut) {
+      // WP-G13: refuse BEFORE the pending intent persists when the
+      // settlement leg cannot be posted (production without a ledger).
+      await this.assertEscrowLedgerAvailable(
+        status === 'released' ? 'released' : 'refunded',
+        record,
+        actorId
+      );
+    }
     // Stage 24 (audit A1-1): verify-before-credit on EVERY money-out path —
     // party-driven transitions, system release/refund, and the expiry sweep
     // alike. Only the admin-mediated dispute resolution may move money for
@@ -574,7 +682,16 @@ export class EscrowService {
         );
       }
     }
-    return this.persistTransition(current, status, actorId);
+    const persisted = await this.persistTransition(current, status, actorId);
+    if (moneyOut) {
+      // WP-G13: settle the hold on-ledger (DR holds liability, CR provider
+      // float), idempotency-keyed per escrow. On failure the escrow is
+      // already terminal; the error surfaces honestly, the transition()
+      // replay branch re-ensures the leg, and the reconciliation job
+      // reports the drift until repaired.
+      await this.postEscrowLedgerLeg(persisted, status === 'released' ? 'released' : 'refunded', actorId);
+    }
+    return persisted;
   }
 
   /**
