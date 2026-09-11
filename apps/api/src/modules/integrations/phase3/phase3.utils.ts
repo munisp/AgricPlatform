@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { UnauthorizedException } from '@nestjs/common';
+import { isProduction } from '../../../common/auth/auth.config.js';
 
 /** SHA-256 hex digest used for identity minimisation (NIN/phone/member refs). */
 export function sha256(value: string): string {
@@ -32,7 +33,7 @@ export function assertWebhookToken(
   system: 'farmos' | 'litefarm' | 'ofn' | 'lender',
   tokenHeader: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  isProd: boolean = env.NODE_ENV === 'production'
+  isProd: boolean = isProduction(env)
 ): void {
   const expected = env[`${system.toUpperCase()}_WEBHOOK_TOKEN`];
   if (!expected) {

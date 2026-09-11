@@ -22,7 +22,10 @@ export interface OidcConfig {
 }
 
 export function isProduction(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.NODE_ENV === 'production';
+  // Normalised once, here: every production guard in the codebase routes
+  // through this helper so casing/whitespace variants ('Production',
+  // ' production ') cannot slip past a fail-closed check.
+  return (env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
 }
 
 /** The x-user-id development stub is never acceptable in production by default. */

@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isProduction } from '../../common/auth/auth.config.js';
 
 /**
  * Public passport verification code (wave-livestock-passport). Mirrors the
@@ -91,7 +92,7 @@ export function resolvePassportCodeSecret(env: NodeJS.ProcessEnv = process.env):
   if (configured && configured.length >= 16) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
     throw new Error(
       'LIVESTOCK_PASSPORT_SECRET (>= 16 chars) is required in production — refusing to sign livestock passport codes with the development default.'
     );

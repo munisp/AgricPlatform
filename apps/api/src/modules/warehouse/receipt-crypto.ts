@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isProduction } from '../../common/auth/auth.config.js';
 
 /**
  * e-WHR signature scheme (wave WAREHOUSE), mirroring the agent-banking
@@ -74,7 +75,7 @@ export function resolveReceiptSecret(env: NodeJS.ProcessEnv = process.env): stri
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
     throw new Error(
       'WAREHOUSE_RECEIPT_SECRET is required in production — refusing to sign receipts with the development default.'
     );

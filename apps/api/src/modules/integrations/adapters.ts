@@ -1,4 +1,5 @@
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
+import { isProduction } from '../../common/auth/auth.config.js';
 
 export type IntegrationDriver = IntegrationStatus['driver'];
 
@@ -218,7 +219,7 @@ export function createAdapter(
  * integrations can be rolled out incrementally.
  */
 export function assertProductionDriverConfig(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.NODE_ENV !== 'production') {
+  if (!isProduction(env)) {
     return;
   }
   const broken = ADAPTER_DEFINITIONS.filter((definition) => {
@@ -233,6 +234,53 @@ export function assertProductionDriverConfig(env: NodeJS.ProcessEnv = process.en
     throw new Error(
       `FATAL: integration drivers are enabled without credentials: ${broken.join('; ')}. ` +
         'Provide the credentials or set the driver flag back to stub. Refusing to start.'
+    );
+  }
+}
+
+/**
+ * Published development-only webhook signing fallback. It is committed in
+ * .env.example and historically shipped in infra/docker-compose.yml, so it
+ * must NEVER authenticate a production webhook.
+ */
+export const WEBHOOK_DEV_ONLY_SECRET = 'local-development-only';
+
+/** Minimum acceptable length for a production webhook signing secret. */
+export const WEBHOOK_SECRET_MIN_LENGTH = 16;
+
+/**
+ * Fail-closed boot check (mirrors resolveVoucherSecret): webhook HMAC
+ * secrets authenticate provider callbacks that move money and state. A
+ * secret equal to the published development default — or too short to
+ * resist guessing — would let anyone forge signed webhooks. Refuse to
+ * start instead. Resolution mirrors IntegrationsService.webhookSecret:
+ * `<PREFIX>_WEBHOOK_SECRET` wins over the shared WEBHOOK_SIGNING_SECRET.
+ * An unset secret stays legal here because the per-request verifier already
+ * fails closed without one; this assertion targets KNOWN-WEAK secrets.
+ */
+export function assertProductionWebhookSecrets(env: NodeJS.ProcessEnv = process.env): void {
+  if (!isProduction(env)) {
+    return;
+  }
+  const isWeak = (secret: string | undefined): secret is string =>
+    secret !== undefined &&
+    (secret === WEBHOOK_DEV_ONLY_SECRET || secret.trim().length < WEBHOOK_SECRET_MIN_LENGTH);
+  const weak: string[] = [];
+  if (isWeak(env.WEBHOOK_SIGNING_SECRET)) {
+    weak.push('WEBHOOK_SIGNING_SECRET');
+  }
+  for (const definition of ADAPTER_DEFINITIONS) {
+    const name = `${definition.envPrefix}_WEBHOOK_SECRET`;
+    if (isWeak(env[name])) {
+      weak.push(name);
+    }
+  }
+  if (weak.length > 0) {
+    throw new Error(
+      `FATAL: weak webhook signing secret(s) in production: ${weak.join(', ')}. ` +
+        `The published development default ('${WEBHOOK_DEV_ONLY_SECRET}') and secrets shorter ` +
+        `than ${WEBHOOK_SECRET_MIN_LENGTH} characters are forbidden. Provision a high-entropy ` +
+        'secret via the deployment secret store. Refusing to start.'
     );
   }
 }

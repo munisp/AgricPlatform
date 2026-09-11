@@ -429,6 +429,45 @@ describe('pledge / lien', () => {
     expect(await service.listPledgesForReceipt(receipt.id)).toHaveLength(0);
   });
 
+  it('refuses stub-basis collateral registrations for pledges in production (fail closed)', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret');
+    const liveFeed: WarehouseCertificationFeed = {
+      name: 'live',
+      check: () => Promise.resolve({ status: 'certified', basis: 'live', reference: 'LIVE-1' })
+    };
+    const { service } = makeService({ certificationFeed: liveFeed }); // stub collateral registry
+    const receipt = await issuedReceipt(service);
+    await expect(
+      service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender)
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    // Nothing persisted: the receipt stays active and no pledge was recorded.
+    expect((await service.getReceipt(receipt.id)).status).toBe('active');
+    expect(await service.listPledgesForReceipt(receipt.id)).toHaveLength(0);
+  });
+
+  it('allows live-registered pledges in production', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('WAREHOUSE_RECEIPT_SECRET', 'spec-receipt-signing-secret');
+    const liveFeed: WarehouseCertificationFeed = {
+      name: 'live',
+      check: () => Promise.resolve({ status: 'certified', basis: 'live', reference: 'LIVE-1' })
+    };
+    const liveRegistry: CollateralRegistry = {
+      name: 'live',
+      register: () => Promise.resolve({ reference: 'CR-LIVE-1', basis: 'live' }),
+      release: () => Promise.resolve()
+    };
+    const { service } = makeService({
+      certificationFeed: liveFeed,
+      collateralRegistry: liveRegistry
+    });
+    const receipt = await issuedReceipt(service);
+    const { pledge } = await service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender);
+    expect(pledge.status).toBe('active');
+    expect(pledge.registryBasis).toBe('live');
+  });
+
   it('the registering lender releases the pledge (receipt released)', async () => {
     const { service } = makeService({ certificationFeed: fixedFeed('certified') });
     const receipt = await issuedReceipt(service);

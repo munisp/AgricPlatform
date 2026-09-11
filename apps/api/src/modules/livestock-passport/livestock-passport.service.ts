@@ -22,6 +22,7 @@ import type {
 } from '@agric-platform/shared';
 import { VACCINATION_SCHEDULES } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -291,6 +292,17 @@ export class LivestockPassportService {
           tagId: animal.tagId,
           eid: animal.eid
         });
+        // Fail closed (mirrors the warehouse deposit/pledge basis guards): a
+        // stub tag verdict is a deterministic fabrication — stamping it on a
+        // passport in production would certify livestock identity against no
+        // real registry. Refuse issuance instead.
+        if (isProduction() && check.basis !== 'live') {
+          throw new ServiceUnavailableException(
+            'The animal-ID authority check did not come from the live registry (basis is not live). ' +
+              'Refusing passport issuance in production — configure ANIMAL_ID_AUTHORITY_MODE=live ' +
+              'with ANIMAL_ID_AUTHORITY_URL and ANIMAL_ID_AUTHORITY_API_KEY.'
+          );
+        }
         tagCheckBasis = check.basis;
         tagCheckDetail = check.detail;
       } catch (error) {

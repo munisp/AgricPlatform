@@ -119,5 +119,14 @@ export function createIdentityDriver(env: NodeJS.ProcessEnv = process.env): Iden
     }
     return new LiveIdentityDriver(env.NIN_PROVIDER_URL, env.NIN_PROVIDER_API_KEY);
   }
+  // Fail closed (mirrors createOtpDriver / assertProductionDriverConfig): the
+  // stub verdict is a PUBLICLY COMPUTABLE hash, so a stub identity check in
+  // production would enrol anyone as a "verified" subsidy beneficiary. Boot
+  // aborts; NIN_DRIVER=live is the only production mode.
+  if (isProduction()) {
+    throw new ProviderConfigError('nin-identity', [
+      'NIN_DRIVER=live (the deterministic stub identity verification is forbidden in production)'
+    ]);
+  }
   return new StubIdentityDriver();
 }

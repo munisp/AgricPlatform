@@ -1,5 +1,5 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConfigError } from '../integrations/drivers/http.js';
 import {
   LiveIdentityDriver,
@@ -82,6 +82,7 @@ describe('identity.driver stub (wave NINVOUCHER)', () => {
 
 describe('identity.driver live (fail-closed, wave NINVOUCHER)', () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     delete process.env.NODE_ENV;
   });
 
@@ -123,8 +124,28 @@ describe('identity.driver live (fail-closed, wave NINVOUCHER)', () => {
     expect(driver.name).toBe('live');
   });
 
-  it('the stub default is unaffected by NODE_ENV=production', () => {
-    process.env.NODE_ENV = 'production';
-    expect(createIdentityDriver({}).name).toBe('stub');
+  it('aborts boot in production when the NIN driver is stub (publicly computable verdict)', () => {
+    // The stub verdict derives from a stable, publicly known hash — allowing
+    // it in production would let anyone enrol as a "verified" beneficiary.
+    // Mirrors the OTP driver boot ban.
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(() => createIdentityDriver({ NIN_DRIVER: 'stub' })).toThrow(ProviderConfigError);
+    expect(() => createIdentityDriver({})).toThrow(/NIN_DRIVER=live/);
+    expect(() => createIdentityDriver({ NIN_DRIVER: 'sandbox' })).toThrow(ProviderConfigError);
+  });
+
+  it('treats NODE_ENV casing variants as production (fail closed)', () => {
+    vi.stubEnv('NODE_ENV', 'Production');
+    expect(() => createIdentityDriver({})).toThrow(ProviderConfigError);
+  });
+
+  it('still boots in production with NIN_DRIVER=live (fail-closed 503 driver)', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const driver = createIdentityDriver({
+      NIN_DRIVER: 'live',
+      NIN_PROVIDER_URL: 'https://vendor.example',
+      NIN_PROVIDER_API_KEY: 'key'
+    });
+    expect(driver.name).toBe('live');
   });
 });

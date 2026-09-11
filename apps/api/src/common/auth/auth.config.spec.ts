@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { assertProductionAuthConfig, loadOidcConfig } from './auth.config.js';
+import { assertProductionAuthConfig, isProduction, loadOidcConfig } from './auth.config.js';
 
 const BASE_ENV = {
   NODE_ENV: 'production',
   OIDC_ISSUER: 'https://keycloak.example.com/realms/agric-platform'
 } as NodeJS.ProcessEnv;
+
+describe('isProduction (normalised NODE_ENV guard)', () => {
+  it('matches only the normalised production value', () => {
+    expect(isProduction({ NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toBe(true);
+    // Casing/whitespace variants must still trip every fail-closed guard.
+    expect(isProduction({ NODE_ENV: 'Production' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(isProduction({ NODE_ENV: ' PRODUCTION ' } as NodeJS.ProcessEnv)).toBe(true);
+    expect(isProduction({ NODE_ENV: 'development' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isProduction({ NODE_ENV: 'test' } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isProduction({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isProduction({ NODE_ENV: 'production2' } as NodeJS.ProcessEnv)).toBe(false);
+  });
+});
 
 describe('assertProductionAuthConfig (G5)', () => {
   it('passes outside production even without OIDC', () => {

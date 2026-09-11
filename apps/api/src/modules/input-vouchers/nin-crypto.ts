@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { isProduction } from '../../common/auth/auth.config.js';
 
 /**
  * NIN handling for the input-subsidy voucher rail (wave NINVOUCHER),
@@ -48,7 +49,7 @@ export function resolveNinHashSalt(env: NodeJS.ProcessEnv = process.env): string
   if (configured) {
     return configured;
   }
-  if ((env.NODE_ENV ?? '').toLowerCase() === 'production') {
+  if (isProduction(env)) {
     throw new Error(
       'NIN_HASH_SALT is required in production — refusing to hash NINs with the development default.'
     );
