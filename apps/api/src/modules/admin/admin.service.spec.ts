@@ -8,6 +8,7 @@ import type { OutboxSweeperService } from '../../core/outbox-sweeper.service.js'
 import { createInMemoryAuditAnchorRepository } from '../../database/repositories/audit-anchor.repository.js';
 import { InMemoryAuditRepository } from '../../database/repositories/audit.repository.js';
 import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
+import { createInMemoryPartnerMemberRepository } from '../../database/repositories/partner-member.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { SessionService } from '../auth/session.service.js';
 import type { CommunityService } from '../community/community.service.js';
@@ -40,7 +41,8 @@ function build() {
     stub as LearningService,
     stub as MarketplaceService,
     stub as OutboxSweeperService,
-    sessions
+    sessions,
+    createInMemoryPartnerMemberRepository()
   );
   return { admin, users, sessions, sessionService };
 }
@@ -127,6 +129,7 @@ describe('AdminService audit anchoring (Stage 23)', () => {
       stub as MarketplaceService,
       stub as OutboxSweeperService,
       sessions,
+      createInMemoryPartnerMemberRepository(),
       undefined,
       undefined,
       undefined,
