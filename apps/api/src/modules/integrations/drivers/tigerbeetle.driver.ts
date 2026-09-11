@@ -12,6 +12,7 @@
  * fallback. Amounts are integer kobo, matching the ledger invariant of no
  * floats.
  */
+import { TelemetryService } from '../../../common/telemetry/telemetry.service.js';
 import { ProviderConfigError, ProviderRequestError } from './http.js';
 
 /** DI token for the selected ledger-backend driver. */
@@ -141,6 +142,7 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
   private client?: TigerBeetleClientLike;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly telemetry: TelemetryService;
 
   constructor(
     private readonly options: {
@@ -149,13 +151,20 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
       clientFactory?: TigerBeetleClientFactory;
       ledger?: number;
       transferCode?: number;
+      telemetry?: TelemetryService;
     }
-  ) {}
+  ) {
+    // No-op-safe fallback: when the driver is built outside Nest DI (tests)
+    // a plain TelemetryService still works — with the SDK disabled every
+    // helper costs ~nothing and never throws into the transfer path.
+    this.telemetry = options.telemetry ?? new TelemetryService();
+  }
 
   async postTransfer(input: LedgerTransferInput): Promise<LedgerTransferResult> {
     // Validation happens before the circuit: malformed ids are caller
     // errors (plain Error), not broker failures, so they never trip the
-    // breaker.
+    // breaker. Validation also stays OUTSIDE the telemetry span — the
+    // duration histogram measures TigerBeetle operations, not caller bugs.
     const transferId = input.transferId ?? String(Date.now());
     const transfer = {
       id: toU128(transferId, 'transferId'),
@@ -166,30 +175,58 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
       code: this.options.transferCode ?? TIGERBEETLE_DEFAULT_TRANSFER_CODE,
       user_data_64: input.reference
     };
-    this.assertCircuitClosed();
+    // Stage 25.2: one span per TigerBeetle operation. Attributes carry the
+    // ledger id and transfer count only — never account ids or references
+    // (financial PII). Duration histogram + error counter are recorded
+    // around the span so failures are still measured.
+    const spanAttributes = {
+      'tb.operation': 'create_transfers',
+      'tb.ledger': transfer.ledger,
+      'tb.transfer_count': 1
+    };
+    const started = performance.now();
     try {
-      const client = await this.ensureClient();
-      const errors = await client.createTransfers([transfer]);
-      this.recordSuccess();
-      if (errors.length === 0) {
-        return {
-          providerRef: transferId,
-          status: 'posted',
-          source: 'tigerbeetle cluster (proof-of-port — not the system of record)'
-        };
-      }
-      return {
-        providerRef: transferId,
-        status: 'failed',
-        source: 'tigerbeetle cluster (proof-of-port — not the system of record)',
-        detail: `TigerBeetle rejected the transfer: ${JSON.stringify(errors[0])}`
-      };
+      return await this.telemetry.withSpan(
+        'tigerbeetle.create_transfers',
+        spanAttributes,
+        async () => {
+          this.assertCircuitClosed();
+          try {
+            const client = await this.ensureClient();
+            const errors = await client.createTransfers([transfer]);
+            this.recordSuccess();
+            if (errors.length === 0) {
+              return {
+                providerRef: transferId,
+                status: 'posted',
+                source: 'tigerbeetle cluster (proof-of-port — not the system of record)'
+              };
+            }
+            this.telemetry.increment('tigerbeetle.transfer.rejected', 1, spanAttributes);
+            return {
+              providerRef: transferId,
+              status: 'failed',
+              source: 'tigerbeetle cluster (proof-of-port — not the system of record)',
+              detail: `TigerBeetle rejected the transfer: ${JSON.stringify(errors[0])}`
+            };
+          } catch (error) {
+            this.recordFailure();
+            if (error instanceof ProviderRequestError) {
+              throw error;
+            }
+            throw new ProviderRequestError('tigerbeetle', 'network', error);
+          }
+        }
+      );
     } catch (error) {
-      this.recordFailure();
-      if (error instanceof ProviderRequestError) {
-        throw error;
-      }
-      throw new ProviderRequestError('tigerbeetle', 'network', error);
+      this.telemetry.increment('tigerbeetle.operation.errors', 1, spanAttributes);
+      throw error;
+    } finally {
+      this.telemetry.record(
+        'tigerbeetle.operation.duration',
+        performance.now() - started,
+        spanAttributes
+      );
     }
   }
 
@@ -256,7 +293,8 @@ export { ProviderConfigError, ProviderRequestError };
  * otherwise.
  */
 export function createLedgerBackendDriver(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  telemetry?: TelemetryService
 ): LedgerBackendDriver {
   const flag = (env.LEDGER_DRIVER ?? 'stub').toLowerCase();
   if (flag === 'tigerbeetle') {
@@ -275,7 +313,8 @@ export function createLedgerBackendDriver(
     }
     return new TigerBeetleLedgerBackendDriver({
       clusterId: env.TIGERBEETLE_CLUSTER_ID as string,
-      addresses
+      addresses,
+      telemetry
     });
   }
   return new StubLedgerBackendDriver();

@@ -4,6 +4,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { LoggingModule } from './common/logging/logging.module.js';
 import { MetricsModule } from './common/metrics/metrics.module.js';
+import { TelemetryModule } from './common/telemetry/telemetry.module.js';
 import { CoreModule } from './core/core.module.js';
 import { DatabaseModule } from './database/database.module.js';
 import { HealthModule } from './health/health.module.js';
@@ -84,6 +85,9 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     // Logging first: every module/service log line flows through pino.
     LoggingModule,
     MetricsModule,
+    // Global OTel wiring: tenant-attribution interceptor + TelemetryService.
+    // The SDK itself was already started by main.ts (telemetry.boot import).
+    TelemetryModule,
     // Rate limiting (docs/security-compliance.md §7 "SSRF / rate abuse").
     // Wave P: the store is pluggable — Redis when REDIS_URL is configured
     // (limits hold across replicas; ioredis was already a dependency), the

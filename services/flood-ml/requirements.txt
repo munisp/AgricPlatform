@@ -12,3 +12,9 @@ pydantic==2.5.0
 python-multipart==0.0.6
 httpx==0.25.1
 python-dotenv==1.0.0
+# OpenTelemetry (no-op-safe when the collector is absent; OTEL_ENABLED=false disables)
+opentelemetry-sdk==1.30.0
+opentelemetry-exporter-otlp-proto-http==1.30.0
+opentelemetry-instrumentation-fastapi==0.51b0
+opentelemetry-instrumentation-requests==0.51b0
+opentelemetry-instrumentation-logging==0.51b0

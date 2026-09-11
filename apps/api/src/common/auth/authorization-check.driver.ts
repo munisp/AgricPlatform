@@ -22,6 +22,7 @@ import {
   ProviderRequestError,
   requireEnv
 } from '../../modules/integrations/drivers/http.js';
+import { TelemetryService } from '../telemetry/telemetry.service.js';
 
 /** DI token for the selected AuthorizationCheck driver. */
 export const AUTHORIZATION_CHECK = Symbol('AUTHORIZATION_CHECK');
@@ -104,10 +105,15 @@ interface PermifyCheckResponse {
 export class PermifyAuthorizationCheck implements AuthorizationCheck {
   readonly name = 'permify' as const;
 
+  private readonly telemetry: TelemetryService;
+
   constructor(
     private readonly baseUrl: string,
-    private readonly options: { tenantId?: string } = {}
-  ) {}
+    private readonly options: { tenantId?: string; telemetry?: TelemetryService } = {}
+  ) {
+    // No-op-safe fallback when built outside Nest DI (tests).
+    this.telemetry = options.telemetry ?? new TelemetryService();
+  }
 
   get tenantId(): string {
     return this.options.tenantId?.trim() || 't1';
@@ -118,19 +124,45 @@ export class PermifyAuthorizationCheck implements AuthorizationCheck {
     action: AuthorizationAction,
     resource: AuthorizationResource
   ): Promise<boolean> {
-    const response = await httpJson<PermifyCheckResponse>(
-      'permify',
-      `${this.baseUrl.replace(/\/+$/, '')}/v1/tenants/${encodeURIComponent(this.tenantId)}/permissions/check`,
-      {
-        body: {
-          metadata: { schema_version: '', snap_token: '', depth: 20 },
-          entity: { type: resource.type, id: resource.id },
-          permission: action,
-          subject: { type: 'user', id: subject.userId }
+    // Stage 25.2: span per permission check. Attributes carry the relation,
+    // resource type and subject TYPE only — never subject.userId or
+    // resource.id (PII / tenant data). Deny decisions and failures are
+    // counted; latency is always recorded.
+    const spanAttributes = {
+      'permify.relation': action,
+      'permify.subject_type': 'user',
+      'permify.resource_type': resource.type,
+      'permify.tenant': this.tenantId
+    };
+    const started = performance.now();
+    try {
+      return await this.telemetry.withSpan('permify.check', spanAttributes, async () => {
+        const response = await httpJson<PermifyCheckResponse>(
+          'permify',
+          `${this.baseUrl.replace(/\/+$/, '')}/v1/tenants/${encodeURIComponent(this.tenantId)}/permissions/check`,
+          {
+            body: {
+              metadata: { schema_version: '', snap_token: '', depth: 20 },
+              entity: { type: resource.type, id: resource.id },
+              permission: action,
+              subject: { type: 'user', id: subject.userId }
+            }
+          }
+        );
+        const allowed = response.can === 'RESULT_ALLOWED';
+        if (!allowed) {
+          // Fail-closed deny path: counted separately from transport errors
+          // so dashboards can distinguish "Permify said no" from outages.
+          this.telemetry.increment('permify.check.denied', 1, spanAttributes);
         }
-      }
-    );
-    return response.can === 'RESULT_ALLOWED';
+        return allowed;
+      });
+    } catch (error) {
+      this.telemetry.increment('permify.check.errors', 1, spanAttributes);
+      throw error;
+    } finally {
+      this.telemetry.record('permify.check.duration', performance.now() - started, spanAttributes);
+    }
   }
 
   status(): Promise<AuthorizationCheckStatus> {
@@ -152,12 +184,16 @@ export { ProviderConfigError, ProviderHttpError, ProviderRequestError };
  * closed with ProviderConfigError otherwise.
  */
 export function createAuthorizationCheck(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  telemetry?: TelemetryService
 ): AuthorizationCheck {
   const flag = (env.AUTHORIZATION_DRIVER ?? 'stub').toLowerCase();
   if (flag === 'permify') {
     const baseUrl = requireEnv('permify', env, ['PERMIFY_URL']);
-    return new PermifyAuthorizationCheck(baseUrl, { tenantId: env.PERMIFY_TENANT_ID });
+    return new PermifyAuthorizationCheck(baseUrl, {
+      tenantId: env.PERMIFY_TENANT_ID,
+      telemetry
+    });
   }
   return new StubAuthorizationCheck();
 }

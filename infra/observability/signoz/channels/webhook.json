@@ -1,0 +1,17 @@
+{
+  "name": "webhook-agric-generic",
+  "type": "webhook",
+  "data": {
+    "webhook_config": {
+      "send_resolved": true,
+      "api_url": "https://alerts.agric-platform.example.com/REPLACE_WITH_WEBHOOK_PATH",
+      "http_config": {
+        "authorization": {
+          "type": "Bearer",
+          "credentials": "REPLACE_WITH_WEBHOOK_BEARER_TOKEN"
+        }
+      }
+    }
+  },
+  "_comment": "DEV PLACEHOLDER: generic JSON webhook receiver (pager/ITSM/ChatOps). Replace host, path and bearer token from the secret store; drop http_config if the receiver is tokenless."
+}

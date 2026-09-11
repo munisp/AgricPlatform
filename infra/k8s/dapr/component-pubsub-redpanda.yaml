@@ -1,0 +1,27 @@
+# Dapr Component: pub/sub backed by the platform Kafka-compatible broker.
+# Mirrors infra/dapr/components/pubsub-redpanda.yaml (compose, where the
+# broker is container agric-redpanda, PLAINTEXT :9092).
+# HONEST GAP: the current K8s base (infra/k8s/kustomization.yaml) does NOT
+# deploy Redpanda/Kafka. The brokers value below is the assumed in-cluster
+# DNS name for a Service named `redpanda` in agric-platform; adjust once the
+# data-tier wave provides real manifests (or point at an external broker).
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: agric-pubsub
+  namespace: agric-platform
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+    - name: brokers
+      value: "redpanda.agric-platform.svc.cluster.local:9092"
+    - name: consumerGroup
+      value: "agric-platform"
+    - name: clientID
+      value: "agric-dapr"
+    - name: authType
+      value: "none"
+  scopes:
+    - agric-api
+    - agric-event-gw

@@ -19,6 +19,7 @@ from .providers.base import ImageryProvider, ImageryProviderError
 from .providers.live import LiveImageryProvider
 from .providers.stub import StubImageryProvider
 from . import service
+from .telemetry import setup_telemetry
 
 API_VERSION = "1.0.0"
 
@@ -46,6 +47,8 @@ def create_app(
     app = FastAPI(title="crop-ml", version=API_VERSION)
     app.state.settings = settings
     app.state.provider = provider
+    # OpenTelemetry: no-op-safe (never fatal, collector may be absent).
+    app.state.otel_shutdown = setup_telemetry(app, service_name="crop-ml")
 
     @app.exception_handler(ImageryProviderError)
     async def _provider_error(_: Request, exc: ImageryProviderError) -> JSONResponse:

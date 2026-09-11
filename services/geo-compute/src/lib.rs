@@ -12,3 +12,4 @@ pub mod geo;
 pub mod h3ops;
 pub mod handlers;
 pub mod stub;
+pub mod telemetry;

@@ -23,6 +23,38 @@ routes:
       # Placeholder key-auth for machine consumers of the gateway. The app
       # keeps its own OIDC/RBAC — this key only gates gateway passage.
       key-auth: {}
+      # Distributed tracing at the edge (stage 25). Spans are exported over
+      # OTLP/HTTP to the platform hub collector (otel-collector:4318, config
+      # in infra/observability/otel-collector-config.yaml) and forwarded to
+      # SigNoz. sampler.fraction 1.0 is for local dev — drop it (e.g. 0.1)
+      # in production.
+      opentelemetry:
+        sampler:
+          name: trace_id_ratio
+          options:
+            fraction: 1.0
+        collector:
+          address: otel-collector:4318
+          request_timeout: 3
+        batch_span_processor:
+          drop_on_queue_full: true
+          max_queue_size: 1024
+          batch_timeout: 2
+          inactive_timeout: 1
+          max_export_batch_size: 16
+        # Resource attributes stamped on every gateway span. tenant.id is a
+        # STATIC placeholder here: APISIX (standalone yaml mode) has no
+        # per-request tenant resolution. The authoritative tenant.id is
+        # stamped in-app by the TenantAttributionInterceptor (stage 25.1);
+        # a custom APISIX plugin can overwrite this per request from a
+        # header/claim later without touching the collector.
+        resource_attributes:
+          service.name: agric-apisix
+          deployment.environment: local-dev
+          tenant.id: unknown
+      # Prometheus metrics for the gateway (scraped by the hub collector,
+      # job `apisix` -> apisix:9091/apisix/prometheus/metrics).
+      prometheus: {}
   - id: agric-web
     uri: /*
     name: agric-web

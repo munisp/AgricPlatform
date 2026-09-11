@@ -1,0 +1,317 @@
+# AgricPlatform — hub OpenTelemetry Collector configuration (stage 25 / wave W4).
+#
+# One collector is the single telemetry hub for the platform:
+#   apps / keycloak / apisix / dapr / trino  --OTLP-->  otel-collector (this file)
+#   postgres / redis / redpanda / <scrape targets>  --pull-->  otel-collector
+#   otel-collector  --OTLP-->  signoz-otel-collector (SigNoz: alerts+UI)
+#   otel-collector  --/metrics :9464-->  existing Prometheus (pull, unchanged)
+#
+# Run it with the contrib distribution (needs postgresql/redis/kafkametrics/
+# filelog receivers):
+#   image: otel/opentelemetry-collector-contrib:0.113.0   (pinned, see README)
+#
+# Every scrape target below matches a profile-gated service in
+# infra/docker-compose.yml; targets for services that are not running simply
+# show up as `up == 0` in the collector's own scrape metrics — they do not
+# break the collector. Adjust hostnames if the compose service names change.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  # pprof is useful for collector debugging but is intentionally commented
+  # out for production builds — enable locally only:
+  # pprof:
+  #   endpoint: 0.0.0.0:1777
+  # zpages is deliberately omitted entirely (prod guidance: off — it exposes
+  # in-memory span data over an unauthenticated HTTP endpoint).
+
+receivers:
+  # ------------------------------------------------------------------
+  # OTLP ingress — every instrumented workload points here:
+  #   api/worker (OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317)
+  #   keycloak (KC_TRACING_ENDPOINT=http://otel-collector:4317)
+  #   apisix opentelemetry plugin (OTLP HTTP -> http://otel-collector:4318)
+  #   dapr sidecars, trino coordinator, python/go/rust sidecars
+  # ------------------------------------------------------------------
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Postgres (agric-postgres in compose). Uses the same dev credentials as
+  # infra/docker-compose.yml; override via env in real environments.
+  postgresql:
+    endpoint: postgres:5432
+    transport: tcp
+    username: ${env:POSTGRES_USER}
+    password: ${env:POSTGRES_PASSWORD}
+    databases:
+      - agric_platform
+    collection_interval: 30s
+    tls:
+      insecure: true # local compose; set proper TLS config in production
+
+  # Redis (agric-redis in compose).
+  redis:
+    endpoint: redis:6379
+    collection_interval: 30s
+    # password: ${env:REDIS_PASSWORD}  # compose dev redis has no password
+
+  # Redpanda is Kafka-protocol compatible (agric-redpanda:9092), so the
+  # kafkametrics receiver works unchanged.
+  kafkametrics:
+    brokers:
+      - redpanda:9092
+    protocol_version: 2.5.2 # sarama client protocol; safe for Redpanda
+    scrapers:
+      - brokers
+      - topics
+      - consumers
+    collection_interval: 30s
+    metadata_refresh_interval: 1m
+
+  # Pull-style scrapes for everything that already exposes Prometheus text
+  # (or can with the one-line config changes in ./components/). Targets are
+  # compose service DNS names; most of these services are profile-gated, so
+  # absent targets are expected in minimal profiles.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          scrape_interval: 30s
+          static_configs:
+            - targets: [otel-collector:8888] # collector's own internal metrics
+
+        - job_name: temporal
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [temporal:8000]
+          # REQUIRES the integrator (W3) to add to the temporal service env:
+          #   PROMETHEUS_ENDPOINT=0.0.0.0:8000
+          # temporalio/auto-setup only binds the prometheus endpoint when
+          # that env var is set (see components/temporal.md).
+
+        - job_name: permify
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [permify:3476]
+          # Permify serves /metrics on its REST port when observability is
+          # enabled (see components/permify.md).
+
+        - job_name: trino
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [trino:8080]
+          # PARTIAL: stock trinodb/trino has no /metrics endpoint. This job
+          # only yields data once the prometheus event listener (or a JMX
+          # exporter sidecar) is added — see components/trino.md.
+
+        - job_name: minio
+          scrape_interval: 30s
+          metrics_path: /minio/v2/metrics/cluster
+          static_configs:
+            - targets: [minio:9000]
+          # Public scrape (no bearer) requires MINIO_PROMETHEUS_AUTH_TYPE=public
+          # on the minio service — see components/minio.md. Alternatively
+          # generate a bearer token with `mc admin prometheus generate` and
+          # add an authorization block here (never inline real tokens).
+
+        - job_name: openappsec
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [openappsec-agent:8002]
+          # UNVERIFIED: the open-appsec nano-agent prometheus port (8002) is
+          # the documented default in open-appsec deployment manifests but was
+          # not verifiable against the pinned ghcr.io/openappsec/agent:latest
+          # image in this wave — confirm before relying on it (components/
+          # openappsec.md). Log-level coverage works regardless via filelog.
+
+        - job_name: apisix
+          scrape_interval: 15s
+          metrics_path: /apisix/prometheus/metrics
+          static_configs:
+            - targets: [apisix:9091]
+          # Requires the prometheus plugin enabled in infra/apisix/apisix.yaml
+          # and plugin_attr export_addr in infra/apisix/config.yaml (both done
+          # in this wave).
+
+        - job_name: event-gw
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [event-gw:8090]
+          # Go event gateway already exposes plaintext /metrics
+          # (services/event-gw/internal/gateway/server.go).
+
+        - job_name: geo-compute
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [geo-compute:8200]
+          # Requires W5's Rust metrics layer; absent until that lands
+          # (components/polyglot-services.md).
+
+        - job_name: mojaloop
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            # Mojaloop core services expose prometheus /metrics on their ops
+            # ports. Adjust names/ports to whatever W3 lands in compose
+            # (account-lookup-service, quoting-service, ml-api-adapter).
+            - targets:
+                - account-lookup-service:4002
+                - quoting-service:3002
+                - ml-api-adapter:3000
+          # UNVERIFIED placeholders — update after W3's mojaloop services are
+          # named. The stub/simulator driver has no server to scrape.
+
+        - job_name: fluvio-sc
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: [fluvio-sc:30010]
+          # PARTIAL/UNVERIFIED: Fluvio's streaming controller metrics support
+          # is limited; 30010 is the conventional SC metrics port in helm
+          # manifests. Confirm against W3's Fluvio deployment; fluvio SPU
+          # coverage is best-effort.
+
+  # open-appsec nano-agent + nginx-attachment logs. REQUIRES the integrator
+  # to mount the compose `appsec-logs` volume read-only into the collector
+  # container (snippet in README). If the volume is absent the receiver
+  # simply finds no files — it does not fail the collector.
+  filelog/openappsec:
+    include:
+      - /var/log/openappsec/nano_agent/*.log
+      - /var/log/openappsec/nginx/*.log
+    start_at: end
+    operators:
+      - type: regex_parser
+        regex: '^(?P<time>\S+)'
+        timestamp:
+          parse_from: attributes.time
+          layout_type: strptime
+          layout: '%Y-%m-%dT%H:%M:%S'
+    attributes:
+      log.source: openappsec
+
+processors:
+  # First processor in every pipeline: hard cap on collector memory.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  # Stamp the deployment environment on all telemetry flowing through the
+  # hub (dev default; set DEPLOYMENT_ENVIRONMENT in the compose snippet).
+  attributes/environment:
+    actions:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: insert
+
+  # Platform-wide resource identity.
+  resource/platform:
+    attributes:
+      - key: service.namespace
+        value: agric-platform
+        action: upsert
+
+  # Drop noisy health/readiness probe spans so they never reach SigNoz.
+  # Covers the API health routes, sidecar /healthz /readyz, and APISIX edge
+  # probes. This is an EXAMPLE — extend the expression as new probe paths
+  # appear.
+  filter/healthchecks:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["url.path"] == "/api/v1/health"'
+        - 'attributes["url.path"] == "/api/v1/health/ready"'
+        - 'attributes["http.target"] == "/healthz"'
+        - 'attributes["http.target"] == "/readyz"'
+        - 'attributes["url.path"] == "/healthz"'
+        - 'attributes["url.path"] == "/readyz"'
+
+  # TENANT EXEMPLAR (optional): group metrics streams by tenant.id so the
+  # prometheus exporter emits per-tenant series (tenant_id label after
+  # resource_to_telemetry_conversion). WARNING: tenant.id is a high-cardinality
+  # attribute — only enable the dedicated metrics/tenant pipeline below if the
+  # tenant count is bounded (pilot/co-op scale), otherwise rely on SigNoz
+  # query-time grouping instead of series-level grouping.
+  groupbyattrs/tenant:
+    keys:
+      - tenant.id
+
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+    send_batch_max_size: 10000
+
+exporters:
+  # Forward everything to the SigNoz collector (alerts, dashboards, logs UI).
+  otlp/signoz:
+    endpoint: signoz-otel-collector:4317
+    tls:
+      insecure: true # in-cluster plaintext; enable TLS for cross-cluster
+
+  # Re-expose all hub metrics in Prometheus text format so the EXISTING
+  # Prometheus deployment keeps working (new scrape job added to
+  # prometheus.yml in this wave: otel-collector:9464).
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true # resource attrs (service.name, tenant.id, ...) -> labels
+    enable_open_metrics: true
+
+  # Quiet by default: warn level only. `loglevel` is deprecated in favour of
+  # `verbosity` in newer collector releases but remains accepted; use
+  # verbosity: basic/normal/detailed when on >= 0.111 builds that reject it.
+  logging:
+    loglevel: warn
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      # collector internal metrics scraped by the prometheus receiver above
+      # (job otel-collector -> :8888/metrics).
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - attributes/environment
+        - resource/platform
+        - filter/healthchecks
+        - batch
+      exporters: [otlp/signoz, logging]
+    metrics:
+      receivers: [otlp, postgresql, redis, kafkametrics, prometheus]
+      processors:
+        - memory_limiter
+        - attributes/environment
+        - resource/platform
+        - batch
+      exporters: [otlp/signoz, prometheus, logging]
+    logs:
+      receivers: [otlp, filelog/openappsec]
+      processors:
+        - memory_limiter
+        - attributes/environment
+        - resource/platform
+        - batch
+      exporters: [otlp/signoz, logging]
+    # OPTIONAL per-tenant series (high-cardinality — see groupbyattrs/tenant
+    # warning above). Uncomment ONLY for bounded tenant counts:
+    # metrics/tenant:
+    #   receivers: [otlp]
+    #   processors: [memory_limiter, groupbyattrs/tenant, batch]
+    #   exporters: [prometheus]

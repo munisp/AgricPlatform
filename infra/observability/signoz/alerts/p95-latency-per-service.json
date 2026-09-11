@@ -1,0 +1,39 @@
+{
+  "alert": "agric-service-p95-latency",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_request_duration_seconds_bucket{job=~\".*\"}[5m])))",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 2.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "api/sidecars",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "p95 latency above 2s for a service (5m)",
+    "description": "Per-service p95 across the platform. Label key: service_name after the collector's resource_to_telemetry_conversion (service.name -> service_name); if a source emits a `service` label instead, rewrite the `by` clause."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "warning",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

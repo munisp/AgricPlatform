@@ -91,6 +91,46 @@ http://localhost:8080 (admin/admin, local only). All drivers default to
 - Failover and failback are manual, runbook-driven procedures; a DR drill is
   required before R3 Launch.
 
+## Optional platform components (stage25)
+
+New wave-integrated components, all opt-in (compose profiles / explicit k8s
+apply) so the reference stack stays unchanged. All images pinned; no
+`latest`; no real secrets anywhere.
+
+| Component | local (compose) | k8s (dev/staging) | production posture |
+|---|---|---|---|
+| Dapr (placement + daprd sidecars for api / event-gw) | `--profile dapr` (+ `apps`/`event-gw`); components in `infra/dapr/components/` (pub/sub → Redpanda, state → Redis), tracing → `otel-collector:4317` via `infra/dapr/config.yaml` | `infra/k8s/dapr/` (Helm chart `dapr/dapr` 1.18.3 + Component/Configuration CRs + injector-annotation patch for the api Deployment) | Sidecar model per workload; samplingRate patched down; components scoped per app-id |
+| Fluvio streaming | `--profile fluvio`; SC `:9003`, SPU `:9010/:9011`, pinned `infinyon/fluvio:v0.18.1`, one-shot `fluvio-sc-setup` registers SPU 5001 | `infra/k8s/fluvio/` (official charts from release assets `fluvio-chart-sys/app.tgz` @ v0.18.1, minimal `values.yaml`) | Multi-SPU, storage classes; metrics scrape TBD per chart version |
+| Mojaloop switch | `--profile mojaloop`; Testing Toolkit pair only (hub emulator for `MOJALOOP_DRIVER=simulator`, TTK API `:4040`, UI `:6060`) | `infra/k8s/mojaloop/` — official Helm chart `mojaloop/mojaloop` **17.2.0** + `example-mojaloop-backend` (full switch: ALS, quoting, transaction-requests, ml-api-adapter, central-ledger + TTK + simulators) | Helm chart + backend chart, per-env values, JWS/TLS from secret store |
+| GeoLibre web GIS | `--profile geolibre`; built from pinned upstream tag v2.8.0, nginx on `:8300` (`infra/geolibre/`) | `infra/k8s/geolibre/deployment.yaml` (Deployment + Service, `/healthz` probes; not in base kustomization) | Static tier behind ingress; image promoted like web/api |
+
+Adapter env contract for the live Mojaloop driver (stub remains the
+default): `MOJALOOP_ALS_ENDPOINT`, `MOJALOOP_QUOTING_ENDPOINT`,
+`MOJALOOP_TRANSFERS_ENDPOINT`, `MOJALOOP_DFSP_ID` — values per path in
+`infra/mojaloop/README.md`; commented examples on the compose `api` service
+and `.env.example`.
+
+Env contract for the other stage25 API drivers (stub remains the default for
+each; selecting a driver without its config fails closed at boot):
+`EVENT_BUS_DRIVER=fluvio` requires `FLUVIO_ENDPOINT` (SC host:port; compose
+profile `fluvio` exposes `localhost:9003`), optional `FLUVIO_TOPIC_PREFIX`
+(default `agric.domain`). The API/temporal-worker OpenTelemetry SDK
+(`apps/api/src/common/telemetry/telemetry.sdk.ts`) is controlled by
+`OTEL_ENABLED` (default enabled; `false` = complete no-op),
+`OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`, the hub
+collector from compose profile `observability`), `OTEL_SERVICE_NAME`
+(default `agric-api`) and `OTEL_TRACES_SAMPLER_ARG` (head-sampling ratio
+0..1). Placeholders in `.env.example`; per-env values come from the env
+secret store.
+
+Observability per component: Dapr has native OTLP tracing (config above) and
+Prometheus metrics on sidecar `:9090`; Fluvio logs via stdout (`RUST_LOG`)
+with Prometheus metrics from SC/SPU (scrape path to confirm against the
+pinned chart); Mojaloop services expose Prometheus `/metrics` on their admin
+ports natively; GeoLibre nginx access logs stream to stdout (filelog
+alternative noted in `infra/geolibre/nginx.conf`). Scrape/merge snippets are
+in the stage25 W3 report for the observability overlay owner.
+
 ## Promotion rules
 
 1. CI builds and tests once; the resulting image tag is the promotion unit.

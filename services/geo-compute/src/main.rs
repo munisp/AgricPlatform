@@ -4,6 +4,7 @@
 
 use geo_compute::config::{Config, Mode};
 use geo_compute::handlers::{self, AppState};
+use geo_compute::telemetry;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -13,6 +14,9 @@ async fn main() {
         eprintln!("[geo-compute] FATAL: {e}");
         std::process::exit(1);
     });
+
+    // OpenTelemetry: no-op-safe (never fatal, collector may be absent).
+    let telemetry_guard = telemetry::init(&config);
 
     match config.mode {
         Mode::Stub => eprintln!(
@@ -38,8 +42,38 @@ async fn main() {
             std::process::exit(1);
         });
     eprintln!("[geo-compute] listening on {addr}");
-    if let Err(e) = axum::serve(listener, app).await {
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    if let Err(e) = server.await {
         eprintln!("[geo-compute] FATAL: server error: {e}");
         std::process::exit(1);
     }
+    // Flush pending spans before exit (bounded: batch processor shutdown has
+    // its own timeout; a dead collector only logs warnings).
+    telemetry_guard.shutdown();
+    eprintln!("[geo-compute] stopped");
+}
+
+/// Graceful shutdown on SIGINT/SIGTERM (falls back to ctrl-c only on
+/// platforms without signal support).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                ctrl_c.await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = term.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await;
 }

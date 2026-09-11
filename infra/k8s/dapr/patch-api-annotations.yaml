@@ -1,0 +1,28 @@
+# OPTIONAL kustomize patch: enable the Dapr sidecar injector for the API
+# Deployment (infra/k8s/api.yaml). Not referenced from kustomization.yaml by
+# default — apply explicitly or wire it into an overlay once Dapr is
+# installed on the cluster (see README.md).
+#
+# These annotations are inert on clusters WITHOUT the Dapr injector (no
+# sidecar appears, deployment unaffected), so they may also be merged into
+# api.yaml directly once Dapr becomes a hard platform dependency.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: agric-platform
+spec:
+  template:
+    metadata:
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "agric-api"
+        dapr.io/app-port: "3001"
+        dapr.io/app-protocol: "http"
+        dapr.io/config: "agric-dapr-config"
+        dapr.io/log-level: "info"
+        # Prometheus scrape of sidecar metrics alongside the app's own
+        # metrics story (observability overlay owns the actual scrape jobs).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"

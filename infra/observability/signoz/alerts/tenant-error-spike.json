@@ -1,0 +1,39 @@
+{
+  "alert": "tenant-error-spike",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "sum by (tenant_id) (rate(http_requests_total{status=~\"5..\"}[5m]))",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 0.5,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "multi-tenant",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "Per-tenant 5xx spike (> 0.5 err/s for one tenant, 5m)",
+    "description": "Label matcher example for per-tenant alerting: tenant.id is stamped in-app by the TenantAttributionInterceptor (stage 25.1) and surfaced as the tenant_id label via the collector's resource_to_telemetry_conversion (and groupbyattrs/tenant when that optional pipeline is enabled). HIGH CARDINALITY \u2014 keep this rule warning-level and rely on SigNoz query-time grouping for exploration."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "warning",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

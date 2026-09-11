@@ -1,0 +1,39 @@
+{
+  "alert": "postgres-connections-high",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "evalWindow": "5m0s",
+  "frequency": "1m0s",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "prom",
+      "panelType": "graph",
+      "promQueries": {
+        "A": {
+          "query": "100 * sum(postgresql_backends) / sum(postgresql_connection_max)",
+          "disabled": false,
+          "legend": ""
+        }
+      }
+    },
+    "op": "1",
+    "target": 80.0,
+    "matchType": "1",
+    "selectedQueryName": "A"
+  },
+  "labels": {
+    "severity": "warning",
+    "component": "postgres",
+    "platform": "agric-platform"
+  },
+  "annotations": {
+    "summary": "Postgres connections above 80% of max (5m)",
+    "description": "From the collector's postgresql receiver (postgresql.backends / postgresql.connection.max; dots become underscores after prometheus normalization). Investigate pool leaks in pg-pool.provider.ts before raising max_connections."
+  },
+  "preferredChannels": [
+    "slack-agric-oncall"
+  ],
+  "severity": "warning",
+  "version": "v4",
+  "source": "stage25-w4 template \u2014 placeholder thresholds; tune before paging"
+}

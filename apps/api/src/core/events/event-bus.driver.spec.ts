@@ -243,3 +243,111 @@ describe('DomainEventsService event-bus integration', () => {
     expect(outbox.markPublished).not.toHaveBeenCalled();
   });
 });
+
+/** Records TelemetryService calls; withSpan executes fn like the real thing. */
+function fakeTelemetry() {
+  return {
+    withSpan: vi.fn((_name: string, _attrs: unknown, fn: () => unknown) => fn()),
+    increment: vi.fn(),
+    record: vi.fn()
+  };
+}
+
+describe('KafkaEventBus telemetry (Stage 25.2)', () => {
+  it('wraps publish in a span with messaging.* attrs and records duration', async () => {
+    const telemetry = fakeTelemetry();
+    const bus = new KafkaEventBus(['localhost:9092'], {
+      producerFactory: () => Promise.resolve(fakeProducer()),
+      telemetry: telemetry as never
+    });
+    await bus.publish(sampleEvent());
+    expect(telemetry.withSpan).toHaveBeenCalledWith(
+      'event-bus.publish',
+      expect.objectContaining({
+        'messaging.system': 'kafka',
+        'messaging.operation.name': 'publish',
+        'messaging.destination.name': 'agric.domain.credit.loan.disbursed',
+        'messaging.event.name': 'credit.loan.disbursed'
+      }),
+      expect.any(Function)
+    );
+    // Event payload (tenant data) must never appear in span attributes.
+    const attrs = telemetry.withSpan.mock.calls[0][1] as Record<string, unknown>;
+    expect(JSON.stringify(attrs)).not.toContain('loan-1');
+    expect(telemetry.record).toHaveBeenCalledWith(
+      'event-bus.publish.duration',
+      expect.any(Number),
+      expect.objectContaining({ 'messaging.system': 'kafka' })
+    );
+  });
+
+  it('counts publish failures and still throws ProviderRequestError', async () => {
+    const telemetry = fakeTelemetry();
+    const bus = new KafkaEventBus(['localhost:9092'], {
+      producerFactory: () =>
+        Promise.resolve(fakeProducer({ send: vi.fn().mockRejectedValue(new Error('down')) })),
+      telemetry: telemetry as never
+    });
+    await expect(bus.publish(sampleEvent())).rejects.toBeInstanceOf(ProviderRequestError);
+    expect(telemetry.increment).toHaveBeenCalledWith(
+      'event-bus.publish.errors',
+      1,
+      expect.objectContaining({ 'messaging.system': 'kafka' })
+    );
+  });
+
+  it('is no-op-safe without an injected TelemetryService (default fallback)', async () => {
+    const bus = new KafkaEventBus(['localhost:9092'], {
+      producerFactory: () => Promise.resolve(fakeProducer())
+    });
+    await expect(bus.publish(sampleEvent())).resolves.toBeUndefined();
+  });
+});
+
+describe('DomainEventsService consumer-handler telemetry (Stage 25.2)', () => {
+  function fakeOutbox() {
+    return {
+      append: vi.fn().mockResolvedValue(undefined),
+      list: vi.fn().mockResolvedValue([]),
+      markPublished: vi.fn().mockResolvedValue(undefined)
+    };
+  }
+
+  it('wraps the listener fan-out in a consumer span and records duration', async () => {
+    const telemetry = fakeTelemetry();
+    const service = new DomainEventsService(fakeOutbox() as never, undefined, telemetry as never);
+    const seen: DomainEvent[] = [];
+    service.on('credit.loan.disbursed', (event) => seen.push(event));
+    const event = service.build('credit.loan.disbursed', { loanId: 'loan-1' });
+    await service.persist(event);
+    expect(seen).toEqual([event]);
+    expect(telemetry.withSpan).toHaveBeenCalledWith(
+      'eventbus.handler',
+      expect.objectContaining({
+        'messaging.operation.name': 'process',
+        'messaging.event.name': 'credit.loan.disbursed'
+      }),
+      expect.any(Function)
+    );
+    expect(telemetry.record).toHaveBeenCalledWith(
+      'eventbus.handler.duration',
+      expect.any(Number),
+      expect.objectContaining({ 'messaging.event.name': 'credit.loan.disbursed' })
+    );
+  });
+
+  it('counts listener failures and preserves throwing-listener semantics', async () => {
+    const telemetry = fakeTelemetry();
+    const service = new DomainEventsService(fakeOutbox() as never, undefined, telemetry as never);
+    service.on('credit.loan.disbursed', () => {
+      throw new Error('listener boom');
+    });
+    const event = service.build('credit.loan.disbursed', { loanId: 'loan-1' });
+    await expect(service.persist(event)).rejects.toThrow('listener boom');
+    expect(telemetry.increment).toHaveBeenCalledWith(
+      'eventbus.handler.failures',
+      1,
+      expect.objectContaining({ 'messaging.event.name': 'credit.loan.disbursed' })
+    );
+  });
+});

@@ -46,6 +46,9 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Default OTLP/HTTP collector endpoint (no-op-safe when absent).
+pub const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4318";
+
 /// Service configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -57,6 +60,14 @@ pub struct Config {
     pub max_points: usize,
     /// Hard cap on cells accepted by `/v1/geo/h3/compact` (422 above).
     pub max_compact_input: usize,
+
+    /// OpenTelemetry: enabled unless OTEL_ENABLED is an explicit negative
+    /// ("false|0|no|off"). A dead collector only logs warnings.
+    pub otel_enabled: bool,
+    /// OTEL_EXPORTER_OTLP_ENDPOINT (OTLP/HTTP base URL).
+    pub otel_endpoint: String,
+    /// OTEL_SERVICE_NAME (service.name resource attribute).
+    pub otel_service_name: String,
 }
 
 impl Default for Config {
@@ -67,6 +78,9 @@ impl Default for Config {
             max_cells: 100_000,
             max_points: 100_000,
             max_compact_input: 1_000_000,
+            otel_enabled: true,
+            otel_endpoint: DEFAULT_OTLP_ENDPOINT.to_string(),
+            otel_service_name: "geo-compute".to_string(),
         }
     }
 }
@@ -100,8 +114,32 @@ impl Config {
         cfg.max_points = parse_usize(&get, "GEOCOMPUTE_MAX_POINTS", cfg.max_points)?;
         cfg.max_compact_input =
             parse_usize(&get, "GEOCOMPUTE_MAX_COMPACT_INPUT", cfg.max_compact_input)?;
+
+        if let Some(raw) = get("OTEL_ENABLED") {
+            let normalized = raw.trim().to_ascii_lowercase();
+            if matches!(normalized.as_str(), "false" | "0" | "no" | "off") {
+                cfg.otel_enabled = false;
+            }
+        }
+        if let Some(endpoint) = non_empty(get("OTEL_EXPORTER_OTLP_ENDPOINT")) {
+            cfg.otel_endpoint = endpoint.trim_end_matches('/').to_string();
+        }
+        if let Some(name) = non_empty(get("OTEL_SERVICE_NAME")) {
+            cfg.otel_service_name = name;
+        }
         Ok(cfg)
     }
+}
+
+fn non_empty(raw: Option<String>) -> Option<String> {
+    raw.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn parse_u16<F>(get: &F, key: &str, default: u16) -> Result<u16, ConfigError>
@@ -171,6 +209,35 @@ mod tests {
         let err = Config::from_lookup(lookup(&[("GEOCOMPUTE_PORT", "99999")]))
             .expect_err("out-of-range port must be rejected");
         assert!(err.0.contains("GEOCOMPUTE_PORT"));
+    }
+
+    #[test]
+    fn otel_defaults_to_enabled_with_localhost_endpoint() {
+        let cfg = Config::from_lookup(|_| None).expect("defaults are valid");
+        assert!(cfg.otel_enabled);
+        assert_eq!(cfg.otel_endpoint, DEFAULT_OTLP_ENDPOINT);
+        assert_eq!(cfg.otel_service_name, "geo-compute");
+    }
+
+    #[test]
+    fn otel_enabled_explicit_negatives_disable() {
+        for value in ["false", "FALSE", "0", "no", "off", " off "] {
+            let cfg = Config::from_lookup(lookup(&[("OTEL_ENABLED", value)]))
+                .expect("valid config");
+            assert!(!cfg.otel_enabled, "OTEL_ENABLED={value:?} must disable");
+        }
+    }
+
+    #[test]
+    fn otel_overrides_are_applied_and_endpoint_trailing_slash_trimmed() {
+        let cfg = Config::from_lookup(lookup(&[
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318/"),
+            ("OTEL_SERVICE_NAME", "geo-test"),
+        ]))
+        .expect("valid config");
+        assert!(cfg.otel_enabled);
+        assert_eq!(cfg.otel_endpoint, "http://collector:4318");
+        assert_eq!(cfg.otel_service_name, "geo-test");
     }
 
     #[test]

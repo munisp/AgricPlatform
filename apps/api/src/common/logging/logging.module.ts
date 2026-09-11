@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
+import { telemetryLogMixin } from '../telemetry/log-correlation.js';
 import {
   genReqId,
   isHealthProbe,
@@ -24,6 +25,9 @@ import {
         genReqId,
         redact: { paths: REDACT_PATHS, censor: REDACT_CENSOR },
         serializers,
+        // Trace/span/tenant correlation fields on every log line (§A.2); a
+        // no-op when the OTel SDK is disabled or no span is active.
+        mixin: telemetryLogMixin,
         autoLogging: { ignore: isHealthProbe }
       }
     })

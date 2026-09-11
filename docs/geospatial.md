@@ -99,10 +99,79 @@ by farm count (`apps/web/components/geo-cluster-map.tsx`). Rationale:
 - SVG output is deterministic (fixed viewBox + equirectangular projection),
   so tests assert exact geometry.
 
-**MapLibre upgrade path** (if a richer basemap is wanted later): add
-`maplibre-gl`, point a GeoJSON source at `GET /geo/farms/clusters` joined
-client-side with `GET /geo/cells/:h3` boundaries (both already exist), and
-configure a free tile source (e.g. OpenStreetMap raster tiles
-`https://tile.openstreetmap.org/{z}/{x}/{y}.png`, attribution required)
-via a `NEXT_PUBLIC_MAP_TILES_URL` env var documented in `.env.example`.
-The endpoints and data shapes do not change.
+**MapLibre upgrade path** (if a richer basemap is wanted later): point a
+GeoJSON source at `GET /geo/farms/clusters` joined client-side with
+`GET /geo/cells/:h3` boundaries (both already exist). `maplibre-gl` and the
+`NEXT_PUBLIC_MAP_TILES` tile-source env var (OSM default, `.env.example`)
+landed with the `/map` portal — see the GeoPortal section below. The
+endpoints and data shapes do not change.
+
+## Farm-plot map portal (`/map`) — GeoLibre stack (wave W6)
+
+The web app ships a production map portal at **`/map`**
+(`apps/web/components/geoportal/` + `apps/web/app/map/`), built on the
+[GeoLibre](https://github.com/opengeos/GeoLibre) client-side GIS stack:
+React + MapLibre GL + DuckDB-WASM.
+
+**Package decision (reimplementation, not npm dependency).** The portal is
+built on GeoLibre's stack/design, NOT the vendored npm packages, for
+React-dedupe and bundle-budget reasons (details below). GeoLibre ships
+primarily as an application. It does publish npm packages
+(`@geolibre/core`, `@geolibre/map`, `@geolibre/embed`), but they are not
+consumable here: `@geolibre/map@2.8.0` lists `react`/`react-dom@^19.2.8` in
+**dependencies** (not only peerDependencies), which would install a second,
+mismatched React copy beside the platform's pinned `react@^19.1.0` and
+break hooks, and it drags in Cesium, geotiff, pmtiles and the full turf
+suite — none of which a plot portal needs and all of which the 250 KB
+shell-bundle budget forbids. `@geolibre/core` is a Zustand store, a state
+library this codebase deliberately avoids. The portal therefore
+re-implements the GeoLibre component stack directly on `maplibre-gl` +
+`@duckdb/duckdb-wasm` (the exact upstream stack), with header comments in
+each `components/geoportal/` module crediting GeoLibre as the design and
+component base. The module layout (`geoportal/` container, map view,
+inspect/detail panel, filter bar, `spatial-query.ts` engine) mirrors the
+upstream app's conventions so the container-deployed GeoLibre instance and
+this portal stay structurally aligned.
+
+**Data sources (all live; the portal fails closed, no fixtures):**
+
+- Farm plots — `GET /farms/plots` (walked `boundaryGeojson` polygons;
+  plots without a boundary render as centroid markers, never fabricated).
+- Carbon MRV plots — `GET /vsla-carbon/plots`; the stored `h3Res9` index is
+  expanded to a polygon client-side via `h3-js` `cellToBoundary` (the same
+  derivation the API uses in `GET /geo/cells/:h3`).
+- State boundaries — pinned public GeoJSON at
+  `apps/web/public/geo/nigeria-states.geojson` (geoBoundaries gbOpen NGA
+  ADM1, GRID3 source, CC BY 4.0, pinned commit `9469f09`, coordinates
+  rounded to 4 dp; provenance in the file's `metadata` block). Also used
+  client-side (ray casting, same algorithm as `geo.service contains()`) to
+  tag carbon plots with a state so the state filter covers both sources.
+- LGA/ward/custom boundaries — `GET /geo/boundaries` (admin-registered;
+  drawn only when real geometry is returned).
+- NDVI — provider badge from `GET /vsla-carbon/ndvi/status`; per-plot NDVI
+  evidence shown in the detail panel when present.
+
+**Client-side spatial query.** "Draw query box" → two clicks on the map →
+`spatial-query.ts` loads the plotted rows into an in-browser DuckDB-WASM
+table and selects plot ids with SQL (`long/lat BETWEEN …` — no spatial
+extension download). The engine (~40 MB WASM) loads on demand only, from
+`NEXT_PUBLIC_DUCKDB_CDN` (jsDelivr default; self-host the four dist files
+to stay first-party). The worker is fetched as text and instantiated from a
+`blob:` URL, so CSP needs only `worker-src blob:` + `connect-src <cdn>` —
+no `script-src` relaxation. Engine failure shows an honest error panel with
+an explicit built-in-filter fallback (`queryPlotIdsInBboxPure`, the tested
+pure mirror of the SQL).
+
+**Configuration.**
+
+- `NEXT_PUBLIC_MAP_TILES` — raster tile URL template for the basemap
+  (default `https://tile.openstreetmap.org/{z}/{x}/{y}.png`, OSM
+  attribution rendered on the map). No hardcoded API keys anywhere; pick a
+  keyless source or self-host. The tile origin is added to CSP
+  `img-src`/`connect-src` at build time (`next.config.ts`).
+- `NEXT_PUBLIC_DUCKDB_CDN` — DuckDB-WASM asset origin (see above).
+
+The map is loaded with `next/dynamic { ssr: false }`, so maplibre-gl never
+enters the initial bundle (the `check:bundle` gate is unaffected) and the
+page renders a skeleton until WebGL is ready; devices without WebGL get an
+honest error panel and the plot lists remain available.
