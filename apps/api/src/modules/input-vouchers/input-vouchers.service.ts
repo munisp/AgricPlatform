@@ -937,6 +937,95 @@ export class InputVouchersService {
     return updated;
   }
 
+  /**
+   * Crash-resume for a REDEEMING voucher whose claim outlived the stuck TTL
+   * (WP-G12 sweeper path; also safe for admin/manual invocation):
+   *   - redemption row exists → the posting committed; settle the float
+   *     reservation (marker-keyed, replay-no-op) and finalize
+   *     REDEEMING→REDEEMED, exactly like the redeem tail. The finalize CAS
+   *     loses against a concurrent redeem retry — that retry already owns
+   *     finalization, so the loser surfaces 409 and nothing double-posts.
+   *   - no redemption row → roll the claim back REDEEMING→ISSUED ONLY when
+   *     the ledger PROVES no redemption entry exists under the operation key
+   *     (stage 24, audit A4-1/A1-3); when the entry exists or the probe is
+   *     inconclusive the claim stays REDEEMING for the next pass and the
+   *     caller surfaces a 409 — never a re-opened voucher on top of a
+   *     committed posting.
+   */
+  async recoverStuckRedemption(id: string, actorId: string): Promise<InputVoucherRecord> {
+    const voucher = await this.getVoucher(id);
+    if (voucher.status !== 'REDEEMING') {
+      throw new ConflictException(
+        `Only REDEEMING vouchers need stuck-claim recovery (status is ${voucher.status})`
+      );
+    }
+    const redemptionKey = `input-voucher-redemption:${voucher.id}`;
+    const redemption =
+      (await this.redemptions.findByIdempotencyKey(redemptionKey)) ??
+      (await this.probeRedemptionRow(redemptionKey));
+    if (redemption) {
+      // Resume the redeem tail: settle the reservation BEFORE the finalize
+      // CAS so a REDEEMED voucher always implies its reservation settled.
+      await this.funding.settleReserved(
+        voucher.programmeId,
+        voucher.amountKobo,
+        `input-voucher-funding-settle:${voucher.id}`,
+        actorId
+      );
+      const redeemed = await this.vouchers.updateExpected(
+        id,
+        {
+          status: 'REDEEMED',
+          redeemedAt: new Date().toISOString(),
+          ledgerEntryId: redemption.ledgerEntryId
+        },
+        { status: 'REDEEMING' }
+      );
+      await this.events.publish(
+        'inputvouchers.voucher.redeemed',
+        {
+          voucherId: voucher.id,
+          programmeId: voucher.programmeId,
+          farmerId: voucher.farmerId,
+          supplierId: redemption.supplierId,
+          amountKobo: voucher.amountKobo,
+          resumedBy: 'sweeper'
+        },
+        actorId
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'inputvouchers.voucher.redemption_resumed',
+        entityType: 'input_vouchers_vouchers',
+        entityId: id,
+        metadata: { programmeId: voucher.programmeId, amountKobo: voucher.amountKobo }
+      });
+      return redeemed;
+    }
+    const probe = await this.probeLedgerEntry(redemptionKey);
+    if (probe.state === 'absent') {
+      // Proven: nothing posted under this key — safe to re-open the voucher;
+      // the normal expire/redeem paths take it from here.
+      const rolledBack = await this.vouchers.updateExpected(
+        id,
+        { status: 'ISSUED' },
+        { status: 'REDEEMING' }
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'inputvouchers.voucher.redemption_rolled_back',
+        entityType: 'input_vouchers_vouchers',
+        entityId: id,
+        metadata: { programmeId: voucher.programmeId, reason: 'stuck_claim_unposted' }
+      });
+      return rolledBack;
+    }
+    throw new ConflictException(
+      `Voucher '${id}' redemption posting state is uncertain — the claim stays REDEEMING ` +
+        'for a safe resume; retry the recovery'
+    );
+  }
+
   /** ISSUED→EXPIRING→EXPIRED for a voucher past its expiry (admin-triggered sweep step). */
   async expireVoucher(id: string, actorId: string): Promise<InputVoucherRecord> {
     const voucher = await this.getVoucher(id);
