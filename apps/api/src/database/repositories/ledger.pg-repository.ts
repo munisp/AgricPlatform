@@ -125,7 +125,7 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
 
   private async findOneWhere(where: string, params: unknown[]): Promise<LedgerJournalEntry | undefined> {
     const result = await this.pool.query(`${TRANSFER_SELECT} WHERE ${where} LIMIT 1`, params);
-    const [entry] = await this.withPostings(result.rows as TransferRow);
+    const [entry] = await this.withPostings(result.rows as TransferRow[]);
     return entry;
   }
 
