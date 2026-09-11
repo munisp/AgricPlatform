@@ -151,7 +151,7 @@ describe('OpenSearchSearchProvider query path', () => {
           size: 5,
           query: {
             bool: {
-              must: [{ multi_match: { query, fields: ['title^2', 'summary'] } }],
+              must: [{ multi_match: { query: 'maize', fields: ['title^2', 'summary'] } }],
               filter: [{ terms: { type: ['course'] } }, { term: { state: 'Kano' } }]
             }
           }
