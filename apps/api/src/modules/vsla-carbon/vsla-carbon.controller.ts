@@ -212,7 +212,8 @@ export class VslaCarbonController {
   @UseGuards(RolesGuard)
   @Roles('chapter_lead', 'admin')
   @ApiOperation({
-    summary: 'Issue a small internal loan from the pool (simple interest; pool solvency guarded).'
+    summary:
+      'Issue a small internal loan from the pool (simple interest; pool solvency guarded). Mandatory idempotencyKey: same-key retries replay, same key + different payload 409s.'
   })
   async issueLoan(
     @Param('id') id: string,
