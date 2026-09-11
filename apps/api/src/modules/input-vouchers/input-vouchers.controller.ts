@@ -88,6 +88,7 @@ class AllocateVoucherDto {
   amountKobo!: number;
 
   @IsString()
+  @IsNotEmpty()
   idempotencyKey!: string;
 
   @IsOptional()
