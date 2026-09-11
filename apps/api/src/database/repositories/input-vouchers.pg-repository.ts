@@ -312,6 +312,10 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
       params.push(criteria.programmeId);
       where.push(`programme_id = $${params.length}`);
     }
+    if (criteria.beneficiaryId) {
+      params.push(criteria.beneficiaryId);
+      where.push(`beneficiary_id = $${params.length}`);
+    }
     if (criteria.farmerId) {
       params.push(criteria.farmerId);
       where.push(`farmer_id = $${params.length}`);
