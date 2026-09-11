@@ -193,6 +193,71 @@ async function claimExistingPayoutAttempt(
 }
 
 /**
+ * Result of the pre-drive lease revalidation (WP-G12).
+ * `held` is true only for the caller still holding the claim; `attempt` is
+ * the refreshed row (extended lease) when held, otherwise the adopted row.
+ */
+export interface PayoutClaimRevalidation {
+  attempt: EscrowPayout;
+  held: boolean;
+}
+
+/**
+ * Pre-drive lease revalidation (WP-G12 — payout lease-expiry double-drive
+ * fix). A claimant that stalled BETWEEN winning the claim and invoking the
+ * payout driver for longer than PAYOUT_CLAIM_LEASE_MS is indistinguishable
+ * from a crashed claimant: a concurrent retry may legitimately re-claim the
+ * expired lease and drive the payout itself. Without a freshness check the
+ * stale claimant would wake up and invoke the driver a SECOND time for the
+ * same attempt (a double disbursement the moment a non-idempotent PSSP
+ * client lands — migration 052 closed the claim race, this closes the
+ * drive race).
+ *
+ * The drive path must therefore CAS-claim the lease immediately BEFORE
+ * invoking the driver: the guarded write matches BOTH 'in_progress' and this
+ * claimant's lease start and extends the lease (fresh claimedAt), so
+ *   - a claimant whose lease was re-claimed by a twin (claimedAt moved) or
+ *     whose attempt already finalized loses the CAS and NEVER drives;
+ *   - a loser that re-reads a 'succeeded' twin adopts it (held=false) so the
+ *     escrow transition can proceed to its terminal state;
+ *   - any other loss throws 409 — the caller backs off and the retry
+ *     converges through the deterministic idempotency key.
+ * The finalize CAS (finalizePayoutAttempt) still pins the claim, so a drive
+ * that itself outlives the extended lease can never be recorded twice; the
+ * provider idempotency key remains the last line of defence for that
+ * residual in-flight window.
+ */
+export async function revalidatePayoutClaimLease(
+  repository: EscrowPayoutRepository,
+  claim: EscrowPayout,
+  now: Date = new Date()
+): Promise<PayoutClaimRevalidation> {
+  const nowIso = now.toISOString();
+  try {
+    const refreshed = await repository.updateExpected(
+      claim.id,
+      { claimedAt: nowIso, updatedAt: nowIso },
+      { status: 'in_progress', claimedAt: claim.claimedAt }
+    );
+    return { attempt: refreshed, held: true };
+  } catch (error) {
+    if (!(error instanceof ConflictException)) {
+      throw error;
+    }
+    const current = await repository.findById(claim.id);
+    if (current?.status === 'succeeded') {
+      // The twin's drive landed while this claimant was stalled: adopt the
+      // win and never invoke the driver a second time.
+      return { attempt: current, held: false };
+    }
+    throw new ConflictException(
+      `Payout attempt '${claim.idempotencyKey}' is no longer held by this claimant ` +
+        '(lease re-claimed or attempt finalized); backing off without driving'
+    );
+  }
+}
+
+/**
  * Finalizes a held claim (Stage 24, audit A4-3): the guarded write matches
  * on BOTH the 'in_progress' status and this claimant's lease start, so
  *   - only the claim holder can finalize;
