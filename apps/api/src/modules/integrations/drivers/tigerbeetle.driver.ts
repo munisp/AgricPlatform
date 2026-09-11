@@ -13,6 +13,11 @@
  * floats.
  */
 import { TelemetryService } from '../../../common/telemetry/telemetry.service.js';
+import {
+  circuitBreakerState,
+  DriverHealthTracker,
+  type DriverHealthFields
+} from './driver-health.js';
 import { ProviderConfigError, ProviderRequestError } from './http.js';
 
 /** DI token for the selected ledger-backend driver. */
@@ -46,7 +51,7 @@ export interface LedgerTransferResult {
   detail?: string;
 }
 
-export interface LedgerBackendStatus {
+export interface LedgerBackendStatus extends DriverHealthFields {
   configured: boolean;
   healthy: boolean;
   detail: string;
@@ -94,6 +99,8 @@ export class StubLedgerBackendDriver implements LedgerBackendDriver {
     return Promise.resolve({
       configured: true,
       healthy: true,
+      lastErrorClass: null,
+      lastSuccessAt: null,
       detail:
         'Stub driver: deterministic simulated transfers; Postgres ledger is the system of record. ' +
         'TigerBeetle backend is legal-gated OFF unless LEDGER_DRIVER=tigerbeetle is set.'
@@ -142,6 +149,7 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
   private client?: TigerBeetleClientLike;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly tracker = new DriverHealthTracker();
   private readonly telemetry: TelemetryService;
 
   constructor(
@@ -210,7 +218,7 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
               detail: `TigerBeetle rejected the transfer: ${JSON.stringify(errors[0])}`
             };
           } catch (error) {
-            this.recordFailure();
+            this.recordFailure(error);
             if (error instanceof ProviderRequestError) {
               throw error;
             }
@@ -234,6 +242,13 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
     return Promise.resolve({
       configured: true,
       healthy: this.client !== undefined && !this.circuitOpen,
+      circuitBreaker: circuitBreakerState(
+        this.consecutiveFailures,
+        LEDGER_CIRCUIT_THRESHOLD,
+        this.circuitOpenUntil
+      ),
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
       detail:
         `TigerBeetle driver selected (cluster ${this.options.clusterId}, replicas ${this.options.addresses.join(', ')}). ` +
         'PROOF-OF-PORT: not wired into LedgerService money movement (legal gate); connects on first transfer.'
@@ -273,10 +288,12 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
   private recordSuccess(): void {
     this.consecutiveFailures = 0;
     this.circuitOpenUntil = 0;
+    this.tracker.recordSuccess();
   }
 
-  private recordFailure(): void {
+  private recordFailure(error: unknown): void {
     this.consecutiveFailures += 1;
+    this.tracker.recordError(error);
     if (this.consecutiveFailures >= LEDGER_CIRCUIT_THRESHOLD) {
       this.circuitOpenUntil = Date.now() + LEDGER_CIRCUIT_COOLDOWN_MS;
     }
