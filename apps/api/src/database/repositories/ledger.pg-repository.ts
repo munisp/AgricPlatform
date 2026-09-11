@@ -14,7 +14,8 @@ import type { CreditScoreRepository } from './credit-score.repository.js';
 import type {
   LedgerAccountRepository,
   LedgerEntryCriteria,
-  LedgerEntryRepository
+  LedgerEntryRepository,
+  LedgerPostingTx
 } from './ledger.repository.js';
 
 /**
@@ -169,89 +170,106 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      // Lock the solvency-protected account rows up front (sorted, to keep a
-      // single global lock order) so concurrent postings touching them
-      // serialise and the balance check below cannot race.
-      for (const accountCode of [...(requireSolventAccounts ?? [])].sort()) {
-        await client.query(
-          `SELECT id FROM finance.ledger_accounts WHERE code = $1 FOR UPDATE`,
-          [accountCode]
-        );
-      }
-      try {
-        await client.query(
-          `INSERT INTO finance.ledger_transfers
-             (id, idempotency_key, reference_type, reference_id, description, reverses_transfer_id, posted_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [
-            entry.id,
-            entry.idempotencyKey,
-            entry.referenceType ?? null,
-            entry.referenceId ?? null,
-            entry.description ?? null,
-            entry.reversesEntryId ?? null,
-            entry.postedAt
-          ]
-        );
-      } catch (error) {
-        mapPgError(error);
-      }
-      for (const posting of entry.postings) {
-        const account = await client.query(
-          `SELECT id FROM finance.ledger_accounts WHERE code = $1`,
-          [posting.accountCode]
-        );
-        if (!account.rows[0]) {
-          throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
-        }
-        await client.query(
-          `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
-           VALUES ($1, $2, $3, $4)`,
-          [entry.id, account.rows[0].id, posting.direction, posting.amountKobo]
-        );
-      }
-      // Solvency guard (funds-integrity wave): protected accounts must stay
-      // non-negative AFTER this entry. The balance is computed inside the
-      // posting transaction with the account rows locked (above), so an
-      // underfunded disbursement rolls the whole entry back atomically.
-      for (const accountCode of requireSolventAccounts ?? []) {
-        const balance = await client.query(
-          `SELECT
-             COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
-             COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
-           FROM finance.ledger_entries e
-           JOIN finance.ledger_accounts a ON a.id = e.account_id
-           WHERE a.code = $1`,
-          [accountCode]
-        );
-        const balanceKobo = num(balance.rows[0]?.debits ?? 0) - num(balance.rows[0]?.credits ?? 0);
-        if (balanceKobo < 0) {
-          throw new BadRequestException(
-            `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
-          );
-        }
-      }
-      if (outboxEvent) {
-        await client.query(
-          `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            outboxEvent.id,
-            outboxEvent.name,
-            JSON.stringify(outboxEvent.payload ?? {}),
-            outboxEvent.actorId ?? null,
-            outboxEvent.occurredAt
-          ]
-        );
-      }
+      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent);
       await client.query('COMMIT');
-      return entry;
+      return posted;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * The posting body of `postEntry` on a CALLER-OWNED transaction client
+   * (WP-G1 VSLA fold): no BEGIN/COMMIT here — the caller's transaction
+   * decides commit/rollback, so a wider logical money movement (e.g. the
+   * VSLA repayment claim + this posting + the repayment row) commits or
+   * rolls back as ONE unit. Lock order, solvency guard and outbox insert
+   * are identical to the standalone path.
+   */
+  async postEntryInTx(
+    tx: LedgerPostingTx,
+    entry: LedgerJournalEntry,
+    requireSolventAccounts?: readonly string[],
+    outboxEvent?: DomainEvent
+  ): Promise<LedgerJournalEntry> {
+    // Lock the solvency-protected account rows up front (sorted, to keep a
+    // single global lock order) so concurrent postings touching them
+    // serialise and the balance check below cannot race.
+    for (const accountCode of [...(requireSolventAccounts ?? [])].sort()) {
+      await tx.query(`SELECT id FROM finance.ledger_accounts WHERE code = $1 FOR UPDATE`, [
+        accountCode
+      ]);
+    }
+    try {
+      await tx.query(
+        `INSERT INTO finance.ledger_transfers
+           (id, idempotency_key, reference_type, reference_id, description, reverses_transfer_id, posted_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          entry.id,
+          entry.idempotencyKey,
+          entry.referenceType ?? null,
+          entry.referenceId ?? null,
+          entry.description ?? null,
+          entry.reversesEntryId ?? null,
+          entry.postedAt
+        ]
+      );
+    } catch (error) {
+      mapPgError(error);
+    }
+    for (const posting of entry.postings) {
+      const account = await tx.query(`SELECT id FROM finance.ledger_accounts WHERE code = $1`, [
+        posting.accountCode
+      ]);
+      if (!account.rows[0]) {
+        throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+      }
+      await tx.query(
+        `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
+         VALUES ($1, $2, $3, $4)`,
+        [entry.id, (account.rows[0] as { id: string }).id, posting.direction, posting.amountKobo]
+      );
+    }
+    // Solvency guard (funds-integrity wave): protected accounts must stay
+    // non-negative AFTER this entry. The balance is computed inside the
+    // posting transaction with the account rows locked (above), so an
+    // underfunded disbursement rolls the whole entry back atomically.
+    for (const accountCode of requireSolventAccounts ?? []) {
+      const balance = await tx.query(
+        `SELECT
+           COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
+           COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
+         FROM finance.ledger_entries e
+         JOIN finance.ledger_accounts a ON a.id = e.account_id
+         WHERE a.code = $1`,
+        [accountCode]
+      );
+      const balanceRow = balance.rows[0] as { debits?: unknown; credits?: unknown } | undefined;
+      const balanceKobo = num(balanceRow?.debits ?? 0) - num(balanceRow?.credits ?? 0);
+      if (balanceKobo < 0) {
+        throw new BadRequestException(
+          `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
+        );
+      }
+    }
+    if (outboxEvent) {
+      await tx.query(
+        `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          outboxEvent.id,
+          outboxEvent.name,
+          JSON.stringify(outboxEvent.payload ?? {}),
+          outboxEvent.actorId ?? null,
+          outboxEvent.occurredAt
+        ]
+      );
+    }
+    return entry;
   }
 
   async entriesForAccount(accountCode: string): Promise<LedgerJournalEntry[]> {
