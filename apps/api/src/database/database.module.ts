@@ -737,6 +737,19 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Innovation 10 (Stage 27): Chapter Map persistence (additive).
+import {
+  CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+  CHAPTER_MEMBER_DIRECTORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryChapterMapSnapshotRepository,
+  createInMemoryChapterMemberDirectory
+} from './repositories/chapter-map.repository.js';
+import {
+  createPgChapterMapSnapshotRepository,
+  createPgChapterMemberDirectory
+} from './repositories/chapter-map.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1870,6 +1883,19 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Innovation 10 (Stage 27): Chapter Map providers (additive).
+    {
+      provide: CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMapSnapshotRepository(pool) : createInMemoryChapterMapSnapshotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CHAPTER_MEMBER_DIRECTORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMemberDirectory(pool) : createInMemoryChapterMemberDirectory(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2052,7 +2078,10 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Innovation 10 (Stage 27): Chapter Map (additive).
+    CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+    CHAPTER_MEMBER_DIRECTORY
   ]
 })
 export class DatabaseModule {}
