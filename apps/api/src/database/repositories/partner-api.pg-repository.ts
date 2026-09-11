@@ -77,18 +77,7 @@ const apiKeyMapper: RowMapper<DeveloperApiKey> = {
     ownerUserId: row.owner_user_id as string,
     keyHash: row.key_hash as string,
     keySalt: row.key_salt as string,
-    prefix: row.prefix as string,
-    scopes: (row.scopes as string[]) ?? [],
-    sandbox: Boolean(row.sandbox),
-    revokedAt: row.revoked_at ? new Date(row.revoked_at as string).toISOString() : undefined,
-    createdAt: new Date(row.created_at as string).toISOString()
-  }),
-  toRow: (item) => ({
-    id: item.id,
-    owner_user_id: item.ownerUserId,
-    key_hash: item.keyHash,
-    key_salt: item.keySalt,
-    prefix: item.prefix,
+    prefix: row.prefix,
     scopes: item.scopes,
     sandbox: item.sandbox,
     revoked_at: item.revokedAt ?? null,
@@ -97,7 +86,17 @@ const apiKeyMapper: RowMapper<DeveloperApiKey> = {
 };
 
 const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
-  columns: ['id', 'client_id', 'event_types', 'target_url', 'secret', 'status', 'created_at'],
+  columns: [
+    'id',
+    'client_id',
+    'event_types',
+    'target_url',
+    'secret',
+    'status',
+    'partner_id',
+    'cross_tenant',
+    'created_at'
+  ],
   fromRow: (row) => ({
     id: row.id as string,
     clientId: row.client_id as string,
@@ -105,6 +104,8 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
     targetUrl: row.target_url as string,
     secret: row.secret as string,
     status: row.status as WebhookSubscription['status'],
+    partnerId: (row.partner_id as string | null) ?? undefined,
+    crossTenant: Boolean(row.cross_tenant),
     createdAt: new Date(row.created_at as string).toISOString()
   }),
   toRow: (item) => ({
@@ -114,6 +115,8 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
     target_url: item.targetUrl,
     secret: item.secret,
     status: item.status,
+    partner_id: item.partnerId ?? null,
+    cross_tenant: item.crossTenant ?? false,
     created_at: item.createdAt
   })
 };
