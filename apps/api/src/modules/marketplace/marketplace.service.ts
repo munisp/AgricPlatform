@@ -540,7 +540,7 @@ export class MarketplaceService {
   }
 
   /**
-   * Stage 24 (audit A1-8): evidence for the direct POST /orders/:id/escrow
+   * Stage 24 (audit A1-1): evidence for the direct POST /orders/:id/escrow
    * endpoint. When verification is required, the caller must supply the
    * payment reference so it can be re-verified with the provider (and
    * checked for cross-order reuse) before EscrowService will create the
