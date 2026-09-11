@@ -1,6 +1,5 @@
 import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
-import { newId } from '../../common/async-repository.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { EventDedupService } from '../../core/event-dedup.service.js';
 import { WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
@@ -23,6 +22,9 @@ export const PARTNER_EVENT_TYPES = [
 ] as const;
 
 export type PartnerEventType = (typeof PARTNER_EVENT_TYPES)[number];
+
+/** Consumer name in events.processed_events for the dispatch dedup ledger. */
+export const WEBHOOK_DISPATCH_CONSUMER = 'partner-webhook-dispatch';
 
 const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
   'learning.certificate.issued': 'course.completed',
@@ -90,23 +92,44 @@ export class WebhookDispatchService implements OnModuleInit {
   }
 
   /**
-   * Consumer-side dedup (Wave P): outbox-sweeper redeliveries of an
-   * already-dispatched event are ignored via events.processed_events.
+   * Consumer-side dedup, MARK-AFTER-DISPATCH (audit A4-6): the event is
+   * recorded in events.processed_events only after every subscribed delivery
+   * succeeded. A failed delivery throws, the event stays unprocessed, and the
+   * outbox sweeper re-drives it — dispatch is at-least-once. Receivers dedupe
+   * re-deliveries via the stable per-event delivery id (x-agric-delivery).
+   * Public: also the outbox-sweeper re-drive entry point.
    */
-  private async dispatchOnce(type: PartnerEventType, event: DomainEvent): Promise<void> {
-    const fresh = await this.dedup.once('partner-webhook-dispatch', event.id);
-    if (!fresh) {
+  async dispatchOnce(type: PartnerEventType, event: DomainEvent): Promise<void> {
+    if (await this.dedup.has(WEBHOOK_DISPATCH_CONSUMER, event.id)) {
       return;
     }
-    await this.dispatch(type, event);
+    const { delivered, targets } = await this.fanOut(type, event);
+    if (delivered < targets) {
+      throw new Error(
+        `webhook dispatch for event ${event.id}: ${targets - delivered} of ${targets} deliveries failed — left unprocessed for sweeper re-drive`
+      );
+    }
+    await this.dedup.mark(WEBHOOK_DISPATCH_CONSUMER, event.id);
   }
 
   /** Delivers one partner event to every active subscribed client URL. */
   async dispatch(type: PartnerEventType, event: DomainEvent): Promise<number> {
+    return (await this.fanOut(type, event)).delivered;
+  }
+
+  /**
+   * Fans the event out to all matching active subscriptions. The delivery id
+   * is derived from the event id (not regenerated per attempt) so a partner
+   * can dedupe a re-driven delivery against the first attempt.
+   */
+  private async fanOut(
+    type: PartnerEventType,
+    event: DomainEvent
+  ): Promise<{ delivered: number; targets: number }> {
     const active = await this.subscriptions.find({ status: 'active' });
     const targets = active.filter((subscription) => subscription.eventTypes.includes(type));
     const delivery: WebhookDelivery = {
-      id: newId('whd'),
+      id: `whd_${event.id}`,
       type,
       occurredAt: event.occurredAt,
       data: event.payload
@@ -117,7 +140,7 @@ export class WebhookDispatchService implements OnModuleInit {
       const ok = await this.deliver(subscription, delivery, body);
       if (ok) delivered += 1;
     }
-    return delivered;
+    return { delivered, targets: targets.length };
   }
 
   /** Signs and POSTs a single delivery. Returns true on a 2xx response. */
