@@ -566,6 +566,7 @@ import {
   VSLA_CYCLE_REPOSITORY,
   VSLA_CONTRIBUTION_REPOSITORY,
   VSLA_SHARE_OUT_REPOSITORY,
+  VSLA_SHARE_OUT_PLAN_REPOSITORY,
   VSLA_LOAN_REPOSITORY,
   VSLA_LOAN_REPAYMENT_REPOSITORY,
   CARBON_PLOT_REPOSITORY,
@@ -658,6 +659,7 @@ import {
   createInMemoryVslaCycleRepository,
   createInMemoryVslaContributionRepository,
   createInMemoryVslaShareOutRepository,
+  createInMemoryVslaShareOutPlanRepository,
   createInMemoryVslaLoanRepository,
   createInMemoryVslaLoanRepaymentRepository,
   createInMemoryCarbonPlotRepository,
@@ -670,6 +672,7 @@ import {
   createPgVslaCycleRepository,
   createPgVslaContributionRepository,
   createPgVslaShareOutRepository,
+  createPgVslaShareOutPlanRepository,
   createPgVslaLoanRepository,
   createPgVslaLoanRepaymentRepository,
   createPgCarbonPlotRepository,
@@ -1739,6 +1742,14 @@ import {
       inject: [PG_POOL]
     },
     {
+      provide: VSLA_SHARE_OUT_PLAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgVslaShareOutPlanRepository(pool)
+          : createInMemoryVslaShareOutPlanRepository(),
+      inject: [PG_POOL]
+    },
+    {
       provide: VSLA_LOAN_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgVslaLoanRepository(pool) : createInMemoryVslaLoanRepository(),
@@ -2008,6 +2019,7 @@ import {
     VSLA_CYCLE_REPOSITORY,
     VSLA_CONTRIBUTION_REPOSITORY,
     VSLA_SHARE_OUT_REPOSITORY,
+    VSLA_SHARE_OUT_PLAN_REPOSITORY,
     VSLA_LOAN_REPOSITORY,
     VSLA_LOAN_REPAYMENT_REPOSITORY,
     CARBON_PLOT_REPOSITORY,
