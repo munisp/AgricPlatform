@@ -9,8 +9,24 @@ export interface EscrowCriteria {
   depositReference?: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface EscrowRepository extends AsyncRepository<EscrowRecord, EscrowCriteria> {}
+export interface EscrowRepository extends AsyncRepository<EscrowRecord, EscrowCriteria> {
+  /**
+   * WP-G12 batch selection for the escrow-expiry sweeper: non-terminal
+   * records (held/releasing/refunding) whose heldUntil deadline has passed,
+   * oldest first, capped at `limit`. The pg implementation selects with
+   * FOR UPDATE SKIP LOCKED so concurrent sweepers never block on rows locked
+   * by an in-flight transition; state re-verification on write stays with
+   * the CAS guard (updateExpected), so a double-run is a no-op.
+   */
+  findExpiredForSweep?(nowIso: string, limit: number): Promise<EscrowRecord[]>;
+}
+
+/** Non-terminal escrow statuses the expiry sweeper may act on. */
+export const SWEEPABLE_ESCROW_STATUSES: readonly EscrowStatus[] = [
+  'held',
+  'releasing',
+  'refunding'
+];
 
 export function escrowMatcher(criteria: EscrowCriteria): (record: EscrowRecord) => boolean {
   return (record) =>
@@ -25,6 +41,19 @@ export class InMemoryEscrowRepository
 {
   constructor(seed: readonly EscrowRecord[] = []) {
     super(seed, escrowMatcher);
+  }
+
+  /** Single-process equivalent of the pg FOR UPDATE SKIP LOCKED batch. */
+  async findExpiredForSweep(nowIso: string, limit: number): Promise<EscrowRecord[]> {
+    return (await this.all())
+      .filter(
+        (record) =>
+          SWEEPABLE_ESCROW_STATUSES.includes(record.status) &&
+          record.heldUntil !== undefined &&
+          record.heldUntil <= nowIso
+      )
+      .sort((a, b) => (a.heldUntil ?? '').localeCompare(b.heldUntil ?? ''))
+      .slice(0, Math.max(0, limit));
   }
 }
 
