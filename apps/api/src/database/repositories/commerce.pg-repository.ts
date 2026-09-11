@@ -38,6 +38,29 @@ export class PgEscrowRepository
       criteria: escrowCriteriaSql
     });
   }
+
+  /**
+   * WP-G12 sweeper batch: non-terminal escrows past their heldUntil
+   * deadline, oldest first, selected FOR UPDATE SKIP LOCKED so a concurrent
+   * sweeper pass (or an in-flight party transition holding a row lock)
+   * never blocks the scan — locked rows are simply skipped this pass. The
+   * row lock itself is held only for the statement (autocommit); the
+   * correctness guard on write stays with the CAS in updateExpected, so a
+   * row skipped or double-selected here still converges exactly once.
+   */
+  async findExpiredForSweep(nowIso: string, limit: number): Promise<EscrowRecord[]> {
+    const result = await this.pool.query(
+      `SELECT ${this.mapper.columns.join(', ')} FROM marketplace.escrow_records
+       WHERE status IN ('held', 'releasing', 'refunding')
+         AND held_until IS NOT NULL
+         AND held_until <= $1
+       ORDER BY held_until
+       LIMIT $2
+       FOR UPDATE SKIP LOCKED`,
+      [nowIso, Math.max(0, limit)]
+    );
+    return result.rows.map((row) => this.mapper.fromRow(row));
+  }
 }
 
 export function invoiceCriteriaSql(criteria: InvoiceCriteria): WhereClause {
