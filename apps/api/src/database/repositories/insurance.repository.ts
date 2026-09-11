@@ -208,7 +208,7 @@ export function insuranceTriggerEventMatcher(
     (!criteria.evidenceFingerprint || record.evidenceFingerprint === criteria.evidenceFingerprint);
 }
 
-export class InMemoryParametricTriggerEventRepository implements InMemoryParametricTriggerEventRepository {
+export class InMemoryParametricTriggerEventRepository implements ParametricTriggerEventRepository {
   private readonly items = new Map<string, ParametricTriggerEvent>();
 
   upsert(
