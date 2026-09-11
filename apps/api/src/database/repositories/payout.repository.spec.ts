@@ -6,7 +6,8 @@ import {
   createInMemoryEscrowPayoutRepository,
   finalizePayoutAttempt,
   hashPayoutPayload,
-  PAYOUT_CLAIM_LEASE_MS
+  PAYOUT_CLAIM_LEASE_MS,
+  revalidatePayoutClaimLease
 } from './payout.repository.js';
 
 function attempt(overrides: Partial<EscrowPayout> = {}): Omit<EscrowPayout, 'status' | 'claimedAt'> {
@@ -164,5 +165,83 @@ describe('finalizePayoutAttempt guarded writes (Stage 24, audit A4-3)', () => {
     const stored = (await repo.all())[0];
     expect(stored.status).toBe('succeeded');
     expect(stored.providerReference).toBe('psp-ref-2');
+  });
+});
+
+describe('revalidatePayoutClaimLease (WP-G12 lease-expiry double-drive fix)', () => {
+  it('the claim holder revalidates and extends its lease before driving', async () => {
+    const repo = createInMemoryEscrowPayoutRepository();
+    const claimedAt = new Date(Date.now() - 60_000);
+    const claim = await claimPayoutAttempt(repo, attempt(), claimedAt);
+    const later = new Date();
+    const revalidation = await revalidatePayoutClaimLease(repo, claim.attempt, later);
+    expect(revalidation.held).toBe(true);
+    expect(revalidation.attempt.status).toBe('in_progress');
+    expect(revalidation.attempt.claimedAt).toBe(later.toISOString());
+  });
+
+  it('a stale claimant whose lease was re-claimed loses the pre-drive CAS and backs off (no second drive)', async () => {
+    const repo = createInMemoryEscrowPayoutRepository();
+    const stalledAt = new Date(Date.now() - PAYOUT_CLAIM_LEASE_MS - 1000);
+    const staleClaim = await claimPayoutAttempt(repo, attempt(), stalledAt);
+    expect(staleClaim.claimed).toBe(true);
+    // The claimant stalled past the lease before driving; a crash-recovery
+    // retry legitimately re-claims and (behind the scenes) drives the payout.
+    const takeover = await claimPayoutAttempt(repo, attempt({ id: 'payout-twin' }));
+    expect(takeover.claimed).toBe(true);
+    // The stale claimant wakes up and MUST NOT drive: its pre-drive
+    // revalidation loses the CAS (claimedAt moved) and surfaces 409.
+    await expect(revalidatePayoutClaimLease(repo, staleClaim.attempt)).rejects.toThrowError(
+      ConflictException
+    );
+    // The lease still belongs to the takeover claimant.
+    const stored = (await repo.all())[0];
+    expect(stored.status).toBe('in_progress');
+    expect(stored.claimedAt).toBe(takeover.attempt.claimedAt);
+  });
+
+  it('a stale claimant adopts the succeeded twin attempt (held=false) instead of driving again', async () => {
+    const repo = createInMemoryEscrowPayoutRepository();
+    const stalledAt = new Date(Date.now() - PAYOUT_CLAIM_LEASE_MS - 1000);
+    const staleClaim = await claimPayoutAttempt(repo, attempt(), stalledAt);
+    const takeover = await claimPayoutAttempt(repo, attempt({ id: 'payout-twin' }));
+    await finalizePayoutAttempt(repo, takeover.attempt, {
+      status: 'succeeded',
+      providerReference: 'psp-ref-twin'
+    });
+    const revalidation = await revalidatePayoutClaimLease(repo, staleClaim.attempt);
+    expect(revalidation.held).toBe(false);
+    expect(revalidation.attempt.status).toBe('succeeded');
+    expect(revalidation.attempt.providerReference).toBe('psp-ref-twin');
+  });
+
+  it('the takeover claimant still drives exactly once (revalidation holds for the fresh lease)', async () => {
+    const repo = createInMemoryEscrowPayoutRepository();
+    const stalledAt = new Date(Date.now() - PAYOUT_CLAIM_LEASE_MS - 1000);
+    await claimPayoutAttempt(repo, attempt(), stalledAt);
+    const takeover = await claimPayoutAttempt(repo, attempt({ id: 'payout-twin' }));
+    const revalidation = await revalidatePayoutClaimLease(repo, takeover.attempt);
+    expect(revalidation.held).toBe(true);
+    const finalized = await finalizePayoutAttempt(repo, revalidation.attempt, {
+      status: 'succeeded',
+      providerReference: 'psp-ref-1'
+    });
+    expect(finalized.status).toBe('succeeded');
+  });
+
+  it('two racing revalidations of the same claim serialise: exactly one winner drives', async () => {
+    const repo = createInMemoryEscrowPayoutRepository();
+    const claim = await claimPayoutAttempt(repo, attempt());
+    // Distinct lease timestamps: the CAS compares VALUES, so two refreshes
+    // writing the same claimedAt could both pass on any repo; distinct times
+    // make the loser's precondition provably stale.
+    const outcomes = await Promise.allSettled([
+      revalidatePayoutClaimLease(repo, claim.attempt, new Date(Date.now() + 1000)),
+      revalidatePayoutClaimLease(repo, claim.attempt, new Date(Date.now() + 2000))
+    ]);
+    const winners = outcomes.filter(
+      (o) => o.status === 'fulfilled' && o.value.held
+    );
+    expect(winners).toHaveLength(1);
   });
 });
