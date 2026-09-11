@@ -17,7 +17,12 @@ import type {
   ParametricProductCriteria,
   ParametricProductRepository,
   ParametricTriggerEventCriteria,
-  ParametricTriggerEventRepository
+  ParametricTriggerEventRepository,
+  VoucherCoverCriteria,
+  VoucherCoverRecord,
+  VoucherCoverRepository,
+  VoucherProgrammeRiderRecord,
+  VoucherProgrammeRiderRepository
 } from './insurance.repository.js';
 
 /**
@@ -489,4 +494,257 @@ export class PgParametricPayoutRepository implements ParametricPayoutRepository 
 
 export function createPgParametricPayoutRepository(pool: pg.Pool): PgParametricPayoutRepository {
   return new PgParametricPayoutRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 27 (Insurance-in-the-Bag, migration 057): voucher-bundled cover.
+
+interface RiderRow {
+  id: string;
+  programme_id: string;
+  product_code: string;
+  sum_insured_kobo: number;
+  premium_rate_bps: number;
+  flood_band: VoucherProgrammeRiderRecord['floodBand'];
+  status: VoucherProgrammeRiderRecord['status'];
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function riderFromRow(row: RiderRow): VoucherProgrammeRiderRecord {
+  return {
+    id: row.id,
+    programmeId: row.programme_id,
+    productCode: row.product_code,
+    sumInsuredKobo: Number(row.sum_insured_kobo),
+    premiumRateBps: Number(row.premium_rate_bps),
+    floodBand: row.flood_band,
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  };
+}
+
+export class PgVoucherProgrammeRiderRepository implements VoucherProgrammeRiderRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord> {
+    try {
+      await this.pool.query(
+        `INSERT INTO insurance.programme_riders
+           (id, programme_id, product_code, sum_insured_kobo, premium_rate_bps,
+            flood_band, status, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          record.id,
+          record.programmeId,
+          record.productCode,
+          record.sumInsuredKobo,
+          record.premiumRateBps,
+          record.floodBand,
+          record.status,
+          record.createdBy,
+          record.createdAt,
+          record.updatedAt
+        ]
+      );
+    } catch (error) {
+      mapPgError(error);
+    }
+    return record;
+  }
+
+  async update(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord> {
+    const result = await this.pool.query(
+      `UPDATE insurance.programme_riders
+         SET product_code = $2, sum_insured_kobo = $3, premium_rate_bps = $4,
+             flood_band = $5, status = $6, updated_at = $7
+       WHERE id = $1`,
+      [
+        record.id,
+        record.productCode,
+        record.sumInsuredKobo,
+        record.premiumRateBps,
+        record.floodBand,
+        record.status,
+        record.updatedAt
+      ]
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new ConflictException(`Insurance rider '${record.id}' not found`);
+    }
+    return record;
+  }
+
+  async findById(id: string): Promise<VoucherProgrammeRiderRecord | undefined> {
+    const result = await this.pool.query<RiderRow>(
+      'SELECT * FROM insurance.programme_riders WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] ? riderFromRow(result.rows[0]) : undefined;
+  }
+
+  async findByProgrammeId(programmeId: string): Promise<VoucherProgrammeRiderRecord | undefined> {
+    const result = await this.pool.query<RiderRow>(
+      'SELECT * FROM insurance.programme_riders WHERE programme_id = $1',
+      [programmeId]
+    );
+    return result.rows[0] ? riderFromRow(result.rows[0]) : undefined;
+  }
+
+  async all(): Promise<VoucherProgrammeRiderRecord[]> {
+    const result = await this.pool.query<RiderRow>(
+      'SELECT * FROM insurance.programme_riders ORDER BY created_at, id'
+    );
+    return result.rows.map(riderFromRow);
+  }
+}
+
+export function createPgVoucherProgrammeRiderRepository(pool: pg.Pool): PgVoucherProgrammeRiderRepository {
+  return new PgVoucherProgrammeRiderRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+
+interface VoucherCoverRow {
+  id: string;
+  voucher_id: string;
+  policy_id: string;
+  programme_id: string;
+  plot_id: string;
+  farmer_id: string;
+  premium_kobo: number;
+  cover_basis: VoucherCoverRecord['coverBasis'];
+  status: VoucherCoverRecord['status'];
+  created_at: string;
+  updated_at: string;
+}
+
+function voucherCoverFromRow(row: VoucherCoverRow): VoucherCoverRecord {
+  return {
+    id: row.id,
+    voucherId: row.voucher_id,
+    policyId: row.policy_id,
+    programmeId: row.programme_id,
+    plotId: row.plot_id,
+    farmerId: row.farmer_id,
+    premiumKobo: Number(row.premium_kobo),
+    coverBasis: row.cover_basis,
+    status: row.status,
+    createdAt: ts(row.created_at),
+    updatedAt: ts(row.updated_at)
+  };
+}
+
+export class PgVoucherCoverRepository implements VoucherCoverRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: VoucherCoverRecord): Promise<VoucherCoverRecord> {
+    try {
+      await this.pool.query(
+        `INSERT INTO insurance.voucher_covers
+           (id, voucher_id, policy_id, programme_id, plot_id, farmer_id,
+            premium_kobo, cover_basis, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          record.id,
+          record.voucherId,
+          record.policyId,
+          record.programmeId,
+          record.plotId,
+          record.farmerId,
+          record.premiumKobo,
+          record.coverBasis,
+          record.status,
+          record.createdAt,
+          record.updatedAt
+        ]
+      );
+    } catch (error) {
+      mapPgError(error);
+    }
+    return record;
+  }
+
+  /**
+   * Guarded compare-and-set: the expected status rides in the WHERE clause,
+   * so a concurrent projection affects zero rows and surfaces 409 instead of
+   * double-firing a transition (same doctrine as the policy CAS above).
+   */
+  async updateExpected(
+    id: string,
+    patch: Partial<VoucherCoverRecord>,
+    expected: Partial<VoucherCoverRecord>
+  ): Promise<VoucherCoverRecord> {
+    const columns: Record<string, string> = { status: 'status', updatedAt: 'updated_at' };
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in patch) {
+        params.push(patch[key as keyof VoucherCoverRecord]);
+        sets.push(`${column} = $${params.length}`);
+      }
+    }
+    const where: string[] = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in expected) {
+        params.push(expected[key as keyof VoucherCoverRecord]);
+        where.push(`${column} = $${params.length}`);
+      }
+    }
+    const result = await this.pool.query<VoucherCoverRow>(
+      `UPDATE insurance.voucher_covers SET ${sets.join(', ')} WHERE id = $1` +
+        (where.length > 0 ? ` AND ${where.join(' AND ')}` : '') +
+        ' RETURNING *',
+      params
+    );
+    if (!result.rows[0]) {
+      throw new ConflictException(`Voucher cover '${id}' changed concurrently; reload and retry`);
+    }
+    return voucherCoverFromRow(result.rows[0]);
+  }
+
+  async findById(id: string): Promise<VoucherCoverRecord | undefined> {
+    const result = await this.pool.query<VoucherCoverRow>(
+      'SELECT * FROM insurance.voucher_covers WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] ? voucherCoverFromRow(result.rows[0]) : undefined;
+  }
+
+  async findByVoucherId(voucherId: string): Promise<VoucherCoverRecord | undefined> {
+    const result = await this.pool.query<VoucherCoverRow>(
+      'SELECT * FROM insurance.voucher_covers WHERE voucher_id = $1',
+      [voucherId]
+    );
+    return result.rows[0] ? voucherCoverFromRow(result.rows[0]) : undefined;
+  }
+
+  async find(criteria: VoucherCoverCriteria): Promise<VoucherCoverRecord[]> {
+    const where = composeWhere(
+      eq('voucher_id', criteria.voucherId),
+      eq('policy_id', criteria.policyId),
+      eq('programme_id', criteria.programmeId),
+      eq('farmer_id', criteria.farmerId),
+      eq('status', criteria.status)
+    );
+    const result = await this.pool.query<VoucherCoverRow>(
+      `SELECT * FROM insurance.voucher_covers ${where.where} ORDER BY created_at, id`,
+      where.params
+    );
+    return result.rows.map(voucherCoverFromRow);
+  }
+
+  async all(): Promise<VoucherCoverRecord[]> {
+    const result = await this.pool.query<VoucherCoverRow>(
+      'SELECT * FROM insurance.voucher_covers ORDER BY created_at, id'
+    );
+    return result.rows.map(voucherCoverFromRow);
+  }
+}
+
+export function createPgVoucherCoverRepository(pool: pg.Pool): PgVoucherCoverRepository {
+  return new PgVoucherCoverRepository(pool);
 }
