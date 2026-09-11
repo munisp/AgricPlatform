@@ -838,15 +838,21 @@ describe('LivestockHealthService', () => {
       const notified = await service.markRecallNotified(recall.id);
       expect(notified.status).toBe('notified');
       expect(notified.notifiedAt).toBeDefined();
-      await expect(service.markRecallNotified(recall.id)).rejects.toBeInstanceOf(
-        BadRequestException
-      );
+      // Idempotent replay (G14): the recall listener marks its dedup ledger
+      // AFTER this flip, so an outbox-sweeper redrive can re-invoke it.
+      const replayed = await service.markRecallNotified(recall.id);
+      expect(replayed.status).toBe('notified');
+      expect(replayed.notifiedAt).toBe(notified.notifiedAt);
       await expect(service.resolveRecall(farmer, recall.id)).rejects.toBeInstanceOf(
         ForbiddenException
       );
       const resolved = await service.resolveRecall(regulator, recall.id);
       expect(resolved.status).toBe('resolved');
       expect(resolved.resolvedAt).toBeDefined();
+      // A resolved recall can never be re-flipped (fails closed).
+      await expect(service.markRecallNotified(recall.id)).rejects.toBeInstanceOf(
+        BadRequestException
+      );
       expect(await eventNames()).toContain('livestock.recall.resolved');
     });
   });
