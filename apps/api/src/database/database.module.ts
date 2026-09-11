@@ -721,8 +721,12 @@ import {
   WAREHOUSE_DEPOSIT_REPOSITORY,
   WAREHOUSE_RECEIPT_REPOSITORY,
   WAREHOUSE_PLEDGE_REPOSITORY,
-  WAREHOUSE_TRANSFER_REPOSITORY
+  WAREHOUSE_TRANSFER_REPOSITORY,
+  // Stage 27 (innovation 4): Planting-Window Pulse persistence (additive).
+  ADVISORY_PULSE_REPOSITORY
 } from './persistence.tokens.js';
+import { createInMemoryAdvisoryPulseRepository } from './repositories/advisory-pulse.repository.js';
+import { createPgAdvisoryPulseRepository } from './repositories/advisory-pulse.pg-repository.js';
 import {
   createInMemoryCertifiedWarehouseRepository,
   createInMemoryWarehouseDepositRepository,
@@ -856,6 +860,13 @@ import {
       provide: ADVISORY_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAdvisoryRepository(pool) : createInMemoryAdvisoryRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 4): Planting-Window Pulse repositories.
+    {
+      provide: ADVISORY_PULSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAdvisoryPulseRepository(pool) : createInMemoryAdvisoryPulseRepository(),
       inject: [PG_POOL]
     },
     {
@@ -2052,7 +2063,9 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 (innovation 4): Planting-Window Pulse.
+    ADVISORY_PULSE_REPOSITORY
   ]
 })
 export class DatabaseModule {}
