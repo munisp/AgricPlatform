@@ -1,8 +1,8 @@
-import { Body, Controller, Get, Headers, Ip, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Ip, Post, UnauthorizedException, UseGuards, BadRequestException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ArrayNotEmpty, IsIn, IsOptional, IsString, Length } from 'class-validator';
-import { LANGUAGE_CODES, USER_ROLES, type LanguageCode, type User, type UserRole } from '@agric-platform/shared';
+import { LANGUAGE_CODES, SELF_REGISTRATION_ROLES, USER_ROLES, type LanguageCode, type User, type UserRole } from '@agric-platform/shared';
 import { devHeaderAuthAllowed } from '../../common/auth/auth.config.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { OidcService } from '../../common/auth/oidc.service.js';
@@ -79,12 +79,29 @@ export class AuthController {
 
   @Post('register')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Register a new member account' })
+  @ApiOperation({
+    summary:
+      'Register a new member account. Only plain member roles ' +
+      `(${SELF_REGISTRATION_ROLES.join(', ')}) may be self-selected; privileged roles ` +
+      'are granted by an administrator via PATCH /admin/users/:id/roles.'
+  })
   async register(
     @Body() dto: RegisterDto,
     @Headers('user-agent') userAgent?: string,
     @Ip() ip?: string
   ) {
+    // Self-service role assignment guard: members may not register
+    // themselves into privileged roles (admin, partner, agent-type, ...).
+    const rejected = dto.roles.filter(
+      (role) => !(SELF_REGISTRATION_ROLES as readonly UserRole[]).includes(role)
+    );
+    if (rejected.length > 0) {
+      throw new BadRequestException(
+        `Self-registration cannot request privileged role(s): ${rejected.join(', ')}. ` +
+          `Allowed roles: ${SELF_REGISTRATION_ROLES.join(', ')}. ` +
+          'Privileged roles are granted by an administrator after verification.'
+      );
+    }
     return { data: await this.auth.register(dto, { userAgent, ipAddress: ip }) };
   }
 

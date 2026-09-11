@@ -92,19 +92,25 @@ export class AnalyticsController {
   ) {}
 
   @Get('metrics')
-  @ApiOperation({ summary: 'Platform metrics' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Platform metrics (admin only — consistent with the export/funnel routes)' })
   async metrics() {
     return { data: await this.analytics.metrics() };
   }
 
   @Get('overview')
-  @ApiOperation({ summary: 'Live cross-domain counts' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Live cross-domain counts (admin only)' })
   async overview() {
     return { data: await this.analytics.overview() };
   }
 
   @Get('segments')
-  @ApiOperation({ summary: 'Member segmentation by state or role' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Member segmentation by state or role (admin only)' })
   async segments(@Query() query: SegmentQuery) {
     return { data: await this.analytics.segments(query.by) };
   }
@@ -251,8 +257,7 @@ export class AnalyticsController {
   @UseGuards(RolesGuard)
   @Roles('admin')
   @ApiOperation({
-    summary:
-      'Lakehouse handoff: columnar-friendly CSV (parquet-ready schema; snapshot_date partition column) for one mart over an optional date range. Admin only; audit-logged.'
+    summary: 'Lakehouse handoff: columnar-friendly CSV (parquet-ready schema; snapshot_date partition column) for one mart over an optional date range. Admin only; audit-logged.'
   })
   async exportMart(
     @Param('mart') martParam: string,

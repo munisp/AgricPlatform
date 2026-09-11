@@ -57,19 +57,24 @@ describe('AgricPlatform API (e2e)', () => {
   });
 
   it('supports enrolment -> progress -> certificate verification', async () => {
-    const enrol = await (await post('/courses/course-post-harvest/enrol', { userId: 'user-aisha' })).json();
+    const aisha = { 'x-user-id': 'user-aisha' };
+    const enrol = await (
+      await post('/courses/course-post-harvest/enrol', { userId: 'user-aisha' }, aisha)
+    ).json();
     expect(enrol.data.status).toBe('enrolled');
 
     const done = await (
       await fetch(`${base}/enrolments/${enrol.data.id}/progress`, {
         method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...aisha },
         body: JSON.stringify({ progressPercent: 100 })
       })
     ).json();
     expect(done.data.status).toBe('completed');
 
-    const certs = await (await fetch(`${base}/users/user-aisha/certificates`)).json();
+    const certs = await (
+      await fetch(`${base}/users/user-aisha/certificates`, { headers: aisha })
+    ).json();
     const code = certs.data.find((c: { courseId: string }) => c.courseId === 'course-post-harvest')
       .verificationCode;
     const verification = await (await fetch(`${base}/certificates/verify/${code}`)).json();
@@ -81,9 +86,10 @@ describe('AgricPlatform API (e2e)', () => {
   });
 
   it('recomputes profile completion score on upsert', async () => {
+    const admin = { 'x-user-id': 'user-admin' };
     const res = await fetch(`${base}/profiles/user-admin`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...admin },
       body: JSON.stringify({
         location: { state: 'FCT', lga: 'Abuja Municipal' },
         farmingInterests: ['Rice'],
@@ -93,15 +99,18 @@ describe('AgricPlatform API (e2e)', () => {
     const body = await res.json();
     expect(body.data.completionScore).toBe(70);
 
-    const report = await (await fetch(`${base}/profiles/user-admin/completion`)).json();
+    const report = await (
+      await fetch(`${base}/profiles/user-admin/completion`, { headers: admin })
+    ).json();
     expect(report.data.score).toBe(70);
     expect(report.data.missing).toContain('bio');
   });
 
   it('applies to opportunities and rejects duplicates', async () => {
-    const first = await post('/opportunities/opp-nysc-agribusiness/apply', { userId: 'user-aisha' });
+    const aisha = { 'x-user-id': 'user-aisha' };
+    const first = await post('/opportunities/opp-nysc-agribusiness/apply', { userId: 'user-aisha' }, aisha);
     expect(first.status).toBe(201);
-    const duplicate = await post('/opportunities/opp-nysc-agribusiness/apply', { userId: 'user-aisha' });
+    const duplicate = await post('/opportunities/opp-nysc-agribusiness/apply', { userId: 'user-aisha' }, aisha);
     expect(duplicate.status).toBe(409);
   });
 
@@ -252,7 +261,9 @@ describe('AgricPlatform API (e2e)', () => {
     ).json();
     expect(confirmed.data.status).toBe('completed');
 
-    const anonymized = await (await fetch(`${base}/users/user-hassan`)).json();
+    const anonymized = await (
+      await fetch(`${base}/users/user-hassan`, { headers: { 'x-user-id': 'user-admin' } })
+    ).json();
     expect(anonymized.data.fullName).toBe('Deleted user');
   });
 
@@ -273,8 +284,8 @@ describe('AgricPlatform API (e2e)', () => {
 
   it('labels http metrics with parameterized routes (low cardinality)', async () => {
     // Concrete IDs must never appear in the `route` label.
-    await fetch(`${base}/profiles/user-admin`);
-    await fetch(`${base}/profiles/user-aisha`);
+    await fetch(`${base}/profiles/user-admin`, { headers: { 'x-user-id': 'user-admin' } });
+    await fetch(`${base}/profiles/user-aisha`, { headers: { 'x-user-id': 'user-aisha' } });
 
     const text = await (await fetch(`${base}/metrics`)).text();
     expect(text).toContain('route="/api/v1/profiles/:userId"');
@@ -467,6 +478,204 @@ describe('AgricPlatform API (e2e)', () => {
         await fetch(`${base}/finance/loans/${loanId}`, { headers: borrower })
       ).json();
       expect(loan.data.status).toBe('closed');
+    });
+  });
+
+  // Stage 22 (audit C1/C2): the unauthenticated-route class. Every route that
+  // reads or writes user data now requires a verified identity; privileged
+  // transitions and self-service role assignment are locked down.
+  describe('auth guard sweep (stage 22)', () => {
+    const farmer = { 'x-user-id': 'user-adamu' };
+    const admin = { 'x-user-id': 'user-admin' };
+    const partner = { 'x-user-id': 'user-partner' };
+
+    async function patch(path: string, body: unknown, headers: Record<string, string> = {}) {
+      return fetch(`${base}${path}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body)
+      });
+    }
+
+    async function put(path: string, body: unknown, headers: Record<string, string> = {}) {
+      return fetch(`${base}${path}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body)
+      });
+    }
+
+    it('guards the user directory (C1-1)', async () => {
+      // Anonymous callers are rejected on every /users route.
+      expect((await fetch(`${base}/users`)).status).toBe(401);
+      expect((await fetch(`${base}/users/user-adamu`)).status).toBe(401);
+      expect((await patch('/users/user-adamu', { fullName: 'X' })).status).toBe(401);
+      // Listing is admin-only.
+      expect((await fetch(`${base}/users`, { headers: farmer })).status).toBe(403);
+      expect((await fetch(`${base}/users`, { headers: admin })).status).toBe(200);
+      // Reads/updates are self-or-admin.
+      expect((await fetch(`${base}/users/user-adamu`, { headers: farmer })).status).toBe(200);
+      expect(
+        (await fetch(`${base}/users/user-adamu`, { headers: { 'x-user-id': 'user-aisha' } })).status
+      ).toBe(403);
+      expect(
+        (await patch('/users/user-adamu', { fullName: 'X' }, { 'x-user-id': 'user-aisha' })).status
+      ).toBe(403);
+      const own = await patch('/users/user-adamu', { fullName: 'Adamu Bello' }, farmer);
+      expect(own.status).toBe(200);
+    });
+
+    it('rejects privileged roles at self-registration (C1-3)', async () => {
+      const payload = {
+        phone: '+2348099900001',
+        fullName: 'Escalation Attempt',
+        roles: ['farmer', 'admin'],
+        preferredLanguage: 'en'
+      };
+      const res = await post('/auth/register', payload);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(JSON.stringify(body)).toContain('admin');
+      // Partner/agent-type privileged roles are rejected too.
+      for (const role of ['partner', 'agent', 'regulator', 'enumerator']) {
+        const attempt = await post('/auth/register', { ...payload, phone: '+2348099900011', roles: [role] });
+        expect(attempt.status).toBe(400);
+      }
+      // Plain member roles still register.
+      const ok = await post('/auth/register', { ...payload, roles: ['farmer', 'buyer'] });
+      expect(ok.status).toBe(201);
+      const okBody = await ok.json();
+      expect(okBody.data.user.roles).toEqual(['farmer', 'buyer']);
+    });
+
+    it('guards opportunity publishing and applications (C1-2)', async () => {
+      const dto = {
+        title: 'Test grant',
+        type: 'grant',
+        description: 'Stage 22 regression',
+        deadline: '2027-01-01T00:00:00.000Z'
+      };
+      expect((await post('/opportunities', dto)).status).toBe(401);
+      expect((await post('/opportunities', dto, farmer)).status).toBe(403);
+      expect((await post('/opportunities', dto, partner)).status).toBe(201);
+      // Applying requires the authenticated actor to be the applicant (or admin).
+      expect(
+        (await post('/opportunities/opp-nysc-agribusiness/apply', { userId: 'user-adamu' })).status
+      ).toBe(401);
+      expect(
+        (
+          await post(
+            '/opportunities/opp-nysc-agribusiness/apply',
+            { userId: 'user-adamu' },
+            { 'x-user-id': 'user-aisha' }
+          )
+        ).status
+      ).toBe(403);
+      // Application lists/details require auth + ownership or staff role.
+      expect((await fetch(`${base}/applications?userId=user-aisha`)).status).toBe(401);
+      expect(
+        (await fetch(`${base}/applications?userId=user-aisha`, { headers: farmer })).status
+      ).toBe(403);
+      expect((await fetch(`${base}/applications`, { headers: farmer })).status).toBe(403);
+      expect((await fetch(`${base}/applications`, { headers: partner })).status).toBe(200);
+      // Status transitions are staff-only (admin/partner).
+      expect((await patch('/applications/app-seed/status', { status: 'successful' })).status).toBe(401);
+      expect(
+        (await patch('/applications/app-seed/status', { status: 'successful' }, farmer)).status
+      ).toBe(403);
+    });
+
+    it('guards per-user reads across profiles, dashboard, finance, learning (C2)', async () => {
+      const guardedGets = [
+        '/profiles/user-adamu',
+        '/profiles/user-adamu/completion',
+        '/dashboard/user-adamu',
+        '/finance/credit-profile/user-adamu',
+        '/finance/kyc/user-adamu',
+        '/finance/lender-matches/user-adamu',
+        '/finance/credit-score/user-adamu',
+        '/users/user-adamu/enrolments',
+        '/users/user-adamu/certificates',
+        '/opportunities/recommended/user-adamu',
+        '/community/mentors/requests?userId=user-adamu'
+      ];
+      for (const path of guardedGets) {
+        expect((await fetch(`${base}${path}`)).status, `GET ${path}`).toBe(401);
+        expect(
+          (await fetch(`${base}${path}`, { headers: { 'x-user-id': 'user-aisha' } })).status,
+          `GET ${path} as another user`
+        ).toBe(403);
+        expect(
+          (await fetch(`${base}${path}`, { headers: farmer })).status,
+          `GET ${path} as owner`
+        ).toBe(200);
+      }
+      // Profile writes are self-or-admin.
+      expect((await put('/profiles/user-adamu', { bio: 'x' })).status).toBe(401);
+      expect(
+        (await put('/profiles/user-adamu', { bio: 'x' }, { 'x-user-id': 'user-aisha' })).status
+      ).toBe(403);
+      expect((await put('/profiles/user-adamu', { bio: 'x' }, farmer)).status).toBe(200);
+    });
+
+    it('guards advisory publishing, community identity and analytics (C2)', async () => {
+      // Advisory publishing is privileged (admin/agronomist/partner).
+      const advisory = { kind: 'guide', title: 'T', summary: 'S' };
+      expect((await post('/advisory', advisory)).status).toBe(401);
+      expect((await post('/advisory', advisory, farmer)).status).toBe(403);
+      expect((await post('/advisory', advisory, admin)).status).toBe(201);
+      // Community authorship is derived from the authenticated actor.
+      expect(
+        (await post('/community/topics', { title: 'T', category: 'general', authorId: 'user-admin' }))
+          .status
+      ).toBe(401);
+      const topic = await (
+        await post('/community/topics', { title: 'T', category: 'general' }, farmer)
+      ).json();
+      expect(topic.data.authorId).toBe('user-adamu');
+      // Anonymous impersonation attempts on replies/flags/mentor requests fail.
+      expect((await post(`/community/topics/${topic.data.id}/replies`, { authorId: 'user-admin' })).status).toBe(401);
+      expect(
+        (await post(`/community/topics/${topic.data.id}/flag`, { reporterId: 'user-admin', reason: 'spam' }))
+          .status
+      ).toBe(401);
+      expect(
+        (await post('/community/mentors/requests', { userId: 'user-adamu', crop: 'rice', state: 'Kano', challenge: 'pests' }))
+          .status
+      ).toBe(401);
+      // Analytics aggregates are admin-only, consistent with the export routes.
+      for (const path of ['/analytics/metrics', '/analytics/overview', '/analytics/segments?by=state']) {
+        expect((await fetch(`${base}${path}`)).status, `GET ${path}`).toBe(401);
+        expect((await fetch(`${base}${path}`, { headers: farmer })).status, `GET ${path} as farmer`).toBe(403);
+        expect((await fetch(`${base}${path}`, { headers: admin })).status, `GET ${path} as admin`).toBe(200);
+      }
+    });
+
+    it('insurance member routes authenticate real users (C3)', async () => {
+      // Previously dead routes: @CurrentUser without the guard meant a 401
+      // for everyone. Now anonymous callers still get 401, and real users work.
+      expect((await fetch(`${base}/insurance/policies/mine`)).status).toBe(401);
+      const mine = await fetch(`${base}/insurance/policies/mine`, { headers: farmer });
+      expect(mine.status).toBe(200);
+      expect(Array.isArray((await mine.json()).data)).toBe(true);
+      expect((await fetch(`${base}/insurance/payouts`)).status).toBe(401);
+      expect((await fetch(`${base}/insurance/trigger-events`)).status).toBe(401);
+    });
+
+    it('keeps genuinely public catalog reads public', async () => {
+      for (const path of [
+        '/courses',
+        '/courses/course-post-harvest',
+        '/opportunities',
+        '/opportunities/opp-nysc-agribusiness',
+        '/advisory',
+        '/community/topics',
+        '/finance/lenders',
+        '/insurance/products',
+        '/certificates/verify/NOPE-000'
+      ]) {
+        expect((await fetch(`${base}${path}`)).status, `GET ${path}`).toBe(200);
+      }
     });
   });
 });

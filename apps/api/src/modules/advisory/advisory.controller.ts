@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString } from 'class-validator';
-import type { AdvisoryItem } from '@agric-platform/shared';
-import { ActorId } from '../../common/auth/current-user.decorator.js';
+import type { AdvisoryItem, User } from '@agric-platform/shared';
+import { CurrentUser } from '../../common/auth/current-user.decorator.js';
+import { Roles } from '../../common/auth/roles.decorator.js';
+import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { AdvisoryService, type CreateAdvisoryInput } from './advisory.service.js';
 
@@ -57,9 +59,11 @@ export class AdvisoryController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Publish advisory content' })
-  async create(@Body() dto: CreateAdvisoryDto, @ActorId() actorId: string) {
-    return { data: await this.advisory.create(dto, actorId) };
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'agronomist', 'partner')
+  @ApiOperation({ summary: 'Publish advisory content (admin/agronomist/partner only)' })
+  async create(@Body() dto: CreateAdvisoryDto, @CurrentUser() actor: User | null) {
+    return { data: await this.advisory.create(dto, actor?.id ?? 'anonymous') };
   }
 
   @Get('weather/:state')

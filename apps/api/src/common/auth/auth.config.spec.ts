@@ -30,6 +30,16 @@ describe('assertProductionAuthConfig (G5)', () => {
     ).not.toThrow();
   });
 
+  it('throws in production when ALLOW_DEV_HEADER_AUTH=true (C2: header auth is unverified identity)', () => {
+    expect(() =>
+      assertProductionAuthConfig({
+        ...BASE_ENV,
+        OIDC_AUDIENCE: 'agric-web',
+        ALLOW_DEV_HEADER_AUTH: 'true'
+      })
+    ).toThrow(/ALLOW_DEV_HEADER_AUTH=true is forbidden/);
+  });
+
   it('loadOidcConfig derives issuer and audience from the Keycloak variables', () => {
     const config = loadOidcConfig({
       KEYCLOAK_URL: 'https://sso.example.com/',

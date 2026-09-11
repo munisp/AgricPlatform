@@ -11,7 +11,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { InsuranceService, type QuoteInput } from './insurance.service.js';
 
@@ -29,6 +29,7 @@ function requireActor(actor: User | null): User {
  */
 @ApiTags('insurance')
 @Controller('insurance')
+@UseGuards(RolesGuard)
 export class InsuranceController {
   constructor(private readonly insurance: InsuranceService) {}
 
@@ -39,6 +40,7 @@ export class InsuranceController {
   }
 
   @Post('quotes')
+  @Authenticated()
   @ApiOperation({
     summary: 'Quote + persist a QUOTED policy (deterministic rate card; fail-closed pricing inputs).'
   })
@@ -47,6 +49,7 @@ export class InsuranceController {
   }
 
   @Post('policies/:id/issue')
+  @Authenticated()
   @ApiOperation({ summary: 'Issue a quoted policy (QUOTED → ACTIVE, owner only; 409 on illegal transition).' })
   async issue(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.insurance.issue(requireActor(actor), id) };
@@ -61,12 +64,14 @@ export class InsuranceController {
   }
 
   @Get('policies/mine')
+  @Authenticated()
   @ApiOperation({ summary: 'My insurance policies.' })
   async myPolicies(@CurrentUser() actor: User | null) {
     return { data: await this.insurance.myPolicies(requireActor(actor)) };
   }
 
   @Get('policies/:id')
+  @Authenticated()
   @ApiOperation({ summary: 'Policy detail (owner or admin).' })
   async getPolicy(@Param('id') id: string, @CurrentUser() actor: User | null) {
     const caller = requireActor(actor);
@@ -89,6 +94,7 @@ export class InsuranceController {
   }
 
   @Get('trigger-events')
+  @Authenticated()
   @ApiOperation({ summary: 'My trigger events with evidence payloads and basis flags.' })
   async myTriggerEvents(@CurrentUser() actor: User | null) {
     return { data: await this.insurance.myTriggerEvents(requireActor(actor)) };
@@ -103,6 +109,7 @@ export class InsuranceController {
   }
 
   @Get('payouts')
+  @Authenticated()
   @ApiOperation({ summary: 'My payout ledger (stub execution).' })
   async myPayouts(@CurrentUser() actor: User | null) {
     return { data: await this.insurance.myPayouts(requireActor(actor)) };

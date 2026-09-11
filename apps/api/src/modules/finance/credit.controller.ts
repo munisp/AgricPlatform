@@ -41,6 +41,7 @@ class CreateLenderDto implements Omit<Lender, 'id' | 'isActive'> {
 /** Versioned credit scoring + lender directory/matching (wave P2a). */
 @ApiTags('finance')
 @Controller('finance')
+@UseGuards(RolesGuard)
 export class CreditController {
   constructor(
     private readonly credit: CreditService,
@@ -48,19 +49,20 @@ export class CreditController {
   ) {}
 
   @Get('credit-score/:userId')
-  @ApiOperation({ summary: 'Versioned credit score recomputed from platform signals' })
-  async creditScore(@Param('userId') userId: string) {
+  @Authenticated()
+  @ApiOperation({ summary: 'Versioned credit score recomputed from platform signals (own record or admin)' })
+  async creditScore(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
     return { data: await this.credit.scoreForUser(userId) };
   }
 
   @Get('lenders')
-  @ApiOperation({ summary: 'Active lender directory' })
+  @ApiOperation({ summary: 'Active lender directory (public catalog)' })
   async lenders() {
     return { data: await this.loans.listLenders() };
   }
 
   @Post('lenders')
-  @UseGuards(RolesGuard)
   @Roles('admin')
   @ApiOperation({ summary: 'Register a lender in the directory (admin)' })
   async createLender(@Body() dto: CreateLenderDto, @CurrentUser() actor: User | null) {
@@ -68,7 +70,6 @@ export class CreditController {
   }
 
   @Get('lenders/match/:userId')
-  @UseGuards(RolesGuard)
   @Authenticated()
   @ApiOperation({ summary: 'Lenders ranked against the member credit score (own record or admin)' })
   async matchLenders(@Param('userId') userId: string, @CurrentUser() actor: User | null) {

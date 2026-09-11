@@ -64,7 +64,10 @@ export class OidcService {
     }
     const { payload } = await jwtVerify(token, this.keySet(), {
       issuer: this.config.issuer,
-      audience: this.config.audience
+      audience: this.config.audience,
+      // Pin the asymmetric realm signing algorithm; without an allowlist a
+      // token signed with an unexpected algorithm could be negotiated.
+      algorithms: ['RS256']
     });
     if (!payload.sub) {
       throw new Error('OIDC token is missing the sub claim');
