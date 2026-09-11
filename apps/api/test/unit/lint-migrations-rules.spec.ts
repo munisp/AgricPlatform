@@ -88,6 +88,38 @@ describe('lint-migrations rules', () => {
     });
   });
 
+  describe('CREATE INDEX', () => {
+    it('fails CREATE INDEX without IF NOT EXISTS', () => {
+      const found = problems('CREATE INDEX idx_a ON a.b (c);');
+      expect(found.some((p) => p.includes('CREATE INDEX idx_a ON a.b without IF NOT EXISTS'))).toBe(
+        true
+      );
+    });
+
+    it('fails CREATE UNIQUE INDEX without IF NOT EXISTS', () => {
+      const found = problems('CREATE UNIQUE INDEX idx_a ON a.b (c);');
+      expect(
+        found.some((p) => p.includes('CREATE UNIQUE INDEX idx_a ON a.b without IF NOT EXISTS'))
+      ).toBe(true);
+    });
+
+    it('passes CREATE INDEX IF NOT EXISTS', () => {
+      expect(problems('CREATE INDEX IF NOT EXISTS idx_a ON a.b (c);')).toEqual([]);
+    });
+
+    it('passes CREATE UNIQUE INDEX IF NOT EXISTS', () => {
+      expect(problems('CREATE UNIQUE INDEX IF NOT EXISTS idx_a ON a.b (c);')).toEqual([]);
+    });
+
+    it('passes a guarded index with USING method and WHERE clause', () => {
+      expect(
+        problems(
+          'CREATE INDEX IF NOT EXISTS idx_a ON a.b USING btree (c DESC) WHERE d IS NULL;'
+        )
+      ).toEqual([]);
+    });
+  });
+
   describe('existing destructive-DDL rules unchanged', () => {
     it('fails unguarded DROP TABLE / TRUNCATE, passes guarded DROP TABLE', () => {
       expect(problems('DROP TABLE a.b;').join('\n')).toContain('unguarded DROP TABLE');

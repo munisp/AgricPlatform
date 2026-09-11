@@ -15,6 +15,8 @@
  *     heuristic is a name mention)
  *   - CREATE TABLE must use IF NOT EXISTS
  *   - every CREATE TABLE declares a primary key (inline or table-level)
+ *   - CREATE INDEX / CREATE UNIQUE INDEX must use IF NOT EXISTS (a
+ *     mid-file-failed migration must be re-applyable end to end)
  */
 
 /** CREATE TABLE primary key check (inline or table-level constraint). */
@@ -56,6 +58,16 @@ export function lintMigrationStatements(statements) {
       }
       if (!hasPrimaryKey(statement)) {
         problems.push(`CREATE TABLE ${name} has no primary key`);
+      }
+    }
+    if (statement.type === 'create index') {
+      if (!statement.ifNotExists) {
+        const kind = statement.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX';
+        const name = statement.indexName?.name ?? '?';
+        const on = statement.table ? tableName(statement.table) : '?';
+        problems.push(
+          `${kind} ${name} ON ${on} without IF NOT EXISTS — add IF NOT EXISTS so a re-applied migration does not fail on the existing index`
+        );
       }
     }
     if (statement.type === 'alter table') {

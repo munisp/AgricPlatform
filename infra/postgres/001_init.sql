@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS privacy.consent_records (
     revoked_at      timestamptz,
     evidence        jsonb NOT NULL DEFAULT '{}'::jsonb
 );
-CREATE INDEX consent_user_purpose_idx ON privacy.consent_records (user_id, purpose, granted_at DESC);
+CREATE INDEX IF NOT EXISTS consent_user_purpose_idx ON privacy.consent_records (user_id, purpose, granted_at DESC);
 
 -- Drift item 3: status vocabulary aligned to the DeletionRequest contract;
 -- fulfilled_at renamed to completed_at.
@@ -209,7 +209,7 @@ CREATE TABLE IF NOT EXISTS community.forum_topics (
     reply_count integer NOT NULL DEFAULT 0,
     created_at  timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX forum_topics_filter_idx ON community.forum_topics (category, state, crop);
+CREATE INDEX IF NOT EXISTS forum_topics_filter_idx ON community.forum_topics (category, state, crop);
 
 -- Drift item 8: mentor requests (mentorship_pairs kept for future pairing).
 CREATE TABLE IF NOT EXISTS community.mentor_requests (
@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS opportunities.opportunities (
     is_active       boolean NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX opportunities_partner_idx ON opportunities.opportunities (partner_id);
+CREATE INDEX IF NOT EXISTS opportunities_partner_idx ON opportunities.opportunities (partner_id);
 
 -- Drift item 11: TS status vocabulary, notes, partial unique index backing
 -- the one-active-application rule.
@@ -310,8 +310,8 @@ CREATE TABLE IF NOT EXISTS opportunities.applications (
                     CHECK (status IN ('submitted','under_review','successful','unsuccessful','withdrawn')),
     submitted_at    timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX applications_user_idx ON opportunities.applications (user_id, submitted_at DESC);
-CREATE UNIQUE INDEX applications_active_unique
+CREATE INDEX IF NOT EXISTS applications_user_idx ON opportunities.applications (user_id, submitted_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS applications_active_unique
     ON opportunities.applications (opportunity_id, user_id) WHERE status <> 'withdrawn';
 
 CREATE TABLE IF NOT EXISTS opportunities.programme_cohorts (
@@ -407,7 +407,7 @@ CREATE TABLE IF NOT EXISTS advisory.items (
     severity    text CHECK (severity IN ('info','warning','critical')),
     published_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX advisory_items_filter_idx ON advisory.items (kind, state, crop);
+CREATE INDEX IF NOT EXISTS advisory_items_filter_idx ON advisory.items (kind, state, crop);
 
 CREATE TABLE IF NOT EXISTS advisory.crop_calendar_entries (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -485,7 +485,7 @@ CREATE TABLE IF NOT EXISTS marketplace.listings (
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX listings_search_idx ON marketplace.listings (crop, location_state) WHERE is_active;
+CREATE INDEX IF NOT EXISTS listings_search_idx ON marketplace.listings (crop, location_state) WHERE is_active;
 
 CREATE TABLE IF NOT EXISTS marketplace.buyer_requests (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -516,8 +516,8 @@ CREATE TABLE IF NOT EXISTS marketplace.orders (
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX orders_buyer_idx ON marketplace.orders (buyer_id, created_at DESC);
-CREATE INDEX orders_seller_idx ON marketplace.orders (seller_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS orders_buyer_idx ON marketplace.orders (buyer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS orders_seller_idx ON marketplace.orders (seller_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS marketplace.order_events (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -625,7 +625,7 @@ CREATE TABLE IF NOT EXISTS finance.ledger_entries (
     amount_kobo     bigint NOT NULL CHECK (amount_kobo > 0),  -- minor units only
     created_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX ledger_entries_account_idx ON finance.ledger_entries (account_id, created_at);
+CREATE INDEX IF NOT EXISTS ledger_entries_account_idx ON finance.ledger_entries (account_id, created_at);
 
 -- Balance invariant: every transfer must have matching debit/credit totals.
 -- The API asserts finance.transfer_is_balanced() after posting entries;
@@ -675,7 +675,7 @@ CREATE TABLE IF NOT EXISTS notifications.notifications (
     sent_at         timestamptz,
     read_at         timestamptz
 );
-CREATE INDEX notifications_user_idx ON notifications.notifications (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications.notifications (user_id, created_at DESC);
 
 -- Drift item 24: text PK/FK; the mapper stores the DeliveryResult JSON in
 -- the detail column.
@@ -710,8 +710,8 @@ CREATE TABLE IF NOT EXISTS admin.audit_events (
     metadata        jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX audit_events_time_idx ON admin.audit_events (created_at DESC);
-CREATE INDEX audit_events_actor_idx ON admin.audit_events (actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_events_time_idx ON admin.audit_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_events_actor_idx ON admin.audit_events (actor_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS admin.review_queue_items (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -748,7 +748,7 @@ CREATE TABLE IF NOT EXISTS analytics.events (
     properties      jsonb NOT NULL DEFAULT '{}'::jsonb,
     occurred_at     timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX analytics_events_name_time_idx ON analytics.events (event_name, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS analytics_events_name_time_idx ON analytics.events (event_name, occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS analytics.export_jobs (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -813,7 +813,7 @@ CREATE TABLE IF NOT EXISTS events.outbox (
     published_at    timestamptz,               -- NULL until relayed to consumers
     attempts        integer NOT NULL DEFAULT 0
 );
-CREATE INDEX outbox_unpublished_idx ON events.outbox (occurred_at) WHERE published_at IS NULL;
+CREATE INDEX IF NOT EXISTS outbox_unpublished_idx ON events.outbox (occurred_at) WHERE published_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS events.processed_events (         -- consumer-side idempotency
     consumer        text NOT NULL,
