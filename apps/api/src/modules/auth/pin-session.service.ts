@@ -1,12 +1,24 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable, Optional } from '@nestjs/common';
-import { PIN_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
+import { createHash } from 'node:crypto';
 import {
-  MAX_PROFILES_PER_DEVICE,
-  PIN_LOCKOUT_MS,
-  PIN_MAX_ATTEMPTS,
-  type PinProfileRepository
-} from '../../database/repositories/pin-profile.repository.js';
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  UnauthorizedException
+} from '@nestjs/common';
+import type { User } from '@agric-platform/shared';
+import { PIN_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
+import type { PinProfile, PinProfileRepository } from '../../database/repositories/pin-profile.repository.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
+import { UsersService } from '../users/users.service.js';
+import { AuthService } from './auth.service.js';
+
+/** A shared Android device hosts at most this many family profiles. */
+export const PIN_MAX_PROFILES_PER_DEVICE = 5;
+/** Wrong-PIN attempts before the 15-minute lockout (mirrors OTP policy). */
+export const PIN_MAX_ATTEMPTS = 5;
+export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 
 // Character class (not a digit escape) keeps this source file free of literal backslashes.
 const PIN_PATTERN = /^[0-9]{4}$/;
@@ -20,124 +32,119 @@ export function hashSharedDevicePin(deviceToken: string, userId: string, pin: st
   return createHash('sha256').update(`pin:${deviceToken}:${userId}:${pin}`).digest('hex');
 }
 
-/** Session token TTL after a successful PIN login (long market days). */
-export const PIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-
-export interface PinSession {
-  token: string;
+export interface PinProfileView {
   deviceToken: string;
   userId: string;
-  expiresAt: string;
-}
-
-export class PinError extends Error {
-  constructor(
-    readonly code:
-      | 'INVALID_PIN_FORMAT'
-      | 'PROFILE_LIMIT'
-      | 'UNKNOWN_PROFILE'
-      | 'LOCKED'
-      | 'WRONG_PIN'
-      | 'SESSION_EXPIRED',
-    message: string
-  ) {
-    super(message);
-    this.name = 'PinError';
-  }
+  createdAt: string;
+  profilesOnDevice: number;
 }
 
 /**
- * Shared-device PIN auth (USSD wave P5b): enrolment and verification for
- * family phones carrying up to 5 farmer profiles. Sessions are in-memory
- * tokens (TTL 12 h); PINs are salted per (device, user) and never logged.
- * Fail-closed lockout: 5 wrong attempts → 15-minute lock (same policy as
- * the OTP service; atomic attempt increments per audit C2-5).
+ * Shared-device PIN sessions (wave P5b): family members share one Android
+ * device; each profile unlocks a fast session swap with a 4-digit PIN. PINs
+ * are stored as salted hashes only, and the attempt/lockout policy reuses
+ * the OTP challenge pattern (5 attempts → 15-minute lock).
  */
 @Injectable()
 export class PinSessionService {
-  private readonly sessions = new Map<string, PinSession>();
-
   constructor(
     @Inject(PIN_PROFILE_REPOSITORY) private readonly profiles: PinProfileRepository,
-    @Optional() private readonly now: () => number = Date.now
+    private readonly users: UsersService,
+    private readonly auth: AuthService,
+    private readonly events: DomainEventsService
   ) {}
-
-  /** Registers (or replaces) a farmer's PIN on a shared device. */
-  async addProfile(deviceToken: string, userId: string, pin: string) {
-    if (!PIN_PATTERN.test(pin)) {
-      throw new PinError('INVALID_PIN_FORMAT', 'PIN must be exactly 4 digits');
-    }
-    const existing = await this.profiles.find(deviceToken, userId);
-    if (!existing) {
-      const count = await this.profiles.countForDevice(deviceToken);
-      if (count >= MAX_PROFILES_PER_DEVICE) {
-        throw new PinError(
-          'PROFILE_LIMIT',
-          `Device already has the maximum of ${MAX_PROFILES_PER_DEVICE} profiles`
-        );
-      }
-    }
-    return this.profiles.save({
-      deviceToken,
-      userId,
-      pinHash: this.hashPin(deviceToken, userId, pin),
-      attempts: 0,
-      createdAt: existing?.createdAt ?? new Date(this.now()).toISOString()
-    });
-  }
-
-  /** Verifies a PIN and mints a 12-hour session token. */
-  async login(deviceToken: string, userId: string, pin: string): Promise<PinSession> {
-    const profile = await this.profiles.find(deviceToken, userId);
-    if (!profile) {
-      throw new PinError('UNKNOWN_PROFILE', 'No profile for this user on this device');
-    }
-    if (profile.lockedUntil && new Date(profile.lockedUntil).getTime() > this.now()) {
-      throw new PinError('LOCKED', 'Profile is locked; try again later');
-    }
-    if (profile.pinHash !== this.hashPin(deviceToken, userId, pin)) {
-      // Atomic increment (audit C2-5) — no read-modify-write race window.
-      const attempts = await this.profiles.incrementAttempts(deviceToken, userId);
-      if (attempts >= PIN_MAX_ATTEMPTS) {
-        await this.profiles.update(deviceToken, userId, {
-          attempts: 0,
-          lockedUntil: new Date(this.now() + PIN_LOCKOUT_MS).toISOString()
-        });
-        throw new PinError('LOCKED', 'Too many wrong PINs; profile locked for 15 minutes');
-      }
-      throw new PinError('WRONG_PIN', 'Wrong PIN');
-    }
-    if (profile.attempts > 0 || profile.lockedUntil) {
-      await this.profiles.update(deviceToken, userId, { attempts: 0, lockedUntil: undefined });
-    }
-    const session: PinSession = {
-      token: randomUUID(),
-      deviceToken,
-      userId,
-      expiresAt: new Date(this.now() + PIN_SESSION_TTL_MS).toISOString()
-    };
-    this.sessions.set(session.token, session);
-    return session;
-  }
-
-  /** Resolves a session token to its user; expired tokens fail closed. */
-  resolve(token: string): PinSession {
-    const session = this.sessions.get(token);
-    if (!session || new Date(session.expiresAt).getTime() <= this.now()) {
-      if (session) {
-        this.sessions.delete(token);
-      }
-      throw new PinError('SESSION_EXPIRED', 'PIN session expired or unknown');
-    }
-    return session;
-  }
-
-  logout(token: string): void {
-    this.sessions.delete(token);
-  }
 
   /** Salted PIN hash — the raw PIN never leaves the request. */
   hashPin(deviceToken: string, userId: string, pin: string): string {
     return hashSharedDevicePin(deviceToken, userId, pin);
   }
+
+  /** Adds (or re-pins) the authenticated user's profile on a device. */
+  async addProfile(userId: string, deviceToken: string, pin: string): Promise<PinProfileView> {
+    if (!PIN_PATTERN.test(pin)) {
+      throw new BadRequestException('PIN must be exactly 4 digits');
+    }
+    // Confirms the account exists before linking it to a device.
+    await this.users.getById(userId);
+    const existing = await this.profiles.find(deviceToken, userId);
+    if (!existing) {
+      const count = await this.profiles.countForDevice(deviceToken);
+      if (count >= PIN_MAX_PROFILES_PER_DEVICE) {
+        throw new BadRequestException(
+          `This device already has the maximum of ${PIN_MAX_PROFILES_PER_DEVICE} profiles`
+        );
+      }
+    }
+    const profile: PinProfile = {
+      deviceToken,
+      userId,
+      pinHash: this.hashPin(deviceToken, userId, pin),
+      attempts: 0,
+      createdAt: existing?.createdAt ?? new Date().toISOString()
+    };
+    await this.profiles.save(profile);
+    await this.events.publish('identity.pin_profile.registered', { deviceToken }, userId);
+    return {
+      deviceToken,
+      userId,
+      createdAt: profile.createdAt,
+      profilesOnDevice: await this.profiles.countForDevice(deviceToken)
+    };
+  }
+
+  /** Lists the profiles on a device (no hashes). */
+  async listProfiles(deviceToken: string): Promise<Array<{ userId: string; createdAt: string }>> {
+    return (await this.profiles.listForDevice(deviceToken)).map((profile) => ({
+      userId: profile.userId,
+      createdAt: profile.createdAt
+    }));
+  }
+
+  /**
+   * Fast profile swap: verifies the PIN and issues a short-lived session for
+   * the selected profile. Wrong PINs count towards the 5-attempt lockout;
+   * locked profiles reject every attempt until the lock expires.
+   */
+  async switchProfile(
+    deviceToken: string,
+    userId: string,
+    pin: string
+  ): Promise<{ token: string; user: User }> {
+    if (!PIN_PATTERN.test(pin)) {
+      throw new BadRequestException('PIN must be exactly 4 digits');
+    }
+    const profile = await this.profiles.find(deviceToken, userId);
+    if (!profile) {
+      throw new UnauthorizedException('Unknown device profile');
+    }
+    const now = Date.now();
+    if (profile.lockedUntil && new Date(profile.lockedUntil).getTime() > now) {
+      throw new HttpException(
+        `Profile is locked after too many wrong PINs. Try again after ${profile.lockedUntil}.`,
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
+    if (profile.pinHash !== this.hashPin(deviceToken, userId, pin)) {
+      // Atomic increment (audit C2-5): the repository counts this failed
+      // attempt indivisibly, so concurrent wrong PINs cannot read the same
+      // pre-increment counter and defeat the lockout.
+      const attempts = await this.profiles.incrementAttempts(deviceToken, userId);
+      if (attempts >= PIN_MAX_ATTEMPTS) {
+        await this.profiles.update(deviceToken, userId, {
+          attempts: 0,
+          lockedUntil: new Date(now + PIN_LOCKOUT_MS).toISOString()
+        });
+        throw new HttpException(
+          'Too many incorrect PINs; this profile is locked for 15 minutes.',
+          HttpStatus.TOO_MANY_REQUESTS
+        );
+      }
+      throw new UnauthorizedException('Incorrect PIN');
+    }
+    if (profile.attempts > 0 || profile.lockedUntil) {
+      await this.profiles.update(deviceToken, userId, { attempts: 0, lockedUntil: undefined });
+    }
+    return this.auth.issueSessionFor(userId);
+  }
 }
+

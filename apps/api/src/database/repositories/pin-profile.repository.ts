@@ -1,32 +1,20 @@
-import { NotFoundException } from '@nestjs/common';
-
 /**
- * Shared-device PIN profiles (USSD wave P5b, growth-model shared-phone gap):
- * up to five farmer profiles per feature phone, each with a salted 4-digit
- * PIN. Fail-closed: 5 wrong attempts lock the profile for 15 minutes (OTP
- * policy parity); attempt increments are ATOMIC per row (audit C2-5).
- * In-memory is the default driver; pg implementation lives in
- * pin-profile.pg-repository.ts and is selected by DatabaseModule when PG_POOL
- * is configured.
+ * Shared-device PIN profile persistence port (wave P5b). Rows map to
+ * channels.pin_profiles (infra/postgres/008_ussd_channels.sql). The composite
+ * key (deviceToken, userId) enforces one profile per family member per
+ * device; the service enforces the 5-profiles-per-device cap and the
+ * attempt/lockout policy.
  */
-
-export const MAX_PROFILES_PER_DEVICE = 5;
-export const PIN_MAX_ATTEMPTS = 5;
-export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
-
 export interface PinProfile {
   deviceToken: string;
   userId: string;
-  /** Salted hash: sha256(`pin:${deviceToken}:${userId}:${pin}`). */
+  /** Salted hash — the raw 4-digit PIN is never stored. */
   pinHash: string;
+  /** Consecutive failed verification attempts since the last success/lock. */
   attempts: number;
+  /** ISO-8601 lock expiry while attempt-limited; absent when not locked. */
   lockedUntil?: string;
   createdAt: string;
-}
-
-export interface PinProfilePatch {
-  attempts?: number;
-  lockedUntil?: string;
 }
 
 export interface PinProfileRepository {
@@ -38,27 +26,35 @@ export interface PinProfileRepository {
    * device, so PIN verification checks the user's shared-device PINs.
    */
   listForUser(userId: string): Promise<PinProfile[]>;
+  countForDevice(deviceToken: string): Promise<number>;
+  /** Upsert keyed on (deviceToken, userId). */
   save(profile: PinProfile): Promise<PinProfile>;
-  update(deviceToken: string, userId: string, patch: PinProfilePatch): Promise<PinProfile>;
+  update(
+    deviceToken: string,
+    userId: string,
+    patch: Partial<Pick<PinProfile, 'pinHash' | 'attempts' | 'lockedUntil'>>
+  ): Promise<PinProfile>;
   /**
-   * Atomically increments the failed-attempt counter and returns the new
-   * count (audit C2-5: read-modify-write races would let an attacker retry
-   * PINs beyond the 5-attempt ceiling).
+   * Atomically increments the wrong-PIN attempt counter and returns the new
+   * count (audit C2-5). A read-modify-write through find+update loses
+   * concurrent increments, letting parallel wrong PINs defeat the lockout;
+   * implementations must make the increment indivisible (single UPDATE on
+   * Postgres; synchronous read-increment-write in memory).
    */
   incrementAttempts(deviceToken: string, userId: string): Promise<number>;
-  countForDevice(deviceToken: string): Promise<number>;
+  remove(deviceToken: string, userId: string): Promise<boolean>;
 }
 
 export class InMemoryPinProfileRepository implements PinProfileRepository {
   private readonly items = new Map<string, PinProfile>();
 
   private key(deviceToken: string, userId: string): string {
-    return `${deviceToken}:${userId}`;
+    return `${deviceToken}${userId}`;
   }
 
   async find(deviceToken: string, userId: string): Promise<PinProfile | undefined> {
-    const found = this.items.get(this.key(deviceToken, userId));
-    return found ? { ...found } : undefined;
+    const profile = this.items.get(this.key(deviceToken, userId));
+    return profile ? { ...profile } : undefined;
   }
 
   async listForDevice(deviceToken: string): Promise<PinProfile[]> {
@@ -73,39 +69,50 @@ export class InMemoryPinProfileRepository implements PinProfileRepository {
       .map((profile) => ({ ...profile }));
   }
 
+  async countForDevice(deviceToken: string): Promise<number> {
+    return (await this.listForDevice(deviceToken)).length;
+  }
+
   async save(profile: PinProfile): Promise<PinProfile> {
     this.items.set(this.key(profile.deviceToken, profile.userId), { ...profile });
     return { ...profile };
   }
 
-  async update(deviceToken: string, userId: string, patch: PinProfilePatch): Promise<PinProfile> {
-    const existing = this.items.get(this.key(deviceToken, userId));
+  async update(
+    deviceToken: string,
+    userId: string,
+    patch: Partial<Pick<PinProfile, 'pinHash' | 'attempts' | 'lockedUntil'>>
+  ): Promise<PinProfile> {
+    const key = this.key(deviceToken, userId);
+    const existing = this.items.get(key);
     if (!existing) {
-      throw new NotFoundException(`PIN profile ${userId} on ${deviceToken} not found`);
+      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
     }
-    const updated: PinProfile = {
-      ...existing,
-      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
-      ...(patch.lockedUntil !== undefined ? { lockedUntil: patch.lockedUntil } : {})
-    };
-    this.items.set(this.key(deviceToken, userId), updated);
+    const updated: PinProfile = { ...existing, ...patch };
+    this.items.set(key, updated);
     return { ...updated };
   }
 
   async incrementAttempts(deviceToken: string, userId: string): Promise<number> {
-    const existing = this.items.get(this.key(deviceToken, userId));
+    // No awaits between the read and the write: the JS event loop runs this
+    // whole block synchronously, so concurrent callers cannot interleave and
+    // every failed attempt is counted exactly once.
+    const key = this.key(deviceToken, userId);
+    const existing = this.items.get(key);
     if (!existing) {
-      throw new NotFoundException(`PIN profile ${userId} on ${deviceToken} not found`);
+      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
     }
-    existing.attempts += 1;
-    return existing.attempts;
+    const updated: PinProfile = { ...existing, attempts: existing.attempts + 1 };
+    this.items.set(key, updated);
+    return updated.attempts;
   }
 
-  async countForDevice(deviceToken: string): Promise<number> {
-    return (await this.listForDevice(deviceToken)).length;
+  async remove(deviceToken: string, userId: string): Promise<boolean> {
+    return this.items.delete(this.key(deviceToken, userId));
   }
 }
 
 export function createInMemoryPinProfileRepository(): InMemoryPinProfileRepository {
   return new InMemoryPinProfileRepository();
 }
+
