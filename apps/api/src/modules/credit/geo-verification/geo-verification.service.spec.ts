@@ -35,7 +35,15 @@ const admin: Pick<User, 'id' | 'roles'> = { id: 'user-admin', roles: ['admin'] }
 const lender: Pick<User, 'id' | 'roles'> = { id: 'user-lender', roles: ['lender'] };
 const farmer: Pick<User, 'id' | 'roles'> = { id: 'user-adamu', roles: ['farmer'] };
 
-const ENV_KEYS = ['GEO_CREDIT_MODE', 'CROP_ML_DRIVER', 'CROP_ML_URL', 'FLOOD_ML_DRIVER', 'FLOOD_ML_URL'];
+const ENV_KEYS = [
+  'GEO_CREDIT_MODE',
+  'CROP_ML_DRIVER',
+  'CROP_ML_URL',
+  'FLOOD_ML_DRIVER',
+  'FLOOD_ML_URL',
+  'NODE_ENV',
+  'SHADOW_FIXTURES'
+];
 let savedEnv: Record<string, string | undefined> = {};
 
 function loan(overrides: Partial<CreditLoanApplication> = {}): CreditLoanApplication {
@@ -84,6 +92,8 @@ beforeEach(() => {
   delete process.env.CROP_ML_URL;
   delete process.env.FLOOD_ML_DRIVER;
   delete process.env.FLOOD_ML_URL;
+  delete process.env.NODE_ENV;
+  delete process.env.SHADOW_FIXTURES;
 });
 
 afterEach(() => {
@@ -287,6 +297,45 @@ describe('GeoVerificationService.recomputeOpenApplications (batch)', () => {
     process.env.GEO_CREDIT_MODE = 'off';
     const { service } = makeService();
     await expect(service.recomputeOpenApplications(admin)).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe('production stub-fixture persistence gate (WP-G15)', () => {
+  it('production: stub-derived shadow score is returned but NOT persisted', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service, shadow } = makeService();
+    const result = await service.getShadowScore('cla-1', admin);
+    // Endpoint stays functional: the computed score is still returned...
+    expect(result.status).toBe('computed');
+    expect(result.basis).toEqual({ flood: 'stub', crop: 'stub' });
+    // ...but no stub-fixture-derived row reaches the shadow table.
+    expect(await shadow.all()).toHaveLength(0);
+  });
+
+  it('production: SHADOW_FIXTURES=true explicitly re-enables persistence', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.SHADOW_FIXTURES = 'true';
+    const { service, shadow } = makeService();
+    const result = await service.getShadowScore('cla-1', admin);
+    expect(result.status).toBe('computed');
+    expect(await shadow.all()).toHaveLength(1);
+  });
+
+  it('production: batch recompute counts suppressed scores and persists nothing', async () => {
+    process.env.NODE_ENV = 'production';
+    const { service, shadow } = makeService();
+    const report = await service.recomputeOpenApplications(admin);
+    expect(report.applications).toBe(1);
+    expect(report.suppressed).toBe(1);
+    expect(report.recomputed).toBe(0);
+    expect(await shadow.all()).toHaveLength(0);
+  });
+
+  it('non-production: stub-derived scores persist exactly as before', async () => {
+    const { service, shadow } = makeService();
+    const result = await service.getShadowScore('cla-1', admin);
+    expect(result.basis).toEqual({ flood: 'stub', crop: 'stub' });
+    expect(await shadow.all()).toHaveLength(1);
   });
 });
 
