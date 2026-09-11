@@ -19,6 +19,7 @@ import type {
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -66,6 +67,8 @@ import {
   ProviderRequestError,
   type InsuranceWeatherProvider
 } from './weather.provider.js';
+import { RegenDiscountService, type RegenQuoteEligibility } from './regen-discount.service.js';
+import type { RegenDiscountRecord } from '../../database/repositories/insurance.repository.js';
 
 /** Ledger account codes for the stub payout rail. */
 export const INSURER_CLAIMS_EXPENSE_ACCOUNT = 'insurer:claims_expense';
@@ -228,7 +231,12 @@ export class InsuranceService {
     private readonly h3: H3Service,
     private readonly ledger: LedgerService,
     private readonly events: DomainEventsService,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    // Stage 27 (Regen Discount): optional so hand-rolled unit tests can
+    // construct the service without the discount collaborator — the running
+    // app always resolves it from the InsuranceModule providers.
+    @Optional() private readonly regen?: RegenDiscountService,
+    @Optional() private readonly telemetry?: TelemetryService
   ) {}
 
   /** Visible for tests: rebuild lazily-resolved providers after env changes. */
@@ -269,8 +277,17 @@ export class InsuranceService {
    * rate card (sum insured × peril rate × flood-band modifier); the flood
    * band comes from the geo-intel flood port and fails closed (503) when a
    * configured live flood sidecar is unreachable.
+   *
+   * Stage 27 (Regen Discount): when the `regen-discount` flag is on and the
+   * plot carries a current-season recorded carbon attestation, the bounded,
+   * versioned regen discount applies inside the same deterministic premium
+   * computation (floor-capped at ₦1k, byte-stable), and the discount row is
+   * recorded with its evidence FK + rate-card version.
    */
-  async quote(actor: User, input: QuoteInput): Promise<{ quote: ParametricQuote; policy: ParametricPolicy }> {
+  async quote(
+    actor: User,
+    input: QuoteInput
+  ): Promise<{ quote: ParametricQuote; policy: ParametricPolicy; regenDiscount?: RegenDiscountRecord }> {
     await this.ensureCatalogSeeded();
     if (!Number.isSafeInteger(input.sumInsuredKobo)) {
       throw new BadRequestException('sumInsuredKobo must be an integer kobo amount');
@@ -317,11 +334,27 @@ export class InsuranceService {
       throw error;
     }
     const floodBand = floodBandForRank(floodSeverityRank(severity));
-    const { premiumKobo, floodModifierBps } = computePremiumKobo({
-      sumInsuredKobo: input.sumInsuredKobo,
-      premiumRateBps: product.premiumRateBps,
-      floodBand
-    });
+    // Stage 27 (Regen Discount): eligibility is resolved BEFORE pricing so
+    // the discount rides the same deterministic premium computation. Flag
+    // OFF (default) → ineligible, quote behaves exactly as before.
+    const regenEligibility: RegenQuoteEligibility = this.regen
+      ? await this.regen.resolveEligibility({ actor, plot, season: input.season })
+      : { eligible: false };
+    const { premiumKobo, floodModifierBps, regenDiscountKobo } = await (
+      this.telemetry ?? new TelemetryService()
+    ).withSpan(
+      'insurance.premium.compute',
+      { product_code: product.code, regen_eligible: regenEligibility.eligible },
+      async () =>
+        computePremiumKobo({
+          sumInsuredKobo: input.sumInsuredKobo,
+          premiumRateBps: product.premiumRateBps,
+          floodBand,
+          ...(regenEligibility.eligible && regenEligibility.discountBps !== undefined
+            ? { regenDiscountBps: regenEligibility.discountBps }
+            : {})
+        })
+    );
     const now = new Date().toISOString();
     const policy: ParametricPolicy = {
       id: newId('inspol'),
@@ -339,6 +372,20 @@ export class InsuranceService {
       updatedAt: now
     };
     await this.policies.create(policy);
+    // Stage 27: record the exactly-once-per-policy discount row only when a
+    // real (non-floor-capped-to-zero) discount was priced in — the row
+    // carries the evidence FK, the rate-card version and the honest
+    // evidence-basis badge so the policy documents estimate-only evidence.
+    let regenDiscount: RegenDiscountRecord | undefined;
+    if (this.regen && regenEligibility.eligible && regenDiscountKobo > 0) {
+      regenDiscount = await this.regen.recordDiscount({
+        policyId: policy.id,
+        plotId: plot.id,
+        actorId: actor.id,
+        eligibility: regenEligibility,
+        discountKobo: regenDiscountKobo
+      });
+    }
     const quote: ParametricQuote = {
       productCode: product.code,
       season: input.season,
@@ -349,7 +396,7 @@ export class InsuranceService {
       premiumKobo,
       pricingBasis
     };
-    return { quote, policy };
+    return { quote, policy, ...(regenDiscount ? { regenDiscount } : {}) };
   }
 
   /** QUOTED → ACTIVE (owner only). Illegal transitions surface 409. */
