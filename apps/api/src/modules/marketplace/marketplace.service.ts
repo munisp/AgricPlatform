@@ -1,13 +1,23 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException
+} from '@nestjs/common';
 import type {
   ApiListResponse,
   LocationRef,
   MarketplaceListing,
   Order,
   OrderStatus,
+  PaymentProviderPort,
   User
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import {
@@ -34,7 +44,7 @@ import {
   SYNC_ENTITY_MARKETPLACE_LISTING
 } from '../sync/sync-proof-entities.js';
 import type { SyncVersioningService } from '../sync/sync-versioning.service.js';
-import { EscrowService } from './escrow.service.js';
+import { EscrowService, PAYMENT_PROVIDER, type DepositEvidence } from './escrow.service.js';
 import { InvoiceService } from './invoice.service.js';
 
 /** Orders at or above this value stay escrow-ready for settlement. */
@@ -126,7 +136,11 @@ export class MarketplaceService {
     @Optional() @Inject(ORDER_EXTENSION_REPOSITORY) private readonly extensions?: OrderExtensionRepository,
     // Wave SYNCSRV: sync version bumps on listing writes (optional so bare
     // service constructions in tests keep working; additive + non-fatal).
-    @Optional() private readonly syncVersioning?: SyncVersioningService
+    @Optional() private readonly syncVersioning?: SyncVersioningService,
+    // Stage 22 (audit C2): payment provider for verify-before-credit on the
+    // deposit_paid transition. Optional so bare service constructions in
+    // tests keep working; registered from MarketplaceModule.
+    @Optional() @Inject(PAYMENT_PROVIDER) private readonly payments?: PaymentProviderPort
   ) {}
 
   async listListings(
@@ -273,11 +287,19 @@ export class MarketplaceService {
    * anything else must be a valid transition from ORDER_TRANSITIONS and the
    * actor must be an entitled party (buyer/seller per the transition, or an
    * administrator).
+   *
+   * Stage 22 (audit C2, verify-before-credit): the deposit_paid transition
+   * requires a paymentReference, verified with the configured payment
+   * provider (status success AND exact kobo amount) before the status
+   * changes and escrow is held; completing an escrow-backed order requires
+   * the escrow's deposit to have reached deposit_paid through that verified
+   * path.
    */
   async setOrderStatus(
     id: string,
     status: OrderStatus,
-    actor: Pick<User, 'id' | 'roles'>
+    actor: Pick<User, 'id' | 'roles'>,
+    options?: { paymentReference?: string }
   ): Promise<Order> {
     const order = await this.orders.getById(id);
     if (order.status === status) {
@@ -298,6 +320,15 @@ export class MarketplaceService {
           `Only the order ${allowed.length > 0 ? allowed.join(' or ') : 'administrator'} may move an order from '${order.status}' to '${status}'`
         );
       }
+    }
+    // Verify-before-credit gates run BEFORE the guarded status write so a
+    // rejected deposit/completion leaves the order in its prior state and
+    // the transition can simply be retried with valid evidence.
+    let deposit: DepositEvidence | undefined;
+    if (status === 'deposit_paid') {
+      deposit = await this.verifyDeposit(order, options?.paymentReference, actor.id);
+    } else if (status === 'completed') {
+      await this.assertVerifiedEscrowForCompletion(order);
     }
     // Guarded write (funds-integrity wave): a concurrent transition that
     // already moved the order fails with a 409 instead of silently
@@ -331,7 +362,7 @@ export class MarketplaceService {
     if (status === 'confirmed') {
       await this.invoices?.issueForOrder(id, actor.id);
     } else if (status === 'deposit_paid' && updated.escrowRequired) {
-      await this.escrow?.holdForOrder(id, actor.id);
+      await this.escrow?.holdForOrder(id, actor.id, deposit);
     } else if (status === 'disputed') {
       await this.escrow?.disputeForOrder(id, actor.id);
     } else if (status === 'cancelled') {
@@ -342,6 +373,91 @@ export class MarketplaceService {
       await this.invoices?.markPaidForOrder(id, actor.id);
     }
     return updated;
+  }
+
+  /**
+   * Verify-before-credit (Stage 22, audit C2): the deposit_paid transition
+   * is a money-crediting event, so a self-declared status flip is never
+   * enough. The buyer must supply the payment reference; when a payment
+   * provider is wired the reference is verified with the provider (status
+   * success AND exact kobo amount vs the order total). Without a provider
+   * the declarative path is a non-production convenience only — production
+   * fails closed.
+   */
+  private async verifyDeposit(
+    order: Order,
+    paymentReference: string | undefined,
+    actorId: string
+  ): Promise<DepositEvidence> {
+    const reference = paymentReference?.trim();
+    if (!reference) {
+      throw new BadRequestException(
+        `A paymentReference is required to mark order ${order.id} deposit_paid; ` +
+          'declarative payment claims are not accepted'
+      );
+    }
+    if (!this.payments) {
+      if (isProduction()) {
+        throw new ServiceUnavailableException(
+          'No payment provider is configured (PAYMENT_DRIVER + provider credentials); ' +
+            'deposit_paid cannot be verified, refusing the transition in production'
+        );
+      }
+      return { reference, verified: false };
+    }
+    const verification = await this.payments.verify(reference);
+    if (verification.status !== 'success') {
+      throw new BadRequestException(
+        `Payment provider '${this.payments.name}' reports status '${verification.status}' ` +
+          `for reference '${reference}'; the deposit cannot be credited`
+      );
+    }
+    const expectedKobo = Math.round(order.totalNaira * 100);
+    if (verification.amountKobo !== expectedKobo) {
+      throw new BadRequestException(
+        `Verified amount ${verification.amountKobo} kobo does not match order ${order.id} ` +
+          `total ${expectedKobo} kobo; the deposit cannot be credited`
+      );
+    }
+    await this.audit?.record({
+      actorId,
+      action: 'marketplace.order.deposit_verified',
+      entityType: 'order',
+      entityId: order.id,
+      metadata: {
+        reference,
+        provider: this.payments.name,
+        amountKobo: verification.amountKobo,
+        providerReference: verification.providerReference
+      }
+    });
+    return { reference, verified: true };
+  }
+
+  /**
+   * Completion auto-release gate (Stage 22, audit C2): an escrow-backed
+   * order may only complete (releasing escrow and marking the invoice paid)
+   * when its deposit reached deposit_paid through the verified path. Runs
+   * before the status write so a refused completion leaves the order
+   * untouched; EscrowService.releaseForOrder enforces the same invariant
+   * for its direct callers. Unverified holds (legacy rows, or holds created
+   * without a provider while verification is required) need admin
+   * mediation.
+   */
+  private async assertVerifiedEscrowForCompletion(order: Order): Promise<void> {
+    if (!order.escrowRequired || !this.escrow) {
+      return;
+    }
+    if (!this.payments && !isProduction()) {
+      return; // declarative holds are a non-production convenience
+    }
+    const record = await this.escrow.escrowForOrder(order.id);
+    if (record && (record.status === 'held' || record.status === 'releasing') && !record.depositVerifiedAt) {
+      throw new ConflictException(
+        `Order ${order.id} cannot complete: escrow ${record.id} has no provider-verified ` +
+          'deposit. Resolve through the admin-mediated path.'
+      );
+    }
   }
 
   async reviewOrder(

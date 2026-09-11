@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import type { EscrowRecord, EscrowStatus, PaymentProviderPort, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { ESCROW_REPOSITORY, ORDER_REPOSITORY } from '../../database/persistence.tokens.js';
@@ -16,11 +17,24 @@ import type { EscrowRepository } from '../../database/repositories/escrow.reposi
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 
 /**
- * Payment provider port token (wave P2a defines the port only). Paystack /
- * Flutterwave adapters register against this token in a later wave; without
- * a provider the escrow record still tracks state with no network calls.
+ * Payment provider port token. Stage 22 (audit C2) registers the
+ * Paystack/Flutterwave driver adapter against this token from
+ * MarketplaceModule (see payment-provider.ts); without a provider the
+ * escrow record still tracks state with no network calls, but the
+ * deposit/release path then runs unverified — a non-production convenience
+ * only.
  */
 export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
+
+/**
+ * Deposit evidence captured at the deposit_paid transition (Stage 22,
+ * audit C2: verify-before-credit). `verified` is true only when a payment
+ * provider confirmed the reference (status success + exact kobo amount).
+ */
+export interface DepositEvidence {
+  reference: string;
+  verified: boolean;
+}
 
 /** Which order party may drive each escrow transition (admins may drive any). */
 type EscrowActor = 'buyer' | 'seller';
@@ -83,11 +97,26 @@ export class EscrowService {
   }
 
   /**
+   * True when deposits/releases must be backed by provider verification:
+   * a provider is wired, or the process runs in production (fail closed —
+   * declarative payment evidence is a non-production convenience only).
+   */
+  private verificationRequired(): boolean {
+    return Boolean(this.provider) || isProduction();
+  }
+
+  /**
    * Places the order total (integer kobo) into escrow. Idempotent per order:
    * an existing escrow record is returned unchanged so webhook/order retries
-   * never double-hold.
+   * never double-hold. Deposit evidence (the buyer's payment reference and
+   * whether a provider verified it) is persisted on the record so the
+   * auto-release path can refuse unverified holds.
    */
-  async holdForOrder(orderId: string, actorId: string): Promise<EscrowRecord> {
+  async holdForOrder(
+    orderId: string,
+    actorId: string,
+    deposit?: DepositEvidence
+  ): Promise<EscrowRecord> {
     const existing = await this.escrowForOrder(orderId);
     if (existing) {
       return existing;
@@ -117,6 +146,8 @@ export class EscrowService {
       amountKobo,
       status: 'held',
       providerReference,
+      depositReference: deposit?.reference,
+      depositVerifiedAt: deposit?.verified ? heldAt.toISOString() : undefined,
       heldAt: heldAt.toISOString(),
       heldUntil: new Date(heldAt.getTime() + ESCROW_HOLD_TTL_MS).toISOString()
     };
@@ -126,7 +157,13 @@ export class EscrowService {
       action: 'marketplace.escrow.held',
       entityType: 'escrow_record',
       entityId: created.id,
-      metadata: { orderId, amountKobo, provider: this.provider?.name ?? 'none' }
+      metadata: {
+        orderId,
+        amountKobo,
+        provider: this.provider?.name ?? 'none',
+        depositReference: deposit?.reference,
+        depositVerified: deposit?.verified === true
+      }
     });
     await this.events.publish(
       'marketplace.escrow.held',
@@ -174,7 +211,14 @@ export class EscrowService {
     return this.applyTransition(record, status, actor.id);
   }
 
-  /** System-path release (delivery confirmation, order completion). */
+  /**
+   * System-path release (delivery confirmation, order completion).
+   * Verify-before-credit (Stage 22, audit C2): when verification is
+   * required (a provider is wired, or production), an escrow whose deposit
+   * was never provider-verified is NOT auto-released — the hold predates
+   * the fix or was declared without evidence. Such holds need the
+   * admin-mediated path (dispute resolution / manual release).
+   */
   async releaseForOrder(orderId: string, actorId: string): Promise<EscrowRecord | undefined> {
     const record = await this.escrowForOrder(orderId);
     if (!record) {
@@ -185,6 +229,19 @@ export class EscrowService {
     }
     if (record.status !== 'held') {
       return record; // nothing held, or awaiting dispute resolution
+    }
+    if (this.verificationRequired() && !record.depositVerifiedAt) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.release_blocked_unverified',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId, depositReference: record.depositReference }
+      });
+      throw new ConflictException(
+        `Escrow ${record.id} for order ${orderId} has no provider-verified deposit; ` +
+          'refusing auto-release. Resolve through the admin-mediated path.'
+      );
     }
     return this.applyTransition(record, 'released', actorId);
   }

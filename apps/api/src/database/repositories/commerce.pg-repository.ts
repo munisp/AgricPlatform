@@ -6,7 +6,8 @@ import {
   PgRepositoryBase,
   type WhereClause
 } from '../pg/pg-repository.base.js';
-import { escrowMapper, invoiceMapper, shipmentMapper } from '../pg/row-mappers.js';
+import { escrowRecordMapper } from '../pg/escrow.mapper.js';
+import { invoiceMapper, shipmentMapper } from '../pg/row-mappers.js';
 import type { EscrowCriteria, EscrowRepository } from './escrow.repository.js';
 import type { InvoiceCriteria, InvoiceRepository } from './invoice.repository.js';
 import type { ShipmentCriteria, ShipmentRepository } from './shipment.repository.js';
@@ -26,7 +27,9 @@ export class PgEscrowRepository
   constructor(pool: pg.Pool) {
     super(pool, {
       table: 'marketplace.escrow_records',
-      mapper: escrowMapper,
+      // Stage 22 (audit C2): wrapper mapper adds the deposit-evidence
+      // columns from migration 045 to the base escrowMapper.
+      mapper: escrowRecordMapper,
       criteria: escrowCriteriaSql
     });
   }

@@ -150,6 +150,16 @@ class CreateOrderDto {
 class OrderStatusDto {
   @IsIn(ORDER_STATUSES)
   status!: OrderStatus;
+
+  /**
+   * Stage 22 (audit C2): provider payment reference (e.g. the Paystack
+   * transaction reference) proving the deposit. Required for the
+   * deposit_paid transition; verified with the configured payment provider
+   * before escrow is held.
+   */
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
 }
 
 class ReviewDto {
@@ -253,7 +263,10 @@ export class MarketplaceController {
   @Patch('orders/:id/status')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Transition an order status (state machine enforced, actor-scoped)' })
+  @ApiOperation({
+    summary:
+      'Transition an order status (state machine enforced, actor-scoped; deposit_paid requires a verifiable paymentReference)'
+  })
   async setOrderStatus(
     @Param('id') id: string,
     @Body() dto: OrderStatusDto,
@@ -262,7 +275,9 @@ export class MarketplaceController {
     if (!actor) {
       throw new UnauthorizedException('Authentication required for order transitions');
     }
-    const order = await this.marketplace.setOrderStatus(id, dto.status, actor);
+    const order = await this.marketplace.setOrderStatus(id, dto.status, actor, {
+      paymentReference: dto.paymentReference
+    });
     await this.audit.record({
       actorId: actor.id,
       action: 'order.status_changed',
