@@ -469,10 +469,14 @@ services:
     networks: [agric]
 
   # ---- Workflow orchestration (profile: temporal) ----
-  # Temporal server (auto-setup, own postgres) + web UI. API wiring:
+  # Temporal server (auto-setup, own postgres) + web UI + worker. API wiring:
   #   WORKFLOW_DRIVER=temporal TEMPORAL_ADDRESS=temporal:7233
-  # Worker (not auto-started): TEMPORAL_ADDRESS=localhost:7233 \
-  #   npm run worker:temporal -w @agric-platform/api
+  # The temporal-worker service below runs the worker as a SEPARATE process
+  # (repo doctrine: main.ts never imports the worker entry). Outside compose:
+  #   TEMPORAL_ADDRESS=localhost:7233 npm run worker:temporal -w @agric-platform/api
+  # Readiness (WP-G8): with WORKFLOW_DRIVER=temporal the API's /health/ready
+  # reports the temporal-worker dependency 'down' until a worker polls the
+  # task queue; with the default stub driver nothing changes.
   temporal-db:
     profiles: ["temporal"]
     image: postgres:18-alpine
@@ -510,6 +514,37 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
       - "8088:8080"
+    networks: [agric]
+
+  # Temporal worker (WP-G8): the loan-disbursement workflow worker as its
+  # own process — same image as the api service, worker entrypoint. With the
+  # temporal profile up, `npm run worker:temporal` no longer needs to be run
+  # by hand for compose environments.
+  temporal-worker:
+    profiles: ["temporal"]
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: agric-temporal-worker
+    command: ["node", "apps/api/dist/workers/temporal.worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://agric:agric@postgres:5432/agric_platform
+      REDIS_URL: redis://redis:6379
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: agric-platform
+      KEYCLOAK_CLIENT_ID: agric-api
+      JWT_SECRET: local-development-only
+      WEBHOOK_SIGNING_SECRET: local-development-only
+      WORKFLOW_DRIVER: temporal
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks: [agric]
 
   # ---- Relationship-based authorization (profile: permify) ----
