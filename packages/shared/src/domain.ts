@@ -134,10 +134,10 @@ export interface Course {
 
 export interface Enrolment {
   id: string;
-  courseId: string;
   userId: string;
+  courseId: string;
   progressPercent: number;
-  status: 'enrolled' | 'in_progress' | 'completed';
+  status: 'enrolled' | 'in_progress' | 'completed' | 'dropped';
   enrolledAt: string;
   completedAt?: string;
 }
@@ -187,8 +187,8 @@ export interface Opportunity {
 
 export interface OpportunityApplication {
   id: string;
-  opportunityId: string;
   userId: string;
+  opportunityId: string;
   status: ApplicationStatus;
   submittedAt: string;
   notes?: string;
@@ -390,7 +390,8 @@ export const ESCROW_STATUSES = [
   'released',
   'refunding',
   'refunded',
-  'disputed'
+  'disputed',
+  'delivered_pending_confirm'
 ] as const;
 export type EscrowStatus = (typeof ESCROW_STATUSES)[number];
 
@@ -420,6 +421,21 @@ export interface EscrowRecord {
   /** Expiry deadline: a held escrow past this timestamp is auto-refunded. */
   heldUntil?: string;
   resolvedAt?: string;
+  /**
+   * Geo-sealed delivery (Stage 27, Innovation 9): the agreed drop point as a
+   * res-9 H3 cell, computed server-side from buyer-supplied coordinates.
+   * Nullable — orders opt in; an escrow without it is not geo-sealed.
+   */
+  deliveryPointH3?: string;
+  /** k-ring radius (cells) around the drop cell that counts as in-geofence. */
+  geofenceRadiusCells?: number;
+  /**
+   * Confirm-window deadline set when a geo-verified attestation moves the
+   * escrow to 'delivered_pending_confirm': past this timestamp the confirm
+   * sweep auto-releases. NULL means a manual-basis attestation — policy
+   * requires an explicit buyer confirm, the sweep never auto-releases it.
+   */
+  deliveryConfirmUntil?: string;
 }
 
 /**
@@ -724,7 +740,7 @@ export interface AgentAssignment {
   targetCount: number;
   completedCount: number;
   status: AgentAssignmentStatus;
-  dueAt?: string;
+  dueAt: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
