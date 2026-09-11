@@ -58,7 +58,6 @@ export const CAMPUS_CLUB_REPOSITORY = Symbol('CAMPUS_CLUB_REPOSITORY');
 export const CAMPUS_CLUB_MEMBERSHIP_REPOSITORY = Symbol('CAMPUS_CLUB_MEMBERSHIP_REPOSITORY');
 export const KNOWLEDGE_RESOURCE_REPOSITORY = Symbol('KNOWLEDGE_RESOURCE_REPOSITORY');
 export const PODCAST_EPISODE_REPOSITORY = Symbol('PODCAST_EPISODE_REPOSITORY');
-export const WEBINAR_REPOSITORY = Symbol('WEBINAR_REPOSITORY');
 export const WEBINAR_REGISTRATION_REPOSITORY = Symbol('WEBINAR_REGISTRATION_REPOSITORY');
 export const SEARCH_QUERY_REPOSITORY = Symbol('SEARCH_QUERY_REPOSITORY');
 // Wave P5c: recommendation feedback + analytics data marts.
@@ -207,6 +206,11 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // Wave GEOCREDIT: geo-verified credit SHADOW scores (credit schema, migration
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
+
+// SeasonSync (innovation wave 27): pinned harvest-linked repayment schedules
+// (credit schema, migration 055). Schedule reshaping only — repayment posting
+// still flows through the existing credit.loan_repayments path.
+export const SEASONAL_SCHEDULE_REPOSITORY = Symbol('SEASONAL_SCHEDULE_REPOSITORY');
 
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
