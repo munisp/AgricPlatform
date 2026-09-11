@@ -331,7 +331,7 @@ export class InMemoryBeneficiaryRepository implements BeneficiaryRepository {
     farmerId: string
   ): Promise<BeneficiaryRecord | undefined> {
     const record = [...this.items.values()].find(
-      (item) => item.programmeId === record.programmeId && item.farmerId === farmerId
+      (item) => item.programmeId === programmeId && item.farmerId === farmerId
     );
     return record ? structuredClone(record) : undefined;
   }
