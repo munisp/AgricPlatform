@@ -5,6 +5,10 @@ import { UsersModule } from '../users/users.module.js';
 import { AgentBankingController, AgentUssdController } from './agent-banking.controller.js';
 import { AgentBankingService } from './agent-banking.service.js';
 import { AgentUssdService } from './agent-ussd.service.js';
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): deterministic float
+// forecasting + rebalancing alerts, flag-gated behind `float-forecaster`.
+import { FloatForecastController } from './float-forecast.controller.js';
+import { FloatForecastService } from './float-forecast.service.js';
 import { OTP_DRIVER_TOKEN, createOtpDriver } from './otp.driver.js';
 
 /**
@@ -17,12 +21,13 @@ import { OTP_DRIVER_TOKEN, createOtpDriver } from './otp.driver.js';
  */
 @Module({
   imports: [FinanceModule, IntegrationsModule, UsersModule],
-  controllers: [AgentBankingController, AgentUssdController],
+  controllers: [AgentBankingController, AgentUssdController, FloatForecastController],
   providers: [
     AgentBankingService,
     AgentUssdService,
+    FloatForecastService,
     { provide: OTP_DRIVER_TOKEN, useFactory: () => createOtpDriver(process.env) }
   ],
-  exports: [AgentBankingService, AgentUssdService, OTP_DRIVER_TOKEN]
+  exports: [AgentBankingService, AgentUssdService, FloatForecastService, OTP_DRIVER_TOKEN]
 })
 export class AgentBankingModule {}

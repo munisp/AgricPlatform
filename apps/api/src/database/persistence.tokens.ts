@@ -216,6 +216,13 @@ export const AGENT_BANKING_AGENT_REPOSITORY = Symbol('AGENT_BANKING_AGENT_REPOSI
 export const AGENT_FLOAT_TOPUP_REPOSITORY = Symbol('AGENT_FLOAT_TOPUP_REPOSITORY');
 export const AGENT_VOUCHER_REPOSITORY = Symbol('AGENT_VOUCHER_REPOSITORY');
 export const AGENT_TRANSACTION_REPOSITORY = Symbol('AGENT_TRANSACTION_REPOSITORY');
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): deterministic agent
+// float forecasts + rebalancing alert queue — schema `agent_banking`,
+// migration 073. Forecasting is read-only on the finance ledger; these
+// tables hold operational forecast/alert records only.
+export const FLOAT_FORECAST_REPOSITORY = Symbol('FLOAT_FORECAST_REPOSITORY');
+export const REBALANCE_ALERT_REPOSITORY = Symbol('REBALANCE_ALERT_REPOSITORY');
+export const REBALANCE_RUN_REPOSITORY = Symbol('REBALANCE_RUN_REPOSITORY');
 // Wave MECHANIZATION: equipment hire marketplace (mechanization schema,
 // migration 033) — listings with H3 service areas + the booking workflow.
 export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');
