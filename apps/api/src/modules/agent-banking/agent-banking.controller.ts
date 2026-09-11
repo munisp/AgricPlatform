@@ -23,7 +23,8 @@ import {
   AGENT_STATUSES,
   type AgentStatus,
   type AgentTopUpStatus,
-  type AgentTransactionType
+  type AgentTransactionType,
+  type AgentVoucherStatus
 } from '../../database/repositories/agent-banking.repository.js';
 import { AgentBankingService, type ActorRef } from './agent-banking.service.js';
 import { AgentUssdService } from './agent-ussd.service.js';
@@ -69,6 +70,11 @@ class TopUpRequestDto {
   @Min(1)
   @Max(Number.MAX_SAFE_INTEGER)
   amountKobo!: number;
+
+  /** Mandatory client idempotency key — retries replay the original request. */
+  @IsString()
+  @IsNotEmpty()
+  idempotencyKey!: string;
 }
 
 class RejectTopUpDto {
@@ -108,10 +114,15 @@ class IssueVoucherDto {
   @IsString()
   expiresAt?: string;
 
-  /** Optional client idempotency key — USSD/API retries replay the original voucher. */
-  @IsOptional()
+  /**
+   * Mandatory client idempotency key (stage 22, audit C2-10) — a keyless
+   * retry would duplicate a signed money-bearing voucher, so new issuance
+   * requests without a key are rejected with 400. NULL keys remain only on
+   * rows predating this requirement.
+   */
   @IsString()
-  idempotencyKey?: string;
+  @IsNotEmpty()
+  idempotencyKey!: string;
 }
 
 class RedeemVoucherDto {
@@ -235,7 +246,7 @@ export class AgentBankingController {
   @Roles('agent', 'admin')
   @ApiOperation({ summary: 'Request a float top-up (agent owner or admin)' })
   async requestTopUp(@Param('id') id: string, @Body() dto: TopUpRequestDto, @CurrentUser() actor: User | null) {
-    return { data: await this.banking.requestTopUp(id, dto.amountKobo, actorOf(actor)) };
+    return { data: await this.banking.requestTopUp(id, dto, actorOf(actor)) };
   }
 
   @Get('top-ups')
@@ -342,7 +353,7 @@ export class AgentBankingController {
     return {
       data: await this.banking.listVouchers({
         agentId: id,
-        status: status as 'ISSUED' | 'REDEEMED' | 'EXPIRED' | 'VOIDED' | undefined
+        status: status as AgentVoucherStatus | undefined
       })
     };
   }

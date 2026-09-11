@@ -96,6 +96,31 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
     return result.rows.map((row) => this.fromRow(row));
   }
 
+  /**
+   * Allocation serialisation (stage 22, audit C2-10): locks the programme row
+   * (SELECT ... FOR UPDATE) inside a transaction for the callback's duration
+   * so a concurrent allocation for the same programme waits until this
+   * check+insert finishes — two 60% allocations can no longer both pass the
+   * budget check. Transaction style mirrors ledger.pg-repository.postEntry.
+   */
+  async withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM input_vouchers.programmes WHERE id = $1 FOR UPDATE', [
+        programmeId
+      ]);
+      const result = await fn();
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async updateExpected(
     id: string,
     patch: Partial<SubsidyProgrammeRecord>,

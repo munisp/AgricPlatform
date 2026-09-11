@@ -16,7 +16,19 @@ import { ConflictException } from '@nestjs/common';
 export const PROGRAMME_STATUSES = ['DRAFT', 'ACTIVE', 'CLOSED'] as const;
 export type ProgrammeStatus = (typeof PROGRAMME_STATUSES)[number];
 
-export const INPUT_VOUCHER_STATUSES = ['ISSUED', 'REDEEMED', 'EXPIRED', 'VOIDED'] as const;
+// Pending states (stage 22, audit C1-6): the CAS into a pending state happens
+// BEFORE the ledger posting so only the CAS winner ever posts — a redeem vs
+// expire/void race can no longer double-debit the programme liability. A
+// retry that finds a pending state resumes finalization instead of reposting.
+export const INPUT_VOUCHER_STATUSES = [
+  'ISSUED',
+  'REDEEMING',
+  'REDEEMED',
+  'EXPIRING',
+  'EXPIRED',
+  'VOIDING',
+  'VOIDED'
+] as const;
 export type InputVoucherStatus = (typeof INPUT_VOUCHER_STATUSES)[number];
 
 export const VERIFICATION_BASES = ['stub', 'live'] as const;
@@ -121,6 +133,16 @@ export interface SubsidyProgrammeRepository {
     patch: Partial<SubsidyProgrammeRecord>,
     expected: Partial<SubsidyProgrammeRecord>
   ): Promise<SubsidyProgrammeRecord>;
+  /**
+   * Serialises the callback per programme (stage 22, audit C2-10): the
+   * budget/cap check + voucher insert inside the callback cannot interleave
+   * with a concurrent allocation for the same programme. The pg
+   * implementation holds a `SELECT ... FOR UPDATE` row lock on the programme
+   * for the callback's duration; the in-memory implementation chains a
+   * per-programme promise mutex (Node is single-threaded, so each awaited
+   * step is atomic — the chain closes the check-then-act window).
+   */
+  withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T>;
 }
 
 export interface BeneficiaryRepository {
@@ -165,6 +187,7 @@ function matches<T>(record: T, expected: Partial<T>): boolean {
 
 export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepository {
   private readonly items = new Map<string, SubsidyProgrammeRecord>();
+  private readonly allocationLocks = new Map<string, Promise<unknown>>();
 
   async create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord> {
     this.items.set(record.id, structuredClone(record));
@@ -195,6 +218,18 @@ export class InMemorySubsidyProgrammeRepository implements SubsidyProgrammeRepos
     const updated = { ...current, ...patch };
     this.items.set(id, updated);
     return structuredClone(updated);
+  }
+
+  async withAllocationLock<T>(programmeId: string, fn: () => Promise<T>): Promise<T> {
+    // Per-programme promise-chain mutex: mirrors the pg row lock so the
+    // budget/cap check + insert serialise in tests exactly as in production.
+    const previous = this.allocationLocks.get(programmeId) ?? Promise.resolve();
+    const run = previous.then(() => fn());
+    this.allocationLocks.set(
+      programmeId,
+      run.catch(() => undefined)
+    );
+    return run;
   }
 }
 

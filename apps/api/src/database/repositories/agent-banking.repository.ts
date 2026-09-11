@@ -16,7 +16,10 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 export const AGENT_TOPUP_STATUSES = ['REQUESTED', 'APPROVED', 'SETTLED', 'REJECTED'] as const;
 export type AgentTopUpStatus = (typeof AGENT_TOPUP_STATUSES)[number];
 
-export const AGENT_VOUCHER_STATUSES = ['ISSUED', 'REDEEMED', 'EXPIRED', 'VOIDED'] as const;
+// REDEEMING (stage 22, audit C3/C2-9): the voucher CASes ISSUED→REDEEMING
+// BEFORE the ledger posting so a redeem vs void race cannot both act on the
+// same voucher — only the CAS winner posts voucher-redemption:<id>.
+export const AGENT_VOUCHER_STATUSES = ['ISSUED', 'REDEEMING', 'REDEEMED', 'EXPIRED', 'VOIDED'] as const;
 export type AgentVoucherStatus = (typeof AGENT_VOUCHER_STATUSES)[number];
 
 export const AGENT_TRANSACTION_TYPES = ['cash_in', 'cash_out', 'voucher_redemption'] as const;
@@ -54,6 +57,12 @@ export interface AgentFloatTopUpRecord {
   settledAt?: string;
   ledgerEntryId?: string;
   rejectionReason?: string;
+  /**
+   * Client idempotency key (stage 22, audit C2-9) — partial UNIQUE in pg;
+   * transport retries replay the original request instead of creating a
+   * second settleable row. NULL only on rows predating migration 042.
+   */
+  idempotencyKey?: string;
   createdAt: string;
 }
 
@@ -127,8 +136,10 @@ export interface AgentBankingAgentRepository {
 }
 
 export interface AgentFloatTopUpRepository {
+  /** Throws ConflictException when idempotencyKey already exists. */
   create(record: AgentFloatTopUpRecord): Promise<AgentFloatTopUpRecord>;
   findById(id: string): Promise<AgentFloatTopUpRecord | undefined>;
+  findByIdempotencyKey(key: string): Promise<AgentFloatTopUpRecord | undefined>;
   find(criteria: AgentTopUpCriteria): Promise<AgentFloatTopUpRecord[]>;
   updateExpected(
     id: string,
@@ -215,12 +226,27 @@ export class InMemoryAgentFloatTopUpRepository implements AgentFloatTopUpReposit
   private readonly items = new Map<string, AgentFloatTopUpRecord>();
 
   async create(record: AgentFloatTopUpRecord): Promise<AgentFloatTopUpRecord> {
+    // Mirror the pg partial UNIQUE index on idempotency_key: a retry that
+    // raced the original write surfaces as 409 instead of a second
+    // settleable top-up row.
+    if (record.idempotencyKey) {
+      for (const existing of this.items.values()) {
+        if (existing.idempotencyKey === record.idempotencyKey) {
+          throw new ConflictException('A record with these unique values already exists');
+        }
+      }
+    }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
   }
 
   async findById(id: string): Promise<AgentFloatTopUpRecord | undefined> {
     const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentFloatTopUpRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.idempotencyKey === key);
     return record ? structuredClone(record) : undefined;
   }
 

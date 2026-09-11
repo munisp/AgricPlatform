@@ -114,12 +114,18 @@ async function fundPlatformCash(ctx: Awaited<ReturnType<typeof makeService>>, am
 }
 
 /** Tops up the agent float through the full workflow. */
+let topUpKeySeq = 0;
 async function topUpFloat(
   ctx: Awaited<ReturnType<typeof makeService>>,
   agentId: string,
   amountKobo: number
 ) {
-  const request = await ctx.service.requestTopUp(agentId, amountKobo, ADMIN);
+  topUpKeySeq += 1;
+  const request = await ctx.service.requestTopUp(
+    agentId,
+    { amountKobo, idempotencyKey: `topup-${topUpKeySeq}` },
+    ADMIN
+  );
   await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
   return ctx.service.settleTopUp(request.id, ADMIN.id);
 }
@@ -194,7 +200,11 @@ describe('AgentBankingService — float top-up workflow', () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
     await fundPlatformCash(ctx, 5_000_000);
-    const request = await ctx.service.requestTopUp(agent.id, 2_000_000, agentActor(ctx.agentUser));
+    const request = await ctx.service.requestTopUp(
+      agent.id,
+      { amountKobo: 2_000_000, idempotencyKey: 'tu-walk-1' },
+      agentActor(ctx.agentUser)
+    );
     expect(request.status).toBe('REQUESTED');
     const approved = await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
     expect(approved.status).toBe('APPROVED');
@@ -218,7 +228,7 @@ describe('AgentBankingService — float top-up workflow', () => {
   it('rejects a REQUESTED top-up with a reason and cannot settle it', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const request = await ctx.service.requestTopUp(agent.id, 500_000, ADMIN);
+    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 500_000, idempotencyKey: 'tu-reject-1' }, ADMIN);
     const rejected = await ctx.service.decideTopUp(request.id, 'reject', ADMIN.id, 'Float adequate');
     expect(rejected.status).toBe('REJECTED');
     await expect(ctx.service.settleTopUp(request.id, ADMIN.id)).rejects.toBeInstanceOf(
@@ -229,7 +239,7 @@ describe('AgentBankingService — float top-up workflow', () => {
   it('requires a rejection reason', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const request = await ctx.service.requestTopUp(agent.id, 500_000, ADMIN);
+    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 500_000, idempotencyKey: 'tu-reason-1' }, ADMIN);
     await expect(ctx.service.decideTopUp(request.id, 'reject', ADMIN.id)).rejects.toBeInstanceOf(
       BadRequestException
     );
@@ -238,7 +248,7 @@ describe('AgentBankingService — float top-up workflow', () => {
   it('a second decision on a decided top-up is a 409 (CAS)', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const request = await ctx.service.requestTopUp(agent.id, 500_000, ADMIN);
+    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 500_000, idempotencyKey: 'tu-cas-1' }, ADMIN);
     await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
     await expect(ctx.service.decideTopUp(request.id, 'approve', ADMIN.id)).rejects.toBeInstanceOf(
       ConflictException
@@ -248,7 +258,7 @@ describe('AgentBankingService — float top-up workflow', () => {
   it('settlement fails closed when platform:cash is underfunded (solvency guard)', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const request = await ctx.service.requestTopUp(agent.id, 5_000_000, ADMIN);
+    const request = await ctx.service.requestTopUp(agent.id, { amountKobo: 5_000_000, idempotencyKey: 'tu-1' }, ADMIN);
     await ctx.service.decideTopUp(request.id, 'approve', ADMIN.id);
     await expect(ctx.service.settleTopUp(request.id, ADMIN.id)).rejects.toBeInstanceOf(
       BadRequestException
@@ -455,13 +465,15 @@ describe('AgentBankingService — cash-in / cash-out', () => {
 });
 
 describe('AgentBankingService — offline vouchers', () => {
+  let voucherKeySeq = 0;
   async function issuedVoucher(ctx: Awaited<ReturnType<typeof makeService>>, amountKobo = 250_000) {
     const agent = await activeAgent(ctx);
     await fundPlatformCash(ctx, 5_000_000);
     await topUpFloat(ctx, agent.id, 2_000_000);
+    voucherKeySeq += 1;
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo },
+      { farmerId: ctx.farmer.id, amountKobo, idempotencyKey: `v-auto-${voucherKeySeq}` },
       agentActor(ctx.agentUser)
     );
     return { agent, voucher };
@@ -542,7 +554,12 @@ describe('AgentBankingService — offline vouchers', () => {
     await topUpFloat(ctx, agent.id, 2_000_000);
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 100_000, expiresAt: new Date(Date.now() + 1_000).toISOString() },
+      {
+        farmerId: ctx.farmer.id,
+        amountKobo: 100_000,
+        expiresAt: new Date(Date.now() + 1_000).toISOString(),
+        idempotencyKey: 'v-expiry-1'
+      },
       agentActor(ctx.agentUser)
     );
     await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -569,7 +586,7 @@ describe('AgentBankingService — offline vouchers', () => {
     // No float top-up: float is 0.
     const voucher = await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 100_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-underfunded-1' },
       agentActor(ctx.agentUser)
     );
     await expect(
@@ -619,15 +636,17 @@ describe('AgentBankingService — voucher issuance idempotency', () => {
     expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(2);
   });
 
-  it('omitting the key always issues a new voucher (backward compatible)', async () => {
+  it('omitting the idempotency key is rejected (400) — keyless retries duplicate money', async () => {
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    const input = { farmerId: ctx.farmer.id, amountKobo: 100_000 };
-    const first = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
-    const second = await ctx.service.issueVoucher(agent.id, input, agentActor(ctx.agentUser));
-    expect(second.id).not.toBe(first.id);
-    expect(first.idempotencyKey).toBeUndefined();
-    expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(2);
+    await expect(
+      ctx.service.issueVoucher(
+        agent.id,
+        { farmerId: ctx.farmer.id, amountKobo: 100_000 } as never,
+        agentActor(ctx.agentUser)
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(await ctx.service.listVouchers({ agentId: agent.id })).toHaveLength(0);
   });
 });
 
@@ -741,9 +760,120 @@ describe('AgentBankingService — domain events', () => {
     ctx.events.on('*', (event: { name: string }) => published.push(event.name));
     await ctx.service.issueVoucher(
       agent.id,
-      { farmerId: ctx.farmer.id, amountKobo: 50_000 },
+      { farmerId: ctx.farmer.id, amountKobo: 50_000, idempotencyKey: 'v-event-1' },
       agentActor(ctx.agentUser)
     );
     expect(published).toContain('agentbank.voucher.issued');
+  });
+});
+
+describe('AgentBankingService — stage-22 money-race regressions', () => {
+  it('top-up request retries with the same key collapse to exactly one settleable row (audit C2-9)', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    const input = { amountKobo: 500_000, idempotencyKey: 'tu-replay-1' };
+    const first = await ctx.service.requestTopUp(agent.id, input, agentActor(ctx.agentUser));
+    const replay = await ctx.service.requestTopUp(agent.id, input, agentActor(ctx.agentUser));
+    expect(replay.id).toBe(first.id);
+    // Concurrent duplicates racing the insert also collapse (UNIQUE index
+    // conflict → the original row is returned).
+    const [a, b] = await Promise.allSettled([
+      ctx.service.requestTopUp(agent.id, { amountKobo: 700_000, idempotencyKey: 'tu-race-1' }, ADMIN),
+      ctx.service.requestTopUp(agent.id, { amountKobo: 700_000, idempotencyKey: 'tu-race-1' }, ADMIN)
+    ]);
+    expect(a.status).toBe('fulfilled');
+    expect(b.status).toBe('fulfilled');
+    expect((a as PromiseFulfilledResult<{ id: string }>).value.id).toBe(
+      (b as PromiseFulfilledResult<{ id: string }>).value.id
+    );
+    expect(await ctx.service.listTopUps({ agentId: agent.id })).toHaveLength(2);
+  });
+
+  it('concurrent redeem + void: the void loses once REDEEMING is held — one ledger posting (audit C3/C2-9)', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const voucher = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 250_000, idempotencyKey: 'v-race-1' },
+      agentActor(ctx.agentUser)
+    );
+    // Widen the posting window so the void attempts while REDEEMING is held.
+    const original = ctx.ledger.postEntry.bind(ctx.ledger);
+    ctx.ledger.postEntry = (async (
+      input: Parameters<LedgerService['postEntry']>[0],
+      actorId: string
+    ) => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return original(input, actorId);
+    }) as LedgerService['postEntry'];
+    const [redeemResult, voidResult] = await Promise.allSettled([
+      ctx.service.redeemVoucher(voucher.id, voucher.signature, { id: ctx.farmer.id, roles: ['farmer'] }),
+      (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return ctx.service.voidVoucher(voucher.id, agentActor(ctx.agentUser));
+      })()
+    ]);
+    expect(redeemResult.status).toBe('fulfilled');
+    // Void refuses non-ISSUED states: a REDEEMING voucher cannot be voided
+    // out from under the in-flight payout.
+    expect(voidResult.status).toBe('rejected');
+    expect((voidResult as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('REDEEMED');
+    const entries = await ctx.ledger.listEntries({});
+    expect(entries.filter((entry) => entry.idempotencyKey === `voucher-redemption:${voucher.id}`)).toHaveLength(1);
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(250_000);
+  });
+
+  it('a redeem retry that finds REDEEMING with the transaction row finalizes instead of reposting', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const voucher = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-race-2' },
+      agentActor(ctx.agentUser)
+    );
+    const first = await ctx.service.redeemVoucher(voucher.id, voucher.signature, {
+      id: ctx.farmer.id,
+      roles: ['farmer']
+    });
+    expect(first.voucher.status).toBe('REDEEMED');
+    // Replay after finalization is still a 409 — payout happened once.
+    await expect(
+      ctx.service.redeemVoucher(voucher.id, voucher.signature, { id: ctx.farmer.id, roles: ['farmer'] })
+    ).rejects.toBeInstanceOf(ConflictException);
+    const entries = await ctx.ledger.listEntries({});
+    expect(entries.filter((entry) => entry.idempotencyKey === `voucher-redemption:${voucher.id}`)).toHaveLength(1);
+  });
+
+  it('a posting failure rolls the REDEEMING claim back to ISSUED so a retry can succeed', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const voucher = await ctx.service.issueVoucher(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-race-3' },
+      agentActor(ctx.agentUser)
+    );
+    const original = ctx.ledger.postEntry.bind(ctx.ledger);
+    ctx.ledger.postEntry = (async () => {
+      throw new Error('ledger unavailable');
+    }) as LedgerService['postEntry'];
+    await expect(
+      ctx.service.redeemVoucher(voucher.id, voucher.signature, { id: ctx.farmer.id, roles: ['farmer'] })
+    ).rejects.toThrow('ledger unavailable');
+    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED'); // claim rolled back
+    ctx.ledger.postEntry = original;
+    const retried = await ctx.service.redeemVoucher(voucher.id, voucher.signature, {
+      id: ctx.farmer.id,
+      roles: ['farmer']
+    });
+    expect(retried.voucher.status).toBe('REDEEMED');
+    const entries = await ctx.ledger.listEntries({});
+    expect(entries.filter((entry) => entry.idempotencyKey === `voucher-redemption:${voucher.id}`)).toHaveLength(1);
   });
 });
