@@ -3,6 +3,7 @@ import { createInMemoryOutboxRepository } from '../database/repositories/outbox.
 import { createInMemoryProcessedEventRepository } from '../database/repositories/processed-event.repository.js';
 import { DomainEventsService, type DomainEvent } from './domain-events.service.js';
 import { EventDedupService } from './event-dedup.service.js';
+import type { EventBus } from './events/event-bus.driver.js';
 import {
   OUTBOX_MAX_ATTEMPTS,
   OUTBOX_RETRY_BASE_MS,
@@ -119,6 +120,65 @@ describe('OutboxSweeperService', () => {
     expect(await deps.sweeper.backlog()).toEqual({ pending: 1, deadLettered: 0 });
     await deps.sweeper.sweep();
     expect(await deps.sweeper.backlog()).toEqual({ pending: 0, deadLettered: 0 });
+  });
+
+  // Audit C2: the sweeper must mark a row published ONLY after the event
+  // bus accepts it — the old fire-and-forget path lost broker-rejected
+  // events while claiming they were relayed.
+  describe('with a live event bus', () => {
+    function buildWithBus(publish: EventBus['publish']) {
+      const outbox = createInMemoryOutboxRepository();
+      const bus: EventBus = {
+        name: 'kafka',
+        publish,
+        status: async () => ({ configured: true, healthy: true, detail: 'fake' }),
+        close: async () => undefined
+      };
+      const events = new DomainEventsService(outbox, bus);
+      const sweeper = new OutboxSweeperService(events, outbox);
+      return { bus, events, outbox, sweeper };
+    }
+
+    it('does NOT mark the row published when the bus rejects it; attempts are recorded', async () => {
+      const publish = vi.fn().mockRejectedValue(new Error('broker unavailable'));
+      const deps = buildWithBus(publish);
+      const seen: string[] = [];
+      deps.events.on('advisory.content.published', (event) => seen.push(event.id));
+      const event = await seedStalled(deps);
+
+      const result = await deps.sweeper.sweep();
+      expect(result).toMatchObject({ published: 0, failed: 1 });
+      expect(publish).toHaveBeenCalledTimes(1);
+      const record = (await deps.outbox.listRecords())[0];
+      expect(record.publishedAt).toBeUndefined();
+      expect(record.attempts).toBe(1);
+      // Bus-first ordering: local fan-out is deferred to the retry.
+      expect(seen).toEqual([]);
+
+      // Backoff defers the immediate retry; after the window the row is
+      // retried and (bus now healthy) marked published.
+      publish.mockResolvedValue(undefined);
+      const later = new Date(new Date(event.occurredAt).getTime() + OUTBOX_RETRY_BASE_MS + 1);
+      const retry = await deps.sweeper.sweep(later);
+      expect(retry.published).toBe(1);
+      expect((await deps.outbox.listRecords())[0].publishedAt).toBeTruthy();
+      expect(seen).toEqual([event.id]);
+    });
+
+    it('marks the row published after the bus accepts it', async () => {
+      const publish = vi.fn().mockResolvedValue(undefined);
+      const deps = buildWithBus(publish);
+      const seen: string[] = [];
+      deps.events.on('advisory.content.published', (event) => seen.push(event.id));
+      const event = await seedStalled(deps);
+
+      const result = await deps.sweeper.sweep();
+      expect(result).toMatchObject({ published: 1, failed: 0 });
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls[0][0].id).toBe(event.id);
+      expect(seen).toEqual([event.id]);
+      expect((await deps.outbox.listRecords())[0].publishedAt).toBeTruthy();
+    });
   });
 });
 

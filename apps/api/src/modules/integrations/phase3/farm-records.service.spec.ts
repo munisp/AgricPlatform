@@ -103,6 +103,38 @@ describe('FarmRecordsService', () => {
     expect((await inbound.all())[0].processedAt).toBeTruthy();
   });
 
+  it('re-drives a replay whose first delivery never completed processing (audit C2)', async () => {
+    const { service, inbound, records } = setup();
+    const payload = {
+      event: 'record.pushed',
+      account_id: 'farm-42',
+      record_type: 'crop_plan',
+      record_id: 'plan-7',
+      observed_at: '2026-03-05T00:00:00Z'
+    };
+    // Simulate a crash AFTER the dedupe insert but BEFORE the side effects:
+    // the event is ledgered with no processed_at.
+    await inbound.ingest({
+      id: 'evt-stalled',
+      system: 'farmos',
+      eventType: 'record.pushed',
+      dedupeKey: 'evt-100',
+      payload,
+      receivedAt: '2026-03-05T00:00:00.000Z'
+    });
+
+    const replay = await service.handleWebhook('farmos', payload, 'evt-100');
+    expect(replay).toEqual({ received: true, reprocessed: true });
+    // The idempotent upsert ran (was lost before this fix).
+    expect(await records.all()).toHaveLength(1);
+    expect((await inbound.all())[0].processedAt).toBeTruthy();
+
+    // Fully processed now: further replays are no-op duplicates.
+    const settled = await service.handleWebhook('farmos', payload, 'evt-100');
+    expect(settled.received).toBe(false);
+    expect(await records.all()).toHaveLength(1);
+  });
+
   it('ledgers webhook events for unknown accounts without farm-record writes', async () => {
     const { service, records, inbound } = setup();
     const result = await service.handleWebhook('farmos', {

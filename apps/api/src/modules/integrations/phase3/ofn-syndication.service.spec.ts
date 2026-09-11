@@ -79,6 +79,32 @@ describe('OfnSyndicationService', () => {
     expect(replay.received).toBe(false);
     expect(await inbound.all()).toHaveLength(1);
   });
+
+  it('re-drives a replay whose first delivery never completed processing (audit C2)', async () => {
+    const { service, events, inbound } = setup();
+    const payload = { number: 'R100', sku: 'listing-9', quantity: 2, total: 84000, payment_state: 'paid' };
+    // Crash after the dedupe insert, before the publish: processed_at NULL.
+    await inbound.ingest({
+      id: 'evt-stalled',
+      system: 'ofn',
+      eventType: 'order.created',
+      dedupeKey: 'ofn-evt-1',
+      payload,
+      receivedAt: '2026-05-01T00:00:00.000Z'
+    });
+
+    const replay = await service.handleOrderEvent(payload, 'ofn-evt-1');
+    expect(replay).toEqual({ received: true, settlementStatus: 'settled', reprocessed: true });
+    expect((await events.listOutbox()).map((event) => event.name)).toEqual([
+      'marketplace.ofn_order.received'
+    ]);
+    expect((await inbound.all())[0].processedAt).toBeTruthy();
+
+    // Processed now: further replays are no-op duplicates.
+    const settled = await service.handleOrderEvent(payload, 'ofn-evt-1');
+    expect(settled.received).toBe(false);
+    expect(await events.listOutbox()).toHaveLength(1);
+  });
 });
 
 describe('settlementStatusFor', () => {

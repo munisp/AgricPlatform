@@ -248,6 +248,8 @@ export interface InboundEvent {
 export interface InboundEventCriteria {
   system?: string;
   eventType?: string;
+  /** Exact dedupe-key lookup (webhook replay re-drive, audit C2). */
+  dedupeKey?: string;
 }
 
 export interface InboundEventRepository extends AsyncRepository<InboundEvent, InboundEventCriteria> {
@@ -262,7 +264,8 @@ export interface InboundEventRepository extends AsyncRepository<InboundEvent, In
 export function inboundEventMatcher(criteria: InboundEventCriteria): (event: InboundEvent) => boolean {
   return (event) =>
     (!criteria.system || event.system === criteria.system) &&
-    (!criteria.eventType || event.eventType === criteria.eventType);
+    (!criteria.eventType || event.eventType === criteria.eventType) &&
+    (!criteria.dedupeKey || event.dedupeKey === criteria.dedupeKey);
 }
 
 export class InMemoryInboundEventRepository

@@ -65,10 +65,10 @@ export class OutboxSweeperService {
   }
 
   /**
-   * One sweep pass: re-emits due rows to in-process listeners and marks
-   * them published; listener failures increment attempts and eventually
-   * dead-letter the row. Consumer-side dedup (events.processed_events)
-   * makes re-delivery safe.
+   * One sweep pass: re-emits due rows through the AWAITABLE bus path and
+   * marks them published only after the bus accepts the event; bus/listener
+   * failures increment attempts and eventually dead-letter the row.
+   * Consumer-side dedup (events.processed_events) makes re-delivery safe.
    */
   async sweep(now: Date = new Date()): Promise<OutboxSweepResult> {
     const result: OutboxSweepResult = { published: 0, failed: 0, deadLettered: 0, deferred: 0 };
@@ -86,7 +86,10 @@ export class OutboxSweeperService {
         }
       }
       try {
-        this.events.emit(record.event);
+        // Audit C2: await bus acceptance BEFORE marking published. The old
+        // fire-and-forget emit() marked the row published unconditionally,
+        // permanently losing events the broker had rejected.
+        await this.events.emitAwaitable(record.event);
         await this.outbox.markPublished(record.event.id, now.toISOString());
         result.published += 1;
       } catch (error) {

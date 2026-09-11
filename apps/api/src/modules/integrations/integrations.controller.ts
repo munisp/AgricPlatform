@@ -48,8 +48,10 @@ export class IntegrationsController {
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({
     summary:
-      'Receive a provider webhook. HMAC-SHA256 signature over the raw body is required unless ' +
-      'the provider runs the stub driver outside production.'
+      'Receive a provider webhook. The provider-native signature scheme is required ' +
+      '(Paystack: HMAC-SHA512 in x-paystack-signature; Flutterwave: static verif-hash; ' +
+      'others: HMAC-SHA256 over the raw body) unless the provider runs the stub driver ' +
+      'outside production.'
   })
   async webhook(
     @Param('provider') provider: string,
@@ -63,11 +65,21 @@ export class IntegrationsController {
       request.headers
     );
     const result = await this.integrations.recordWebhook(provider, payload, digest);
+    // Audit C2: a duplicate whose processing never completed (transient
+    // failure after the dedupe insert) is RE-DRIVEN below — a bare
+    // duplicate 200 would permanently lose the verified event because the
+    // provider stops retrying. Side effects are idempotent (audit is
+    // append-only; consumers dedupe by payload — see
+    // InboundConversationsService). A failure here answers 5xx so the
+    // provider keeps retrying and the record stays unprocessed.
+    const needsProcessing = !result.duplicate || result.reprocess === true;
     // Payment webhooks drive the payments lifecycle metric (plan §A.3).
     if (this.integrations.status(provider).capability === 'payments') {
-      this.metrics.paymentEvent(result.duplicate ? 'webhook_duplicate' : 'webhook_received');
+      this.metrics.paymentEvent(
+        result.duplicate && !result.reprocess ? 'webhook_duplicate' : 'webhook_received'
+      );
     }
-    if (!result.duplicate) {
+    if (needsProcessing) {
       await this.audit.record({
         actorId,
         action: 'integration.webhook_received',
@@ -78,6 +90,7 @@ export class IntegrationsController {
       // consumers (wave P5b WhatsApp workflows) can process it without the
       // integrations module depending back on them.
       await this.events.publish('integration.webhook.received', { provider, payload }, actorId);
+      await this.integrations.markWebhookProcessed(provider, payload, digest);
     }
     return { data: result };
   }
