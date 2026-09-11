@@ -62,6 +62,7 @@ import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 import { VoiceModule } from './modules/voice/voice.module.js';
+import { VoiceTellerModule } from './modules/voice/voice-teller.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
@@ -176,7 +177,9 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
-    WarehouseModule
+    WarehouseModule,
+    // Stage 27 Voice Teller transactional voice intents (flag `voice-teller`, default OFF) — appended to minimise merge conflicts.
+    VoiceTellerModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

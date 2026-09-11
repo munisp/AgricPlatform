@@ -16,6 +16,7 @@ import { AdvisoryService } from '../advisory/advisory.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { ProfilesService } from '../profiles/profiles.service.js';
 import { UsersService } from '../users/users.service.js';
+import { VoiceTellerService } from '../voice/voice-teller.service.js';
 import {
   handleIvrTurn,
   initialIvrState,
@@ -92,7 +93,13 @@ export class IvrService {
     private readonly learning: LearningService,
     @Inject(IVR_CALL_REPOSITORY) private readonly calls: IvrCallRepository,
     @Inject(COMMODITY_PRICE_REPOSITORY) private readonly prices: CommodityPriceRepository,
-    @Optional() private readonly env: NodeJS.ProcessEnv = process.env
+    @Optional() private readonly env: NodeJS.ProcessEnv = process.env,
+    /**
+     * Stage 27 Voice Teller (optional so pre-teller tests/constructors keep
+     * working): when absent the account menu is unreachable — the engine
+     * only enters it via menuData().voiceTeller.enabled, which stays false.
+     */
+    @Optional() private readonly teller?: VoiceTellerService
   ) {
     this.driverConfig = resolveIvrDriver(env);
     // Fail closed at boot in production: a live/sandbox IVR driver without
@@ -166,7 +173,49 @@ export class IvrService {
     const opening = !stored || input.dtmfDigits === undefined;
     const engineState = stored?.engine ?? initialIvrState();
     const digits = opening ? undefined : (input.dtmfDigits ?? '');
-    const turn = handleIvrTurn(engineState, digits, await this.menuData(input.callerNumber));
+    const data = await this.menuData(input.callerNumber);
+    let turn = handleIvrTurn(engineState, digits, data);
+
+    // Stage 27 Voice Teller: the engine validated the PIN format and
+    // resolved the grammar-slot intent; the teller verifies the PIN, reads
+    // the account fact LIVE and returns the complete resolved turn.
+    // pinTurn masks the raw PIN out of the persisted dtmf history /
+    // lastDigits replay fields below — a credential is never stored.
+    const pinTurn = turn.effect?.type === 'voice_intent';
+    if (turn.effect?.type === 'voice_intent') {
+      turn = this.teller
+        ? await this.teller.resolvePinTurn({
+            sessionId: input.sessionId,
+            callerNumber: input.callerNumber,
+            intent: turn.effect.intent,
+            pin: turn.effect.pin,
+            strikes: turn.state.strikes,
+            locale: data.voiceTeller?.locale
+          })
+        : {
+            // Fail-closed: no teller wired → polite unavailable, never a
+            // silent skip or a fabricated answer.
+            state: initialIvrState(),
+            actions: [
+              { type: 'say', text: 'That service is unavailable right now. Please try again later.' }
+            ],
+            end: true,
+            outcome: 'completed' as const
+          };
+    } else if (this.teller && turn.state.menu === 'account_pin' && turn.state.pendingIntent &&
+      engineState.menu !== 'account_pin') {
+      // Intent selected in the account menu → voice.intent.started (PIN
+      // still pending; answered/failed events fire from the teller).
+      await this.teller.intentStarted(input.callerNumber, turn.state.pendingIntent);
+    } else if (
+      this.teller &&
+      turn.outcome === 'escalated' &&
+      (engineState.menu === 'account_menu' || engineState.menu === 'account_pin')
+    ) {
+      // Caller asked for an agent from inside the account flow.
+      await this.teller.intentEscalated(input.callerNumber, engineState.pendingIntent);
+    }
+
     const response = renderVoiceXml(turn.actions);
 
     if (turn.effect?.type === 'callback_request') {
@@ -179,19 +228,21 @@ export class IvrService {
 
     // Cumulative dtmf history: opening ring resets to empty; every input
     // turn appends this turn's digits (terminal replays returned above
-    // never append, keeping (sessionId, history-length) stable).
+    // never append, keeping (sessionId, history-length) stable). PIN turns
+    // append a mask — the raw credential never touches the call record.
+    const historyDigits = pinTurn ? '####' : (digits ?? '');
     const previousHistory = existing?.dtmfHistory ?? '';
     const history = opening
       ? ''
       : previousHistory
-        ? `${previousHistory}*${digits ?? ''}`
-        : (digits ?? '');
+        ? `${previousHistory}*${historyDigits}`
+        : historyDigits;
     const record: IvrCallRecord = {
       sessionId: input.sessionId,
       callerNumber: input.callerNumber,
       state: {
         engine: turn.state,
-        lastDigits: digits,
+        lastDigits: historyDigits,
         lastResponse: response
       } as unknown as Record<string, unknown>,
       currentMenu: turn.state.menu,
@@ -246,7 +297,14 @@ export class IvrService {
               completed: enrolments.filter((entry) => entry.status === 'completed').length
             }
           }
-        : undefined
+        : undefined,
+      // Stage 27 Voice Teller: flag-gated (fail-closed when the teller is
+      // not wired or the flag check throws); locale drives speech templates.
+      voiceTeller: {
+        enabled: this.teller ? await this.teller.isEnabled(user?.id) : false,
+        registered: !!user,
+        locale: user?.preferredLanguage
+      }
     };
   }
 
