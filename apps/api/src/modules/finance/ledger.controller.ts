@@ -36,7 +36,9 @@ import {
   LEDGER_BACKEND,
   type LedgerBackendDriver
 } from '../integrations/drivers/tigerbeetle.driver.js';
+import { LedgerReconciliationService } from './ledger-reconciliation.service.js';
 import { LedgerService, type PostEntryInput } from './ledger.service.js';
+import { TbConsistencyChecker } from './tb-consistency.checker.js';
 
 class CreateLedgerAccountDto {
   @IsString()
@@ -98,8 +100,76 @@ function actorIdOf(actor: User | null): string {
 export class LedgerController {
   constructor(
     private readonly ledger: LedgerService,
+    private readonly reconciliation: LedgerReconciliationService,
+    private readonly tbConsistency: TbConsistencyChecker,
     @Optional() @Inject(LEDGER_BACKEND) private readonly backend?: LedgerBackendDriver
   ) {}
+
+  /**
+   * WP-G13 drift detection: committed journal entries failing the balance
+   * invariant (finance.transfer_is_balanced / ≥2 postings). Must be empty —
+   * a non-empty result proves a writer bypassed the guarded posting path.
+   * A non-empty result increments finance.ledger.unbalanced_transfers and
+   * writes an audit row.
+   */
+  @Get('reconciliation/balance')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Unbalanced committed journal entries (admin; drift alert — must be empty)'
+  })
+  async unbalancedEntries() {
+    const unbalanced = await this.reconciliation.findUnbalancedEntries();
+    return { data: { balanced: unbalanced.length === 0, entries: unbalanced } };
+  }
+
+  /**
+   * WP-G13 escrow value reconciliation: Σ open escrow holds vs the ledger
+   * holds-liability and provider-float accounts, plus per-escrow leg
+   * presence. Detect-only; drift increments
+   * finance.ledger.escrow_reconciliation.drift and is audited.
+   */
+  @Get('reconciliation/escrow')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Escrow Σ vs ledger liability reconciliation report (admin, detect-only)'
+  })
+  async escrowReconciliation() {
+    return { data: await this.reconciliation.reconcileEscrow({ repair: false }) };
+  }
+
+  /**
+   * WP-G13 escrow reconciliation REPAIR: posts missing hold/settlement legs
+   * (idempotency-keyed — never double-posts), backfilling pre-WP-G13
+   * escrows. Amount mismatches and orphan entries stay alert-only.
+   */
+  @Post('reconciliation/escrow/repair')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Repair missing escrow ledger legs (admin; idempotent) and re-report'
+  })
+  async escrowReconciliationRepair() {
+    return { data: await this.reconciliation.reconcileEscrow({ repair: true }) };
+  }
+
+  /**
+   * WP-G13 pg↔TigerBeetle consistency: per configured account pair, the pg
+   * ledger balance vs the TigerBeetle posted balance. Disabled (inert)
+   * unless the tigerbeetle backend is selected; tigerbeetle selected with
+   * no account map reports unmapped=true (fail-visible, never silently
+   * divergent).
+   */
+  @Get('reconciliation/backend')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'pg↔TigerBeetle balance consistency report (admin; inert unless LEDGER_DRIVER=tigerbeetle)'
+  })
+  async backendConsistency() {
+    return { data: await this.tbConsistency.runCheck() };
+  }
 
   /**
    * Wave FABRIC: selected ledger-backend driver status (stub = Postgres
