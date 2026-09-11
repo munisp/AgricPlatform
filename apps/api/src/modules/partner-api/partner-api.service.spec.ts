@@ -251,6 +251,30 @@ describe('PartnerApiService', () => {
     expect(listed[0]).not.toHaveProperty('secret');
   });
 
+  it('binds new webhook subscriptions to the token partner, never cross-tenant (WP-G3)', async () => {
+    const { service } = makeService();
+    const bound = await service.createWebhookSubscription(
+      'pc_test',
+      {
+        eventTypes: ['disbursement.recorded'],
+        targetUrl: 'https://partner.example/hook',
+        secret: 'sixteen-char-secret'
+      },
+      'partner-a'
+    );
+    expect(bound.partnerId).toBe('partner-a');
+    expect(bound.crossTenant).toBe(false);
+
+    // Unbound (pre-Stage-24 style) credentials create platform-level subs.
+    const unbound = await service.createWebhookSubscription('pc_legacy', {
+      eventTypes: ['enrolment.created'],
+      targetUrl: 'https://platform.example/hook',
+      secret: 'sixteen-char-secret'
+    });
+    expect(unbound.partnerId).toBeUndefined();
+    expect(unbound.crossTenant).toBe(false);
+  });
+
   it('rejects unknown webhook event types', async () => {
     const { service } = makeService();
     await expect(
