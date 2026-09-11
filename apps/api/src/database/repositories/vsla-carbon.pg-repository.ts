@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import type pg from 'pg';
+import type { LedgerPostingTx } from './ledger.repository.js';
 import type {
   CarbonEvidenceCriteria,
   CarbonEvidenceRecord,
@@ -29,6 +30,7 @@ import type {
   VslaMemberRepository,
   VslaShareOutCriteria,
   VslaShareOutPlanCriteria,
+  VslaShareOutPlanMetaRecord,
   VslaShareOutPlanRecord,
   VslaShareOutPlanRepository,
   VslaShareOutRecord,
@@ -538,6 +540,78 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
     return result.rows.map((row) => this.fromRow(row));
   }
 
+  async findMeta(cycleId: string): Promise<VslaShareOutPlanMetaRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.vsla_share_out_plan_meta WHERE cycle_id = $1',
+      [cycleId]
+    );
+    return result.rows[0] ? this.metaFromRow(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Atomic full-plan write (WP-G1, stage-27 V2 audit): the completion marker
+   * inserts ON CONFLICT DO NOTHING — a concurrent closer blocks then skips,
+   * and only the marker winner replaces the rows. Partial rows (crash
+   * mid-insert, pre-054) are deleted and the FULL plan + marker commit in
+   * ONE transaction, so a resume can never again mistake a half-written
+   * plan for a complete one.
+   */
+  async replacePlan(
+    cycleId: string,
+    rows: VslaShareOutPlanRecord[],
+    meta: VslaShareOutPlanMetaRecord
+  ): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const marker = await client.query(
+        'INSERT INTO vsla_carbon.vsla_share_out_plan_meta (cycle_id, row_count, total_share_kobo, created_at) ' +
+          'VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING cycle_id',
+        [meta.cycleId, meta.rowCount, meta.totalShareKobo, meta.createdAt]
+      );
+      if ((marker.rowCount ?? 0) === 0) {
+        // A complete plan already exists — this closer lost the race and
+        // must pay from the stored plan.
+        await client.query('ROLLBACK');
+        return false;
+      }
+      await client.query('DELETE FROM vsla_carbon.vsla_share_out_plan WHERE cycle_id = $1', [
+        cycleId
+      ]);
+      for (const row of rows) {
+        await client.query(
+          'INSERT INTO vsla_carbon.vsla_share_out_plan (id, cycle_id, member_id, share_kobo, ' +
+            'contributed_kobo, residual_kobo, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [
+            row.id,
+            row.cycleId,
+            row.memberId,
+            row.shareKobo,
+            row.contributedKobo,
+            row.residualKobo,
+            row.createdAt
+          ]
+        );
+      }
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markPlanComplete(cycleId: string, rowCount: number, totalShareKobo: number): Promise<void> {
+    // Marker-keyed exactly-once: only the first writer's marker stands.
+    await this.pool.query(
+      'INSERT INTO vsla_carbon.vsla_share_out_plan_meta (cycle_id, row_count, total_share_kobo, created_at) ' +
+        'VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',
+      [cycleId, rowCount, totalShareKobo, new Date().toISOString()]
+    );
+  }
+
   private fromRow(row: Record<string, unknown>): VslaShareOutPlanRecord {
     return {
       id: row.id as string,
@@ -549,38 +623,89 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
       createdAt: toIso(row.created_at) as string
     };
   }
+
+  private metaFromRow(row: Record<string, unknown>): VslaShareOutPlanMetaRecord {
+    return {
+      cycleId: row.cycle_id as string,
+      rowCount: Number(row.row_count),
+      totalShareKobo: Number(row.total_share_kobo),
+      createdAt: toIso(row.created_at) as string
+    };
+  }
 }
 
 export class PgVslaLoanRepository implements VslaLoanRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async create(record: VslaLoanRecord): Promise<VslaLoanRecord> {
-    await this.pool.query(
-      'INSERT INTO vsla_carbon.vsla_loans (id, group_id, cycle_id, member_id, principal_kobo, ' +
-        'interest_rate_bps, total_due_kobo, repaid_kobo, status, issued_at, repaid_at, ' +
-        'ledger_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
-      [
-        record.id,
-        record.groupId,
-        record.cycleId,
-        record.memberId,
-        record.principalKobo,
-        record.interestRateBps,
-        record.totalDueKobo,
-        record.repaidKobo,
-        record.status,
-        record.issuedAt,
-        record.repaidAt ?? null,
-        record.ledgerEntryId,
-        record.createdAt
-      ]
-    );
+  async create(record: VslaLoanRecord, tx?: LedgerPostingTx): Promise<VslaLoanRecord> {
+    try {
+      await (tx ?? this.pool).query(
+        'INSERT INTO vsla_carbon.vsla_loans (id, group_id, cycle_id, member_id, principal_kobo, ' +
+          'interest_rate_bps, total_due_kobo, repaid_kobo, status, issued_at, repaid_at, ' +
+          'ledger_entry_id, idempotency_key, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
+        [
+          record.id,
+          record.groupId,
+          record.cycleId,
+          record.memberId,
+          record.principalKobo,
+          record.interestRateBps,
+          record.totalDueKobo,
+          record.repaidKobo,
+          record.status,
+          record.issuedAt,
+          record.repaidAt ?? null,
+          record.ledgerEntryId,
+          record.idempotencyKey ?? null,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      // 054 partial UNIQUE index on idempotency_key: a twin disbursement
+      // under the same client key loses here and its whole unit rolls back.
+      assertPgUnique(error, 'A record with these unique values already exists');
+    }
     return record;
   }
 
   async findById(id: string): Promise<VslaLoanRecord | undefined> {
     const result = await this.pool.query('SELECT * FROM vsla_carbon.vsla_loans WHERE id = $1', [id]);
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<VslaLoanRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.vsla_loans WHERE idempotency_key = $1',
+      [key]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  /**
+   * Caller-owned transaction for the loan money paths (WP-G1, stage-27 V2
+   * audit): the callback's claim UPDATE, ledger posting and row inserts run
+   * on THIS connection and commit — or roll back — as one unit. Transaction
+   * style mirrors ledger.pg-repository.postEntry and the input-vouchers
+   * allocation lock.
+   */
+  async withLoanTransaction<T>(
+    scopeKey: string,
+    fn: (tx?: LedgerPostingTx) => Promise<T>
+  ): Promise<T> {
+    void scopeKey; // the pg unit of work is a plain transaction, not a lock scope
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client as unknown as LedgerPostingTx);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async find(criteria: VslaLoanCriteria): Promise<VslaLoanRecord[]> {
@@ -653,8 +778,12 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
    * 409s BEFORE any ledger posting, so money can never commit ahead of the
    * loan aggregate again.
    */
-  async claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined> {
-    const result = await this.pool.query(
+  async claimRepayment(
+    id: string,
+    amountKobo: number,
+    tx?: LedgerPostingTx
+  ): Promise<VslaLoanRecord | undefined> {
+    const result = (await (tx ?? this.pool).query(
       `UPDATE vsla_carbon.vsla_loans
        SET repaid_kobo = repaid_kobo + $1,
            status = CASE
@@ -670,7 +799,7 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
          AND repaid_kobo + $1 <= total_due_kobo
        RETURNING *`,
       [amountKobo, id]
-    );
+    )) as { rows: Record<string, unknown>[] };
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
@@ -700,6 +829,7 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
       issuedAt: toIso(row.issued_at) as string,
       repaidAt: toIso(row.repaid_at),
       ledgerEntryId: row.ledger_entry_id as string,
+      idempotencyKey: (row.idempotency_key as string | null) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -708,9 +838,12 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
 export class PgVslaLoanRepaymentRepository implements VslaLoanRepaymentRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async create(record: VslaLoanRepaymentRecord): Promise<VslaLoanRepaymentRecord> {
+  async create(
+    record: VslaLoanRepaymentRecord,
+    tx?: LedgerPostingTx
+  ): Promise<VslaLoanRepaymentRecord> {
     try {
-      await this.pool.query(
+      await (tx ?? this.pool).query(
         'INSERT INTO vsla_carbon.vsla_loan_repayments (id, loan_id, amount_kobo, idempotency_key, ' +
           'ledger_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6)',
         [
