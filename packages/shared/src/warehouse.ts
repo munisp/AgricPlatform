@@ -148,3 +148,70 @@ export interface WarehouseRegistryExport {
   transfers: WarehouseReceiptTransfer[];
   exportedAt: string;
 }
+
+/* ---- Stage 27 / Innovation 8: Receipt LTV Guardian (migration 066) ------ */
+
+/** Collateral-position lifecycle: active → margin_call → cured | liquidated. */
+export const COLLATERAL_POSITION_STATUSES = [
+  'active',
+  'margin_call',
+  'cured',
+  'liquidated'
+] as const;
+export type CollateralPositionStatus = (typeof COLLATERAL_POSITION_STATUSES)[number];
+
+/**
+ * Honest provenance of an observed price (geo-credit badge doctrine).
+ * 'unavailable' is deliberately absent: a failed fetch produces NO
+ * observation row — the position is flagged priceStale instead.
+ */
+export const LTV_PRICE_BASES = ['live', 'stub'] as const;
+export type LtvPriceBasis = (typeof LTV_PRICE_BASES)[number];
+
+/**
+ * A warehouse receipt monitored as loan collateral. The outstanding loan
+ * balance is never stored here — `ledgerAccountCode` points at the finance
+ * ledger account (single source of truth) read at evaluation time.
+ */
+export interface CollateralPosition {
+  id: string;
+  receiptId: string;
+  loanId: string;
+  lenderId: string;
+  borrowerId: string;
+  /** Ledger account read for the outstanding balance at evaluation time. */
+  ledgerAccountCode: string;
+  pledgedQtyKg: number;
+  commodity: string;
+  /** Collateral haircut in basis points (0–9999). */
+  haircutBps: number;
+  /** Target maximum LTV in basis points; recovery to ≤ this cures a call. */
+  ltvLimitBps: number;
+  /** LTV at or above this raises a margin call (basis points). */
+  marginCallBps: number;
+  status: CollateralPositionStatus;
+  /** Fail-closed flag: price feed unavailable at the last evaluation. */
+  priceStale: boolean;
+  openedAt: string;
+  closedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Append-only LTV observation (evidence doctrine — never updated). */
+export interface LtvObservation {
+  id: string;
+  positionId: string;
+  pricePerKgKobo: number;
+  priceBasis: LtvPriceBasis;
+  /** Outstanding loan balance read from the ledger at observation time. */
+  outstandingKobo: number;
+  ltvBps: number;
+  observedAt: string;
+}
+
+/** Lender-facing position detail including the observation history. */
+export interface CollateralPositionDetail {
+  position: CollateralPosition;
+  observations: LtvObservation[];
+}
