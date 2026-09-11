@@ -1,1 +1,73 @@
-PLACEHOLDER_PKG
+{
+  "name": "agric-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified Nigeria Farmer Platform implementation based on NYFN PRD v3.3.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @agric-platform/api\" \"npm run dev -w @agric-platform/web\"",
+    "start": "concurrently -k \"PORT=3001 npm run start -w @agric-platform/api\" \"PORT=3000 npm run start -w @agric-platform/web\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "validate": "npm run typecheck && npm run lint && npm run lint:sql && npm run test && npm run build",
+    "lint:sql": "node scripts/lint-migrations.mjs",
+    "sweep:outbox": "node scripts/sweep-outbox.mjs",
+    "backup:db": "node scripts/backup-db.mjs",
+    "verify:restore": "node scripts/verify-restore.mjs",
+    "verify:providers": "node scripts/verify-providers.mjs",
+    "verify:deployment": "node scripts/verify-deployment.mjs",
+    "check:bundle": "node scripts/check-bundle-budget.mjs",
+    "audit:media": "node scripts/audit-media.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "concurrently": "^10.0.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "agriculture",
+    "nigeria",
+    "farmers",
+    "nyfn",
+    "platform"
+  ],
+  "license": "UNLICENSED",
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "^5.2.3"
+    },
+    "next": {
+      "postcss": "^8.5.25",
+      "sharp": "^0.35.4"
+    },
+    "@expo/metro-config": {
+      "postcss": "^8.5.25"
+    },
+    "multer": "^2.3.0",
+    "@expo/plist": {
+      "@xmldom/xmldom": "^0.9.12"
+    },
+    "plist": {
+      "@xmldom/xmldom": "^0.9.12"
+    },
+    "@eslint/eslintrc": {
+      "js-yaml": "^4.3.2"
+    },
+    "@expo/xcpretty": {
+      "js-yaml": "^4.3.2"
+    },
+    "cosmiconfig": {
+      "js-yaml": "^4.3.2"
+    }
+  }
+}
