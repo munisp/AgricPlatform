@@ -3,8 +3,13 @@ import type { RawBodyRequest } from '../../bootstrap.js';
 import type { MetricsService } from '../../common/metrics/metrics.service.js';
 import type { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { createInMemoryAdvisoryRepository } from '../../database/repositories/advisory.repository.js';
+import { createInMemoryBridgeSyncStateRepository } from '../../database/repositories/bridge-sync-state.repository.js';
+import { createInMemoryCourseRepository } from '../../database/repositories/course.repository.js';
+import { createInMemoryForumTopicRepository } from '../../database/repositories/forum-topic.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryWebhookDedupeStore } from '../../database/repositories/webhook-dedupe.repository.js';
+import { BridgeSyncService } from './bridge-sync.service.js';
 import { IntegrationsController } from './integrations.controller.js';
 import { IntegrationsService } from './integrations.service.js';
 
@@ -27,7 +32,15 @@ describe('IntegrationsController webhook crash recovery (audit C2)', () => {
     const integrations = new IntegrationsService(undefined, dedupe, events);
     const audit = { record: vi.fn(async () => ({})) } as unknown as AuditService;
     const metrics = { paymentEvent: vi.fn() } as unknown as MetricsService;
-    const controller = new IntegrationsController(integrations, audit, events, metrics);
+    const bridgeSync = new BridgeSyncService(
+      integrations,
+      createInMemoryCourseRepository(),
+      createInMemoryForumTopicRepository(),
+      createInMemoryAdvisoryRepository(),
+      createInMemoryBridgeSyncStateRepository(),
+      {}
+    );
+    const controller = new IntegrationsController(integrations, audit, events, metrics, bridgeSync);
     const request = { rawBody: undefined, headers: {} } as RawBodyRequest;
     return { audit, controller, dedupe, events, integrations, outbox, request };
   }
