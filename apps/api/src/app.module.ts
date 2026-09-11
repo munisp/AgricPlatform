@@ -79,6 +79,9 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
 import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
+// WP-G12 (additive): money-state sweepers (escrow expiry, stuck vouchers) +
+// the env-gated in-process scheduler.
+import { SweepersModule } from './modules/sweepers/sweepers.module.js';
 
 @Module({
   imports: [
@@ -176,7 +179,9 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
-    WarehouseModule
+    WarehouseModule,
+    // WP-G12 money-state sweepers — appended to minimise merge conflicts.
+    SweepersModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
