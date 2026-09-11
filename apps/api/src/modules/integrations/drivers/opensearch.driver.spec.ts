@@ -5,6 +5,7 @@ import {
   createOpenSearchProvider,
   MeilisearchModuleProvider,
   OpenSearchSearchProvider,
+  parseOpenSearchTimeoutMs,
   type OpenSearchClientLike
 } from './opensearch.driver.js';
 
@@ -143,18 +144,21 @@ describe('OpenSearchSearchProvider query path', () => {
       fallback: fakeFallback()
     });
     const results = await provider.search('maize', ['course'], 'Kano', 5);
-    expect(client.search).toHaveBeenCalledWith({
-      index: 'agric-platform',
-      body: {
-        size: 5,
-        query: {
-          bool: {
-            must: [{ multi_match: { query: 'maize', fields: ['title^2', 'summary'] } }],
-            filter: [{ terms: { type: ['course'] } }, { term: { state: 'Kano' } }]
+    expect(client.search).toHaveBeenCalledWith(
+      {
+        index: 'agric-platform',
+        body: {
+          size: 5,
+          query: {
+            bool: {
+              must: [{ multi_match: { query, fields: ['title^2', 'summary'] } }],
+              filter: [{ terms: { type: ['course'] } }, { term: { state: 'Kano' } }]
+            }
           }
         }
-      }
-    });
+      },
+      { signal: expect.any(AbortSignal) }
+    );
     // Unknown result types are dropped (fail closed on shape).
     expect(results).toEqual([
       {
@@ -177,7 +181,8 @@ describe('OpenSearchSearchProvider query path', () => {
     });
     await provider.search('maize');
     expect(client.search).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 'custom-index' })
+      expect.objectContaining({ index: 'custom-index' }),
+      { signal: expect.any(AbortSignal) }
     );
   });
 
@@ -197,14 +202,17 @@ describe('OpenSearchSearchProvider query path', () => {
     });
     const suggestions = await provider.suggest('maize', 5);
     expect(suggestions).toEqual(['Maize prices', 'Maize storage']);
-    expect(client.search).toHaveBeenCalledWith({
-      index: 'agric-platform',
-      body: {
-        size: 5,
-        _source: ['title'],
-        query: { match_phrase_prefix: { title: 'maize' } }
-      }
-    });
+    expect(client.search).toHaveBeenCalledWith(
+      {
+        index: 'agric-platform',
+        body: {
+          size: 5,
+          _source: ['title'],
+          query: { match_phrase_prefix: { title: 'maize' } }
+        }
+      },
+      { signal: expect.any(AbortSignal) }
+    );
   });
 
   it('delegates trending and related to the in-process fallback (not index-backed)', async () => {
@@ -235,5 +243,121 @@ describe('OpenSearchSearchProvider query path', () => {
       fallback: fakeFallback()
     });
     await expect(provider.search('maize')).rejects.toBeInstanceOf(ProviderRequestError);
+  });
+});
+
+describe('OpenSearchSearchProvider hardening (WP-G10)', () => {
+  it('times out at the configured OPENSEARCH_TIMEOUT_MS even when the client never settles', async () => {
+    const provider = new OpenSearchSearchProvider({
+      clientFactory: () =>
+        // A client that ignores the abort signal and never resolves: the
+        // race guard must still reject at the configured timeout.
+        Promise.resolve({ search: vi.fn().mockReturnValue(new Promise(() => undefined)) }),
+      fallback: fakeFallback(),
+      timeoutMs: 30
+    });
+    const started = Date.now();
+    const failure = await provider.search('maize').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ProviderRequestError);
+    expect((failure as ProviderRequestError).reason).toBe('timeout');
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('maps a client abort-signal rejection to the timeout class', async () => {
+    const provider = new OpenSearchSearchProvider({
+      clientFactory: () =>
+        Promise.resolve({
+          search: vi.fn().mockImplementation(
+            (_params: unknown, options?: { signal?: AbortSignal }) =>
+              new Promise((_, reject) => {
+                options?.signal?.addEventListener('abort', () =>
+                  reject(new DOMException('The operation was aborted', 'AbortError'))
+                );
+              })
+          )
+        }),
+      fallback: fakeFallback(),
+      timeoutMs: 30
+    });
+    const failure = await provider.search('maize').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ProviderRequestError);
+    expect((failure as ProviderRequestError).reason).toBe('timeout');
+  });
+
+  it('opens the circuit after 3 consecutive failures and half-opens after the cooldown', async () => {
+    vi.useFakeTimers();
+    try {
+      const search = vi.fn().mockRejectedValue(new TypeError('ECONNREFUSED'));
+      const provider = new OpenSearchSearchProvider({
+        clientFactory: () => Promise.resolve({ search }),
+        fallback: fakeFallback()
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await expect(provider.search('maize')).rejects.toBeInstanceOf(ProviderRequestError);
+      }
+      expect(provider.circuitOpen).toBe(true);
+      // Open circuit: the next call short-circuits without hitting the client.
+      await expect(provider.search('maize')).rejects.toThrow(/circuit open/);
+      expect(search).toHaveBeenCalledTimes(3);
+      let status = await provider.status();
+      expect(status.circuitBreaker).toBe('open');
+      expect(status.healthy).toBe(false);
+      expect(status.lastErrorClass).toBe('network');
+
+      // Half-open after the 30s cooldown: the probe goes through to the
+      // client and a success closes the circuit again.
+      vi.setSystemTime(Date.now() + 31_000);
+      search.mockResolvedValueOnce({ body: { hits: { hits: [] } } });
+      status = await provider.status();
+      expect(status.circuitBreaker).toBe('half-open');
+      await expect(provider.search('maize')).resolves.toEqual([]);
+      expect(search).toHaveBeenCalledTimes(4);
+      expect(provider.circuitOpen).toBe(false);
+      status = await provider.status();
+      expect(status.circuitBreaker).toBe('closed');
+      expect(status.healthy).toBe(true);
+      expect(status.lastSuccessAt).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records lastSuccessAt on the status accessor after a query', async () => {
+    const provider = new OpenSearchSearchProvider({
+      clientFactory: () => Promise.resolve(clientReturning({ hits: { hits: [] } })),
+      fallback: fakeFallback()
+    });
+    const before = await provider.status();
+    expect(before.configured).toBe(true);
+    expect(before.healthy).toBe(false); // lazy: client connects on first query
+    expect(before.circuitBreaker).toBe('closed');
+    expect(before.lastSuccessAt).toBeNull();
+    await provider.search('maize');
+    const after = await provider.status();
+    expect(after.healthy).toBe(true);
+    expect(after.lastSuccessAt).not.toBeNull();
+    expect(Number.isNaN(Date.parse(after.lastSuccessAt as string))).toBe(false);
+  });
+});
+
+describe('parseOpenSearchTimeoutMs', () => {
+  it('defaults to 5000 and honours valid overrides only', () => {
+    expect(parseOpenSearchTimeoutMs(undefined)).toBe(5000);
+    expect(parseOpenSearchTimeoutMs('')).toBe(5000);
+    expect(parseOpenSearchTimeoutMs('2500')).toBe(2500);
+    expect(parseOpenSearchTimeoutMs('junk')).toBe(5000);
+    expect(parseOpenSearchTimeoutMs('-5')).toBe(5000);
+  });
+
+  it('createOpenSearchProvider wires OPENSEARCH_TIMEOUT_MS into the driver', () => {
+    const provider = createOpenSearchProvider(
+      {
+        SEARCH_DRIVER: 'opensearch',
+        OPENSEARCH_NODE: 'http://localhost:9200',
+        OPENSEARCH_TIMEOUT_MS: '1500'
+      },
+      fakeFallback()
+    ) as OpenSearchSearchProvider;
+    expect(provider.timeoutMs).toBe(1500);
   });
 });
