@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  UseGuards
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ArrayNotEmpty, IsBoolean, IsIn } from 'class-validator';
 import { USER_ROLES, type UserRole } from '@agric-platform/shared';
@@ -57,6 +68,35 @@ export class AdminController {
     @CurrentUser() actor: User | null
   ) {
     return { data: await this.admin.setVerified(id, dto.isVerified, actor?.id ?? 'admin') };
+  }
+
+  @Put('users/:id/partner-memberships/:partnerId')
+  @ApiOperation({
+    summary:
+      'Bind a user to a partner organisation (tenant binding for /partner/:partnerId/*; audited, idempotent)'
+  })
+  async bindPartnerMember(
+    @Param('id') id: string,
+    @Param('partnerId') partnerId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.admin.bindPartnerMember(id, partnerId, actor?.id ?? 'admin') };
+  }
+
+  @Delete('users/:id/partner-memberships/:partnerId')
+  @ApiOperation({ summary: 'Revoke a partner-organisation binding (audited)' })
+  async unbindPartnerMember(
+    @Param('id') id: string,
+    @Param('partnerId') partnerId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.admin.unbindPartnerMember(id, partnerId, actor?.id ?? 'admin') };
+  }
+
+  @Get('partner-memberships')
+  @ApiOperation({ summary: 'List partner tenant bindings (optionally filtered by userId)' })
+  async partnerMemberships(@Query('userId') userId?: string) {
+    return { data: await this.admin.partnerMemberships(userId) };
   }
 
   @Get('review-queue')

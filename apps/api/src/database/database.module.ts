@@ -296,6 +296,7 @@ import {
 import {
   API_KEY_REPOSITORY,
   PARTNER_CLIENT_REPOSITORY,
+  PARTNER_MEMBER_REPOSITORY,
   WEBHOOK_SUBSCRIPTION_REPOSITORY
 } from './persistence.tokens.js';
 import {
@@ -308,6 +309,11 @@ import {
   createPgPartnerClientRepository,
   createPgWebhookSubscriptionRepository
 } from './repositories/partner-api.pg-repository.js';
+// Stage 24: partner tenant binding persistence (additive).
+import {
+  createInMemoryPartnerMemberRepository,
+  createPgPartnerMemberRepository
+} from './repositories/partner-member.repository.js';
 // Wave P6a: IVR voice channel persistence (additive).
 import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
@@ -1205,6 +1211,13 @@ import {
         pool ? createPgApiKeyRepository(pool) : createInMemoryApiKeyRepository(),
       inject: [PG_POOL]
     },
+    // Stage 24: partner tenant binding (user ↔ partner organisation).
+    {
+      provide: PARTNER_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPartnerMemberRepository(pool) : createInMemoryPartnerMemberRepository(),
+      inject: [PG_POOL]
+    },
     {
       provide: WEBHOOK_SUBSCRIPTION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
@@ -1935,6 +1948,7 @@ import {
     PARTNER_CLIENT_REPOSITORY,
     API_KEY_REPOSITORY,
     WEBHOOK_SUBSCRIPTION_REPOSITORY,
+    PARTNER_MEMBER_REPOSITORY,
     IVR_CALL_REPOSITORY,
     ANIMAL_REPOSITORY,
     LOT_REPOSITORY,

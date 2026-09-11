@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { SignJWT, jwtVerify } from 'jose';
 import { newId } from '../../common/async-repository.js';
 import {
@@ -21,6 +21,12 @@ export interface PartnerTokenIdentity {
   clientId: string;
   scopes: string[];
   sandbox: boolean;
+  /**
+   * Tenant binding claim (Stage 24, audit A2-2). Present on every token
+   * issued after Stage 24; tenant-parameterised routes refuse identities
+   * without it (fail closed).
+   */
+  partnerId?: string;
 }
 
 export interface IssuedPartnerToken {
@@ -64,12 +70,24 @@ export class PartnerAuthService {
     return this.config.sandbox;
   }
 
-  /** Registers a partner client; returns the plaintext secret exactly once. */
+  /**
+   * Registers a partner client bound to ONE partner organisation (Stage 24,
+   * audit A2-2); returns the plaintext secret exactly once. The binding is
+   * mandatory: issued tokens carry it as a claim and tenant-parameterised
+   * routes enforce it, so a client can never act on another partner's data.
+   */
   async registerClient(input: {
     name: string;
     scopes: string[];
+    partnerId: string;
     rateLimitPerMin?: number;
   }): Promise<{ client: PartnerClient; clientSecret: string }> {
+    const partnerId = input.partnerId?.trim();
+    if (!partnerId) {
+      throw new BadRequestException(
+        'partnerId is required — every partner client is bound to one partner organisation'
+      );
+    }
     const clientSecret = `pcs_${randomBytes(24).toString('base64url')}`;
     const salt = randomBytes(16).toString('hex');
     const client = await this.clients.create({
@@ -81,6 +99,7 @@ export class PartnerAuthService {
       scopes: input.scopes,
       status: 'active',
       rateLimitPerMin: input.rateLimitPerMin ?? 1000,
+      partnerId,
       createdAt: new Date().toISOString()
     });
     return { client, clientSecret };
@@ -98,7 +117,9 @@ export class PartnerAuthService {
     }
     const accessToken = await new SignJWT({
       scope: client.scopes.join(' '),
-      sandbox: this.config.sandbox
+      sandbox: this.config.sandbox,
+      // Tenant binding claim; verified identically on every request.
+      ...(client.partnerId ? { partnerId: client.partnerId } : {})
     })
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setSubject(client.clientId)
@@ -126,7 +147,8 @@ export class PartnerAuthService {
     return {
       clientId: payload.sub,
       scopes: typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [],
-      sandbox: payload.sandbox === true
+      sandbox: payload.sandbox === true,
+      partnerId: typeof payload.partnerId === 'string' ? payload.partnerId : undefined
     };
   }
 

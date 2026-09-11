@@ -19,6 +19,13 @@ export interface PartnerClient {
   status: PartnerClientStatus;
   /** Per-client rate bucket size (requests per minute, default 1000). */
   rateLimitPerMin: number;
+  /**
+   * Tenant binding (Stage 24, audit A2-2): the partner organisation slug this
+   * client may act for. Required at registration; tokens carry it as a claim
+   * and tenant-parameterised routes enforce it. Absent only on pre-Stage-24
+   * rows, which fail closed on tenant routes until rebound.
+   */
+  partnerId?: string;
   createdAt: string;
 }
 

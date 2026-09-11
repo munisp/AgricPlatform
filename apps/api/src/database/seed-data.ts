@@ -66,6 +66,32 @@ export interface DeletionRequest {
   completedAt?: string;
 }
 
+/**
+ * Partner tenant binding (Stage 24, audit A2-1): a `partner`-role user may
+ * act on `/partner/:partnerId/*` only when a membership row binds them to
+ * that partner organisation slug; admins are unrestricted. Admin-managed via
+ * /admin/users/:id/partner-memberships/:partnerId (audited).
+ */
+export interface PartnerMember {
+  id: string;
+  userId: string;
+  partnerId: string;
+  /** Admin user id that granted the binding (audit trail). */
+  createdBy: string;
+  createdAt: string;
+}
+
+/** Development seed: the demo partner account is bound to its own org slug. */
+export const seedPartnerMembers: PartnerMember[] = [
+  {
+    id: 'pmem-user-partner',
+    userId: 'user-partner',
+    partnerId: 'agri-partner-foundation',
+    createdBy: 'user-admin',
+    createdAt: NOW
+  }
+];
+
 export const seedUsers: User[] = [
   {
     id: 'user-adamu',

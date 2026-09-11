@@ -5,6 +5,7 @@ import {
   genReqId,
   isHealthProbe,
   maskPhone,
+  redactUrl,
   REDACT_PATHS,
   resolveLogLevel,
   resolveTransport,
@@ -81,10 +82,32 @@ describe('redaction policy', () => {
     } as unknown as Parameters<typeof serializers.req>[0];
     expect(serializers.req(req)).toEqual({
       method: 'GET',
-      url: '/api/v1/users?phone=08031234000',
+      // Query strings are stripped from the logged URL (Stage 24, A3-4);
+      // safe query-derived fields are logged explicitly (masked phone).
+      url: '/api/v1/users',
       requestId: 'req-9',
       phone: '0803****000'
     });
+  });
+
+  it('request serializer never logs query-string credentials (Stage 24, A3-4)', () => {
+    const req = {
+      id: 'req-10',
+      method: 'POST',
+      url: '/api/v1/ussd/callback?token=SUPERSECRET',
+      query: { token: 'SUPERSECRET' }
+    } as unknown as Parameters<typeof serializers.req>[0];
+    const serialized = serializers.req(req);
+    expect(serialized.url).toBe('/api/v1/ussd/callback');
+    expect(JSON.stringify(serialized)).not.toContain('SUPERSECRET');
+  });
+});
+
+describe('redactUrl (Stage 24, A3-4)', () => {
+  it('strips the query string and tolerates missing/empty urls', () => {
+    expect(redactUrl('/api/v1/ussd/callback?token=x&sessionId=1')).toBe('/api/v1/ussd/callback');
+    expect(redactUrl('/api/v1/orders')).toBe('/api/v1/orders');
+    expect(redactUrl(undefined)).toBeUndefined();
   });
 });
 

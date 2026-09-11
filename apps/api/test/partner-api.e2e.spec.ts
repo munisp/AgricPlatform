@@ -16,6 +16,8 @@ describe('Partner API (e2e)', () => {
   let base: string;
   let clientId: string;
   let clientSecret: string;
+  let otherClientId: string;
+  let otherClientSecret: string;
   let limitedClientId: string;
   let limitedClientSecret: string;
   const savedEnv = { ...process.env };
@@ -29,6 +31,8 @@ describe('Partner API (e2e)', () => {
     base = `http://127.0.0.1:${address.port}/api/v1`;
 
     const auth = app.get(PartnerAuthService);
+    // Tenant binding (Stage 24, audit A2-2): every client is bound to ONE
+    // partner organisation at registration; tokens carry the binding.
     const full = await auth.registerClient({
       name: 'E2E Partner',
       scopes: [
@@ -40,12 +44,25 @@ describe('Partner API (e2e)', () => {
         'webhooks:manage',
         'profile:read',
         'farm_data:write'
-      ]
+      ],
+      partnerId: 'partner-demo'
     });
     clientId = full.client.clientId;
     clientSecret = full.clientSecret;
 
-    const limited = await auth.registerClient({ name: 'Narrow', scopes: ['impact:read'] });
+    const other = await auth.registerClient({
+      name: 'Other Partner',
+      scopes: ['programmes:read', 'impact:read', 'disbursements:write'],
+      partnerId: 'partner-other'
+    });
+    otherClientId = other.client.clientId;
+    otherClientSecret = other.clientSecret;
+
+    const limited = await auth.registerClient({
+      name: 'Narrow',
+      scopes: ['impact:read'],
+      partnerId: 'partner-demo'
+    });
     limitedClientId = limited.client.clientId;
     limitedClientSecret = limited.clientSecret;
   });
@@ -153,6 +170,47 @@ describe('Partner API (e2e)', () => {
     expect(body.data.amountNgn).toBe(75_000);
   });
 
+  it('scopes tenant-parameterised reads to the bound partnerId (Stage 24, audit A2-2)', async () => {
+    const token = await tokenFor(otherClientId, otherClientSecret);
+    // Bound to partner-other: its own tenant reads fine...
+    const own = await fetch(`${base}/partner/impact/partner-other`, {
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(own.status).toBe(200);
+    // ...but any other partner's tenant is refused (403).
+    for (const path of [
+      '/partner/impact/partner-demo',
+      '/partner/participation/partner-demo',
+      '/partner/applications/count/partner-demo'
+    ]) {
+      const res = await fetch(`${base}${path}`, {
+        headers: { authorization: `Bearer ${token}` }
+      });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('persists the TOKEN partnerId on writes; 400 on caller-supplied mismatch (A2-2)', async () => {
+    const token = await tokenFor(otherClientId, otherClientSecret);
+    // Caller-supplied partnerId contradicting the token binding → 400.
+    const mismatch = await fetch(`${base}/partner/disbursements`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ partnerId: 'partner-demo', userId: 'user-adamu', amountNgn: 10 })
+    });
+    expect(mismatch.status).toBe(400);
+
+    // partnerId omitted → recorded under the token's bound partnerId.
+    const recorded = await fetch(`${base}/partner/disbursements`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ userId: 'user-adamu', amountNgn: 25 })
+    });
+    expect(recorded.status).toBe(201);
+    const body = (await recorded.json()) as { data: { partnerId: string } };
+    expect(body.data.partnerId).toBe('partner-other');
+  });
+
   it('manages webhook subscriptions (secret shown once, omitted on list)', async () => {
     const token = await tokenFor(clientId, clientSecret);
     const created = await fetch(`${base}/partner/webhooks`, {
@@ -204,7 +262,9 @@ describe('Partner API (e2e)', () => {
     const res = await fetch(`${base}/partner/impact/partner-demo`, {
       headers: { 'x-api-key': body.data.key }
     });
-    expect(res.status).toBe(200);
+    // Developer keys carry no tenant binding (Stage 24, audit A2-2):
+    // tenant-parameterised routes fail closed for them.
+    expect(res.status).toBe(403);
   });
 
   it('serves anonymous embed feeds with open CORS and cache headers', async () => {

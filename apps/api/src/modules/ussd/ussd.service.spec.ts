@@ -136,14 +136,28 @@ describe('resolveUssdDriver (fail-closed)', () => {
           env: { USSD_DRIVER: 'live', AT_API_KEY: 'k', AT_USERNAME: 'u' } as NodeJS.ProcessEnv
         })
       ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
-      // …and boots once the shared secret is configured.
+      // …a published placeholder or sub-length token is equally refused
+      // (Stage 24, audit A3-1)…
+      for (const weak of ['replace-me', 'local-development-only', 'secret']) {
+        expect(() =>
+          build({
+            env: {
+              USSD_DRIVER: 'live',
+              AT_API_KEY: 'k',
+              AT_USERNAME: 'u',
+              AT_CALLBACK_TOKEN: weak
+            } as NodeJS.ProcessEnv
+          })
+        ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+      }
+      // …and boots once a strong shared secret is configured.
       expect(() =>
         build({
           env: {
             USSD_DRIVER: 'live',
             AT_API_KEY: 'k',
             AT_USERNAME: 'u',
-            AT_CALLBACK_TOKEN: 'secret'
+            AT_CALLBACK_TOKEN: 'callback-token-with-32-chars-min-xxx'
           } as NodeJS.ProcessEnv
         })
       ).not.toThrow();

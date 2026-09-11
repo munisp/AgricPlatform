@@ -31,6 +31,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     'scopes',
     'status',
     'rate_limit_per_min',
+    'partner_id',
     'created_at'
   ],
   fromRow: (row) => ({
@@ -42,6 +43,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     scopes: (row.scopes as string[]) ?? [],
     status: row.status as PartnerClient['status'],
     rateLimitPerMin: Number(row.rate_limit_per_min),
+    partnerId: (row.partner_id as string | null) ?? undefined,
     createdAt: new Date(row.created_at as string).toISOString()
   }),
   toRow: (item) => ({
@@ -53,6 +55,7 @@ const partnerClientMapper: RowMapper<PartnerClient> = {
     scopes: item.scopes,
     status: item.status,
     rate_limit_per_min: item.rateLimitPerMin,
+    partner_id: item.partnerId ?? null,
     created_at: item.createdAt
   })
 };

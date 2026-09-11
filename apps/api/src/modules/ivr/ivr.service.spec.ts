@@ -171,13 +171,26 @@ describe('resolveIvrDriver (fail-closed)', () => {
           env: { IVR_DRIVER: 'live', AT_API_KEY: 'k', AT_USERNAME: 'u' } as NodeJS.ProcessEnv
         })
       ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+      // Placeholders / weak tokens are refused too (Stage 24, audit A3-1).
+      for (const weak of ['replace-me', 'local-development-only', 'secret']) {
+        expect(() =>
+          build({
+            env: {
+              IVR_DRIVER: 'live',
+              AT_API_KEY: 'k',
+              AT_USERNAME: 'u',
+              AT_CALLBACK_TOKEN: weak
+            } as NodeJS.ProcessEnv
+          })
+        ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+      }
       expect(() =>
         build({
           env: {
             IVR_DRIVER: 'live',
             AT_API_KEY: 'k',
             AT_USERNAME: 'u',
-            AT_CALLBACK_TOKEN: 'secret'
+            AT_CALLBACK_TOKEN: 'callback-token-with-32-chars-min-xxx'
           } as NodeJS.ProcessEnv
         })
       ).not.toThrow();

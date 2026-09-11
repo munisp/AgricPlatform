@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   createInMemoryApiKeyRepository,
@@ -19,10 +19,11 @@ describe('PartnerAuthService', () => {
     );
   });
 
-  it('issues and verifies a client-credentials token with scope claims', async () => {
+  it('issues and verifies a client-credentials token with scope + tenant claims', async () => {
     const { client, clientSecret } = await service.registerClient({
       name: 'DFI Partner',
-      scopes: ['impact:read', 'programmes:read']
+      scopes: ['impact:read', 'programmes:read'],
+      partnerId: 'partner-dfi'
     });
     const issued = await service.issueToken(client.clientId, clientSecret);
     expect(issued.tokenType).toBe('Bearer');
@@ -33,10 +34,18 @@ describe('PartnerAuthService', () => {
     expect(identity.clientId).toBe(client.clientId);
     expect(identity.scopes).toEqual(['impact:read', 'programmes:read']);
     expect(identity.sandbox).toBe(true);
+    // Tenant binding claim (Stage 24, audit A2-2).
+    expect(identity.partnerId).toBe('partner-dfi');
+  });
+
+  it('requires a partnerId binding at registration (Stage 24, audit A2-2)', async () => {
+    await expect(
+      service.registerClient({ name: 'Unbound', scopes: [], partnerId: '' })
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rejects a bad client secret with 401', async () => {
-    const { client } = await service.registerClient({ name: 'X', scopes: [] });
+    const { client } = await service.registerClient({ name: 'X', scopes: [], partnerId: 'p-x' });
     await expect(service.issueToken(client.clientId, 'wrong-secret')).rejects.toBeInstanceOf(
       UnauthorizedException
     );
@@ -49,14 +58,22 @@ describe('PartnerAuthService', () => {
   });
 
   it('rejects tampered tokens on verify', async () => {
-    const { client, clientSecret } = await service.registerClient({ name: 'Y', scopes: ['a'] });
+    const { client, clientSecret } = await service.registerClient({
+      name: 'Y',
+      scopes: ['a'],
+      partnerId: 'p-y'
+    });
     const issued = await service.issueToken(client.clientId, clientSecret);
     const tampered = `${issued.accessToken.slice(0, -2)}xx`;
     await expect(service.verifyToken(tampered)).rejects.toThrow();
   });
 
   it('stores client secrets only as salted hashes', async () => {
-    const { client, clientSecret } = await service.registerClient({ name: 'Z', scopes: [] });
+    const { client, clientSecret } = await service.registerClient({
+      name: 'Z',
+      scopes: [],
+      partnerId: 'p-z'
+    });
     expect(client.clientSecretHash).not.toContain(clientSecret);
     expect(client.clientSecretHash).toBe(hashSecret(client.clientSecretSalt, clientSecret));
   });

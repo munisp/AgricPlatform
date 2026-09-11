@@ -21,6 +21,13 @@ export interface PartnerRequestIdentity {
   sandbox: boolean;
   /** Developer API key owner, when authenticated via x-api-key. */
   ownerUserId?: string;
+  /**
+   * Tenant binding (Stage 24, audit A2-2): the partner organisation the
+   * client was bound to at registration, carried as a token claim. Absent
+   * for developer API keys and pre-Stage-24 (unbound) clients — both fail
+   * closed on tenant-parameterised routes.
+   */
+  partnerId?: string;
 }
 
 interface PartnerRequest {
@@ -121,4 +128,26 @@ export function partnerIdentity(request: PartnerRequest): PartnerRequestIdentity
     throw new UnauthorizedException('Partner identity is not resolved');
   }
   return request.partner;
+}
+
+/**
+ * Tenant binding enforcement (Stage 24, audit A2-2): tenant-parameterised
+ * routes (`:partnerId`) require the authenticated client's bound partner
+ * organisation to match the path parameter exactly. Unbound identities
+ * (developer API keys, pre-Stage-24 clients) are refused — fail closed.
+ */
+export function assertPartnerTenant(
+  identity: PartnerRequestIdentity,
+  partnerId: string
+): void {
+  if (!identity.partnerId) {
+    throw new ForbiddenException(
+      'This credential is not bound to a partner organisation; tenant-scoped routes require a bound client-credentials token'
+    );
+  }
+  if (identity.partnerId !== partnerId) {
+    throw new ForbiddenException(
+      `Client is bound to partner '${identity.partnerId}' and cannot access '${partnerId}'`
+    );
+  }
 }
