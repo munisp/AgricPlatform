@@ -1,10 +1,15 @@
 import { Global, Module } from '@nestjs/common';
+import type pg from 'pg';
+import { AUDIT_ANCHOR_REPOSITORY, PG_POOL } from '../database/persistence.tokens.js';
+import { createInMemoryAuditAnchorRepository } from '../database/repositories/audit-anchor.repository.js';
+import { createPgAuditAnchorRepository } from '../database/repositories/audit-anchor.pg-repository.js';
 import { OidcService } from '../common/auth/oidc.service.js';
 import { ErrorTrackingService } from '../common/error-tracking/error-tracking.service.js';
 import {
   AUTHORIZATION_CHECK,
   createAuthorizationCheck
 } from '../common/auth/authorization-check.driver.js';
+import { AuditAnchorService } from './audit-anchor.service.js';
 import { AuditService } from './audit.service.js';
 import { DomainEventsService } from './domain-events.service.js';
 import { EventDedupService } from './event-dedup.service.js';
@@ -29,6 +34,17 @@ import {
 @Module({
   providers: [
     AuditService,
+    AuditAnchorService,
+    // Stage 23: the anchor-repository binding lives next to its only consumer
+    // (AuditAnchorService), keeping the anchoring feature self-contained.
+    // DatabaseModule is @Global and exports PG_POOL, so the pg/in-memory
+    // switch follows the same PG_POOL presence rule as every other binding.
+    {
+      provide: AUDIT_ANCHOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAuditAnchorRepository(pool) : createInMemoryAuditAnchorRepository(),
+      inject: [PG_POOL]
+    },
     DomainEventsService,
     OidcService,
     ErrorTrackingService,
@@ -46,6 +62,7 @@ import {
   ],
   exports: [
     AuditService,
+    AuditAnchorService,
     DomainEventsService,
     OidcService,
     ErrorTrackingService,
