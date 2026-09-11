@@ -28,6 +28,10 @@ import {
   ProviderConfigError,
   ProviderRequestError
 } from '../../modules/integrations/drivers/http.js';
+import {
+  circuitBreakerState,
+  DriverHealthTracker
+} from '../../modules/integrations/drivers/driver-health.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import type { DomainEvent } from '../domain-events.service.js';
 import {
@@ -138,6 +142,7 @@ export class FluvioEventBus implements EventBus {
   private readonly producers = new Map<string, FluvioProducerLike>();
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly tracker = new DriverHealthTracker();
   private readonly telemetry: TelemetryService;
 
   constructor(
@@ -194,7 +199,7 @@ export class FluvioEventBus implements EventBus {
         { 'messaging.system': 'fluvio', result: 'ok' }
       );
     } catch (error) {
-      this.recordFailure();
+      this.recordFailure(error);
       this.telemetry.increment('eventbus.fluvio.deliveries.total', 1, {
         'messaging.system': 'fluvio',
         result: 'error'
@@ -235,7 +240,7 @@ export class FluvioEventBus implements EventBus {
       });
       this.recordSuccess();
     } catch (error) {
-      this.recordFailure();
+      this.recordFailure(error);
       if (error instanceof ProviderRequestError) {
         throw error;
       }
@@ -247,6 +252,13 @@ export class FluvioEventBus implements EventBus {
     return Promise.resolve({
       configured: true,
       healthy: this.client !== undefined && !this.circuitOpen,
+      circuitBreaker: circuitBreakerState(
+        this.consecutiveFailures,
+        EVENT_BUS_CIRCUIT_THRESHOLD,
+        this.circuitOpenUntil
+      ),
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
       detail: this.client
         ? this.circuitOpen
           ? `Fluvio client connected but circuit open after ${this.consecutiveFailures} consecutive failures.`
@@ -307,12 +319,16 @@ export class FluvioEventBus implements EventBus {
   private recordSuccess(): void {
     this.consecutiveFailures = 0;
     this.circuitOpenUntil = 0;
+    this.tracker.recordSuccess();
   }
 
-  private recordFailure(): void {
+  private recordFailure(error?: unknown): void {
     this.consecutiveFailures += 1;
     this.producers.clear();
     this.client = undefined;
+    if (error !== undefined) {
+      this.tracker.recordError(error);
+    }
     if (this.consecutiveFailures >= EVENT_BUS_CIRCUIT_THRESHOLD) {
       this.circuitOpenUntil = Date.now() + EVENT_BUS_CIRCUIT_COOLDOWN_MS;
     }
