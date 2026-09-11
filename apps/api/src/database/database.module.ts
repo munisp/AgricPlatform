@@ -737,6 +737,19 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential persistence.
+import {
+  CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+  CREDIT_PASSPORT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditPassportCredentialRepository,
+  createInMemoryCreditPassportDisclosureRepository
+} from './repositories/credit-passport.repository.js';
+import {
+  createPgCreditPassportCredentialRepository,
+  createPgCreditPassportDisclosureRepository
+} from './repositories/credit-passport.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1870,6 +1883,23 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential.
+    {
+      provide: CREDIT_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportCredentialRepository(pool)
+          : createInMemoryCreditPassportCredentialRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportDisclosureRepository(pool)
+          : createInMemoryCreditPassportDisclosureRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2052,7 +2082,10 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 INNOVATION 7 Credit Passport (additive).
+    CREDIT_PASSPORT_REPOSITORY,
+    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY
   ]
 })
 export class DatabaseModule {}
