@@ -644,6 +644,35 @@ describe('payout settlement (stub execution)', () => {
       ForbiddenException
     );
   });
+
+  it('fails closed with 503 in production: stub execution never marks a payout PAID (WP-G15)', async () => {
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    const context = makeService();
+    const policy = await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    const [payout] = await context.payouts.all();
+    expect(payout.status).toBe('proposed');
+
+    vi.stubEnv('NODE_ENV', 'production');
+    await expect(context.service.confirmPayout(admin, payout.id)).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+    // Fail closed: NOTHING changed — payout still proposed, policy still
+    // payout_proposed, no settlement entry, no farmer account, no event.
+    expect((await context.payouts.findById(payout.id))?.status).toBe('proposed');
+    expect((await context.policies.findById(policy.id))?.status).toBe('payout_proposed');
+    await expect(
+      context.ledger.getAccountByCode(`farmer:${farmer.id}:insurance_payouts`)
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).not.toContain('insurance.payout.paid');
+
+    // Non-prod behaviour is unchanged once the guard lifts.
+    vi.stubEnv('NODE_ENV', 'development');
+    const paid = await context.service.confirmPayout(admin, payout.id);
+    expect(paid.status).toBe('paid');
+    expect(paid.execution).toBe('stub');
+  });
 });
 
 describe('insurer portfolio', () => {
