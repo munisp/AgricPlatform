@@ -275,3 +275,8 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Innovation 10 (Stage 27): Chapter Map — recomputable per-chapter H3 res-7
+// aggregate cache (geo_intel schema, migration 068) plus the read-only
+// roster port over chapters.chapter_members. Aggregates only; no PII.
+export const CHAPTER_MAP_SNAPSHOT_REPOSITORY = Symbol('CHAPTER_MAP_SNAPSHOT_REPOSITORY');
+export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
