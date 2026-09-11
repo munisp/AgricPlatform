@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_COMMISSION_TABLE, commissionFor } from './commission.js';
+import { commissionFor } from './commission.js';
 
 describe('agent commission table', () => {
   it('computes basis points of the amount, floored to kobo', () => {
@@ -14,11 +14,11 @@ describe('agent commission table', () => {
 
   it('caps the per-transaction commission', () => {
     // N500,000 cash-in → raw 250,000 kobo, capped at 50,000 (N500).
-    expect(commissionFor('cash_in', 50_000_000)).toBe(AGENT_COMMISSION_TABLE.cash_in.capKobo);
-    expect(commissionFor('cash_out', 50_000_000)).toBe(AGENT_COMMISSION_TABLE.cash_out.capKobo);
-    expect(commissionFor('voucher_redemption', 50_000_000)).toBe(
-      AGENT_COMMISSION_TABLE.voucher_redemption.capKobo
-    );
+    expect(commissionFor('cash_in', 50_000_000)).toBe(50_000);
+    // cash_out: raw 375,000 kobo at 75 bps, capped at 75,000 (N750).
+    expect(commissionFor('cash_out', 50_000_000)).toBe(75_000);
+    // voucher_redemption: raw 125,000 kobo at 25 bps, capped at 25,000 (N250).
+    expect(commissionFor('voucher_redemption', 50_000_000)).toBe(25_000);
   });
 
   it('is exactly at the cap boundary', () => {

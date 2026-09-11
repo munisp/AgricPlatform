@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 /**
  * Migration lint (persistence wave plan §9.3). Parses every
- * infra/postgres/*.sql file with pgsql-ast-parser and asserts:
+ * infra/postgres/*.sql file with pgsql-ast-parser and asserts the rules in
+ * scripts/lint-migrations-rules.mjs:
  *   - clean parse (syntax errors fail the build before docker first-boot does)
  *   - no unguarded DROP TABLE / DROP SCHEMA / TRUNCATE statements
- *   - every CREATE TABLE declares a primary key (inline or table-level)
+ *   - no ALTER TABLE … DROP COLUMN; DROP CONSTRAINT must be IF EXISTS
+ *   - ADD CONSTRAINT must be re-apply-safe (016 DROP+ADD / 019a DO-block patterns)
+ *   - CREATE TABLE must use IF NOT EXISTS and declare a primary key
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'pgsql-ast-parser';
+import { lintMigrationStatements } from './lint-migrations-rules.mjs';
 
 const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'infra', 'postgres');
 
@@ -28,19 +32,6 @@ const fail = (file, message) => {
   console.error(`lint:sql ${file}: ${message}`);
 };
 
-/** CREATE TABLE statements whose primary key check is skipped (join tables). */
-function hasPrimaryKey(statement) {
-  if (statement.type !== 'create table') return true;
-  const columns = statement.columns ?? [];
-  const columnPk = columns.some((column) =>
-    (column.constraints ?? []).some((constraint) => constraint.type === 'primary key')
-  );
-  const tablePk = (statement.constraints ?? []).some(
-    (constraint) => constraint.type === 'primary key'
-  );
-  return columnPk || tablePk;
-}
-
 for (const file of files) {
   const sql = readFileSync(join(migrationsDir, file), 'utf8');
   let statements;
@@ -50,21 +41,8 @@ for (const file of files) {
     fail(file, `parse error — ${error.message}`);
     continue;
   }
-  for (const statement of statements) {
-    if (statement.type === 'drop table' || statement.type === 'drop schema') {
-      if (!statement.ifExists) {
-        fail(file, `unguarded ${statement.type.toUpperCase()} (${statement.name?.name ?? '?'})`);
-      }
-    }
-    if (statement.type === 'truncate table') {
-      fail(file, 'TRUNCATE is not allowed in migrations');
-    }
-    if (statement.type === 'create table') {
-      const name = `${statement.name.schema ? statement.name.schema + '.' : ''}${statement.name.name}`;
-      if (!hasPrimaryKey(statement)) {
-        fail(file, `CREATE TABLE ${name} has no primary key`);
-      }
-    }
+  for (const problem of lintMigrationStatements(statements)) {
+    fail(file, problem);
   }
   console.log(`lint:sql ${file}: ${statements.length} statements parsed`);
 }
