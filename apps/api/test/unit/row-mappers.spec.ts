@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MarketplaceListing, Profile } from '@agric-platform/shared';
+import { hashAuditEvent } from '../../src/core/audit-chain.js';
 import {
   auditMapper,
   deliveryLogMapper,
@@ -155,6 +156,14 @@ describe('row mappers', () => {
     const back = auditMapper.fromRow({ ...row, created_at: new Date(event.createdAt) });
     expect(back).toEqual(event);
 
+    // Payload-hash stability (audit C2-11): the event verify() rebuilds from
+    // the row must hash identically to the writer's in-memory event.
+    const { hash: _stored, ...unsignedWritten } = event;
+    const { hash: _mapped, ...unsignedMapped } = back;
+    expect(hashAuditEvent(unsignedMapped, back.prevHash!)).toBe(
+      hashAuditEvent(unsignedWritten, event.prevHash)
+    );
+
     // Legacy rows without hash columns map to undefined (additive contract).
     const legacy = auditMapper.fromRow({
       ...row,
@@ -166,5 +175,19 @@ describe('row mappers', () => {
     expect(legacy.prevHash).toBeUndefined();
     expect(legacy.hash).toBeUndefined();
     expect(legacy.requestId).toBeUndefined();
+    // The keys must be ABSENT, not present-but-undefined: canonicalJSON
+    // serializes an own undefined key as `"key":undefined`, which would
+    // change the hashed payload and break verify() recomputation (C2-11).
+    expect(Object.keys(legacy)).not.toContain('prevHash');
+    expect(Object.keys(legacy)).not.toContain('hash');
+    expect(Object.keys(legacy)).not.toContain('requestId');
+    // …and a row without request_id must round-trip without the key too.
+    const noRequestId = auditMapper.fromRow({
+      ...row,
+      request_id: null,
+      created_at: new Date(event.createdAt)
+    });
+    expect(Object.keys(noRequestId)).not.toContain('requestId');
+    expect(noRequestId.prevHash).toBe(event.prevHash);
   });
 });

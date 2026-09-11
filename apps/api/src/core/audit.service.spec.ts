@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AuditEvent } from '@agric-platform/shared';
 import { createInMemoryAuditRepository } from '../database/repositories/audit.repository.js';
 import { AuditService, canonicalJSON, GENESIS_HASH, hashAuditEvent } from './audit.service.js';
 
@@ -93,5 +94,46 @@ describe('AuditService hash chain', () => {
     expect(withId.requestId).toBe('req-42');
     expect(withoutId.requestId).toBeUndefined();
     await expect(audit.verify()).resolves.toEqual({ valid: true, checked: 2 });
+  });
+
+  it('serializes concurrent record() calls into a single valid chain (audit C2-11)', async () => {
+    const { audit } = makeService();
+    // N interleaved writers: the repository's atomic append must link each
+    // event to a distinct parent — no two events may share a prevHash.
+    const recorded = await Promise.all(
+      Array.from({ length: 25 }, (_, i) => audit.record(input(`bulk.${i}`, `e-${i}`)))
+    );
+    expect(recorded).toHaveLength(25);
+    expect(new Set(recorded.map((event) => event.prevHash)).size).toBe(25);
+    await expect(audit.verify()).resolves.toEqual({ valid: true, checked: 25 });
+  });
+
+  it('detects a forged fork: two events claiming the same prevHash', async () => {
+    const { audit, repository } = makeService();
+    const first = await audit.record(input('a', 'e-1'));
+    await audit.record(input('b', 'e-2'));
+
+    // Forged sibling branch: a well-formed event whose prevHash duplicates
+    // event 2's parent (what the pre-fix concurrent writer would persist).
+    const forgedUnsigned: Omit<AuditEvent, 'hash'> = {
+      id: 'audit-forged-fork',
+      actorId: 'attacker',
+      action: 'user.suspend',
+      entityType: 'user',
+      entityId: 'user-9',
+      metadata: {},
+      createdAt: new Date().toISOString(),
+      prevHash: first.hash
+    };
+    const forged: AuditEvent = {
+      ...forgedUnsigned,
+      hash: hashAuditEvent(forgedUnsigned, first.hash!)
+    };
+    await repository.record(forged);
+
+    const result = await audit.verify();
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt).toBe(forged.id);
+    expect(result.checked).toBe(2);
   });
 });
