@@ -105,7 +105,7 @@ export class LoanService {
   }
 
   async createLender(
-    input: Omit<Lender, 'id' | 'isActive'> & { isActive?: boolean },
+    input: Omit<Lender, 'id' | 'isActive' | 'source' | 'verified'> & { isActive?: boolean },
     actorId: string
   ): Promise<Lender> {
     if (input.maxTicketKobo < input.minTicketKobo) {
@@ -119,7 +119,11 @@ export class LoanService {
       maxTicketKobo: input.maxTicketKobo,
       minScore: input.minScore,
       criteria: input.criteria,
-      isActive: input.isActive ?? true
+      isActive: input.isActive ?? true,
+      // Provenance (WP-G18): admin-registered rows are never auto-verified;
+      // verification is an ops action on finance.lenders, not API-reachable.
+      source: 'admin_registered',
+      verified: false
     };
     const created = await this.lenders.create(lender);
     await this.events.publish('finance.lender.registered', { lenderId: created.id }, actorId);
