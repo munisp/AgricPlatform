@@ -9,6 +9,8 @@ export interface OrderCriteria {
   buyerId?: string;
   sellerId?: string;
   status?: OrderStatus;
+  /** Stage 27 (WP-G11): replay lookup by client idempotency key. */
+  idempotencyKey?: string;
 }
 
 export interface OrderRepository extends AsyncRepository<Order, OrderCriteria> {
@@ -24,7 +26,8 @@ export function orderMatcher(criteria: OrderCriteria): (order: Order) => boolean
   return (order) =>
     (!criteria.buyerId || order.buyerId === criteria.buyerId) &&
     (!criteria.sellerId || order.sellerId === criteria.sellerId) &&
-    (!criteria.status || order.status === criteria.status);
+    (!criteria.status || order.status === criteria.status) &&
+    (!criteria.idempotencyKey || order.idempotencyKey === criteria.idempotencyKey);
 }
 
 export class InMemoryOrderRepository
@@ -41,6 +44,23 @@ export class InMemoryOrderRepository
     private readonly listings?: ListingRepository
   ) {
     super(seed, orderMatcher);
+  }
+
+  /**
+   * Mirror the pg UNIQUE constraint on idempotency_key (Stage 27 WP-G11):
+   * a twin create under the same key cannot persist a second order. The
+   * check-and-set body deliberately contains NO await so concurrent claims
+   * serialise in one synchronous tick, exactly like the index.
+   */
+  override async create(item: Order): Promise<Order> {
+    if (item.idempotencyKey !== undefined) {
+      for (const existing of this.items.values()) {
+        if (existing.idempotencyKey === item.idempotencyKey) {
+          throw new ConflictException('A record with these unique values already exists');
+        }
+      }
+    }
+    return super.create(item);
   }
 
   async placeOrder(order: Order): Promise<Order> {
@@ -66,6 +86,22 @@ export class InMemoryOrderRepository
           // A concurrent order took the stock between read and write.
           const fresh = await this.listings.getById(order.listingId);
           throw new BadRequestException(`Quantity must be between 1 and ${fresh.quantity}`);
+        }
+        throw error;
+      }
+      try {
+        return await this.create(order);
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          // Idempotency-twin loss (WP-G11): the winner's order row is
+          // authoritative, so restore the stock this loser decremented —
+          // exactly what the pg placement transaction's rollback does.
+          const current = await this.listings.getById(order.listingId);
+          await this.listings.updateExpected(
+            current.id,
+            { quantity: current.quantity + order.quantity },
+            { quantity: current.quantity }
+          );
         }
         throw error;
       }

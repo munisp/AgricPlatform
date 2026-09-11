@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
-import { Observable, of, tap } from 'rxjs';
+import { catchError, mergeMap, Observable, of } from 'rxjs';
 import { IDEMPOTENCY_STORE } from '../../database/persistence.tokens.js';
 import type { IdempotencyStore } from '../../redis/idempotency.store.js';
 import { MetricsService } from '../metrics/metrics.service.js';
@@ -53,13 +53,49 @@ export function hashRequestBody(body: unknown): string {
  *
  * The store is injected (Redis in production, in-memory otherwise) so replay
  * safety holds across replicas (persistence wave plan §7).
+ *
+ * Concurrent-twin serialization (Stage 27 WP-G11): two simultaneous FIRST
+ * requests with the same key previously both missed the cache and both
+ * executed the mutation (the check-then-act gap between `store.get` and the
+ * post-response `store.save`). A per-key in-process advisory lock now
+ * serialises them: the twin waits for the first request's response to be
+ * cached, then replays it (or 409s on body mismatch) instead of executing a
+ * duplicate. The lock is per replica; cross-instance duplicates are stopped
+ * by the service-level UNIQUE constraints on the idempotency-keyed records
+ * (adopt-on-23505), which remain the correctness backstop.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
+  /** Per-scoped-key promise-chain mutex (per replica). */
+  private readonly keyLocks = new Map<string, Promise<void>>();
+
   constructor(
     @Inject(IDEMPOTENCY_STORE) private readonly store: IdempotencyStore,
     private readonly metrics: MetricsService
   ) {}
+
+  /**
+   * Takes the per-key advisory lock. The get-and-set chain contains NO
+   * await, so concurrent callers register their turn atomically in one
+   * synchronous tick (same doctrine as the in-memory repository CAS).
+   */
+  private async acquireKeyLock(scopedKey: string): Promise<() => void> {
+    const previous = this.keyLocks.get(scopedKey) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.then(() => current);
+    this.keyLocks.set(scopedKey, chain);
+    void chain.then(() => {
+      // Clean up only when no newer caller has chained onto this key.
+      if (this.keyLocks.get(scopedKey) === chain) {
+        this.keyLocks.delete(scopedKey);
+      }
+    });
+    await previous;
+    return release;
+  }
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -77,8 +113,20 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const scopedKey = `${request.method}:${request.originalUrl}:${key}`;
     const requestHash = hashRequestBody(request.body);
-    const cached = await this.store.get(scopedKey);
+    // Serialize concurrent twins (WP-G11): the twin waits for the first
+    // request's response to be cached before its own cache lookup, so it
+    // replays (or 409s on body mismatch) instead of executing a duplicate
+    // mutation. The lock releases only AFTER the envelope is stored.
+    const release = await this.acquireKeyLock(scopedKey);
+    let cached: unknown;
+    try {
+      cached = await this.store.get(scopedKey);
+    } catch (error) {
+      release();
+      throw error;
+    }
     if (cached !== undefined) {
+      release();
       if (isEnvelope(cached)) {
         if (cached.requestHash !== requestHash) {
           throw new ConflictException(
@@ -96,9 +144,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     return next.handle().pipe(
-      tap((body) => {
+      // Await the envelope save BEFORE emitting and BEFORE releasing the
+      // lock: a queued twin must observe the cached response, never an
+      // empty cache.
+      mergeMap(async (body) => {
         const envelope: IdempotencyEnvelope = { requestHash, body };
-        void this.store.save(scopedKey, envelope);
+        try {
+          await this.store.save(scopedKey, envelope);
+        } finally {
+          release();
+        }
+        return body;
+      }),
+      catchError((error: unknown) => {
+        // A failed first request caches nothing: the next caller with this
+        // key retries as a fresh first request.
+        release();
+        throw error;
       })
     );
   }
