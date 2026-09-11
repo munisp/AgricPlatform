@@ -257,6 +257,18 @@ export interface Order {
   totalNaira: number;
   status: OrderStatus;
   escrowRequired: boolean;
+  /**
+   * Optional client idempotency key (Stage 27 WP-G11; column exists since
+   * 001, UNIQUE): a transport retry with the same key replays the original
+   * order instead of double-booking stock.
+   */
+  idempotencyKey?: string;
+  /**
+   * Canonical payload fingerprint (Stage 27 WP-G11): same key + same
+   * payload replays; same key + a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
+   */
+  payloadHash?: string;
   createdAt: string;
 }
 
