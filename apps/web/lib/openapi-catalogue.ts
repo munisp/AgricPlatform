@@ -79,6 +79,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/credit/coop-score/{cooperativeId}",
+        "summary": "Latest cooperative score with 5-factor explainability (partner read; scope: profile:read). Identical payload to the in-app GET.",
+        "auth": "client-credentials",
+        "scopes": [
+          "profile:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/impact/{partnerId}",
         "summary": "Aggregate impact metrics (counts only, no PII)",
         "auth": "client-credentials",
