@@ -1087,8 +1087,7 @@ import {
     // Commerce & finance wave (P2a) providers.
     {
       provide: ESCROW_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) =>
-        pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository(),
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
       inject: [PG_POOL]
     },
     {
@@ -2006,6 +2005,7 @@ import {
     PROMOTION_REDEMPTION_REPOSITORY,
     ORDER_EXTENSION_REPOSITORY,
     RETURN_REQUEST_REPOSITORY,
+    DRAFT_ORDER_REPOSITORY,
     PRODUCT_REVIEW_REPOSITORY,
     SELLER_RATING_REPOSITORY,
     AUTH_SESSION_REPOSITORY,
