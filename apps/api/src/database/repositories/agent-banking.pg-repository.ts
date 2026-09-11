@@ -443,6 +443,10 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
       params.push(criteria.type);
       where.push(`type = $${params.length}`);
     }
+    if (criteria.voucherId) {
+      params.push(criteria.voucherId);
+      where.push(`voucher_id = $${params.length}`);
+    }
     if (criteria.from) {
       params.push(criteria.from);
       where.push(`created_at >= $${params.length}`);

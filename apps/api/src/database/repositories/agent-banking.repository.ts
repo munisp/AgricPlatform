@@ -118,6 +118,8 @@ export interface AgentTransactionCriteria {
   agentId?: string;
   farmerId?: string;
   type?: AgentTransactionType;
+  /** Filter to the transaction that settled this voucher (redemptions only). */
+  voucherId?: string;
   /** Inclusive ISO date/datetime bounds on createdAt. */
   from?: string;
   to?: string;
@@ -365,6 +367,7 @@ export class InMemoryAgentTransactionRepository implements AgentTransactionRepos
           (!criteria.agentId || item.agentId === criteria.agentId) &&
           (!criteria.farmerId || item.farmerId === criteria.farmerId) &&
           (!criteria.type || item.type === criteria.type) &&
+          (!criteria.voucherId || item.voucherId === criteria.voucherId) &&
           (!criteria.from || item.createdAt >= criteria.from) &&
           (!criteria.to || item.createdAt <= criteria.to)
       )
