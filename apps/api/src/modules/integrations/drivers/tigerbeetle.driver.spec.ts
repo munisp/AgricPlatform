@@ -3,6 +3,7 @@ import type { TelemetryService } from '../../../common/telemetry/telemetry.servi
 import { ProviderConfigError, ProviderRequestError } from './http.js';
 import {
   createLedgerBackendDriver,
+  generateTransferId,
   LEDGER_CIRCUIT_THRESHOLD,
   StubLedgerBackendDriver,
   TigerBeetleLedgerBackendDriver,
@@ -261,3 +262,116 @@ describe('TigerBeetleLedgerBackendDriver telemetry (Stage 25.2)', () => {
     await expect(driver.postTransfer(TRANSFER)).resolves.toMatchObject({ status: 'posted' });
   });
 });
+
+
+/* ------------------------------------------------------------------------
+ * WP-G13 (Stage 27, ledger hardening): collision-resistant transfer ids.
+ * TigerBeetle deduplicates transfers by id — a reused id silently replays
+ * the FIRST transfer — so Date.now()/Math.random-derived ids are a silent
+ * money-corruption hazard. The driver must hard-fail them.
+ * ---------------------------------------------------------------------- */
+describe('TigerBeetle transferId guard (WP-G13)', () => {
+  function fakeClient(errors: Array<{ index: number; result: string }> = []) {
+    const client: TigerBeetleClientLike = {
+      createTransfers: vi.fn().mockResolvedValue(errors),
+      lookupAccounts: vi.fn().mockResolvedValue([]),
+      destroy: vi.fn()
+    };
+    return client;
+  }
+
+  function driverWith(client: TigerBeetleClientLike): TigerBeetleLedgerBackendDriver {
+    return new TigerBeetleLedgerBackendDriver({
+      clusterId: '0',
+      addresses: ['localhost:3000'],
+      clientFactory: () => Promise.resolve(client)
+    });
+  }
+
+  it('hard-fails a supplied id that looks like Date.now() epoch millis — client never called', async () => {
+    const client = fakeClient();
+    const driver = driverWith(client);
+    await expect(
+      driver.postTransfer({ ...TRANSFER, transferId: String(Date.now()) })
+    ).rejects.toThrow(/epoch-millis/);
+    expect(client.createTransfers).not.toHaveBeenCalled();
+    expect(driver.circuitOpen).toBe(false); // caller bug, not a broker failure
+  });
+
+  it('hard-fails the zero id (TigerBeetle null id)', async () => {
+    const client = fakeClient();
+    await expect(
+      driverWith(client).postTransfer({ ...TRANSFER, transferId: '0' })
+    ).rejects.toThrow(/non-zero/);
+    expect(client.createTransfers).not.toHaveBeenCalled();
+  });
+
+  it('generates a collision-resistant UUIDv7-based u128 when transferId is omitted', async () => {
+    const client = fakeClient();
+    const driver = driverWith(client);
+    const first = await driver.postTransfer({ ...TRANSFER, transferId: undefined });
+    const second = await driver.postTransfer({ ...TRANSFER, transferId: undefined });
+    expect(first.status).toBe('posted');
+    expect(second.status).toBe('posted');
+    // Distinct ids even within the same millisecond (74 random bits), and
+    // both are valid non-zero u128 decimals far above the epoch-millis range.
+    expect(first.providerRef).not.toBe(second.providerRef);
+    for (const ref of [first.providerRef, second.providerRef]) {
+      expect(/^[0-9]+$/.test(ref)).toBe(true);
+      const value = BigInt(ref);
+      expect(value > 10_000_000_000_000n).toBe(true);
+      expect(value < 2n ** 128n).toBe(true);
+    }
+    const batch = (client.createTransfers as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<
+      Record<string, unknown>
+    >;
+    expect(batch[0].id).toBe(BigInt(first.providerRef));
+  });
+
+  it('accepts caller-managed small ids and hash-derived ids (outside the lookalike range)', async () => {
+    const client = fakeClient();
+    const driver = driverWith(client);
+    await expect(
+      driver.postTransfer({ ...TRANSFER, transferId: '42' })
+    ).resolves.toMatchObject({ status: 'posted', providerRef: '42' });
+    // A u128 with the high bit set (e.g. UUID-derived) is far above the range.
+    const uuidDerived = BigInt('0xf47ac10b58cc4372a5670e02b2c3d479').toString(10);
+    await expect(
+      driver.postTransfer({ ...TRANSFER, transferId: uuidDerived })
+    ).resolves.toMatchObject({ status: 'posted' });
+  });
+
+  it('generateTransferId is time-ordered on the 48-bit ms prefix', async () => {
+    const earlier = BigInt(generateTransferId(1_000_000));
+    const later = BigInt(generateTransferId(2_000_000));
+    expect(later > earlier).toBe(true);
+  });
+
+  it('lookupAccountBalances returns posted balances aligned with the request (sparse)', async () => {
+    const client: TigerBeetleClientLike = {
+      createTransfers: vi.fn(),
+      lookupAccounts: vi
+        .fn()
+        .mockResolvedValue([{ id: 7001n, debits_posted: 1_000n, credits_posted: 400n }]),
+      destroy: vi.fn()
+    };
+    const driver = driverWith(client);
+    const balances = await driver.lookupAccountBalances(['7001', '7002']);
+    expect(client.lookupAccounts).toHaveBeenCalledWith([7001n, 7002n]);
+    expect(balances).toEqual([
+      { accountId: '7001', debitsPostedKobo: 1_000, creditsPostedKobo: 400 },
+      undefined // TigerBeetle omits unknown accounts
+    ]);
+  });
+
+  it('lookupAccountBalances fails visible when the client cannot look accounts up', async () => {
+    const driver = driverWith(fakeClientNoLookup());
+    await expect(driver.lookupAccountBalances(['7001'])).rejects.toBeInstanceOf(
+      ProviderRequestError
+    );
+  });
+});
+
+function fakeClientNoLookup(): TigerBeetleClientLike {
+  return { createTransfers: vi.fn(), destroy: vi.fn() };
+}
