@@ -738,6 +738,12 @@ import {
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
 
+// Stage 27 innovation "Float Sentinel" (additive): fraud/liquidity anomaly
+// engine persistence (fraud schema, migration 059).
+import { FRAUD_SENTINEL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryFraudSentinelRepository } from './repositories/fraud.repository.js';
+import { createPgFraudSentinelRepository } from './repositories/fraud.pg-repository.js';
+
 /**
  * Global persistence module. Repository tokens resolve to the pg
  * implementations when PG_POOL is live (DATABASE_URL configured) and to the
@@ -1870,6 +1876,13 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Stage 27 Float Sentinel (additive): fraud.sentinel rules/alerts/cases.
+    {
+      provide: FRAUD_SENTINEL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFraudSentinelRepository(pool) : createInMemoryFraudSentinelRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2052,7 +2065,9 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 Float Sentinel (additive).
+    FRAUD_SENTINEL_REPOSITORY
   ]
 })
 export class DatabaseModule {}
