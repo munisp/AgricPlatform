@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
-import { LEDGER_BACKEND } from '../integrations/drivers/tigerbeetle.driver.js';
-import { createLedgerBackendDriver } from '../integrations/drivers/tigerbeetle.driver.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { LearningModule } from '../learning/learning.module.js';
-import { AgentFloatService } from './agent-float.service.js';
+import {
+  LEDGER_BACKEND,
+  createLedgerBackendDriver
+} from '../integrations/drivers/tigerbeetle.driver.js';
 import { CreditController } from './credit.controller.js';
 import { CreditService } from './credit.service.js';
 import { FinanceController } from './finance.controller.js';
@@ -17,7 +18,7 @@ import { TbConsistencyChecker } from './tb-consistency.checker.js';
 
 @Module({
   imports: [LearningModule],
-  controllers: [FinanceController, CreditController, LoanController, LedgerController],
+  controllers: [FinanceController, LedgerController, CreditController, LoanController],
   providers: [
     FinanceService,
     LedgerService,
@@ -28,11 +29,9 @@ import { TbConsistencyChecker } from './tb-consistency.checker.js';
     TbConsistencyChecker,
     CreditService,
     LoanService,
-    AgentFloatService,
-    // Wave FABRIC: selected ledger-backend driver (default stub — legal gate
-    // OFF; tigerbeetle requires TIGERBEETLE_ADDRESSES + TIGERBEETLE_CLUSTER_ID
-    // and fails closed otherwise). Telemetry flows into the driver's spans,
-    // duration histograms and error counters (Stage 25.2).
+    // Wave FABRIC: ledger-backend driver port (stub = Postgres ledger
+    // authoritative; tigerbeetle proof-of-port, legal-gated OFF by default,
+    // fail-closed when selected without its envs).
     {
       provide: LEDGER_BACKEND,
       useFactory: (telemetry: TelemetryService) =>
