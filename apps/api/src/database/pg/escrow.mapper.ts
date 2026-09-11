@@ -69,6 +69,7 @@ export const escrowPayoutMapper: RowMapper<EscrowPayout> = {
     'provider',
     'provider_reference',
     'status',
+    'claimed_at',
     'failure_reason',
     'created_at',
     'updated_at'
@@ -84,6 +85,7 @@ export const escrowPayoutMapper: RowMapper<EscrowPayout> = {
     provider: row.provider as string,
     providerReference: (row.provider_reference as string) ?? undefined,
     status: row.status as EscrowPayout['status'],
+    claimedAt: row.claimed_at ? ts(row.claimed_at) : undefined,
     failureReason: (row.failure_reason as string) ?? undefined,
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at)
@@ -100,6 +102,7 @@ export const escrowPayoutMapper: RowMapper<EscrowPayout> = {
       provider: 'provider',
       provider_reference: 'providerReference',
       status: 'status',
+      claimed_at: 'claimedAt',
       failure_reason: 'failureReason',
       created_at: 'createdAt',
       updated_at: 'updatedAt'

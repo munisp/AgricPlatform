@@ -481,7 +481,13 @@ export interface PaymentProviderPort {
 export const ESCROW_PAYOUT_KINDS = ['release', 'refund'] as const;
 export type EscrowPayoutKind = (typeof ESCROW_PAYOUT_KINDS)[number];
 
-export const ESCROW_PAYOUT_STATUSES = ['recorded', 'succeeded', 'failed'] as const;
+/**
+ * Attempt lifecycle: a claimable row starts 'recorded' (legacy pre-claim
+ * rows); a caller holds it via a CAS claim to 'in_progress' (exactly one
+ * claimant drives the payout); the claimant finalizes to 'succeeded' or
+ * 'failed'. 'succeeded' is terminal — guarded writes must never regress it.
+ */
+export const ESCROW_PAYOUT_STATUSES = ['recorded', 'in_progress', 'succeeded', 'failed'] as const;
 export type EscrowPayoutStatus = (typeof ESCROW_PAYOUT_STATUSES)[number];
 
 /** One recorded payout attempt against an escrow hold (audit-grade). */
@@ -501,6 +507,8 @@ export interface EscrowPayout {
   /** Opaque provider-side reference, set once the driver succeeds. */
   providerReference?: string;
   status: EscrowPayoutStatus;
+  /** Set by the CAS claim while the attempt is 'in_progress' (lease start). */
+  claimedAt?: string;
   failureReason?: string;
   createdAt: string;
   updatedAt: string;

@@ -5,6 +5,8 @@ import { InMemoryRepository } from '../../common/in-memory.repository.js';
 export interface EscrowCriteria {
   orderId?: string;
   status?: EscrowStatus;
+  /** Deposit-evidence reference (Stage 24, audit A1-2 reference-reuse check). */
+  depositReference?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -13,7 +15,8 @@ export interface EscrowRepository extends AsyncRepository<EscrowRecord, EscrowCr
 export function escrowMatcher(criteria: EscrowCriteria): (record: EscrowRecord) => boolean {
   return (record) =>
     (!criteria.orderId || record.orderId === criteria.orderId) &&
-    (!criteria.status || record.status === criteria.status);
+    (!criteria.status || record.status === criteria.status) &&
+    (!criteria.depositReference || record.depositReference === criteria.depositReference);
 }
 
 export class InMemoryEscrowRepository

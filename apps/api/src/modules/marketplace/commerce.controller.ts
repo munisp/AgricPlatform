@@ -34,6 +34,19 @@ class EscrowStatusDto {
   status!: EscrowStatus;
 }
 
+class HoldEscrowDto {
+  /**
+   * Stage 24 (audit A1-1): the buyer's provider payment reference. Required
+   * whenever deposit verification is required (a payment provider is wired,
+   * or production): the reference is re-verified before the hold is created,
+   * so an unfunded escrow can never be held — and later paid out — through
+   * this endpoint.
+   */
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
+}
+
 class InvoiceStatusDto {
   @IsIn(INVOICE_STATUSES)
   status!: InvoiceStatus;
@@ -83,12 +96,26 @@ export class CommerceController {
   @Post('orders/:id/escrow')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Hold the order total in escrow (buyer or admin; idempotent per order)' })
-  async holdEscrow(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
+  @ApiOperation({
+    summary:
+      'Hold the order total in escrow (buyer or admin; idempotent per order; requires the verified payment reference when deposit verification is enforced)'
+  })
+  async holdEscrow(
+    @Param('id') orderId: string,
+    @Body() dto: HoldEscrowDto,
+    @CurrentUser() actor: User | null
+  ) {
     const user = requireActor(actor);
     const order = await this.marketplace.getOrder(orderId);
     assertSelfOrAdmin(user, order.buyerId);
-    return { data: await this.escrow.holdForOrder(orderId, user.id) };
+    // Stage 24 (audit A1-1): verify-before-credit also gates hold creation —
+    // no provider-verified deposit evidence, no hold.
+    const deposit = await this.marketplace.verifyDepositForHold(
+      orderId,
+      dto?.paymentReference,
+      user.id
+    );
+    return { data: await this.escrow.holdForOrder(orderId, user.id, deposit) };
   }
 
   @Get('orders/:id/escrow')

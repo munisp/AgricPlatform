@@ -759,7 +759,12 @@ export class MechanizationService {
         postings: [
           { accountCode: MECH_HOLDS_ACCOUNT, direction: 'debit', amountKobo },
           { accountCode: walletAccount(booking.farmerId), direction: 'credit', amountKobo }
-        ]
+        ],
+        // Stage 24 (audit A1-5): the farmer's wallet must actually cover the
+        // hold. Without this guard a zero-balance farmer books equipment and
+        // the owner accrues a real, cash-out-able credit against an
+        // uncollectible negative farmer wallet — money creation.
+        requireSolventAccounts: [walletAccount(booking.farmerId)]
       },
       actorId
     );
