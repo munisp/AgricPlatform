@@ -73,4 +73,18 @@ describe('H3Service', () => {
     expect(() => h3.boundaryGeojson('not-a-cell')).toThrow(BadRequestException);
     expect(() => h3.center('not-a-cell')).toThrow(BadRequestException);
   });
+
+  it('resolves ancestor cells at coarser resolutions (parentAt)', () => {
+    // Ground truth: the Zaria res-7 cell is a child of the Zaria res-5 cell.
+    expect(h3.parentAt(ZARIA_CELLS[7], 5)).toBe(ZARIA_CELLS[5]);
+    expect(h3.parentAt(ZARIA_CELLS[9], 7)).toBe(ZARIA_CELLS[7]);
+    expect(h3.parentAt(ZARIA_CELLS[7], 7)).toBe(ZARIA_CELLS[7]);
+  });
+
+  it('parentAt fails closed on invalid cells and resolutions', () => {
+    expect(() => h3.parentAt('not-a-cell', 5)).toThrow(BadRequestException);
+    expect(() => h3.parentAt(ZARIA_CELLS[7], -1)).toThrow(BadRequestException);
+    expect(() => h3.parentAt(ZARIA_CELLS[7], 8)).toThrow(BadRequestException); // finer than the cell
+    expect(() => h3.parentAt(ZARIA_CELLS[7], 16)).toThrow(BadRequestException);
+  });
 });
