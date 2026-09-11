@@ -17,7 +17,8 @@ import type {
   RedemptionRecord,
   RedemptionRepository,
   SubsidyProgrammeRecord,
-  SubsidyProgrammeRepository
+  SubsidyProgrammeRepository,
+  VoucherSweepCriteria
 } from './input-vouchers.repository.js';
 
 /**
@@ -275,8 +276,8 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     try {
       await (tx ?? this.pool).query(
         'INSERT INTO input_vouchers.vouchers (id, programme_id, beneficiary_id, farmer_id, amount_kobo, ' +
-          'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+          'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at, updated_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
         [
           record.id,
           record.programmeId,
@@ -290,7 +291,10 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
           record.redeemedAt ?? null,
           record.voidedAt ?? null,
           record.ledgerEntryId ?? null,
-          record.createdAt
+          record.createdAt,
+          // WP-G12 (migration 061): state-write clock for the stuck-voucher
+          // sweeper; fresh rows start at their creation time.
+          record.updatedAt ?? record.createdAt
         ]
       );
     } catch (error) {
@@ -359,6 +363,9 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
         sets.push(`${column} = $${params.length}`);
       }
     }
+    // WP-G12 (migration 061): every guarded write stamps the state-change
+    // clock so the stuck-voucher sweeper can age pending claims.
+    sets.push('updated_at = now()');
     const where: string[] = [];
     for (const [key, column] of Object.entries(columns)) {
       if (key in expected) {
@@ -392,8 +399,36 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
       redeemedAt: toIso(row.redeemed_at),
       voidedAt: toIso(row.voided_at),
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
-      createdAt: toIso(row.created_at) as string
+      createdAt: toIso(row.created_at) as string,
+      updatedAt: toIso(row.updated_at)
     };
+  }
+
+  /**
+   * WP-G12 sweeper batch: due expiries (ISSUED/EXPIRING past expires_at)
+   * plus stuck pending claims (VOIDING/REDEEMING untouched since the TTL
+   * cutoff), selected FOR UPDATE SKIP LOCKED so concurrent sweep passes and
+   * in-flight transitions never block the scan — locked rows are skipped
+   * this pass. Locks are held only for the statement (autocommit); the
+   * correctness guard on write stays with the updateExpected CAS, so a
+   * skipped or double-selected row still converges exactly once.
+   */
+  async findSweepCandidates(criteria: VoucherSweepCriteria): Promise<InputVoucherRecord[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM input_vouchers.vouchers
+       WHERE (
+           status IN ('ISSUED', 'EXPIRING')
+           AND expires_at <= $1
+         ) OR (
+           status IN ('VOIDING', 'REDEEMING')
+           AND COALESCE(updated_at, created_at) <= $2
+         )
+       ORDER BY created_at
+       LIMIT $3
+       FOR UPDATE SKIP LOCKED`,
+      [criteria.nowIso, criteria.stuckBeforeIso, Math.max(0, criteria.limit)]
+    );
+    return result.rows.map((row) => this.fromRow(row));
   }
 }
 
