@@ -275,3 +275,10 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Stage 27 INNOVATION 7 (Credit Passport): portable, verifiable farmer
+// credit credential — append-only per-farmer credential chain plus
+// consent-scoped, expiring disclosures (schema `credit_passport`, migration
+// 065). Composes credit/vsla-carbon/learning/geo-verification repositories;
+// these tokens hold only the credential chain and disclosure records.
+export const CREDIT_PASSPORT_REPOSITORY = Symbol('CREDIT_PASSPORT_REPOSITORY');
+export const CREDIT_PASSPORT_DISCLOSURE_REPOSITORY = Symbol('CREDIT_PASSPORT_DISCLOSURE_REPOSITORY');
