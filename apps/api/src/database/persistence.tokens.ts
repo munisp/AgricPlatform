@@ -33,6 +33,10 @@ export const NOTIFICATION_PREFERENCE_REPOSITORY = Symbol('NOTIFICATION_PREFERENC
 export const DELIVERY_LOG_REPOSITORY = Symbol('DELIVERY_LOG_REPOSITORY');
 export const AUDIT_REPOSITORY = Symbol('AUDIT_REPOSITORY');
 export const AUDIT_ANCHOR_REPOSITORY = Symbol('AUDIT_ANCHOR_REPOSITORY');
+// Stage 27 Innovation 13 (evidence locker): hash-chained dispute evidence
+// items (migration 071). The binding lives in the evidence module next to
+// its only consumer, following the AUDIT_ANCHOR_REPOSITORY precedent.
+export const EVIDENCE_ITEM_REPOSITORY = Symbol('EVIDENCE_ITEM_REPOSITORY');
 export const OUTBOX_REPOSITORY = Symbol('OUTBOX_REPOSITORY');
 export const COMMODITY_PRICE_REPOSITORY = Symbol('COMMODITY_PRICE_REPOSITORY');
 
