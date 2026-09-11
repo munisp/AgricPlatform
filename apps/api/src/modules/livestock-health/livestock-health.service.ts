@@ -225,7 +225,7 @@ export class LivestockHealthService {
     if (caller.id === ownerUserId || hasAnyRole(caller, PRIVILEGED_READERS)) {
       return caller;
     }
-    throw new ForbiddenException('You may only access your own animals health data');
+    throw new ForbiddenException('You may only access your own animals’ health data');
   }
 
   private assertValidState(state: string): void {
