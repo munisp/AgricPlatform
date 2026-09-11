@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { createInMemoryWebhookSubscriptionRepository } from '../../database/repositories/partner-api.repository.js';
@@ -37,15 +37,31 @@ function accountLink(userId: string, id = `link-${userId}`): ExternalAccountLink
   };
 }
 
+interface TestApplication {
+  id: string;
+  userId: string;
+  partnerId: string;
+  status: string;
+}
+
+const DEFAULT_APPLICATIONS: TestApplication[] = [
+  { id: 'app-1', userId: 'user-a', partnerId: 'partner-1', status: 'submitted' },
+  { id: 'app-2', userId: 'user-b', partnerId: 'partner-1', status: 'successful' },
+  { id: 'app-3', userId: 'user-a', partnerId: 'partner-1', status: 'successful' }
+];
+
 function makeService(
-  options: { consents?: ConsentRecord[]; links?: ExternalAccountLink[] } = {}
+  options: {
+    consents?: ConsentRecord[];
+    links?: ExternalAccountLink[];
+    applications?: TestApplication[];
+  } = {}
 ) {
+  const applications = options.applications ?? DEFAULT_APPLICATIONS;
   const opportunities = {
-    applicationsForPartner: vi.fn(async () => [
-      { id: 'app-1', userId: 'user-a', status: 'submitted' },
-      { id: 'app-2', userId: 'user-b', status: 'successful' },
-      { id: 'app-3', userId: 'user-a', status: 'successful' }
-    ]),
+    applicationsForPartner: vi.fn(async (partnerId: string) =>
+      applications.filter((application) => application.partnerId === partnerId)
+    ),
     opportunitiesForPartner: vi.fn(async () => [{ id: 'opp-1' }, { id: 'opp-2' }])
   };
   const learning = {
@@ -126,17 +142,58 @@ describe('PartnerApiService', () => {
 
   it('denies member profile reads without consent (403)', async () => {
     const { service } = makeService();
-    await expect(service.consentedMemberProfile('user-a')).rejects.toBeInstanceOf(
-      ForbiddenException
+    await expect(
+      service.consentedMemberProfile('user-a', 'partner-1', 'pc_test')
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('rejects a member bound only to a different partner (404, WP-G4)', async () => {
+    const { service } = makeService({ consents: [consent('user-a')] });
+    // user-a applied to partner-1 programmes only; partner-2 must not resolve them.
+    await expect(
+      service.consentedMemberProfile('user-a', 'partner-2', 'pc_other')
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('unbound member is indistinguishable from a nonexistent user (WP-G4)', async () => {
+    const { service } = makeService({ consents: [consent('user-a')] });
+    const crossPartner = await service
+      .consentedMemberProfile('user-a', 'partner-2', 'pc_other')
+      .catch((error: unknown) => error);
+    const nonexistent = await service
+      .consentedMemberProfile('user-ghost', 'partner-2', 'pc_other')
+      .catch((error: unknown) => error);
+    expect(crossPartner).toBeInstanceOf(NotFoundException);
+    expect(nonexistent).toBeInstanceOf(NotFoundException);
+    expect((crossPartner as NotFoundException).getStatus()).toBe(404);
+    expect((nonexistent as NotFoundException).getStatus()).toBe(404);
+    expect((crossPartner as NotFoundException).message).toBe(
+      (nonexistent as NotFoundException).message.replace('user-ghost', 'user-a')
     );
+  });
+
+  it('rejects a bound member whose consent was withdrawn (WP-G4)', async () => {
+    const { service } = makeService({ consents: [consent('user-a', true, true)] });
+    await expect(
+      service.consentedMemberProfile('user-a', 'partner-1', 'pc_test')
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('returns member profile with consent and audits the read', async () => {
     const { service, audit } = makeService({ consents: [consent('user-a')] });
-    const result = await service.consentedMemberProfile('user-a');
+    const result = await service.consentedMemberProfile('user-a', 'partner-1', 'pc_test');
     expect(result.user.id).toBe('user-a');
+    expect(result.profile).toMatchObject({ userId: 'user-a' });
+    expect(result.enrolments).toHaveLength(1);
+    // Actor = the partner client; subject = the member (WP-G4 audit fix).
     expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'partner.member_profile.read' })
+      expect.objectContaining({
+        actorId: 'pc_test',
+        action: 'partner.member_profile.read',
+        entityType: 'user',
+        entityId: 'user-a',
+        metadata: { partnerId: 'partner-1' }
+      })
     );
   });
 
