@@ -547,11 +547,6 @@ export class LtvGuardianService {
   }
 
   /**
-   * Sets/clears the price_stale review flag. CAS-guarded on the current
-   * status so a concurrent margin-call transition is never clobbered; a
-   * conflict just defers the flag to the next run.
-   */
-  /**
    * Shared fail-closed path for unavailable/degenerate prices: NO
    * observation is recorded, the position is flagged priceStale for human
    * review and the basis=unavailable metric is emitted.
