@@ -737,6 +737,19 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Stage 27 / Innovation 8: Receipt LTV Guardian persistence (additive).
+import {
+  COLLATERAL_POSITION_REPOSITORY,
+  LTV_OBSERVATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCollateralPositionRepository,
+  createInMemoryLtvObservationRepository
+} from './repositories/warehouse-ltv.repository.js';
+import {
+  createPgCollateralPositionRepository,
+  createPgLtvObservationRepository
+} from './repositories/warehouse-ltv.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1074,7 +1087,8 @@ import {
     // Commerce & finance wave (P2a) providers.
     {
       provide: ESCROW_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1870,6 +1884,19 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    {
+      provide: COLLATERAL_POSITION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCollateralPositionRepository(pool) : createInMemoryCollateralPositionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LTV_OBSERVATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLtvObservationRepository(pool) : createInMemoryLtvObservationRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -1979,7 +2006,6 @@ import {
     PROMOTION_REDEMPTION_REPOSITORY,
     ORDER_EXTENSION_REPOSITORY,
     RETURN_REQUEST_REPOSITORY,
-    DRAFT_ORDER_REPOSITORY,
     PRODUCT_REVIEW_REPOSITORY,
     SELLER_RATING_REPOSITORY,
     AUTH_SESSION_REPOSITORY,
@@ -2052,7 +2078,10 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    COLLATERAL_POSITION_REPOSITORY,
+    LTV_OBSERVATION_REPOSITORY
   ]
 })
 export class DatabaseModule {}
