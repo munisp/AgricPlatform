@@ -28,6 +28,75 @@ export function isProduction(env: NodeJS.ProcessEnv = process.env): boolean {
   return (env.NODE_ENV ?? '').trim().toLowerCase() === 'production';
 }
 
+/**
+ * Minimum acceptable length for production HMAC signing secrets (agent
+ * vouchers, NIN hash salt, warehouse receipts, livestock passports,
+ * attendance/vet signing). 32 chars ≈ 128 bits of base64/hex entropy;
+ * anything shorter is offline-brute-forceable from observed signatures.
+ */
+export const PRODUCTION_HMAC_SECRET_MIN_LENGTH = 32;
+
+/** Minimum acceptable length for other production shared/webhook secrets. */
+export const PRODUCTION_SHARED_SECRET_MIN_LENGTH = 16;
+
+export interface ProductionSecretStrengthOptions {
+  /** Length floor enforced in production (default 16). */
+  minLength?: number;
+  /**
+   * Published development defaults / placeholders that must NEVER be
+   * accepted in production, no matter their length (they are committed in
+   * the repo, so their entropy is zero).
+   */
+  publishedDefaults?: readonly string[];
+  /**
+   * When false an UNSET variable stays legal (per-request guards fail
+   * closed instead); a set value is still strength-checked. Default true.
+   */
+  required?: boolean;
+}
+
+/**
+ * Fail-closed production strength gate for shared/HMAC secrets (audit
+ * A3-2/A3-3/A3-5). In production a configured secret must (a) be present
+ * when `required`, (b) not equal any published development default, and
+ * (c) meet the length floor. No-op outside production. Throws a
+ * descriptive error so misconfigured pods never serve traffic.
+ */
+export function assertProductionSecretStrength(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  options: ProductionSecretStrengthOptions = {}
+): void {
+  if (!isProduction(env)) {
+    return;
+  }
+  const value = env[name]?.trim();
+  const minLength = options.minLength ?? PRODUCTION_SHARED_SECRET_MIN_LENGTH;
+  if (!value) {
+    if (options.required === false) {
+      return;
+    }
+    throw new Error(
+      `FATAL: NODE_ENV=production requires ${name} (>= ${minLength} chars, high entropy). ` +
+        'Refusing to run with the development default.'
+    );
+  }
+  if (options.publishedDefaults?.includes(value)) {
+    throw new Error(
+      `FATAL: ${name} is set to the PUBLISHED development default, which is committed in ` +
+        'the repository and has zero entropy. Provision a unique high-entropy secret via ' +
+        'the deployment secret store. Refusing to start.'
+    );
+  }
+  if (value.length < minLength) {
+    throw new Error(
+      `FATAL: ${name} must be at least ${minLength} characters in production ` +
+        `(got ${value.length}). Short secrets are offline-brute-forceable from observed ` +
+        'signatures. Refusing to start.'
+    );
+  }
+}
+
 /** The x-user-id development stub is never acceptable in production by default. */
 export function devHeaderAuthAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   return !isProduction(env) || env.ALLOW_DEV_HEADER_AUTH === 'true';

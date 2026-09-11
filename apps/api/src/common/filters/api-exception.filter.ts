@@ -77,6 +77,14 @@ export class ApiExceptionFilter implements ExceptionFilter {
         `Unhandled error on ${request.method} ${request.originalUrl}`,
         exception instanceof Error ? exception.stack : String(exception)
       );
+      // Audit A3-7: never relay a 5xx exception message to the client.
+      // 5xx messages routinely embed upstream provider error bodies (e.g.
+      // BadGatewayException wrapping ProviderHttpError, whose message
+      // carries up to 200 chars of the provider's response — account
+      // details, internal references, echoed request data). The detail
+      // stays in the server logs and Sentry above; the client gets a
+      // generic envelope plus the requestId for support correlation.
+      message = 'Unexpected server error';
     } else {
       this.logger.warn(
         `${request.method} ${request.originalUrl} -> ${status} (${error}): ${

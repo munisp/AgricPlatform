@@ -32,6 +32,68 @@ describe('scrubSentryEvent', () => {
     // Original event must not be mutated.
     expect(event.request.data.code).toBe('123456');
   });
+
+  it('redacts the newer credential keys case-insensitively (audit A3-9)', () => {
+    const event = {
+      request: {
+        headers: {
+          'x-at-callback-token': 'at-secret',
+          'X-Webhook-Signature': 'sig',
+          'x-paystack-signature': 'psig',
+          accept: 'json'
+        },
+        data: {
+          'verif-hash': 'flw-hash',
+          signingSecret: 's',
+          PASSWORD: 'p',
+          apiKey: 'k',
+          apikey: 'k2',
+          NIN: '12345678901',
+          note: 'ok'
+        }
+      }
+    };
+    const scrubbed = scrubSentryEvent(event);
+    expect(scrubbed.request.headers['x-at-callback-token']).toBe('[redacted]');
+    expect(scrubbed.request.headers['X-Webhook-Signature']).toBe('[redacted]');
+    expect(scrubbed.request.headers['x-paystack-signature']).toBe('[redacted]');
+    expect(scrubbed.request.headers.accept).toBe('json');
+    expect(scrubbed.request.data['verif-hash']).toBe('[redacted]');
+    expect(scrubbed.request.data.signingSecret).toBe('[redacted]');
+    expect(scrubbed.request.data.PASSWORD).toBe('[redacted]');
+    expect(scrubbed.request.data.apiKey).toBe('[redacted]');
+    expect(scrubbed.request.data.apikey).toBe('[redacted]');
+    expect(scrubbed.request.data.NIN).toBe('[redacted]');
+    expect(scrubbed.request.data.note).toBe('ok');
+  });
+
+  it('scrubs credential fragments embedded in exception message strings (audit A3-9)', () => {
+    // ProviderHttpError-style bodies may echo request credentials; object-key
+    // filtering alone leaves them untouched.
+    const event = {
+      exception: {
+        values: [
+          {
+            type: 'ProviderHttpError',
+            value:
+              "Provider 'paystack' failed with HTTP 500: {\"authorization\":\"Bearer sk-live-abc\",\"detail\":\"bad\"}"
+          },
+          {
+            type: 'Error',
+            value: 'callback rejected: token=supersecret123 for /ussd/callback'
+          }
+        ]
+      },
+      message: 'plain message without credentials'
+    };
+    const scrubbed = scrubSentryEvent(event);
+    expect(scrubbed.exception.values[0].value).not.toContain('sk-live-abc');
+    expect(scrubbed.exception.values[0].value).toContain('[redacted]');
+    expect(scrubbed.exception.values[1].value).not.toContain('supersecret123');
+    expect(scrubbed.exception.values[1].value).toContain('token=[redacted]');
+    // Benign strings are left untouched.
+    expect(scrubbed.message).toBe('plain message without credentials');
+  });
 });
 
 describe('ErrorTrackingService', () => {
