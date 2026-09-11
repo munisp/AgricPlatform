@@ -488,7 +488,7 @@ describe('EvidenceService — NDPA expunge tombstones', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('privacy sweep expunges all of a user\'s uploads across cases', async () => {
+  it("privacy sweep expunges all of a user's uploads across cases", async () => {
     const { service, cases, storage, items } = makeService();
     seedEscrowCase(cases);
     cases.set('escrow', 'escrow-2', [buyer.id]);
