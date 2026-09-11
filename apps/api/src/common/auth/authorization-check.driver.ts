@@ -22,6 +22,10 @@ import {
   ProviderRequestError,
   requireEnv
 } from '../../modules/integrations/drivers/http.js';
+import {
+  DriverHealthTracker,
+  type DriverHealthFields
+} from '../../modules/integrations/drivers/driver-health.js';
 import { TelemetryService } from '../telemetry/telemetry.service.js';
 
 /** DI token for the selected AuthorizationCheck driver. */
@@ -42,7 +46,7 @@ export interface AuthorizationResource {
   ownerId?: string;
 }
 
-export interface AuthorizationCheckStatus {
+export interface AuthorizationCheckStatus extends DriverHealthFields {
   configured: boolean;
   healthy: boolean;
   detail: string;
@@ -84,6 +88,8 @@ export class StubAuthorizationCheck implements AuthorizationCheck {
     return Promise.resolve({
       configured: true,
       healthy: true,
+      lastErrorClass: null,
+      lastSuccessAt: null,
       detail:
         'Stub driver: in-process role/ownership checks (current RolesGuard logic). ' +
         'Set AUTHORIZATION_DRIVER=permify and PERMIFY_URL for relationship-based checks.'
@@ -105,6 +111,7 @@ interface PermifyCheckResponse {
 export class PermifyAuthorizationCheck implements AuthorizationCheck {
   readonly name = 'permify' as const;
 
+  private readonly tracker = new DriverHealthTracker();
   private readonly telemetry: TelemetryService;
 
   constructor(
@@ -150,6 +157,7 @@ export class PermifyAuthorizationCheck implements AuthorizationCheck {
           }
         );
         const allowed = response.can === 'RESULT_ALLOWED';
+        this.tracker.recordSuccess();
         if (!allowed) {
           // Fail-closed deny path: counted separately from transport errors
           // so dashboards can distinguish "Permify said no" from outages.
@@ -158,6 +166,7 @@ export class PermifyAuthorizationCheck implements AuthorizationCheck {
         return allowed;
       });
     } catch (error) {
+      this.tracker.recordError(error);
       this.telemetry.increment('permify.check.errors', 1, spanAttributes);
       throw error;
     } finally {
@@ -166,9 +175,14 @@ export class PermifyAuthorizationCheck implements AuthorizationCheck {
   }
 
   status(): Promise<AuthorizationCheckStatus> {
+    // No circuit breaker on this driver (the shared HTTP seam owns the 5s
+    // timeout); healthy flips on the most recent check outcome — a failed
+    // check degrades readiness listings until the next success.
     return Promise.resolve({
       configured: true,
-      healthy: true,
+      healthy: !this.tracker.failing,
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
       detail:
         `Permify REST configured at ${this.baseUrl} (tenant ${this.tenantId}). ` +
         'Reachability is verified at call time — check failures fail closed (deny + 503).'
