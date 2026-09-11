@@ -1,14 +1,18 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { and, composeWhere, eq, in, mapPgError } from '../../database/pg/pg-repository.base.js';
-import { PG_POOL, WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
-import type { WebhookSubscriptionRepository } from '../../database/repositories/webhook-subscription.repository.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
-import { signWebhookPayload, WEBHOOK_SIGNATURE_HEADER } from './webhook-signing.js';
+import { createHmac } from 'node:crypto';
+import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
+import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { WEBHOOK_SUBSCRIPTION_REPOSITORY } from '../../database/persistence.tokens.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
+import type {
+  WebhookSubscription,
+  WebhookSubscriptionRepository
+} from '../../database/repositories/partner-api.repository.js';
 
 /**
- * Stable public event vocabulary (versioned by API version). Internal domain
- * event names map onto these before delivery so internal refactors do not
- * break partner integrations.
+ * Partner-facing webhook event types. Internal domain events keep their
+ * `{domain}.{entity}.{verb}` taxonomy; this map exposes a stable public
+ * vocabulary to subscribers.
  */
 export const PARTNER_EVENT_TYPES = [
   'course.completed',
@@ -17,9 +21,12 @@ export const PARTNER_EVENT_TYPES = [
   'programme_enrolment.recorded',
   'coop_score.band_changed'
 ] as const;
+
 export type PartnerEventType = (typeof PARTNER_EVENT_TYPES)[number];
 
-/** domain event name -> public partner event type */
+/** Consumer name in events.processed_events for the dispatch dedup ledger. */
+export const WEBHOOK_DISPATCH_CONSUMER = 'partner-webhook-dispatch';
+
 const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
   'learning.certificate.issued': 'course.completed',
   'learning.enrolment.created': 'enrolment.created',
@@ -32,214 +39,136 @@ const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
 
 export interface WebhookDelivery {
   id: string;
-  subscriptionId: string;
-  eventType: PartnerEventType;
-  payload: Record<string, unknown>;
-  status: 'pending' | 'delivered' | 'failed' | 'exhausted';
-  attempts: number;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
+  type: PartnerEventType;
+  occurredAt: string;
+  data: unknown;
 }
 
-interface WebhookDeliveryRow {
-  id: string;
-  subscription_id: string;
-  event_type: string;
-  payload: Record<string, unknown>;
-  status: WebhookDelivery['status'];
-  attempts: number;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type WebhookFetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string }
+) => Promise<{ status: number }>;
 
-function deliveryFromRow(row: WebhookDeliveryRow): WebhookDelivery {
-  return {
-    id: row.id,
-    subscriptionId: row.subscription_id,
-    eventType: row.event_type as PartnerEventType,
-    payload: row.payload,
-    status: row.status,
-    attempts: row.attempts,
-    lastError: row.last_error ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
+/** HMAC-SHA256 signature over the exact JSON payload (sha256=<hex>). */
+export function signWebhookPayload(secret: string, payload: string): string {
+  return `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`;
 }
 
 /**
- * Webhook delivery pipeline. Subscriptions live in the webhook repository;
- * deliveries are recorded per attempt. Real HTTP fan-out uses global fetch
- * (mocked in tests); failures retry with bounded attempts, and every
- * transition is logged. Delivery attempts are recorded DURABLY in
- * integrations.outbox_events when PG is configured (crash-safe fan-out);
- * without PG they stay in-process (dev mode).
+ * Outbound webhook dispatcher (wave P5d). Listens to the domain-event
+ * outbox (DomainEventsService already persists every event before fan-out,
+ * so deliveries are outbox-style replayable) and POSTs HMAC-signed JSON
+ * deliveries to each active subscription matching the event type.
  */
 @Injectable()
-export class WebhookDispatchService {
+export class WebhookDispatchService implements OnModuleInit {
   private readonly logger = new Logger(WebhookDispatchService.name);
-  private readonly pending: WebhookDelivery[] = [];
+  private readonly fetchImpl: WebhookFetch;
 
   constructor(
+    private readonly events: DomainEventsService,
     @Inject(WEBHOOK_SUBSCRIPTION_REPOSITORY)
     private readonly subscriptions: WebhookSubscriptionRepository,
-    private readonly events: DomainEventsService,
-    @Optional() @Inject(PG_POOL) private readonly pool: import('pg').Pool | null = null
+    @Optional() fetchImpl?: WebhookFetch,
+    // @Optional: unit specs construct the service directly; Nest injects the
+    // shared EventDedupService (events.processed_events) at runtime.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {
-    // Deliver whenever a mappable domain event is published.
-    this.events.on('*', (event) => {
+    this.fetchImpl = fetchImpl ?? (globalThis.fetch as unknown as WebhookFetch);
+  }
+
+  onModuleInit(): void {
+    this.events.on('*', (event: DomainEvent) => {
       const type = DOMAIN_EVENT_MAP[event.name];
       if (type) {
-        void this.fanOut(type, event.payload as Record<string, unknown>).catch((error) => {
-          this.logger.error(`webhook fan-out failed for ${type}: ${(error as Error).message}`);
+        void this.dispatchOnce(type, event).catch((error: unknown) => {
+          this.logger.warn(
+            `webhook dispatch for ${event.name} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
         });
       }
     });
   }
 
-  /** Enqueues a signed delivery for every subscription covering eventType. */
-  async fanOut(eventType: PartnerEventType, payload: Record<string, unknown>): Promise<WebhookDelivery[]> {
-    const subs = (await this.subscriptions.listAll()).filter(
-      (sub) => sub.active && sub.eventTypes.includes(eventType)
-    );
-    const deliveries: WebhookDelivery[] = [];
-    for (const sub of subs) {
-      const delivery: WebhookDelivery = {
-        id: `whd_${deliveries.length}_${Date.now()}`,
-        subscriptionId: sub.id,
-        eventType,
-        payload,
-        status: 'pending',
-        attempts: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      this.pending.push(delivery);
-      if (this.pool) {
-        await this.persistOutbox(delivery, sub.secretHash ? 'configured' : 'unconfigured');
-      }
-      deliveries.push(delivery);
-      void this.attempt(delivery, sub.url, sub.secretHash).catch((error) => {
-        this.logger.error(`webhook attempt crashed: ${(error as Error).message}`);
-      });
+  /**
+   * Consumer-side dedup, MARK-AFTER-DISPATCH (audit A4-6): the event is
+   * recorded in events.processed_events only after every subscribed delivery
+   * succeeded. A failed delivery throws, the event stays unprocessed, and the
+   * outbox sweeper re-drives it — dispatch is at-least-once. Receivers dedupe
+   * re-deliveries via the stable per-event delivery id (x-agric-delivery).
+   * Public: also the outbox-sweeper re-drive entry point.
+   */
+  async dispatchOnce(type: PartnerEventType, event: DomainEvent): Promise<void> {
+    if (await this.dedup.has(WEBHOOK_DISPATCH_CONSUMER, event.id)) {
+      return;
     }
-    return deliveries;
+    const { delivered, targets } = await this.fanOut(type, event);
+    if (delivered < targets) {
+      throw new Error(
+        `webhook dispatch for event ${event.id}: ${targets - delivered} of ${targets} deliveries failed — left unprocessed for sweeper re-drive`
+      );
+    }
+    await this.dedup.mark(WEBHOOK_DISPATCH_CONSUMER, event.id);
   }
 
-  private async attempt(
+  /** Delivers one partner event to every active subscribed client URL. */
+  async dispatch(type: PartnerEventType, event: DomainEvent): Promise<number> {
+    return (await this.fanOut(type, event)).delivered;
+  }
+
+  /**
+   * Fans the event out to all matching active subscriptions. The delivery id
+   * is derived from the event id (not regenerated per attempt) so a partner
+   * can dedupe a re-driven delivery against the first attempt.
+   */
+  private async fanOut(
+    type: PartnerEventType,
+    event: DomainEvent
+  ): Promise<{ delivered: number; targets: number }> {
+    const active = await this.subscriptions.find({ status: 'active' });
+    const targets = active.filter((subscription) => subscription.eventTypes.includes(type));
+    const delivery: WebhookDelivery = {
+      id: `whd_${event.id}`,
+      type,
+      occurredAt: event.occurredAt,
+      data: event.payload
+    };
+    const body = JSON.stringify(delivery);
+    let delivered = 0;
+    for (const subscription of targets) {
+      const ok = await this.deliver(subscription, delivery, body);
+      if (ok) delivered += 1;
+    }
+    return { delivered, targets: targets.length };
+  }
+
+  /** Signs and POSTs a single delivery. Returns true on a 2xx response. */
+  async deliver(
+    subscription: WebhookSubscription,
     delivery: WebhookDelivery,
-    url: string,
-    secretHash: string,
-    maxAttempts = 5
-  ): Promise<void> {
-    delivery.attempts += 1;
-    delivery.updatedAt = new Date().toISOString();
-    try {
-      const body = JSON.stringify({
-        id: delivery.id,
-        type: delivery.eventType,
-        payload: delivery.payload,
-        createdAt: delivery.createdAt
-      });
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [WEBHOOK_SIGNATURE_HEADER]: signWebhookPayload(body, secretHash)
-        },
-        body
-      });
-      if (response.ok) {
-        delivery.status = 'delivered';
-      } else {
-        delivery.lastError = `http_${response.status}`;
-        delivery.status = delivery.attempts >= maxAttempts ? 'exhausted' : 'failed';
-      }
-    } catch (error) {
-      delivery.lastError = (error as Error).message;
-      delivery.status = delivery.attempts >= maxAttempts ? 'exhausted' : 'failed';
-    }
-    delivery.updatedAt = new Date().toISOString();
-    if (this.pool) {
-      await this.markOutbox(delivery).catch(() => undefined);
-    }
-    if (delivery.status === 'failed' && delivery.attempts < maxAttempts) {
-      await this.attempt(delivery, url, secretHash, maxAttempts);
-    }
-  }
-
-  /** Test-support: inspect pending deliveries (in-process copy). */
-  pendingDeliveries(): WebhookDelivery[] {
-    return [...this.pending];
-  }
-
-  private async persistOutbox(delivery: WebhookDelivery, secretState: string): Promise<void> {
-    if (!this.pool) {
-      return;
-    }
-    try {
-      await this.pool.query(
-        `INSERT INTO integrations.outbox_events
-           (id, event_name, payload, published_at, attempts, last_error)
-         VALUES ($1, $2, $3, now(), 0, NULL)
-         ON CONFLICT (id) DO NOTHING`,
-        [
-          `webhook:${delivery.id}`,
-          `webhook.${delivery.eventType}`,
-          JSON.stringify({
-            subscriptionId: delivery.subscriptionId,
-            eventType: delivery.eventType,
-            payload: delivery.payload,
-            secretState
-          })
-        ]
+    body = JSON.stringify(delivery)
+  ): Promise<boolean> {
+    const response = await this.fetchImpl(subscription.targetUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agric-signature': signWebhookPayload(subscription.secret, body),
+        'x-agric-event': delivery.type,
+        'x-agric-delivery': delivery.id
+      },
+      body
+    });
+    if (response.status < 200 || response.status >= 300) {
+      this.logger.warn(
+        `webhook ${delivery.id} to ${subscription.targetUrl} returned ${response.status}`
       );
-    } catch (error) {
-      mapPgError(error);
+      return false;
     }
-  }
-
-  private async markOutbox(delivery: WebhookDelivery): Promise<void> {
-    if (!this.pool) {
-      return;
-    }
-    try {
-      await this.pool.query(
-        `UPDATE integrations.outbox_events
-            SET attempts = attempts + 1,
-                last_error = $2
-          WHERE id = $1`,
-        [`webhook:${delivery.id}`, delivery.lastError ?? null]
-      );
-    } catch (error) {
-      mapPgError(error);
-    }
-  }
-
-  /** Lists durable outbox rows for webhook deliveries (admin tooling). */
-  async listOutbox(limit = 100): Promise<Record<string, unknown>[]> {
-    if (!this.pool) {
-      return this.pending.map((delivery) => ({ ...delivery }) as Record<string, unknown>);
-    }
-    const where = and(composeWhere([]), undefined);
-    void where;
-    const result = await this.pool.query(
-      `SELECT * FROM integrations.outbox_events
-        WHERE event_name LIKE 'webhook.%'
-        ORDER BY published_at DESC
-        LIMIT $1`,
-      [limit]
-    );
-    return result.rows as Record<string, unknown>[];
-  }
-
-  /** Filters pending deliveries by subscription (uses eq/in helpers). */
-  async pendingFor(subscriptionId: string): Promise<WebhookDelivery[]> {
-    const predicate = eq('subscriptionId', subscriptionId);
-    const many = in('status', ['pending', 'failed']);
-    return this.pending.filter(
-      (delivery) => predicate(delivery as never) && many(delivery as never)
-    );
+    return true;
   }
 }
