@@ -129,6 +129,7 @@ describe('AdminService audit anchoring (Stage 23)', () => {
       sessions,
       undefined,
       undefined,
+      undefined,
       auditAnchors
     );
     return { admin, auditRepository };
