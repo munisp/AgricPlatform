@@ -79,6 +79,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/credit-passports/{userId}",
+        "summary": "Read a farmer's credit passport. Scope: credit-passport:read. Requires an active, unexpired consent-scoped disclosure naming this partner.",
+        "auth": "client-credentials",
+        "scopes": [
+          "credit-passport:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/impact/{partnerId}",
         "summary": "Aggregate impact metrics (counts only, no PII)",
         "auth": "client-credentials",
