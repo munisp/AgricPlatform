@@ -17,7 +17,7 @@ import type {
   CreditGroupMemberRepository,
   CreditGroupRepository
 } from '../../database/repositories/credit-suite.repository.js';
-import type { CreditActor } from './credit.service.js';
+import { isCreditReviewer, type CreditActor } from './credit.service.js';
 
 export interface CreateCreditGroupInput {
   name: string;
@@ -70,12 +70,34 @@ export class CreditGroupsService {
     return { group: created, members: [leader] };
   }
 
-  async listGroups(): Promise<CreditGroup[]> {
-    return this.groups.find({});
+  /**
+   * Membership-scoped listing (G5): credit reviewers (admin|lender — the
+   * same predicate CreditService.listLoans uses) see every group; any other
+   * caller sees only the groups they belong to. VSLA groups and their
+   * rosters are not public directory data.
+   */
+  async listGroups(actor: CreditActor): Promise<CreditGroup[]> {
+    if (isCreditReviewer(actor)) {
+      return this.groups.find({});
+    }
+    const memberships = await this.members.listByUser(actor.id);
+    const mine = new Set(memberships.map((membership) => membership.groupId));
+    return (await this.groups.find({})).filter((group) => mine.has(group.id));
   }
 
-  async getGroup(groupId: string): Promise<CreditGroupWithMembers> {
+  /**
+   * Group detail with roster (G5): reviewers may read any group; other
+   * callers must be members — the same party-scoping convention as
+   * CreditService.getLoan (403 for non-parties).
+   */
+  async getGroup(groupId: string, actor: CreditActor): Promise<CreditGroupWithMembers> {
     const group = await this.groups.getById(groupId);
+    if (!isCreditReviewer(actor)) {
+      const membership = await this.members.find(groupId, actor.id);
+      if (!membership) {
+        throw new ForbiddenException('You may only view groups you belong to');
+      }
+    }
     const members = await this.members.listByGroup(groupId);
     return { group, members };
   }
@@ -84,7 +106,7 @@ export class CreditGroupsService {
     const memberships = await this.members.listByUser(actor.id);
     const result: CreditGroupWithMembers[] = [];
     for (const membership of memberships) {
-      result.push(await this.getGroup(membership.groupId));
+      result.push(await this.getGroup(membership.groupId, actor));
     }
     return result;
   }
