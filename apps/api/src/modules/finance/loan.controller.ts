@@ -129,7 +129,7 @@ export class LoanController {
     // existing assertSelfOrAdmin behaviour byte-for-byte.
     if (this.authz && this.authz.name !== 'stub') {
       const user = requireActor(actor);
-      let allowed = false;
+      let allowed: boolean;
       try {
         allowed = await this.authz.can(
           { userId: user.id, roles: user.roles },
