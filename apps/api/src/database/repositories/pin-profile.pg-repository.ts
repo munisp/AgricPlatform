@@ -67,6 +67,23 @@ export class PgPinProfileRepository implements PinProfileRepository {
     return updated;
   }
 
+  /**
+   * Single-statement atomic increment (audit C2-5): concurrent wrong-PIN
+   * requests cannot lose updates the way the previous find+update
+   * read-modify-write cycle could.
+   */
+  async incrementAttempts(deviceToken: string, userId: string): Promise<number> {
+    const result = await this.pool.query(
+      'UPDATE channels.pin_profiles SET attempts = attempts + 1 ' +
+        'WHERE device_token = $1 AND user_id = $2 RETURNING attempts',
+      [deviceToken, userId]
+    );
+    if (!result.rows[0]) {
+      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
+    }
+    return Number(result.rows[0].attempts);
+  }
+
   async remove(deviceToken: string, userId: string): Promise<boolean> {
     const result = await this.pool.query(
       'DELETE FROM channels.pin_profiles WHERE device_token = $1 AND user_id = $2',

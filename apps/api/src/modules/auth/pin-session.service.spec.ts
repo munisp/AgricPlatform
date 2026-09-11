@@ -140,6 +140,39 @@ describe('PinSessionService', () => {
     expect(after?.attempts).toBe(0);
   });
 
+  it('counts concurrent wrong PINs exactly — parallel bursts cannot defeat the lockout (C2-5)', async () => {
+    const { service, users, profiles } = build();
+    const user = await makeUser(users, '+234927', 'Race Me');
+    await service.addProfile(user.id, DEVICE, '1234');
+    // Fire a parallel burst of wrong PINs against the service.
+    const results = await Promise.allSettled(
+      Array.from({ length: 10 }, () => service.switchProfile(DEVICE, user.id, '9999'))
+    );
+    // Every guess was rejected; none slipped through as a success.
+    expect(results.every((result) => result.status === 'rejected')).toBe(true);
+    // The atomic counter reached the lockout threshold despite concurrency.
+    const rejected = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason as HttpException);
+    expect(rejected.some((error) => error.getStatus?.() === 429)).toBe(true);
+    const locked = await profiles.find(DEVICE, user.id);
+    expect(locked?.lockedUntil).toBeDefined();
+    // …and even the correct PIN is refused while locked.
+    const duringLock = await service.switchProfile(DEVICE, user.id, '1234').catch((error) => error);
+    expect((duringLock as HttpException).getStatus()).toBe(429);
+  });
+
+  it('incrementAttempts is atomic in the in-memory repository (no lost updates)', async () => {
+    const { service, users, profiles } = build();
+    const user = await makeUser(users, '+234928', 'Repo Race');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const counts = await Promise.all(
+      Array.from({ length: 20 }, () => profiles.incrementAttempts(DEVICE, user.id))
+    );
+    expect(Math.max(...counts)).toBe(20);
+    expect((await profiles.find(DEVICE, user.id))?.attempts).toBe(20);
+  });
+
   it('rejects unknown device profiles', async () => {
     const { service } = build();
     await expect(service.switchProfile(DEVICE, 'user-nope', '1234')).rejects.toBeInstanceOf(

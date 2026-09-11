@@ -13,6 +13,13 @@ import { SessionService } from './session.service.js';
 const OTP_TTL_MS = 5 * 60 * 1000;
 /** Per-challenge verification attempts before the challenge is locked out. */
 export const OTP_MAX_ATTEMPTS = 5;
+/**
+ * Per-phone rolling cap on failed verifications (audit C3): reissuing a
+ * challenge must not hand out 5 fresh guesses per cycle. Beyond this many
+ * failed verifications in the window the phone is refused with 429.
+ */
+export const OTP_PHONE_MAX_FAILURES = 20;
+export const OTP_PHONE_FAILURE_WINDOW_MS = 60 * 60 * 1000;
 
 export interface OtpRequestResult {
   requestId: string;
@@ -29,7 +36,9 @@ export interface OtpRequestResult {
  * Hardening (docs/security-compliance.md §7 "Auth failures"): the dev code
  * is only returned outside production; challenges expire, track failed
  * attempts, and lock out after OTP_MAX_ATTEMPTS wrong codes; requesting a
- * new code invalidates outstanding challenges for the same phone number.
+ * new code invalidates outstanding challenges for the same phone number; and
+ * a per-phone rolling cap (OTP_PHONE_MAX_FAILURES per hour, audit C3)
+ * refuses phones that keep failing across reissued challenges.
  *
  * Challenges live in the injected OTP store (Redis in production, in-memory
  * otherwise); successful verification consumes the challenge atomically
@@ -50,8 +59,10 @@ export class AuthService {
     // code is usable (limits parallel guessing windows).
     await this.otp.invalidateForPhone(phone);
     // Stub driver: the code is returned for local development only. The
-    // production Termii SMS adapter delivers it out-of-band instead.
-    const code = randomInt(100000, 999999).toString();
+    // production Termii SMS adapter delivers it out-of-band instead. Full
+    // 6-digit space including leading zeros (audit C3): the randomInt upper
+    // bound is exclusive, so [0, 1_000_000) zero-padded covers 000000-999999.
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     const challenge = {
       id: newId('otp'),
       phone,
@@ -92,8 +103,19 @@ export class AuthService {
         HttpStatus.TOO_MANY_REQUESTS
       );
     }
+    // Per-phone rolling cap (audit C3): survives challenge reissue, so
+    // cycling /otp/request cannot reset the guessing budget.
+    const phoneFailures = await this.otp.phoneFailureCount(challenge.phone);
+    if (phoneFailures >= OTP_PHONE_MAX_FAILURES) {
+      this.metrics.otpVerification('locked');
+      throw new HttpException(
+        'Too many failed verification attempts for this phone number. Try again later.',
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
     if (challenge.codeHash !== this.hash(code)) {
       challenge.attempts += 1;
+      await this.otp.registerPhoneFailure(challenge.phone, OTP_PHONE_FAILURE_WINDOW_MS);
       if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
         await this.otp.delete(requestId);
         this.metrics.otpVerification('locked');

@@ -33,6 +33,21 @@ describe('InMemoryKeyValueStore', () => {
     expect(await kv.getdel('k')).toBe('v');
     expect(await kv.getdel('k')).toBeUndefined();
   });
+
+  it('incr counts atomically and anchors the TTL window on the first increment', async () => {
+    vi.useFakeTimers();
+    const kv = new InMemoryKeyValueStore();
+    // Concurrent increments all count — no lost updates (audit C2-5/C3).
+    const counts = await Promise.all(Array.from({ length: 20 }, () => kv.incr('counter', 60_000)));
+    expect(Math.max(...counts)).toBe(20);
+    expect(await kv.get('counter')).toBe('20');
+    // The window does not slide: later increments keep the original expiry.
+    vi.advanceTimersByTime(59_000);
+    expect(await kv.incr('counter', 60_000)).toBe(21);
+    vi.advanceTimersByTime(1_001);
+    expect(await kv.get('counter')).toBeUndefined();
+    expect(await kv.incr('counter', 60_000)).toBe(1);
+  });
 });
 
 describe('KeyValueIdempotencyStore', () => {
@@ -91,5 +106,18 @@ describe('KeyValueOtpChallengeStore', () => {
     await store.save(challenge('otp-2'), 60_000);
     await store.delete('otp-1');
     expect(await store.get('otp-2')).toBeDefined();
+  });
+
+  it('counts per-phone verification failures in a fixed window (audit C3)', async () => {
+    vi.useFakeTimers();
+    const store = new KeyValueOtpChallengeStore(new InMemoryKeyValueStore());
+    expect(await store.phoneFailureCount('+2348010000001')).toBe(0);
+    expect(await store.registerPhoneFailure('+2348010000001', 60_000)).toBe(1);
+    expect(await store.registerPhoneFailure('+2348010000001', 60_000)).toBe(2);
+    // Other phones are unaffected.
+    expect(await store.phoneFailureCount('+2348099999999')).toBe(0);
+    // The window expires and the counter resets.
+    vi.advanceTimersByTime(60_001);
+    expect(await store.phoneFailureCount('+2348010000001')).toBe(0);
   });
 });

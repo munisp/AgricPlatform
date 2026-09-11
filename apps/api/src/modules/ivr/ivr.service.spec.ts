@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { AdvisoryItem, Enrolment, Profile } from '@agric-platform/shared';
 import { createInMemoryCommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
@@ -162,6 +162,30 @@ describe('resolveIvrDriver (fail-closed)', () => {
     expect(service.driverConfig.missing).toEqual(['AT_API_KEY', 'AT_USERNAME']);
   });
 
+  it('throws at boot in production when the callback token is missing (audit C2-3)', () => {
+    const nodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() =>
+        build({
+          env: { IVR_DRIVER: 'live', AT_API_KEY: 'k', AT_USERNAME: 'u' } as NodeJS.ProcessEnv
+        })
+      ).toThrowError(/missing configuration.*AT_CALLBACK_TOKEN/);
+      expect(() =>
+        build({
+          env: {
+            IVR_DRIVER: 'live',
+            AT_API_KEY: 'k',
+            AT_USERNAME: 'u',
+            AT_CALLBACK_TOKEN: 'secret'
+          } as NodeJS.ProcessEnv
+        })
+      ).not.toThrow();
+    } finally {
+      process.env.NODE_ENV = nodeEnv;
+    }
+  });
+
   it('controller returns 404 while the driver is disabled', async () => {
     const { service } = build({ env: {} as NodeJS.ProcessEnv });
     const controller = new IvrController(service);
@@ -176,6 +200,32 @@ describe('resolveIvrDriver (fail-closed)', () => {
     const xml = await controller.callback({ sessionId: 's-c', callerNumber: '+234801' });
     expect(xml).toContain('<Response>');
     expect(xml).toContain('Welcome to AgricPlatform voice service.');
+  });
+
+  it('controller rejects callbacks without/with a wrong callback token once configured (C2-3)', async () => {
+    const { service } = build();
+    const controller = new IvrController(service);
+    const saved = process.env.AT_CALLBACK_TOKEN;
+    process.env.AT_CALLBACK_TOKEN = 'ivr-test-token';
+    try {
+      await expect(
+        controller.callback({ sessionId: 's-t1', callerNumber: '+234801' })
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        controller.callback({ sessionId: 's-t1', callerNumber: '+234801' }, 'wrong')
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      const xml = await controller.callback(
+        { sessionId: 's-t1', callerNumber: '+234801' },
+        'ivr-test-token'
+      );
+      expect(xml).toContain('Welcome to AgricPlatform voice service.');
+    } finally {
+      if (saved === undefined) {
+        delete process.env.AT_CALLBACK_TOKEN;
+      } else {
+        process.env.AT_CALLBACK_TOKEN = saved;
+      }
+    }
   });
 });
 

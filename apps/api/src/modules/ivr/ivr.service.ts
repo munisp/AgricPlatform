@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { AdvisoryItem, Profile, User } from '@agric-platform/shared';
+import { missingAtCallbackConfig } from '../../common/auth/at-callback.utils.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 import {
   COMMODITY_PRICE_REPOSITORY,
@@ -95,9 +96,13 @@ export class IvrService {
   ) {
     this.driverConfig = resolveIvrDriver(env);
     // Fail closed at boot in production: a live/sandbox IVR driver without
-    // the Africa's Talking credentials aborts startup (wave P1 pattern).
-    if (isProduction() && this.driverConfig.mode !== 'stub' && this.driverConfig.missing.length > 0) {
-      throw new ProviderConfigError(IVR_PROVIDER, this.driverConfig.missing);
+    // the Africa's Talking credentials OR the callback shared secret
+    // (AT_CALLBACK_TOKEN, audit C2-3) aborts startup (wave P1 pattern).
+    if (isProduction() && this.driverConfig.mode !== 'stub') {
+      const missing = [...this.driverConfig.missing, ...missingAtCallbackConfig(env)];
+      if (missing.length > 0) {
+        throw new ProviderConfigError(IVR_PROVIDER, missing);
+      }
     }
   }
 

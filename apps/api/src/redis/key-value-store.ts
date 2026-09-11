@@ -10,6 +10,11 @@ export interface KeyValueStore {
   set(key: string, value: string, ttlMs?: number): Promise<void>;
   /** Atomic set-if-absent; returns true when the value was stored. */
   setNx(key: string, value: string, ttlMs?: number): Promise<boolean>;
+  /**
+   * Atomic numeric increment (created at 1 when absent); ttlMs is applied
+   * only when the key is first created, anchoring a fixed window.
+   */
+  incr(key: string, ttlMs?: number): Promise<number>;
   /** Atomic read-and-delete (single-use values). */
   getdel(key: string): Promise<string | undefined>;
   delete(key: string): Promise<void>;
@@ -54,6 +59,25 @@ export class InMemoryKeyValueStore implements KeyValueStore {
     return value;
   }
 
+  async incr(key: string, ttlMs?: number): Promise<number> {
+    // No awaits: the read-increment-write is synchronous and therefore
+    // atomic for concurrent in-process callers.
+    const existing = this.entries.get(key);
+    const expired = existing?.expiresAt !== undefined && existing.expiresAt <= Date.now();
+    const current = existing && !expired ? Number.parseInt(existing.value, 10) : 0;
+    const next = (Number.isNaN(current) ? 0 : current) + 1;
+    this.entries.set(key, {
+      value: String(next),
+      expiresAt:
+        existing && !expired
+          ? existing.expiresAt
+          : ttlMs !== undefined
+            ? Date.now() + ttlMs
+            : undefined
+    });
+    return next;
+  }
+
   async delete(key: string): Promise<void> {
     this.entries.delete(key);
   }
@@ -84,6 +108,17 @@ export class RedisKeyValueStore implements KeyValueStore {
 
   async getdel(key: string): Promise<string | undefined> {
     return (await this.redis.getdel(key)) ?? undefined;
+  }
+
+  async incr(key: string, ttlMs?: number): Promise<number> {
+    const value = await this.redis.incr(key);
+    // Anchor the window on the first increment only (portable across Redis
+    // versions; the crash-between-commands gap leaves an uncapped counter,
+    // which is fail-open for TTL only, never for the count itself).
+    if (value === 1 && ttlMs !== undefined) {
+      await this.redis.pexpire(key, ttlMs);
+    }
+    return value;
   }
 
   async delete(key: string): Promise<void> {

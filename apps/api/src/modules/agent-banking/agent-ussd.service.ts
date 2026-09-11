@@ -1,9 +1,20 @@
-import { ConflictException, GoneException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  ConflictException,
+  GoneException,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  UnauthorizedException
+} from '@nestjs/common';
+import { missingAtCallbackConfig } from '../../common/auth/at-callback.utils.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { USSD_SESSION_REPOSITORY } from '../../database/persistence.tokens.js';
 import type {
   UssdSessionRecord,
   UssdSessionRepository
 } from '../../database/repositories/ussd-session.repository.js';
+import { ProviderConfigError } from '../integrations/drivers/http.js';
 import { UsersService } from '../users/users.service.js';
 import { resolveUssdDriver, type UssdDriverConfig } from '../ussd/ussd.service.js';
 import { AgentBankingService } from './agent-banking.service.js';
@@ -53,14 +64,35 @@ export class AgentUssdService {
   ) {
     // Same fail-closed driver gate as the agronomy USSD channel: the
     // callback stays disabled unless USSD_DRIVER is live|sandbox with the
-    // Africa's Talking credentials configured.
+    // Africa's Talking credentials configured. In production a missing
+    // callback shared secret (AT_CALLBACK_TOKEN, audit C2-3) aborts boot —
+    // this channel treats the caller phone number as the agent's identity,
+    // so an unauthenticated callback must never be reachable.
     this.driverConfig = resolveUssdDriver(env);
+    if (isProduction() && this.driverConfig.mode !== 'stub') {
+      const missing = missingAtCallbackConfig(env);
+      if (missing.length > 0) {
+        throw new ProviderConfigError('africastalking-agent-ussd', missing);
+      }
+    }
   }
 
   async handleCallback(input: AgentUssdCallbackInput): Promise<string> {
     const now = Date.now();
     const text = input.text ?? '';
     const existing = await this.sessions.findById(input.sessionId);
+
+    // Session phone binding (audit C2-3): the phone number opens the session
+    // and cannot change mid-session — it is the agent's identity here.
+    if (
+      existing &&
+      existing.expiresAt > new Date(now).toISOString() &&
+      existing.phone !== input.phoneNumber
+    ) {
+      throw new UnauthorizedException(
+        'USSD session is bound to a different phone number; start a new session.'
+      );
+    }
 
     if (existing && existing.expiresAt > new Date(now).toISOString()) {
       const stored = existing.state as unknown as StoredAgentUssdState;

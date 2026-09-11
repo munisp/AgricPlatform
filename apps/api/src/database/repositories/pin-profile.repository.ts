@@ -28,6 +28,14 @@ export interface PinProfileRepository {
     userId: string,
     patch: Partial<Pick<PinProfile, 'pinHash' | 'attempts' | 'lockedUntil'>>
   ): Promise<PinProfile>;
+  /**
+   * Atomically increments the wrong-PIN attempt counter and returns the new
+   * count (audit C2-5). A read-modify-write through find+update loses
+   * concurrent increments, letting parallel wrong PINs defeat the lockout;
+   * implementations must make the increment indivisible (single UPDATE on
+   * Postgres; synchronous read-increment-write in memory).
+   */
+  incrementAttempts(deviceToken: string, userId: string): Promise<number>;
   remove(deviceToken: string, userId: string): Promise<boolean>;
 }
 
@@ -71,6 +79,20 @@ export class InMemoryPinProfileRepository implements PinProfileRepository {
     const updated: PinProfile = { ...existing, ...patch };
     this.items.set(key, updated);
     return { ...updated };
+  }
+
+  async incrementAttempts(deviceToken: string, userId: string): Promise<number> {
+    // No awaits between the read and the write: the JS event loop runs this
+    // whole block synchronously, so concurrent callers cannot interleave and
+    // every failed attempt is counted exactly once.
+    const key = this.key(deviceToken, userId);
+    const existing = this.items.get(key);
+    if (!existing) {
+      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
+    }
+    const updated: PinProfile = { ...existing, attempts: existing.attempts + 1 };
+    this.items.set(key, updated);
+    return updated.attempts;
   }
 
   async remove(deviceToken: string, userId: string): Promise<boolean> {
