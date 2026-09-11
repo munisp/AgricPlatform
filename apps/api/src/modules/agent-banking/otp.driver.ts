@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ProviderConfigError } from '../integrations/drivers/http.js';
+import { VendorHttpClient, parseVendorTimeoutMs } from '../integrations/drivers/vendor-client.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 
 /**
@@ -12,10 +13,19 @@ import { isProduction } from '../../common/auth/auth.config.js';
  * and the challenge reference, so tests and demos are reproducible. It is
  * NOT a real OTP channel: nothing is sent anywhere.
  *
- * OTP_DRIVER=live: reserved for a real OTP provider integration. It
- * REQUIRES OTP_PROVIDER_URL + OTP_PROVIDER_API_KEY and fails CLOSED: boot
- * aborts in production when they are missing, and every verification call
- * answers 503 (ServiceUnavailable) otherwise — never a silent pass.
+ * OTP_DRIVER=live: OTP vendor client (WP-G17). It REQUIRES
+ * OTP_PROVIDER_URL + OTP_PROVIDER_API_KEY (per-attempt timeout via
+ * OTP_PROVIDER_TIMEOUT_MS, default 5000) and fails CLOSED: boot aborts in
+ * production when they are missing, an unconfigured client answers 503 on
+ * every call, and every vendor failure mode (timeout, transport, 4xx/5xx,
+ * open circuit breaker, malformed response) maps to 503 — never a silent
+ * pass. Resilience per platform pattern: AbortController timeout, circuit
+ * breaker (3 fails/30s), bounded retry with jitter on transient 5xx only
+ * (VendorHttpClient). Vendor request/response bodies carry the OTP code and
+ * are never logged or echoed in errors.
+ *
+ * EXTERNAL GATE: real OTP vendor credentials are a MAINTAINER ACTION
+ * (vendor contract + DND routing) — see apps/api/.env.example.
  */
 
 export const OTP_DRIVER_TOKEN = Symbol('AGENT_BANKING_OTP_DRIVER');
@@ -61,37 +71,73 @@ export class OtpVerificationError extends Error {
 }
 
 /**
- * Live driver placeholder: a real OTP provider is an EXTERNAL GATE (vendor
- * contract + DND routing). Until one is wired, every call fails closed with
- * 503 so no deployment can pretend to verify presence.
+ * Vendor-agnostic presence-proof verification contract: POST {base}/verify
+ * with { farmerId, reference, code } expects 200 JSON { valid: boolean }.
+ * `valid: false` rejects with OtpVerificationError; a missing `valid` field
+ * is a contract violation and fails closed with 503.
+ */
+interface OtpVendorVerifyResponse {
+  valid?: boolean;
+}
+
+/**
+ * Live driver (WP-G17): OTP vendor HTTP client scaffolding. Real vendor
+ * credentials remain an EXTERNAL GATE (vendor contract + DND routing —
+ * maintainer action); until configured, every call fails closed with 503 so
+ * no deployment can pretend to verify presence.
  */
 export class LiveOtpDriver implements OtpDriver {
   readonly name = 'live' as const;
+  private readonly client?: VendorHttpClient;
 
-  constructor(
-    private readonly providerUrl: string | undefined,
-    private readonly apiKey: string | undefined
-  ) {}
+  constructor(providerUrl?: string, apiKey?: string, timeoutMs?: number) {
+    if (providerUrl && apiKey) {
+      this.client = new VendorHttpClient({
+        provider: 'agent-banking-otp',
+        baseUrl: providerUrl,
+        apiKey,
+        timeoutMs
+      });
+    }
+  }
+
+  /** Visible for tests/status: whether the circuit breaker is open. */
+  get circuitOpen(): boolean {
+    return this.client?.circuitOpen ?? false;
+  }
 
   challengeCode(_farmerId?: string, _reference?: string): undefined {
     return undefined;
   }
 
-  verify(_farmerId: string, _reference: string, _code: string): Promise<never> {
-    if (!this.providerUrl || !this.apiKey) {
-      return Promise.reject(
-        new ServiceUnavailableException(
-          'OTP_DRIVER=live requires OTP_PROVIDER_URL and OTP_PROVIDER_API_KEY (fail-closed: no presence proof possible).'
-        )
+  async verify(farmerId: string, reference: string, code: string): Promise<void> {
+    if (!this.client) {
+      throw new ServiceUnavailableException(
+        'OTP_DRIVER=live requires OTP_PROVIDER_URL and OTP_PROVIDER_API_KEY (fail-closed: no presence proof possible).'
       );
     }
-    // No provider client is integrated yet — fail closed rather than
-    // silently accepting an unverifiable proof.
-    return Promise.reject(
-      new ServiceUnavailableException(
-        'Live OTP provider client is not integrated in this build (fail-closed).'
-      )
-    );
+    let json: OtpVendorVerifyResponse;
+    try {
+      json = await this.client.postJson<OtpVendorVerifyResponse>('/verify', {
+        farmerId,
+        reference,
+        code
+      });
+    } catch {
+      // Timeout / transport / HTTP error / open breaker: one uniform
+      // fail-closed answer; the underlying error carries no vendor body.
+      throw new ServiceUnavailableException(
+        'OTP provider request failed (fail-closed: timeout, transport error, HTTP error or open circuit breaker).'
+      );
+    }
+    if (!json || typeof json.valid !== 'boolean') {
+      throw new ServiceUnavailableException(
+        'OTP provider returned a malformed verification response (fail-closed).'
+      );
+    }
+    if (!json.valid) {
+      throw new OtpVerificationError();
+    }
   }
 }
 
@@ -102,7 +148,11 @@ export function createOtpDriver(env: NodeJS.ProcessEnv = process.env): OtpDriver
     if (isProduction() && missing.length > 0) {
       throw new ProviderConfigError('agent-banking-otp', missing);
     }
-    return new LiveOtpDriver(env.OTP_PROVIDER_URL, env.OTP_PROVIDER_API_KEY);
+    return new LiveOtpDriver(
+      env.OTP_PROVIDER_URL,
+      env.OTP_PROVIDER_API_KEY,
+      parseVendorTimeoutMs(env.OTP_PROVIDER_TIMEOUT_MS)
+    );
   }
   // Fail closed (mirrors assertProductionDriverConfig): the stub code is a
   // PUBLICLY COMPUTABLE hash, so a stub OTP in production is a presence-proof
