@@ -24,6 +24,18 @@ export interface LedgerEntryCriteria {
   referenceId?: string;
 }
 
+/**
+ * Opaque caller-owned transaction handle for in-transaction postings
+ * (WP-G1 VSLA fold). Mirrors the input-vouchers `AllocationTx` doctrine:
+ * the pg implementation passes the open transaction's client so a caller
+ * can commit a ledger posting TOGETHER with its own state change; the
+ * in-memory implementation has no handle (each awaited step is already
+ * atomic) and callers pass `undefined`.
+ */
+export interface LedgerPostingTx {
+  query(text: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount?: number | null }>;
+}
+
 export interface LedgerEntryRepository {
   /**
    * True when postEntry persists a passed outbox event in the same database
@@ -46,6 +58,18 @@ export interface LedgerEntryRepository {
    * the implementation sets `transactionalOutbox` (ignored otherwise).
    */
   postEntry(
+    entry: LedgerJournalEntry,
+    requireSolventAccounts?: readonly string[],
+    outboxEvent?: DomainEvent
+  ): Promise<LedgerJournalEntry>;
+  /**
+   * Optional (pg): the posting body of `postEntry` running on a CALLER-OWNED
+   * transaction client — no BEGIN/COMMIT of its own (WP-G1 VSLA fold: the
+   * repayment claim, this posting and the repayment row commit or roll back
+   * as one unit). Same solvency-guard and outbox semantics as `postEntry`.
+   */
+  postEntryInTx?(
+    tx: LedgerPostingTx,
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
     outboxEvent?: DomainEvent
