@@ -1,12 +1,16 @@
-import { Inject, Injectable } from '@nestjs/common';
-import type { CreditProfile, KycTier, VaultDocument } from '@agric-platform/shared';
+import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import type { CreditProfile, KycTier, Lender, VaultDocument } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import {
   CREDIT_PROFILE_REPOSITORY,
-  DOCUMENT_REPOSITORY
+  DOCUMENT_REPOSITORY,
+  LENDER_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type { CreditProfileRepository } from '../../database/repositories/credit-profile.repository.js';
 import type { DocumentRepository } from '../../database/repositories/document.repository.js';
+import type { LenderRepository } from '../../database/repositories/lender.repository.js';
+import { seedLenders } from '../../database/seed-data.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { UsersService } from '../users/users.service.js';
@@ -23,6 +27,15 @@ export interface LenderMatch {
   maxAmountNaira: number;
   eligible: boolean;
   reason: string;
+  /**
+   * Provenance label (WP-G18, extends the WP-G15 labelling doctrine): every
+   * match carries the catalogue row's source — 'sample_catalogue' for the
+   * built-in unverified fixtures (migration 062), 'admin_registered' for
+   * ops-registered lenders, or an import-rail tag. Never silently absent.
+   */
+  source: string;
+  /** Vetted-lender flag straight from the catalogue row (default false). */
+  verified: boolean;
 }
 
 export interface KycStatus {
@@ -46,7 +59,8 @@ export class FinanceService {
     private readonly users: UsersService,
     private readonly learning: LearningService,
     @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles: CreditProfileRepository,
-    @Inject(DOCUMENT_REPOSITORY) private readonly documents: DocumentRepository
+    @Inject(DOCUMENT_REPOSITORY) private readonly documents: DocumentRepository,
+    @Inject(LENDER_REPOSITORY) private readonly lenders: LenderRepository
   ) {}
 
   /** Credit readiness profile, recomputed from live signals. */
@@ -136,31 +150,57 @@ export class FinanceService {
     };
   }
 
-  /** Lender matching against the credit profile (stub lenders, no network). */
+  /**
+   * Lender matching against the credit profile, served from the lender
+   * catalogue repository (finance.lenders — WP-G18; migration 062 seeds the
+   * three built-in SAMPLE lenders with source 'sample_catalogue',
+   * verified: false). Every match carries the catalogue row's source +
+   * verified labels — unverified sample rows are never presented as vetted
+   * lenders. Eligibility rule: the member's recomputed credit score must
+   * meet the catalogue row's minScore; the row's criteria stay advisory in
+   * the reason text.
+   *
+   * FAIL-CLOSED (extends the WP-G15 guard): when the catalogue table is
+   * EMPTY there is no honest catalogue to serve. In production that answers
+   * 503 LENDER_CATALOGUE_UNAVAILABLE unless LENDER_CATALOGUE=sample is set
+   * explicitly (demos/fixture seeding) — never silently serve sample data
+   * as real. Outside production (or with the explicit sample opt-in) the
+   * labelled sample catalogue is the fallback, preserving pre-WP-G18 dev
+   * behaviour.
+   */
   async lenderMatches(userId: string): Promise<LenderMatch[]> {
     const profile = await this.creditProfile(userId);
-    return [
-      {
-        lender: 'NYFN Cooperative Credit Window',
-        product: 'Input financing (per season)',
-        maxAmountNaira: 500000,
-        eligible: profile.score >= 40,
-        reason: 'Requires credit score 40+ and verified membership'
-      },
-      {
-        lender: 'Partner MFI Network',
-        product: 'Asset financing (equipment)',
-        maxAmountNaira: 3000000,
-        eligible: profile.score >= 60 && profile.documentCount >= 2,
-        reason: 'Requires credit score 60+ and two vault documents'
-      },
-      {
-        lender: 'Commercial Agri Desk',
-        product: 'Working capital line',
-        maxAmountNaira: 10000000,
-        eligible: profile.score >= 75,
-        reason: 'Requires credit score 75+ and tier 2 KYC'
+    const catalogue = await this.lenders.find({ active: true });
+    const sampleOptIn =
+      (process.env.LENDER_CATALOGUE ?? '').trim().toLowerCase() === 'sample';
+    if (catalogue.length === 0) {
+      if (isProduction() && !sampleOptIn) {
+        throw new ServiceUnavailableException(
+          'LENDER_CATALOGUE_UNAVAILABLE: the lender catalogue is empty and no verified ' +
+            'lender repository is wired in production. Set LENDER_CATALOGUE=sample to ' +
+            'explicitly serve the built-in sample catalogue (clearly labelled, unverified).'
+        );
       }
-    ];
+      return seedLenders
+        .filter((lender) => lender.isActive)
+        .map((lender) => this.toLenderMatch(lender, profile));
+    }
+    return catalogue.map((lender) => this.toLenderMatch(lender, profile));
+  }
+
+  /** Maps a catalogue row onto a labelled match for the credit profile. */
+  private toLenderMatch(lender: Lender, profile: CreditProfile): LenderMatch {
+    return {
+      lender: lender.name,
+      product: lender.product,
+      maxAmountNaira: Math.floor(lender.maxTicketKobo / 100),
+      eligible: profile.score >= lender.minScore,
+      reason:
+        lender.criteria.length > 0
+          ? `Requires ${lender.criteria.join(' and ')}`
+          : `Requires credit score ${lender.minScore}+`,
+      source: lender.source,
+      verified: lender.verified
+    };
   }
 }
