@@ -1,10 +1,11 @@
+import { NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
-import type { PinProfile, PinProfileRepository } from './pin-profile.repository.js';
+import type { PinProfile, PinProfilePatch, PinProfileRepository } from './pin-profile.repository.js';
 
 /**
- * PostgreSQL implementation over channels.pin_profiles
- * (infra/postgres/008_ussd_channels.sql). Standalone (not PgRepositoryBase)
- * because the primary key is the composite (device_token, user_id).
+ * PostgreSQL implementation over channels.pin_profiles (migration 024).
+ * incrementAttempts is a single atomic UPDATE (audit C2-5); a FOR UPDATE
+ * variant would only matter under a transactions-per-call redesign.
  */
 export class PgPinProfileRepository implements PinProfileRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -27,20 +28,20 @@ export class PgPinProfileRepository implements PinProfileRepository {
     return result.rows.map((row) => this.fromRow(row));
   }
 
-  async countForDevice(deviceToken: string): Promise<number> {
+  async listForUser(userId: string): Promise<PinProfile[]> {
     const result = await this.pool.query(
-      'SELECT count(*)::int AS total FROM channels.pin_profiles WHERE device_token = $1',
-      [deviceToken]
+      'SELECT device_token, user_id, pin_hash, attempts, locked_until, created_at ' +
+        'FROM channels.pin_profiles WHERE user_id = $1 ORDER BY created_at, device_token',
+      [userId]
     );
-    return Number(result.rows[0]?.total ?? 0);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
   async save(profile: PinProfile): Promise<PinProfile> {
     await this.pool.query(
       'INSERT INTO channels.pin_profiles (device_token, user_id, pin_hash, attempts, locked_until, created_at) ' +
         'VALUES ($1, $2, $3, $4, $5, $6) ' +
-        'ON CONFLICT (device_token, user_id) DO UPDATE SET ' +
-        'pin_hash = EXCLUDED.pin_hash, attempts = EXCLUDED.attempts, locked_until = EXCLUDED.locked_until',
+        'ON CONFLICT (device_token, user_id) DO UPDATE SET pin_hash = EXCLUDED.pin_hash',
       [
         profile.deviceToken,
         profile.userId,
@@ -53,55 +54,53 @@ export class PgPinProfileRepository implements PinProfileRepository {
     return profile;
   }
 
-  async update(
-    deviceToken: string,
-    userId: string,
-    patch: Partial<Pick<PinProfile, 'pinHash' | 'attempts' | 'lockedUntil'>>
-  ): Promise<PinProfile> {
+  async update(deviceToken: string, userId: string, patch: PinProfilePatch): Promise<PinProfile> {
     const existing = await this.find(deviceToken, userId);
     if (!existing) {
-      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
+      throw new NotFoundException(`PIN profile ${userId} on ${deviceToken} not found`);
     }
-    const updated: PinProfile = { ...existing, ...patch };
-    await this.save(updated);
-    return updated;
+    const next: PinProfile = {
+      ...existing,
+      ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
+      ...(patch.lockedUntil !== undefined ? { lockedUntil: patch.lockedUntil } : {})
+    };
+    await this.pool.query(
+      'UPDATE channels.pin_profiles SET attempts = $3, locked_until = $4 ' +
+        'WHERE device_token = $1 AND user_id = $2',
+      [deviceToken, userId, next.attempts, next.lockedUntil ?? null]
+    );
+    return next;
   }
 
-  /**
-   * Single-statement atomic increment (audit C2-5): concurrent wrong-PIN
-   * requests cannot lose updates the way the previous find+update
-   * read-modify-write cycle could.
-   */
+  /** Atomic increment — the UPDATE itself is the row lock. */
   async incrementAttempts(deviceToken: string, userId: string): Promise<number> {
     const result = await this.pool.query(
       'UPDATE channels.pin_profiles SET attempts = attempts + 1 ' +
         'WHERE device_token = $1 AND user_id = $2 RETURNING attempts',
       [deviceToken, userId]
     );
-    if (!result.rows[0]) {
-      throw new Error(`PIN profile not found for device '${deviceToken}' user '${userId}'`);
+    if (result.rows.length === 0) {
+      throw new NotFoundException(`PIN profile ${userId} on ${deviceToken} not found`);
     }
     return Number(result.rows[0].attempts);
   }
 
-  async remove(deviceToken: string, userId: string): Promise<boolean> {
+  async countForDevice(deviceToken: string): Promise<number> {
     const result = await this.pool.query(
-      'DELETE FROM channels.pin_profiles WHERE device_token = $1 AND user_id = $2',
-      [deviceToken, userId]
+      'SELECT COUNT(*) AS count FROM channels.pin_profiles WHERE device_token = $1',
+      [deviceToken]
     );
-    return (result.rowCount ?? 0) > 0;
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   private fromRow(row: Record<string, unknown>): PinProfile {
     return {
-      deviceToken: row.device_token as string,
-      userId: row.user_id as string,
-      pinHash: row.pin_hash as string,
+      deviceToken: String(row.device_token),
+      userId: String(row.user_id),
+      pinHash: String(row.pin_hash),
       attempts: Number(row.attempts),
-      lockedUntil: row.locked_until
-        ? new Date(row.locked_until as string).toISOString()
-        : undefined,
-      createdAt: new Date(row.created_at as string).toISOString()
+      lockedUntil: row.locked_until ? new Date(String(row.locked_until)).toISOString() : undefined,
+      createdAt: new Date(String(row.created_at)).toISOString()
     };
   }
 }
