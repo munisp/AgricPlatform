@@ -34,11 +34,26 @@ function present<T extends object>(
  * written — undefined becomes SQL NULL; an absent key is not updated).
  */
 export const escrowRecordMapper: RowMapper<EscrowRecord> = {
-  columns: [...escrowMapper.columns, 'deposit_payment_reference', 'deposit_verified_at'],
+  // Stage 27 (Innovation 9): also carries the geo-sealed delivery columns
+  // from infra/postgres/067_escrow_delivery_geo.sql (nullable — opt-in).
+  columns: [
+    ...escrowMapper.columns,
+    'deposit_payment_reference',
+    'deposit_verified_at',
+    'delivery_point_h3',
+    'geofence_radius_cells',
+    'delivery_confirm_until'
+  ],
   fromRow: (row) => ({
     ...escrowMapper.fromRow(row),
     depositReference: (row.deposit_payment_reference as string) ?? undefined,
-    depositVerifiedAt: row.deposit_verified_at ? ts(row.deposit_verified_at) : undefined
+    depositVerifiedAt: row.deposit_verified_at ? ts(row.deposit_verified_at) : undefined,
+    deliveryPointH3: (row.delivery_point_h3 as string) ?? undefined,
+    geofenceRadiusCells:
+      row.geofence_radius_cells === null || row.geofence_radius_cells === undefined
+        ? undefined
+        : num(row.geofence_radius_cells),
+    deliveryConfirmUntil: row.delivery_confirm_until ? ts(row.delivery_confirm_until) : undefined
   }),
   toRow: (item) => {
     const row = escrowMapper.toRow(item);
@@ -47,6 +62,15 @@ export const escrowRecordMapper: RowMapper<EscrowRecord> = {
     }
     if ('depositVerifiedAt' in item) {
       row.deposit_verified_at = item.depositVerifiedAt ?? null;
+    }
+    if ('deliveryPointH3' in item) {
+      row.delivery_point_h3 = item.deliveryPointH3 ?? null;
+    }
+    if ('geofenceRadiusCells' in item) {
+      row.geofence_radius_cells = item.geofenceRadiusCells ?? null;
+    }
+    if ('deliveryConfirmUntil' in item) {
+      row.delivery_confirm_until = item.deliveryConfirmUntil ?? null;
     }
     return row;
   }
