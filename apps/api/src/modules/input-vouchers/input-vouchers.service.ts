@@ -12,15 +12,33 @@ import {
 } from '@nestjs/common';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service.js';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   BENEFICIARY_REPOSITORY,
+  FARM_PLOT_REPOSITORY,
   INPUT_VOUCHER_PROGRAMME_FUNDING_REPOSITORY,
   INPUT_VOUCHER_PROGRAMME_REPOSITORY,
   INPUT_VOUCHER_REDEMPTION_REPOSITORY,
-  INPUT_VOUCHER_REPOSITORY
+  INPUT_VOUCHER_REPOSITORY,
+  PARAMETRIC_POLICY_REPOSITORY,
+  PARAMETRIC_PRODUCT_REPOSITORY,
+  VOUCHER_COVER_REPOSITORY,
+  VOUCHER_PROGRAMME_RIDER_REPOSITORY
 } from '../../database/persistence.tokens.js';
+import type { FarmPlotRepository } from '../../database/repositories/farms.repository.js';
+import type {
+  VoucherCoverRecord,
+  VoucherCoverRepository,
+  VoucherProgrammeRiderRecord,
+  VoucherProgrammeRiderRepository
+} from '../../database/repositories/insurance.repository.js';
+import type {
+  ParametricPolicyRepository,
+  ParametricProductRepository
+} from '../../database/repositories/insurance.repository.js';
 import type {
   BeneficiaryRecord,
   BeneficiaryRepository,
@@ -37,6 +55,8 @@ import type {
 } from '../../database/repositories/input-vouchers.repository.js';
 import { LedgerService } from '../finance/ledger.service.js';
 import { UsersService } from '../users/users.service.js';
+import { computePremiumKobo } from '../insurance/premium.js';
+import { createWeatherProvider } from '../insurance/weather.provider.js';
 import {
   IDENTITY_VERIFICATION_PORT,
   type IdentityVerificationPort
@@ -52,6 +72,37 @@ export function programmeLiabilityAccountCode(programmeId: string): string {
 
 export function supplierReceivableAccountCode(supplierId: string): string {
   return `supplier:${supplierId}:receivable`;
+}
+
+/**
+ * Stage 27 (Insurance-in-the-Bag): per-programme insurer premium payable
+ * account. Redemption of a voucher under an active programme rider splits
+ * the envelope in ONE ledger entry: DR programme liability (full face
+ * value) / CR supplier receivable (face − premium) / CR this account
+ * (premium). The premium therefore debits the funded envelope atomically
+ * with the redemption — never as a separate, raceable posting.
+ */
+export function programmeInsurancePremiumAccountCode(programmeId: string): string {
+  return `programme:${programmeId}:insurance_premium`;
+}
+
+/** Rollout flag for the voucher insurance rider (default OFF, fail-closed). */
+export const VOUCHER_INSURANCE_RIDER_FLAG = 'voucher-insurance-rider';
+
+/** Options for redemption: the planted plot the bundled cover attaches to. */
+export interface RedeemVoucherOptions {
+  plotId?: string;
+}
+
+/** Resolved cover plan for a redemption under an active rider. */
+export interface VoucherCoverPlan {
+  rider: VoucherProgrammeRiderRecord;
+  productId: string;
+  season: string;
+  triggerMetric: string;
+  plotId: string;
+  premiumKobo: number;
+  insurerAccountCode: string;
 }
 
 export interface ActorRef {
@@ -145,6 +196,18 @@ export interface ProgrammeReconciliation {
   };
   /** Funded-float backing state (stage 23, audit C3); zeroed when never topped up. */
   funding: ProgrammeFundingView;
+  /**
+   * Stage 27 (Insurance-in-the-Bag): bundled-cover ledger tie. Present when
+   * the cover repository is wired; asserts premium payable balance == sum of
+   * bound cover premiums (non-zero discrepancy = integrity breach).
+   */
+  insurance?: {
+    premiumPayableAccountCode: string;
+    coversBound: number;
+    premiumKobo: number;
+    premiumPayableKobo: number;
+    discrepancyKobo: number;
+  };
   generatedAt: string;
 }
 
@@ -205,6 +268,7 @@ function assertPositiveKobo(amountKobo: number, field = 'amountKobo'): void {
 @Injectable()
 export class InputVouchersService {
   private readonly ninSalt: string;
+  private readonly env: NodeJS.ProcessEnv;
 
   constructor(
     @Inject(INPUT_VOUCHER_PROGRAMME_REPOSITORY) private readonly programmes: SubsidyProgrammeRepository,
@@ -217,9 +281,22 @@ export class InputVouchersService {
     private readonly events: DomainEventsService,
     @Inject(IDENTITY_VERIFICATION_PORT) private readonly identity: IdentityVerificationPort,
     @Optional() private readonly audit?: AuditService,
-    @Optional() env: NodeJS.ProcessEnv = process.env
+    @Optional() env: NodeJS.ProcessEnv = process.env,
+    // Stage 27 (Insurance-in-the-Bag): optional cover-binding collaborators.
+    // All resolve from the global DatabaseModule in the running app; they are
+    // optional only so hand-rolled unit tests can construct the service
+    // without them — a rider that is actually ACTIVE with unwired
+    // collaborators fails closed (503) instead of silently skipping the bind.
+    @Optional() @Inject(VOUCHER_PROGRAMME_RIDER_REPOSITORY) private readonly riders?: VoucherProgrammeRiderRepository,
+    @Optional() @Inject(VOUCHER_COVER_REPOSITORY) private readonly covers?: VoucherCoverRepository,
+    @Optional() @Inject(PARAMETRIC_PRODUCT_REPOSITORY) private readonly insuranceProducts?: ParametricProductRepository,
+    @Optional() @Inject(PARAMETRIC_POLICY_REPOSITORY) private readonly insurancePolicies?: ParametricPolicyRepository,
+    @Optional() @Inject(FARM_PLOT_REPOSITORY) private readonly plots?: FarmPlotRepository,
+    @Optional() private readonly flags?: FeatureFlagsService,
+    @Optional() private readonly telemetry?: TelemetryService
   ) {
     this.ninSalt = resolveNinHashSalt(env);
+    this.env = env;
   }
 
   // ------------------------------------------------------------- programmes
@@ -754,8 +831,9 @@ export class InputVouchersService {
   async redeemVoucher(
     id: string,
     invoiceRef: string,
-    actor: ActorRef
-  ): Promise<{ voucher: InputVoucherRecord; redemption: RedemptionRecord }> {
+    actor: ActorRef,
+    options: RedeemVoucherOptions = {}
+  ): Promise<{ voucher: InputVoucherRecord; redemption: RedemptionRecord; cover?: VoucherCoverRecord }> {
     if (!invoiceRef?.trim()) {
       throw new BadRequestException('invoiceRef is required — redemptions settle against a dealer invoice');
     }
@@ -781,6 +859,14 @@ export class InputVouchersService {
     if (!voucher.distributedAt) {
       throw new BadRequestException(`Voucher '${id}' has not been distributed to the farmer yet`);
     }
+    // Stage 27 (Insurance-in-the-Bag): resolve the programme's insurance
+    // rider BEFORE the claim CAS, so a validation failure (no plot, premium
+    // not covered by the face value) rejects the redemption while the
+    // voucher is still ISSUED — the "policy issue failure rolls back the
+    // redemption" doctrine. Post-claim failures are crash-class and resume
+    // through the REDEEMING path below. Flag OFF (default) => no rider
+    // consult, redemption behaves exactly as before.
+    const coverPlan = await this.resolveCoverPlan(voucher, options.plotId, actor);
     if (voucher.status === 'ISSUED') {
       // Claim the redemption FIRST: after this write only this caller (or a
       // retry resuming the claim) can reach the ledger posting; a concurrent
@@ -789,6 +875,7 @@ export class InputVouchersService {
     }
     const redemptionKey = `input-voucher-redemption:${voucher.id}`;
     let redemption = await this.redemptions.findByIdempotencyKey(redemptionKey);
+    let cover: VoucherCoverRecord | undefined;
     if (!redemption) {
       const programme = await this.getProgramme(voucher.programmeId);
       await this.ledger.ensureAccount({
@@ -796,20 +883,53 @@ export class InputVouchersService {
         type: 'liability',
         ownerId: actor.id
       });
+      // Stage 27: when a rider plan resolved, the premium rides the SAME
+      // ledger entry as the redemption (envelope split) — one atomic,
+      // idempotency-keyed posting: DR programme liability (full face value)
+      // / CR supplier receivable (face − premium) / CR insurer premium
+      // payable (premium). The funded-float reservation already backs the
+      // full face value, so the premium is backed by the same funded money.
+      if (coverPlan) {
+        await this.ledger.ensureAccount({ code: coverPlan.insurerAccountCode, type: 'liability' });
+      }
+      const postings = coverPlan
+        ? [
+            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: voucher.amountKobo },
+            {
+              accountCode: supplierReceivableAccountCode(actor.id),
+              direction: 'credit' as const,
+              amountKobo: voucher.amountKobo - coverPlan.premiumKobo
+            },
+            { accountCode: coverPlan.insurerAccountCode, direction: 'credit' as const, amountKobo: coverPlan.premiumKobo }
+          ]
+        : [
+            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: voucher.amountKobo },
+            { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit' as const, amountKobo: voucher.amountKobo }
+          ];
       try {
         const entry = await this.ledger.postEntry(
           {
             idempotencyKey: redemptionKey,
             referenceType: 'input_voucher_redemption',
             referenceId: voucher.id,
-            description: `Subsidy voucher ${voucher.id} redeemed by supplier ${actor.id} (invoice ${invoiceRef.trim()})`,
-            postings: [
-              { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo: voucher.amountKobo },
-              { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit', amountKobo: voucher.amountKobo }
-            ]
+            description:
+              `Subsidy voucher ${voucher.id} redeemed by supplier ${actor.id} (invoice ${invoiceRef.trim()})` +
+              (coverPlan ? ` — bundled insurance premium ${coverPlan.premiumKobo} kobo (envelope split)` : ''),
+            postings
           },
           actor.id
         );
+        if (coverPlan) {
+          // Bind the cover BEFORE the redemption row so a crash anywhere in
+          // this block resumes with the cover adopted (UNIQUE voucher_id),
+          // never double-bound.
+          cover = await this.bindVoucherCover(voucher, coverPlan);
+        } else if (this.covers) {
+          // Resume edge: a crashed attempt may have bound the cover under a
+          // flag state the retry no longer resolves — adopt the row so the
+          // settled view stays consistent with the posted envelope split.
+          cover = await this.covers.findByVoucherId(voucher.id);
+        }
         redemption = await this.redemptions.create({
           id: newId('ired'),
           voucherId: voucher.id,
@@ -877,7 +997,206 @@ export class InputVouchersService {
       entityId: voucher.id,
       metadata: { programmeId: voucher.programmeId, amountKobo: voucher.amountKobo, invoiceRef: invoiceRef.trim() }
     });
-    return { voucher: redeemed, redemption };
+    if (cover) {
+      // Policy issuance event AFTER the redemption committed (outbox), per
+      // the money doctrine — a failure here can never roll back a settled
+      // redemption, and a client retry replays the settled view (the cover
+      // row already exists, so the resume path never double-binds).
+      await this.events.publish(
+        'insurance.voucher_cover.bound',
+        {
+          coverId: cover.id,
+          voucherId: voucher.id,
+          policyId: cover.policyId,
+          programmeId: voucher.programmeId,
+          farmerId: voucher.farmerId,
+          plotId: cover.plotId,
+          premiumKobo: cover.premiumKobo,
+          coverBasis: cover.coverBasis
+        },
+        actor.id
+      );
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'insurance.voucher_cover.bound',
+        entityType: 'insurance_voucher_covers',
+        entityId: cover.id,
+        metadata: {
+          voucherId: voucher.id,
+          policyId: cover.policyId,
+          programmeId: voucher.programmeId,
+          premiumKobo: cover.premiumKobo,
+          coverBasis: cover.coverBasis
+        }
+      });
+      this.telemetry?.increment('insurance.voucher_covers_bound_total', 1, {
+        programme_id: voucher.programmeId,
+        trigger_type: coverPlan?.triggerMetric ?? 'resumed'
+      });
+      this.telemetry?.increment('insurance.voucher_premium_kobo_total', cover.premiumKobo, {
+        programme_id: voucher.programmeId
+      });
+    }
+    return { voucher: redeemed, redemption, ...(cover ? { cover } : {}) };
+  }
+
+  /**
+   * Stage 27 (Insurance-in-the-Bag): resolves the cover plan for a voucher
+   * redemption. Returns undefined (redeem unchanged) when the rollout flag
+   * is off for the caller, no rider exists, or the rider is suspended. When
+   * an active rider exists the plan is fully validated HERE — before the
+   * redemption claim CAS — so a product/plot/premium failure rejects the
+   * redemption with the voucher still ISSUED (422/404), never leaving a
+   * half-bound cover. Fail-closed: an active rider with unwired cover
+   * collaborators is a 503, not a silent skip.
+   */
+  private async resolveCoverPlan(
+    voucher: InputVoucherRecord,
+    plotId: string | undefined,
+    actor: ActorRef
+  ): Promise<VoucherCoverPlan | undefined> {
+    if (!this.flags || !this.riders) {
+      return undefined;
+    }
+    const enabled = await this.flags.isEnabled(VOUCHER_INSURANCE_RIDER_FLAG, {
+      userId: actor.id,
+      roles: [...actor.roles]
+    });
+    if (!enabled) {
+      return undefined;
+    }
+    const rider = await this.riders.findByProgrammeId(voucher.programmeId);
+    if (!rider || rider.status !== 'active') {
+      return undefined;
+    }
+    if (!this.covers || !this.insuranceProducts || !this.insurancePolicies || !this.plots) {
+      throw new ServiceUnavailableException(
+        'The programme insurance rider is active but the cover-binding persistence is not wired — refusing to redeem without binding'
+      );
+    }
+    const product = await this.insuranceProducts.findOne({ code: rider.productCode });
+    if (!product) {
+      throw new UnprocessableEntityException(
+        `RIDER_PRODUCT_UNKNOWN: the programme rider references insurance product '${rider.productCode}', which is not in the catalog`
+      );
+    }
+    if (!plotId?.trim()) {
+      throw new UnprocessableEntityException(
+        'PLOT_REQUIRED: this programme bundles parametric cover on the planted plot — pass plotId at redemption'
+      );
+    }
+    const plot = await this.plots.findById(plotId.trim());
+    if (!plot) {
+      throw new NotFoundException(`Plot '${plotId.trim()}' not found`);
+    }
+    if (plot.ownerUserId !== voucher.farmerId) {
+      throw new UnprocessableEntityException(
+        'PLOT_OWNER_MISMATCH: the cover plot must belong to the voucher farmer'
+      );
+    }
+    // Deterministic rate card (premium.ts): sum insured × rate × flood-band
+    // modifier. The flood band was captured at rider-definition time — the
+    // stub flood driver is never consulted on the redemption money path.
+    const { premiumKobo } = computePremiumKobo({
+      sumInsuredKobo: rider.sumInsuredKobo,
+      premiumRateBps: rider.premiumRateBps,
+      floodBand: rider.floodBand
+    });
+    if (premiumKobo <= 0 || premiumKobo >= voucher.amountKobo) {
+      throw new UnprocessableEntityException(
+        `PREMIUM_EXCEEDS_ENVELOPE: the bundled premium (${premiumKobo} kobo) is not covered by the voucher face value (${voucher.amountKobo} kobo)`
+      );
+    }
+    return {
+      rider,
+      productId: product.id,
+      season: product.trigger.season,
+      triggerMetric: product.trigger.metric,
+      plotId: plot.id,
+      premiumKobo,
+      insurerAccountCode: programmeInsurancePremiumAccountCode(voucher.programmeId)
+    };
+  }
+
+  /**
+   * Stage 27: binds the voucher cover exactly once per voucher. The cover
+   * row is inserted FIRST with a pre-generated policy id (UNIQUE voucher_id
+   * — a crash-resume or racing twin adopts the existing row), then the
+   * parametric policy is created under that id (23505 → adopt). The policy
+   * enters as 'active' (a bound cover) so the existing trigger-evaluation
+   * and payout path — including its production fail-closed gates — applies
+   * unchanged. cover_basis is stamped honestly from the configured weather
+   * provider ('stub' until the live provider gate opens).
+   */
+  private async bindVoucherCover(
+    voucher: InputVoucherRecord,
+    plan: VoucherCoverPlan
+  ): Promise<VoucherCoverRecord> {
+    const covers = this.covers as VoucherCoverRepository;
+    const policies = this.insurancePolicies as ParametricPolicyRepository;
+    return (this.telemetry ?? new TelemetryService()).withSpan(
+      'insurance.voucher_cover.bind',
+      { programme_id: voucher.programmeId, trigger_type: plan.triggerMetric },
+      async () => {
+        const now = new Date().toISOString();
+        let cover = await covers.findByVoucherId(voucher.id);
+        if (!cover) {
+          const coverBasis: 'stub' | 'live' =
+            createWeatherProvider(this.env).name === 'http' ? 'live' : 'stub';
+          try {
+            cover = await covers.create({
+              id: newId('ivcov'),
+              voucherId: voucher.id,
+              policyId: newId('inspol'),
+              programmeId: voucher.programmeId,
+              plotId: plan.plotId,
+              farmerId: voucher.farmerId,
+              premiumKobo: plan.premiumKobo,
+              coverBasis,
+              status: 'bound',
+              createdAt: now,
+              updatedAt: now
+            });
+          } catch (error) {
+            if (!(error instanceof ConflictException)) {
+              throw error;
+            }
+            // Twin won the UNIQUE voucher_id race — adopt its row.
+            cover = await covers.findByVoucherId(voucher.id);
+            if (!cover) {
+              throw error;
+            }
+          }
+        }
+        try {
+          await policies.create({
+            id: cover.policyId,
+            farmerUserId: voucher.farmerId,
+            plotId: cover.plotId,
+            productId: plan.productId,
+            productCode: plan.rider.productCode,
+            season: plan.season,
+            sumInsuredKobo: plan.rider.sumInsuredKobo,
+            premiumKobo: cover.premiumKobo,
+            floodBand: plan.rider.floodBand,
+            pricingBasis: cover.coverBasis,
+            status: 'active',
+            createdAt: now,
+            updatedAt: now
+          });
+        } catch (error) {
+          if (!(error instanceof ConflictException)) {
+            throw error;
+          }
+          // Policy already exists under the cover's pinned id (twin/resume).
+          const existing = await policies.findById(cover.policyId);
+          if (!existing) {
+            throw error;
+          }
+        }
+        return cover;
+      }
+    );
   }
 
   /**
@@ -1173,6 +1492,28 @@ export class InputVouchersService {
     const liabilityKobo = balance.creditsKobo - balance.debitsKobo;
     const expectedLiabilityKobo = programme.budgetKobo - redeemedKobo - releasedKobo;
     const funding = await this.funding.getFunding(programmeId);
+    // Stage 27 (Insurance-in-the-Bag): bundled-cover tie — the insurer
+    // premium payable balance must equal the sum of bound cover premiums
+    // (mirrors the liability tie above; non-zero discrepancy = breach).
+    let insurance: ProgrammeReconciliation['insurance'];
+    if (this.covers) {
+      const programmeCovers = await this.covers.find({ programmeId });
+      const premiumKobo = programmeCovers.reduce((acc, cover) => acc + cover.premiumKobo, 0);
+      const premiumAccount = programmeInsurancePremiumAccountCode(programmeId);
+      // Provision the account up-front so the balance read ties to zero for
+      // programmes that never bound a cover (same pattern as the liability
+      // account provisioning at programme creation).
+      await this.ledger.ensureAccount({ code: premiumAccount, type: 'liability' });
+      const premiumBalance = await this.ledger.balance(premiumAccount);
+      const premiumPayableKobo = premiumBalance.creditsKobo - premiumBalance.debitsKobo;
+      insurance = {
+        premiumPayableAccountCode: premiumAccount,
+        coversBound: programmeCovers.length,
+        premiumKobo,
+        premiumPayableKobo,
+        discrepancyKobo: premiumPayableKobo - premiumKobo
+      };
+    }
     return {
       programmeId,
       budgetKobo: programme.budgetKobo,
@@ -1197,6 +1538,7 @@ export class InputVouchersService {
         discrepancyKobo: liabilityKobo - expectedLiabilityKobo
       },
       funding: this.toFundingView(funding, programmeId),
+      ...(insurance ? { insurance } : {}),
       generatedAt: new Date().toISOString()
     };
   }
