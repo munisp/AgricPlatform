@@ -275,3 +275,8 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Stage 27 innovation "Float Sentinel": deterministic fraud/liquidity anomaly
+// engine — versioned rule registry, dedup-keyed alert queue, admin case queue
+// (fraud schema, migration 059). Detective control only; read-only on the ledger.
+export const FRAUD_SENTINEL_REPOSITORY = Symbol('FRAUD_SENTINEL_REPOSITORY');
