@@ -4700,7 +4700,7 @@ export function fetchVslaLoans(groupId: string): Promise<{ data: VslaLoan[] }> {
 
 export function issueVslaLoan(
   groupId: string,
-  input: { memberId: string; principalKobo: number; interestRateBps: number }
+  input: { memberId: string; principalKobo: number; interestRateBps: number; idempotencyKey: string }
 ): Promise<{ data: VslaLoan }> {
   return apiFetch(`/vsla-carbon/groups/${encodeURIComponent(groupId)}/loans`, {
     method: 'POST',
