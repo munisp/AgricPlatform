@@ -172,6 +172,15 @@ function dayBounds(date: string): { from: string; to: string } {
   return { from: `${date}T00:00:00.000Z`, to: `${date}T23:59:59.999Z` };
 }
 
+/**
+ * UTC business date for the daily cash-limit counter (YYYY-MM-DD) — the
+ * same UTC-day basis the pre-WP-G2 sum-based check used, so the cap window
+ * is unchanged; a new UTC day starts a fresh counter row.
+ */
+function currentBusinessDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function monthBounds(month: string): { from: string; to: string } {
   if (!/^\d{4}-\d{2}$/.test(month)) {
     throw new BadRequestException('month must be YYYY-MM');
@@ -511,13 +520,15 @@ export class AgentBankingService {
       }
       throw error; // fail-closed driver errors (e.g. live 503) propagate
     }
-    await this.assertWithinDailyLimit(agent, input.amountKobo);
-
     const walletCode = farmerWalletAccountCode(input.farmerId);
     await this.ledger.ensureAccount({ code: walletCode, type: 'asset', ownerId: input.farmerId });
     const txId = newId('agtx');
     // Double-entry through the ledger with the solvency guard on the account
-    // being drawn down — overdraft is impossible by construction.
+    // being drawn down — overdraft is impossible by construction. The daily
+    // cash cap (cash-in and cash-out share one cap) is enforced ATOMICALLY
+    // inside the same posting transaction via dailyLimitReservation (stage
+    // 27 WP-G2, audit A1-7): the counter increments only while
+    // used + amount <= cap, and rolls back with the posting on any failure.
     const entry = await this.ledger.postEntry(
       {
         idempotencyKey: `agent-tx:${input.idempotencyKey}`,
@@ -537,7 +548,13 @@ export class AgentBankingService {
                 { accountCode: agent.floatAccountCode, direction: 'debit', amountKobo: input.amountKobo },
                 { accountCode: walletCode, direction: 'credit', amountKobo: input.amountKobo }
               ],
-        requireSolventAccounts: [type === 'cash_in' ? agent.floatAccountCode : walletCode]
+        requireSolventAccounts: [type === 'cash_in' ? agent.floatAccountCode : walletCode],
+        dailyLimitReservation: {
+          agentId: agent.id,
+          businessDate: currentBusinessDate(),
+          amountKobo: input.amountKobo,
+          limitKobo: agent.dailyLimitKobo
+        }
       },
       actorId
     );
@@ -576,17 +593,13 @@ export class AgentBankingService {
     }
   }
 
-  private async assertWithinDailyLimit(agent: AgentRecord, amountKobo: number): Promise<void> {
-    const today = new Date().toISOString().slice(0, 10);
-    const { from, to } = dayBounds(today);
-    const todays = await this.transactions.find({ agentId: agent.id, from, to });
-    const used = todays.reduce((sum, tx) => sum + tx.amountKobo, 0);
-    if (used + amountKobo > agent.dailyLimitKobo) {
-      throw new BadRequestException(
-        `Agent daily limit exceeded: ${used + amountKobo} kobo would pass the ${agent.dailyLimitKobo} kobo daily limit`
-      );
-    }
-  }
+  /**
+   * (stage 27 WP-G2, audit A1-7) The former check-then-act daily-limit read
+   * (sum today's transaction rows, compare, then post) is gone: concurrent
+   * requests all observed the same pre-sum and all posted, breaching the
+   * cap. The cap is now enforced by the atomic `dailyLimitReservation`
+   * upsert inside the ledger posting transaction (see cashTransaction).
+   */
 
   /** Posts the commission accrual entry; returns the accrued kobo. */
   private async accrueCommission(
