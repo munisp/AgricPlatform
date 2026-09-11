@@ -1,7 +1,8 @@
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException
+  ForbiddenException,
+  ServiceUnavailableException
 } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { EquipmentListing, User } from '@agric-platform/shared';
@@ -277,6 +278,45 @@ describe('booking workflow + ledger hold/release (stub execution mode)', () => {
     );
     expect(holds).toHaveLength(1);
     expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(5_250_000);
+  });
+
+  it('fails closed with 503 in production: stub hold execution never posts a ledger lien (WP-G15)', async () => {
+    const previousEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const { service, ledger } = makeService();
+      const listing = await makeActiveListing(service);
+      const booking = await service.requestBooking(listing.id, bookingInput());
+      const quoted = await service.quoteBooking(booking.id, owner);
+      await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
+
+      await expect(service.confirmBooking(booking.id, farmer)).rejects.toBeInstanceOf(
+        ServiceUnavailableException
+      );
+      // Fail closed: NOTHING moved — booking stays 'quoted', no hold entry,
+      // holds account untouched, farmer wallet still fully funded.
+      expect((await service.getBooking(booking.id)).status).toBe('quoted');
+      const holds = (await ledger.listEntries({ referenceId: booking.id })).filter((entry) =>
+        entry.idempotencyKey.startsWith('mech-hold:')
+      );
+      expect(holds).toHaveLength(0);
+      expect((await ledger.balance(walletAccount(farmer.id))).balanceKobo).toBe(
+        quoted.quote!.totalKobo
+      );
+    } finally {
+      if (previousEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousEnv;
+    }
+
+    // Non-production behaviour is unchanged once the guard lifts.
+    const { service, ledger } = makeService();
+    const listing = await makeActiveListing(service);
+    const booking = await service.requestBooking(listing.id, bookingInput());
+    const quoted = await service.quoteBooking(booking.id, owner);
+    await fundWallet(ledger, farmer.id, quoted.quote!.totalKobo);
+    const confirmed = await service.confirmBooking(booking.id, farmer);
+    expect(confirmed.status).toBe('confirmed');
+    expect((await ledger.balance(MECH_HOLDS_ACCOUNT)).balanceKobo).toBe(quoted.quote!.totalKobo);
   });
 
   it('Stage 24 (audit A1-5): a zero-balance farmer cannot confirm — no negative wallet, owner never credited', async () => {
