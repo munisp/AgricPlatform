@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import type { AuditAnchor, PlatformMetric, User, UserRole } from '@agric-platform/shared';
 import { AuditAnchorService } from '../../core/audit-anchor.service.js';
 import { AuditService, type AuditVerification } from '../../core/audit.service.js';
@@ -13,6 +13,10 @@ import { assertNoSeedPlatformMetrics, composePlatformMetrics } from '../analytic
 import { ChaptersService } from '../chapters/chapters.service.js';
 import { CommunityService } from '../community/community.service.js';
 import { FinanceService } from '../finance/finance.service.js';
+import {
+  IntegrationsService,
+  type WebhookReprocessResult
+} from '../integrations/integrations.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { MarketplaceService } from '../marketplace/marketplace.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
@@ -49,6 +53,10 @@ export class AdminService {
     // (refused in production), never a fabricated live number.
     @Optional() private readonly chapters?: ChaptersService,
     @Optional() @Inject(CREDIT_PROFILE_REPOSITORY) private readonly creditProfiles?: CreditProfileRepository,
+    // Webhook crash-recovery reprocessor (audit C2). Optional only so bare
+    // unit-test constructions keep working; AdminModule imports
+    // IntegrationsModule at runtime.
+    @Optional() private readonly integrations?: IntegrationsService,
     // Stage 23: anchoring checkpoints. Optional so older tests/wiring keep
     // working; always provided in the deployed app via the global CoreModule.
     @Optional() private readonly auditAnchors?: AuditAnchorService
@@ -193,6 +201,21 @@ export class AdminService {
   /** Wave P: one outbox sweeper pass (retries + dead-lettering). */
   async sweepOutbox(): Promise<OutboxSweepResult> {
     return this.outboxSweeper.sweep();
+  }
+
+  /**
+   * Webhook crash-recovery sweep (audit C2): re-drives recorded provider
+   * webhooks whose processing never completed (dedupe insert succeeded but
+   * the side effects failed). Same external-scheduler pattern as the outbox
+   * sweep — POST /admin/webhooks/reprocess.
+   */
+  async reprocessWebhooks(): Promise<WebhookReprocessResult> {
+    if (!this.integrations) {
+      throw new ServiceUnavailableException(
+        'IntegrationsService is not wired into the admin module'
+      );
+    }
+    return this.integrations.reprocessUnprocessedWebhooks();
   }
 
   /** Wave P: dead-lettered outbox rows awaiting operator action. */
