@@ -39,6 +39,13 @@ export interface LedgerEntryRepository {
    * Persists a validated, balanced journal entry as one atomic unit: the
    * transfer row plus its ≥2 posting rows commit or roll back together.
    *
+   * WP-G13 (Stage 27, ledger hardening): implementations MUST re-assert the
+   * balance invariant at persistence time (Σ debits === Σ credits over ≥2
+   * postings), independent of the caller-side validation — the pg
+   * implementation checks finance.transfer_is_balanced() INSIDE the posting
+   * transaction so an unbalanced posting rolls back atomically; the
+   * in-memory implementation validates synchronously before storing.
+   *
    * `requireSolventAccounts` (funds-integrity wave): account codes whose
    * post-entry balance must stay non-negative; the check runs inside the
    * same transaction, so an underfunded posting rolls back atomically.
@@ -53,6 +60,14 @@ export interface LedgerEntryRepository {
   entriesForAccount(accountCode: string): Promise<LedgerJournalEntry[]>;
   /** Aggregated debit/credit totals (integer kobo) for an account. */
   balance(accountCode: string): Promise<LedgerBalance>;
+  /**
+   * Reconciliation primitive (WP-G13): committed journal entries whose
+   * postings fail the balance invariant (Σ debits !== Σ credits, or fewer
+   * than two postings). Always empty when every writer goes through
+   * postEntry — a non-empty result proves a writer bypassed the guarded
+   * posting path (direct SQL, corruption) and is a drift alert.
+   */
+  findUnbalancedEntries(): Promise<LedgerJournalEntry[]>;
 }
 
 export class InMemoryLedgerAccountRepository implements LedgerAccountRepository {
@@ -78,9 +93,51 @@ export class InMemoryLedgerAccountRepository implements LedgerAccountRepository 
   }
 }
 
+/**
+ * WP-G13 balance invariant, shared by the in-memory posting path and the
+ * drift detector: ≥2 postings, positive integer kobo amounts, known
+ * directions, Σ debits === Σ credits. Mirrors the SQL-side
+ * finance.transfer_is_balanced() (001_init.sql) plus its posting count.
+ */
+export function assertBalancedEntry(entry: LedgerJournalEntry): void {
+  const totals = entryBalanceTotals(entry);
+  if (totals.postingCount < 2) {
+    throw new BadRequestException(
+      `Unbalanced journal entry '${entry.id}': ${totals.postingCount} postings (minimum 2)`
+    );
+  }
+  if (totals.debitsKobo !== totals.creditsKobo) {
+    throw new BadRequestException(
+      `Unbalanced journal entry '${entry.id}': debits ${totals.debitsKobo} kobo != credits ${totals.creditsKobo} kobo`
+    );
+  }
+}
+
+/** Sums an entry's postings; throws on invalid amounts/directions. */
+function entryBalanceTotals(entry: LedgerJournalEntry): {
+  postingCount: number;
+  debitsKobo: number;
+  creditsKobo: number;
+} {
+  let debitsKobo = 0;
+  let creditsKobo = 0;
+  for (const posting of entry.postings) {
+    if (!Number.isSafeInteger(posting.amountKobo) || posting.amountKobo <= 0) {
+      throw new BadRequestException('Posting amounts must be positive integer kobo');
+    }
+    if (posting.direction === 'debit') {
+      debitsKobo += posting.amountKobo;
+    } else if (posting.direction === 'credit') {
+      creditsKobo += posting.amountKobo;
+    } else {
+      throw new BadRequestException(`Unknown posting direction '${posting.direction}'`);
+    }
+  }
+  return { postingCount: entry.postings.length, debitsKobo, creditsKobo };
+}
+
 export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
   private readonly items = new Map<string, LedgerJournalEntry>();
-
   async findById(id: string): Promise<LedgerJournalEntry | undefined> {
     return this.items.get(id);
   }
@@ -105,6 +162,10 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[]
   ): Promise<LedgerJournalEntry> {
+    // WP-G13: the same persistence-level balance assertion the pg posting
+    // enforces in-transaction via finance.transfer_is_balanced() — an
+    // unbalanced entry is refused BEFORE any state change (fail closed).
+    assertBalancedEntry(entry);
     // Mirror the pg UNIQUE constraint on idempotency_key (23505 → 409):
     // concurrent posts with the same key cannot both persist.
     for (const existing of this.items.values()) {
@@ -148,6 +209,17 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
       }
     }
     return { accountCode, debitsKobo, creditsKobo, balanceKobo: debitsKobo - creditsKobo };
+  }
+
+  async findUnbalancedEntries(): Promise<LedgerJournalEntry[]> {
+    return [...this.items.values()].filter((entry) => {
+      try {
+        assertBalancedEntry(entry);
+        return false;
+      } catch {
+        return true;
+      }
+    });
   }
 }
 

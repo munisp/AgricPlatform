@@ -85,6 +85,41 @@ const TRANSFER_SELECT = `SELECT t.id, t.idempotency_key, t.reference_type, t.ref
        t.description, t.reverses_transfer_id, t.posted_at
   FROM finance.ledger_transfers t`;
 
+/**
+ * In-transaction balance assertion (Stage 27, WP-G13 ledger hardening):
+ * re-checks the double-entry invariant AFTER this transaction's posting rows
+ * are inserted, via the same finance.transfer_is_balanced() function the
+ * reconciliation sweep uses (001_init.sql), plus the ≥2-postings minimum the
+ * function alone cannot express (an empty transfer balances trivially). A
+ * violation throws, so the caller's posting transaction ROLLS BACK the
+ * transfer row, every posting row and the outbox event atomically.
+ *
+ * This runs on the caller's transaction client, so every posting path that
+ * funnels through postEntry (standalone postings) or the caller-owned
+ * transaction bodies of in-flight PRs #67/#72 (postLedgerEntryTx /
+ * postEntryInTx — the multi-entry coop-pool settlement and VSLA folds) gets
+ * the same enforcement by calling this helper; when those PRs land, the
+ * assertion must move INTO the extracted posting body so no path bypasses it.
+ */
+export async function assertTransferBalancedTx(
+  client: Pick<pg.PoolClient, 'query'>,
+  transferId: string
+): Promise<void> {
+  const result = await client.query(
+    `SELECT finance.transfer_is_balanced($1) AS balanced,
+            (SELECT count(*) FROM finance.ledger_entries WHERE transfer_id = $1) AS posting_count`,
+    [transferId]
+  );
+  const row = result.rows[0] as { balanced?: boolean | null; posting_count?: unknown } | undefined;
+  const postingCount = num(row?.posting_count ?? 0);
+  if (row?.balanced !== true || postingCount < 2) {
+    throw new BadRequestException(
+      `Unbalanced journal entry '${transferId}' (${postingCount} postings): ` +
+        'Σ debits != Σ credits — the posting transaction rolls back'
+    );
+  }
+}
+
 export class PgLedgerEntryRepository implements LedgerEntryRepository {
   /** postEntry persists a passed outbox event in the posting transaction. */
   readonly transactionalOutbox = true;
@@ -210,6 +245,9 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
           [entry.id, account.rows[0].id, posting.direction, posting.amountKobo]
         );
       }
+      // WP-G13: mandatory in-transaction balance assertion — an unbalanced
+      // posting can never commit, regardless of which entry point posted it.
+      await assertTransferBalancedTx(client, entry.id);
       // Solvency guard (funds-integrity wave): protected accounts must stay
       // non-negative AFTER this entry. The balance is computed inside the
       // posting transaction with the account rows locked (above), so an
@@ -252,6 +290,23 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Reconciliation primitive (WP-G13): committed transfers failing
+   * finance.transfer_is_balanced() (or holding fewer than two postings).
+   * Always empty when every writer posts through postEntry; a non-empty
+   * result proves an unguarded writer (direct SQL/corruption) and is a
+   * drift alert.
+   */
+  async findUnbalancedEntries(): Promise<LedgerJournalEntry[]> {
+    const result = await this.pool.query(
+      `${TRANSFER_SELECT}
+        WHERE NOT finance.transfer_is_balanced(t.id)
+           OR (SELECT count(*) FROM finance.ledger_entries e WHERE e.transfer_id = t.id) < 2
+        ORDER BY t.posted_at, t.id`
+    );
+    return this.withPostings(result.rows as TransferRow[]);
   }
 
   async entriesForAccount(accountCode: string): Promise<LedgerJournalEntry[]> {
