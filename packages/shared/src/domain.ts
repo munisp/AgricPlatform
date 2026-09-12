@@ -22,7 +22,10 @@ export const USER_ROLES = [
   'agronomist',
   // Wave AGENTBANK: rural banking agent — runs a ledger-backed float for
   // farmer cash-in/cash-out and signed offline vouchers (migration 032).
-  'agent'
+  'agent',
+  // Stage 27 innovation #19: supervisor — samples answer quality on the
+  // agronomist SLA console queue (voice.escalation_cases, migration 078).
+  'supervisor'
 ] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
@@ -134,8 +137,8 @@ export interface Course {
 
 export interface Enrolment {
   id: string;
-  courseId: string;
   userId: string;
+  courseId: string;
   progressPercent: number;
   status: 'enrolled' | 'in_progress' | 'completed';
   enrolledAt: string;
@@ -208,7 +211,6 @@ export interface Chapter {
 
 export interface ChapterEvent {
   id: string;
-  chapterId: string;
   title: string;
   type: 'meeting' | 'training' | 'field_visit' | 'programme';
   startsAt: string;

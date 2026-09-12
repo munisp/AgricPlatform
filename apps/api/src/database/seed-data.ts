@@ -255,6 +255,19 @@ export const seedUsers: User[] = [
     isVerified: true,
     createdAt: '2025-10-01T09:00:00.000Z',
     lastActiveAt: NOW
+  },
+  // Stage 27 innovation #19 persona (appended): supervisor who samples
+  // answer quality on the agronomist SLA console queue (migration 078).
+  {
+    id: 'user-supervisor',
+    phone: '+2348010000015',
+    fullName: 'Console Supervisor',
+    roles: ['supervisor'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_2',
+    isVerified: true,
+    createdAt: '2025-10-01T09:00:00.000Z',
+    lastActiveAt: NOW
   }
 ];
 

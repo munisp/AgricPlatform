@@ -275,3 +275,8 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Stage 27 innovation #19 (additive): agronomist SLA console — operated
+// escalation queue mirroring voice agent cases into voice.escalation_cases
+// (migration 078) with business-hours SLAs, CAS claim, honest answer
+// delivery and supervisor quality sampling.
+export const ESCALATION_CASE_REPOSITORY = Symbol('ESCALATION_CASE_REPOSITORY');
