@@ -11,6 +11,7 @@ import {
 import type { EscrowPayout, EscrowRecord, EscrowStatus, PaymentProviderPort, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -24,6 +25,7 @@ import {
   claimPayoutAttempt,
   finalizePayoutAttempt,
   hashPayoutPayload,
+  revalidatePayoutClaimLease,
   type EscrowPayoutRepository
 } from '../../database/repositories/payout.repository.js';
 import { LedgerService } from '../finance/ledger.service.js';
@@ -91,6 +93,14 @@ export const ESCROW_TRANSITIONS: Readonly<
     released: [],
     refunded: []
   },
+  // Stage 27 (Innovation 9): entered ONLY by the geo-sealed attestation path
+  // (markDeliveredPendingConfirm) — it is deliberately absent from `held`'s
+  // map so the party-driven transition() API can never request it. The buyer
+  // may confirm early (released); the confirm-window sweep auto-releases once
+  // the deadline passes.
+  delivered_pending_confirm: {
+    released: ['buyer']
+  },
   released: {},
   refunded: {}
 };
@@ -100,6 +110,13 @@ const PENDING_STATUSES: ReadonlySet<EscrowStatus> = new Set(['releasing', 'refun
 
 /** Default escrow hold lifetime before the deterministic auto-refund path. */
 export const ESCROW_HOLD_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+/**
+ * Stage 27 (Innovation 9): confirm window after a geo-verified delivery
+ * attestation before the confirm sweep auto-releases the escrow. A
+ * manual-basis attestation gets NO window (buyer confirm required by policy).
+ */
+export const DELIVERY_CONFIRM_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
 
 @Injectable()
 export class EscrowService {
@@ -111,6 +128,7 @@ export class EscrowService {
     @Optional() @Inject(ESCROW_PAYOUT_DRIVER) private readonly payoutDriver?: EscrowPayoutDriverPort,
     @Optional() @Inject(ESCROW_PAYOUT_REPOSITORY) private readonly payouts?: EscrowPayoutRepository,
     @Optional() private readonly audit?: AuditService,
+    @Optional() private readonly telemetry?: TelemetryService,
     /**
      * WP-G13 (Stage 27, ledger hardening): when wired (always in the Nest
      * module graph), every hold and money-out transition also posts its
@@ -240,7 +258,11 @@ export class EscrowService {
    *      time; an already-succeeded attempt replays without any driver
    *      call; the same key with a different payload is a 409 (the repo's
    *      idempotency contract).
-   *   4. The driver is called by the claim holder only; the guarded
+   *   4. Immediately BEFORE the driver call the claimant CAS-revalidates the
+   *      lease (WP-G12): a claimant that stalled past the claim lease between
+   *      steps 3 and 4 may have lost the lease to a crash-recovery re-claim;
+   *      it backs off instead of driving the same payout a second time.
+   *   5. The driver is called by the claim holder only; the guarded
    *      finalize can never regress 'succeeded' to 'failed'. A driver
    *      failure leaves the escrow in the pending state and the attempt
    *      marked 'failed' so a retry re-claims and converges instead of
@@ -304,19 +326,29 @@ export class EscrowService {
       // before the terminal write: never pay twice.
       return current;
     }
+    // WP-G12 (lease-expiry double-drive fix): CAS-claim the lease AGAIN
+    // immediately before invoking the driver. A claimant that stalled past
+    // PAYOUT_CLAIM_LEASE_MS between the claim and this point may have lost
+    // the lease to a retry's crash-recovery re-claim; without this check it
+    // would wake up and drive the same payout a second time. The loser backs
+    // off (adopting a succeeded twin, or surfacing 409 for a safe retry).
+    const revalidation = await revalidatePayoutClaimLease(this.payouts, claim.attempt);
+    if (!revalidation.held) {
+      return current;
+    }
     try {
       const result = await this.payoutDriver.payout({
         ...payload,
         idempotencyKey,
         depositProviderReference: record.providerReference
       });
-      await finalizePayoutAttempt(this.payouts, claim.attempt, {
+      await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
         status: 'succeeded',
         providerReference: result.providerReference
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const finalized = await finalizePayoutAttempt(this.payouts, claim.attempt, {
+      const finalized = await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
         status: 'failed',
         failureReason: message
       });
@@ -602,6 +634,120 @@ export class EscrowService {
     return expired;
   }
 
+  /**
+   * Stage 27 (Innovation 9): opt this escrow into geo-sealed delivery by
+   * pinning the agreed drop point. The res-9 H3 cell is computed SERVER-SIDE
+   * (by DeliveryAttestationService) from buyer-supplied coordinates — callers
+   * never supply the cell. Buyer-driven, only while 'held' (before any
+   * delivery attestation); the guarded write rejects a concurrent transition
+   * instead of overwriting it.
+   */
+  async setDeliveryPoint(
+    orderId: string,
+    deliveryPointH3: string,
+    radiusCells: number,
+    actorId: string
+  ): Promise<EscrowRecord> {
+    const record = await this.escrowForOrder(orderId);
+    if (!record) {
+      throw new BadRequestException(
+        `Order ${orderId} has no escrow record; geo-sealed delivery requires an escrowed order`
+      );
+    }
+    if (record.status !== 'held') {
+      throw new ConflictException(
+        `Escrow ${record.id} is '${record.status}'; the delivery point can only be set while 'held'`
+      );
+    }
+    if (!Number.isInteger(radiusCells) || radiusCells < 0 || radiusCells > 10) {
+      throw new BadRequestException('geofence radius must be an integer between 0 and 10 cells');
+    }
+    const updated = await this.escrows.updateExpected(
+      record.id,
+      { deliveryPointH3, geofenceRadiusCells: radiusCells },
+      { status: 'held' }
+    );
+    await this.audit?.record({
+      actorId,
+      action: 'marketplace.escrow.delivery_point_set',
+      entityType: 'escrow_record',
+      entityId: record.id,
+      // The H3 cell — never raw coordinates — is the audit-grade location.
+      metadata: { orderId, deliveryPointH3, geofenceRadiusCells: radiusCells }
+    });
+    return updated;
+  }
+
+  /**
+   * Stage 27 (Innovation 9): the ONLY entry into 'delivered_pending_confirm'
+   * — invoked by the geo-sealed attestation path AFTER the server recomputed
+   * containment and found the attestation in-geofence. CAS-guarded from
+   * 'held': a concurrent admin refund (or any other transition) wins or loses
+   * outright — exactly one outcome, never a silent overwrite.
+   *
+   * `confirmWindowMs` sets the auto-release deadline; when omitted (manual
+   * device basis) deliveryConfirmUntil stays NULL and policy requires an
+   * explicit buyer confirm — the sweep never auto-releases manual-only
+   * deliveries.
+   */
+  async markDeliveredPendingConfirm(
+    id: string,
+    actorId: string,
+    confirmWindowMs?: number
+  ): Promise<EscrowRecord> {
+    const record = await this.escrows.getById(id);
+    if (record.status === 'delivered_pending_confirm') {
+      return record; // idempotent replay of a retried attestation
+    }
+    if (record.status !== 'held') {
+      throw new ConflictException(
+        `Escrow ${id} is '${record.status}'; delivery attestation requires 'held'`
+      );
+    }
+    const deliveryConfirmUntil =
+      confirmWindowMs === undefined
+        ? undefined
+        : new Date(Date.now() + confirmWindowMs).toISOString();
+    return this.persistTransition(record, 'delivered_pending_confirm', actorId, {
+      deliveryConfirmUntil
+    });
+  }
+
+  /**
+   * Stage 27 (Innovation 9): deterministic confirm-window sweep — every
+   * 'delivered_pending_confirm' escrow whose deadline has passed is released
+   * through the SAME guarded transition machinery as the expiry path
+   * (verify-before-credit, payout rail, CAS). Distinct from
+   * expireHeldEscrows: existing held_until expiry semantics are unchanged.
+   * Safe to run repeatedly and concurrently — each record moves exactly once;
+   * races against manual transitions surface as conflicts and are skipped.
+   * Records with no deadline (manual-basis attestations) are skipped.
+   */
+  async releaseDeliveredEscrows(now: string = new Date().toISOString()): Promise<EscrowRecord[]> {
+    const pending = await this.escrows.find({ status: 'delivered_pending_confirm' });
+    const released: EscrowRecord[] = [];
+    for (const record of pending) {
+      if (!record.deliveryConfirmUntil || record.deliveryConfirmUntil > now) {
+        continue;
+      }
+      try {
+        released.push(await this.applyTransition(record, 'released', 'system'));
+        this.telemetry?.increment('marketplace.escrow_auto_releases_total');
+        await this.events.publish(
+          'marketplace.escrow.auto_released',
+          { escrowId: record.id, orderId: record.orderId },
+          'system'
+        );
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+        // A concurrent transition won; the record no longer awaits confirm.
+      }
+    }
+    return released;
+  }
+
   private async applyTransition(
     record: EscrowRecord,
     status: EscrowStatus,
@@ -705,7 +851,8 @@ export class EscrowService {
   private async persistTransition(
     record: EscrowRecord,
     status: EscrowStatus,
-    actorId: string
+    actorId: string,
+    extra?: Partial<EscrowRecord>
   ): Promise<EscrowRecord> {
     const terminal = status === 'released' || status === 'refunded';
     const event = this.events.build(
@@ -715,7 +862,7 @@ export class EscrowService {
     );
     const updated = await this.escrows.updateExpected(
       record.id,
-      { status, resolvedAt: terminal ? new Date().toISOString() : undefined },
+      { status, resolvedAt: terminal ? new Date().toISOString() : undefined, ...extra },
       { status: record.status },
       event
     );
