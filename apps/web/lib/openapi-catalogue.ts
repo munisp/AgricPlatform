@@ -129,6 +129,26 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/traceability/dds/{id}",
+        "summary": "Fetch a DDS package with its checklist. Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/traceability/dds/{id}/export",
+        "summary": "Export the deterministic hash-manifested DDS package (JSON + evidence annex). Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/traceability/shipments/{id}/dds",
         "summary": "Fetch the EUDR due-diligence statement JSON for a shipment. Scope: traceability:read.",
         "auth": "client-credentials",
@@ -187,11 +207,31 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "POST",
+        "path": "/api/v1/partner/traceability/dds/{id}/validate",
+        "summary": "Run the DDS validation checklist. Scope: traceability:dds. Failures stay draft; never auto-passed.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
+        ],
+        "response": "{ 201 }"
+      },
+      {
+        "method": "POST",
         "path": "/api/v1/partner/traceability/shipments",
         "summary": "Create a shipment from commodity lots (exporter). Scope: traceability:write.",
         "auth": "client-credentials",
         "scopes": [
           "traceability:write"
+        ],
+        "response": "{ 201 }"
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/partner/traceability/shipments/{id}/dds",
+        "summary": "Create a draft DDS package for a partner shipment. Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
         ],
         "response": "{ 201 }"
       }
