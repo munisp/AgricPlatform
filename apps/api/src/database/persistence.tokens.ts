@@ -293,3 +293,8 @@ export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITO
 // engine — versioned rule registry, dedup-keyed alert queue, admin case queue
 // (fraud schema, migration 059). Detective control only; read-only on the ledger.
 export const FRAUD_SENTINEL_REPOSITORY = Symbol('FRAUD_SENTINEL_REPOSITORY');
+
+// Stage 27 Batch 1 (innovation 4): Planting-Window Pulse — per-plot advisory
+// subscriptions + dispatch log (advisory schema, migration 058). No money
+// movement; operational records with basis honesty labelling only.
+export const ADVISORY_PULSE_REPOSITORY = Symbol('ADVISORY_PULSE_REPOSITORY');
