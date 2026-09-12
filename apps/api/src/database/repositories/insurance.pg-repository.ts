@@ -574,7 +574,6 @@ export class PgVoucherProgrammeRiderRepository implements VoucherProgrammeRiderR
         record.premiumRateBps,
         record.floodBand,
         record.status,
-        record.createdBy,
         record.updatedAt
       ]
     );
