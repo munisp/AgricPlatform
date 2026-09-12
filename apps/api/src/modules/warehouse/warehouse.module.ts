@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { FinanceModule } from '../finance/finance.module.js';
 import { GeoModule } from '../geo/geo.module.js';
+import { IntegrationsModule } from '../integrations/integrations.module.js';
 import {
   WAREHOUSE_CERTIFICATION_FEED,
   createCertificationFeed
@@ -8,6 +10,8 @@ import {
   COLLATERAL_REGISTRY,
   createCollateralRegistry
 } from './collateral-registry.driver.js';
+import { LtvGuardianController } from './ltv-guardian.controller.js';
+import { LtvGuardianService } from './ltv-guardian.service.js';
 import { WarehouseController } from './warehouse.controller.js';
 import { WarehouseService } from './warehouse.service.js';
 
@@ -19,15 +23,23 @@ import { WarehouseService } from './warehouse.service.js';
  * are operational records only. Both external ports (warehouse-operator
  * certification feed, collateral registry) are STUB-first and fail closed
  * in live mode (see docs/warehouse-receipts.md for the external gates).
+ *
+ * Stage 27 / Innovation 8 (migration 066): the Receipt LTV Guardian
+ * (LtvGuardianService + LtvGuardianController) monitors pledged receipts as
+ * live collateral positions. It reads outstanding balances from the finance
+ * ledger (FinanceModule) and prices through the fail-closed commodity-price
+ * provider port (IntegrationsModule); the whole surface is behind the
+ * `whr-ltv-guardian` feature flag (default OFF).
  */
 @Module({
-  imports: [GeoModule],
-  controllers: [WarehouseController],
+  imports: [GeoModule, FinanceModule, IntegrationsModule],
+  controllers: [WarehouseController, LtvGuardianController],
   providers: [
     WarehouseService,
+    LtvGuardianService,
     { provide: WAREHOUSE_CERTIFICATION_FEED, useFactory: () => createCertificationFeed(process.env) },
     { provide: COLLATERAL_REGISTRY, useFactory: () => createCollateralRegistry(process.env) }
   ],
-  exports: [WarehouseService]
+  exports: [WarehouseService, LtvGuardianService]
 })
 export class WarehouseModule {}
