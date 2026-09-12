@@ -1,15 +1,20 @@
 import 'reflect-metadata';
 import type { ExecutionContext } from '@nestjs/common';
-import { UnauthorizedException } from '@nestjs/common';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { describe, expect, it } from 'vitest';
 import type { UserRole } from '@agric-platform/shared';
 import { ROLES_KEY } from '../common/auth/roles.decorator.js';
 import { RolesGuard } from '../common/auth/roles.guard.js';
 import { OidcService } from '../common/auth/oidc.service.js';
+import { TelemetryService } from '../common/telemetry/telemetry.service.js';
 import { createInMemoryUserRepository } from '../database/repositories/user.repository.js';
+import type { IntegrationsService } from '../modules/integrations/integrations.service.js';
 import { UsersService } from '../modules/users/users.service.js';
+import type { DependencyIndicator } from './dependency-indicator.js';
 import { HealthController } from './health.controller.js';
+import type { InfraDriverProbe, StatusedDriver } from './infra-driver-registry.js';
+import type { ModuleHealthService } from './module-health.service.js';
 
 /**
  * G14: /health/modules exposes the internal module/dependency matrix and
@@ -68,6 +73,184 @@ describe('HealthController access control (G14)', () => {
   });
 });
 
+/**
+ * WP-G10: /health/ready degraded-not-down aggregation. Optional infra
+ * drivers (event-bus, orchestrator, authz) degrade the response payload
+ * without failing it; only REQUIRED dependencies (postgres, redis) fail
+ * the probe with 503; stub/unconfigured drivers report 'disabled'.
+ */
+function readyController(options: {
+  dependencies?: DependencyIndicator[];
+  probes?: InfraDriverProbe[];
+  integrationsHealthy?: boolean;
+}): HealthController {
+  const integrations = {
+    list: () => [
+      {
+        provider: 'termii',
+        capability: 'sms',
+        driver: 'stub' as const,
+        configured: false,
+        healthy: options.integrationsHealthy ?? true,
+        notes: 'stub driver'
+      }
+    ]
+  };
+  return new HealthController(
+    integrations as unknown as IntegrationsService,
+    {} as ModuleHealthService,
+    new TelemetryService(),
+    options.dependencies ?? [],
+    null, // pgPool (WP-G7 ctor param; the WP-G10 aggregation tests do not exercise it)
+    options.probes ?? []
+  );
+}
+
+function fakeDriver(
+  name: string,
+  status: Record<string, unknown>
+): StatusedDriver {
+  return {
+    name,
+    status: () => Promise.resolve(status as never)
+  };
+}
+
+function failingPg(): DependencyIndicator {
+  return {
+    name: 'database',
+    configured: () => true,
+    check: () => Promise.reject(new Error('connection refused'))
+  };
+}
+
+describe('HealthController /health/ready aggregation (WP-G10)', () => {
+  it('returns degraded-not-down (resolves) with a degraded optional driver listed', async () => {
+    const controller = readyController({
+      probes: [
+        {
+          port: 'event-bus',
+          driver: fakeDriver('kafka', {
+            configured: true,
+            healthy: false,
+            circuitBreaker: 'open',
+            lastErrorClass: 'network',
+            lastSuccessAt: null,
+            detail: 'Kafka producer connected but circuit open after 3 consecutive failures.'
+          })
+        }
+      ]
+    });
+    const report = await controller.ready();
+    expect(report.status).toBe('degraded');
+    expect(report.drivers).toHaveLength(1);
+    expect(report.drivers[0]).toMatchObject({
+      port: 'event-bus',
+      driver: 'kafka',
+      enabled: true,
+      state: 'degraded',
+      circuitBreaker: 'open',
+      lastErrorClass: 'network'
+    });
+    expect(report.degraded).toHaveLength(1);
+    expect(report.degraded[0].name).toBe('event-bus');
+    expect(report.degraded[0].reason).toContain('circuit open');
+  });
+
+  it('fails with 503 when a REQUIRED dependency (postgres) is down', async () => {
+    const controller = readyController({ dependencies: [failingPg()] });
+    const failure = await controller.ready().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ServiceUnavailableException);
+    expect((failure as ServiceUnavailableException).getStatus()).toBe(503);
+    expect((failure as ServiceUnavailableException).message).toContain('database');
+  });
+
+  it('does not fail when postgres is unconfigured (skipped → disabled)', async () => {
+    const controller = readyController({
+      dependencies: [
+        { name: 'database', configured: () => false, check: () => Promise.reject(new Error('never')) },
+        { name: 'redis', configured: () => false, check: () => Promise.reject(new Error('never')) }
+      ]
+    });
+    const report = await controller.ready();
+    expect(report.status).toBe('ok');
+    expect(report.persistence).toEqual({ database: 'disabled', redis: 'disabled' });
+    expect(report.degraded).toEqual([]);
+  });
+
+  it('reports a stub (disabled) driver as disabled, not down or degraded', async () => {
+    const controller = readyController({
+      probes: [
+        {
+          port: 'orchestrator',
+          driver: fakeDriver('stub', {
+            configured: true,
+            healthy: true,
+            detail: 'Stub driver: direct in-process invocation.'
+          })
+        }
+      ]
+    });
+    const report = await controller.ready();
+    expect(report.status).toBe('ok');
+    expect(report.drivers[0]).toMatchObject({
+      port: 'orchestrator',
+      driver: 'stub',
+      enabled: false,
+      state: 'disabled'
+    });
+    expect(report.degraded).toEqual([]);
+  });
+
+  it('treats a lazy (never-connected, no failures) live driver as ok, not degraded', async () => {
+    const controller = readyController({
+      probes: [
+        {
+          port: 'orchestrator',
+          driver: fakeDriver('temporal', {
+            configured: true,
+            healthy: false,
+            circuitBreaker: 'closed',
+            lastErrorClass: null,
+            lastSuccessAt: null,
+            detail: 'Temporal driver selected; connects on first workflow start.'
+          })
+        }
+      ]
+    });
+    const report = await controller.ready();
+    expect(report.status).toBe('ok');
+    expect(report.drivers[0].state).toBe('ok');
+    expect(report.degraded).toEqual([]);
+  });
+
+  it('keeps the endpoint up when a driver status probe itself throws', async () => {
+    const controller = readyController({
+      probes: [
+        {
+          port: 'authz',
+          driver: {
+            name: 'permify',
+            status: () => Promise.reject(new Error('status boom'))
+          }
+        }
+      ]
+    });
+    const report = await controller.ready();
+    expect(report.status).toBe('degraded');
+    expect(report.drivers[0].state).toBe('degraded');
+    expect(report.drivers[0].lastErrorClass).toBe('internal');
+    expect(report.degraded.map((entry) => entry.name)).toContain('authz');
+  });
+
+  it('lists unhealthy integrations in degraded[] without failing', async () => {
+    const controller = readyController({ integrationsHealthy: false });
+    const report = await controller.ready();
+    expect(report.status).toBe('degraded');
+    expect(report.degraded.map((entry) => entry.name)).toContain('integration:termii');
+  });
+});
+
 describe('HealthController.ready (WP-G7 pool stats, WP-G8 temporal readiness)', () => {
   function controller(overrides: {
     integrationsHealthy?: boolean;
@@ -81,6 +264,7 @@ describe('HealthController.ready (WP-G7 pool stats, WP-G8 temporal readiness)', 
     return new HealthController(
       integrations as never,
       moduleHealth as never,
+      new TelemetryService(),
       overrides.dependencies ?? [],
       (overrides.pgPool ?? null) as never
     );

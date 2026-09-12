@@ -1,6 +1,15 @@
 import { Module } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 import type pg from 'pg';
+import {
+  AUTHORIZATION_CHECK,
+  type AuthorizationCheck
+} from '../common/auth/authorization-check.driver.js';
+import {
+  WORKFLOW_ORCHESTRATOR,
+  type WorkflowOrchestrator
+} from '../common/orchestration/workflow-orchestrator.driver.js';
+import { EVENT_BUS, type EventBus } from '../core/events/event-bus.driver.js';
 import { PG_POOL, REDIS_CLIENT } from '../database/persistence.tokens.js';
 import { IntegrationsModule } from '../modules/integrations/integrations.module.js';
 import {
@@ -12,6 +21,13 @@ import {
 import { TemporalWorkerIndicator } from './temporal-worker.indicator.js';
 import { HealthController } from './health.controller.js';
 import { ModuleHealthService } from './module-health.service.js';
+import {
+  authzProbe,
+  eventBusProbe,
+  INFRA_DRIVER_PROBES,
+  orchestratorProbe,
+  type InfraDriverProbe
+} from './infra-driver-registry.js';
 
 /**
  * Health/readiness endpoints (observability plan §A.5). The persistence
@@ -21,6 +37,11 @@ import { ModuleHealthService } from './module-health.service.js';
  * only configured when WORKFLOW_DRIVER=temporal — it then degrades
  * readiness unless a worker is actually polling the task queue; with the
  * default stub driver it reports 'skipped' and changes nothing.
+ *
+ * Stage 27 (WP-G10): the infra-driver registry binds the globally-provided
+ * middleware drivers (event bus, workflow orchestrator, authorization
+ * check — CoreModule is @Global) so /health/ready can list them with
+ * degraded-not-down semantics.
  */
 @Module({
   imports: [IntegrationsModule],
@@ -37,6 +58,24 @@ import { ModuleHealthService } from './module-health.service.js';
       inject: [
         { token: PG_POOL, optional: true },
         { token: REDIS_CLIENT, optional: true }
+      ]
+    },
+    {
+      provide: INFRA_DRIVER_PROBES,
+      useFactory: (
+        eventBus: EventBus | undefined,
+        orchestrator: WorkflowOrchestrator | undefined,
+        authz: AuthorizationCheck | undefined
+      ): InfraDriverProbe[] =>
+        [
+          eventBus ? eventBusProbe(eventBus) : undefined,
+          orchestrator ? orchestratorProbe(orchestrator) : undefined,
+          authz ? authzProbe(authz) : undefined
+        ].filter((probe): probe is InfraDriverProbe => probe !== undefined),
+      inject: [
+        { token: EVENT_BUS, optional: true },
+        { token: WORKFLOW_ORCHESTRATOR, optional: true },
+        { token: AUTHORIZATION_CHECK, optional: true }
       ]
     }
   ]
