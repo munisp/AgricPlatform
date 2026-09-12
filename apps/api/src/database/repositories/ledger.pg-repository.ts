@@ -12,6 +12,7 @@ import { creditScoreMapper } from '../pg/row-mappers.js';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { CreditScoreRepository } from './credit-score.repository.js';
 import type {
+  DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
   LedgerEntryRepository,
@@ -85,6 +86,130 @@ interface TransferRow extends Record<string, unknown> {
 const TRANSFER_SELECT = `SELECT t.id, t.idempotency_key, t.reference_type, t.reference_id,
        t.description, t.reverses_transfer_id, t.posted_at
   FROM finance.ledger_transfers t`;
+
+/**
+ * Transaction-body of a journal posting (Stage 27: extracted so the
+ * coop-pool settlement can commit its exactly-once marker + the split
+ * transfer + member credit postings in ONE database transaction instead of
+ * a separate posting transaction). Callers must hold BEGIN/COMMIT; this
+ * runs the identical SQL the standalone postEntry path uses: idempotency
+ * key UNIQUE insert (23505 → 409 via mapPgError), account-code resolution,
+ * solvency guard, and the optional same-transaction outbox append.
+ */
+export async function postLedgerEntryTx(
+  client: pg.PoolClient,
+  entry: LedgerJournalEntry,
+  requireSolventAccounts?: readonly string[],
+  outboxEvent?: DomainEvent,
+  dailyLimitReservation?: DailyLimitReservation
+): Promise<void> {
+  // Lock the solvency-protected account rows up front (sorted, to keep a
+  // single global lock order) so concurrent postings touching them
+  // serialise and the balance check below cannot race.
+  for (const accountCode of [...(requireSolventAccounts ?? [])].sort()) {
+    await client.query(
+      `SELECT id FROM finance.ledger_accounts WHERE code = $1 FOR UPDATE`,
+      [accountCode]
+    );
+  }
+  // Daily-limit reservation (stage 27 WP-G2, audit A1-7): ONE atomic
+  // conditional upsert replaces the old check-then-act sum. Concurrent
+  // same-day requests for an agent serialise on the counter row's
+  // primary-key lock; the loser re-evaluates the WHERE against the
+  // winner's committed value, so the cap can never be exceeded. No row
+  // returned means the reservation would breach the cap — the whole
+  // posting (transfer + postings + reservation) rolls back. Likewise a
+  // posting failure after this point rolls the reservation back with it.
+  if (dailyLimitReservation) {
+    const reserved = await client.query(
+      `INSERT INTO agent_banking.agent_daily_limits (agent_id, business_date, used_amount_kobo)
+       SELECT $1, $2::date, $3::bigint
+       WHERE $3::bigint <= $4::bigint
+       ON CONFLICT (agent_id, business_date) DO UPDATE
+         SET used_amount_kobo = agent_daily_limits.used_amount_kobo + EXCLUDED.used_amount_kobo,
+             updated_at = now()
+         WHERE agent_daily_limits.used_amount_kobo + EXCLUDED.used_amount_kobo <= $4::bigint
+       RETURNING used_amount_kobo`,
+      [
+        dailyLimitReservation.agentId,
+        dailyLimitReservation.businessDate,
+        dailyLimitReservation.amountKobo,
+        dailyLimitReservation.limitKobo
+      ]
+    );
+    if (reserved.rows.length === 0) {
+      throw new BadRequestException(
+        `Agent daily limit exceeded: ${dailyLimitReservation.amountKobo} kobo would pass the ${dailyLimitReservation.limitKobo} kobo daily limit`
+      );
+    }
+  }
+  try {
+    await client.query(
+      `INSERT INTO finance.ledger_transfers
+         (id, idempotency_key, reference_type, reference_id, description, reverses_transfer_id, posted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        entry.id,
+        entry.idempotencyKey,
+        entry.referenceType ?? null,
+        entry.referenceId ?? null,
+        entry.description ?? null,
+        entry.reversesEntryId ?? null,
+        entry.postedAt
+      ]
+    );
+  } catch (error) {
+    mapPgError(error);
+  }
+  for (const posting of entry.postings) {
+    const account = await client.query(
+      `SELECT id FROM finance.ledger_accounts WHERE code = $1`,
+      [posting.accountCode]
+    );
+    if (!account.rows[0]) {
+      throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+    }
+    await client.query(
+      `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
+       VALUES ($1, $2, $3, $4)`,
+      [entry.id, account.rows[0].id, posting.direction, posting.amountKobo]
+    );
+  }
+  // Solvency guard (funds-integrity wave): protected accounts must stay
+  // non-negative AFTER this entry. The balance is computed inside the
+  // posting transaction with the account rows locked (above), so an
+  // underfunded disbursement rolls the whole entry back atomically.
+  for (const accountCode of requireSolventAccounts ?? []) {
+    const balance = await client.query(
+      `SELECT
+         COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
+         COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
+       FROM finance.ledger_entries e
+       JOIN finance.ledger_accounts a ON a.id = e.account_id
+       WHERE a.code = $1`,
+      [accountCode]
+    );
+    const balanceKobo = num(balance.rows[0]?.debits ?? 0) - num(balance.rows[0]?.credits ?? 0);
+    if (balanceKobo < 0) {
+      throw new BadRequestException(
+        `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
+      );
+    }
+  }
+  if (outboxEvent) {
+    await client.query(
+      `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        outboxEvent.id,
+        outboxEvent.name,
+        JSON.stringify(outboxEvent.payload ?? {}),
+        outboxEvent.actorId ?? null,
+        outboxEvent.occurredAt
+      ]
+    );
+  }
+}
 
 export class PgLedgerEntryRepository implements LedgerEntryRepository {
   /** postEntry persists a passed outbox event in the posting transaction. */
@@ -165,12 +290,13 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
   async postEntry(
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
-    outboxEvent?: DomainEvent
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
   ): Promise<LedgerJournalEntry> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent);
+      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation);
       await client.query('COMMIT');
       return posted;
     } catch (error) {
@@ -193,82 +319,21 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     tx: LedgerPostingTx,
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
-    outboxEvent?: DomainEvent
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
   ): Promise<LedgerJournalEntry> {
-    // Lock the solvency-protected account rows up front (sorted, to keep a
-    // single global lock order) so concurrent postings touching them
-    // serialise and the balance check below cannot race.
-    for (const accountCode of [...(requireSolventAccounts ?? [])].sort()) {
-      await tx.query(`SELECT id FROM finance.ledger_accounts WHERE code = $1 FOR UPDATE`, [
-        accountCode
-      ]);
-    }
-    try {
-      await tx.query(
-        `INSERT INTO finance.ledger_transfers
-           (id, idempotency_key, reference_type, reference_id, description, reverses_transfer_id, posted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          entry.id,
-          entry.idempotencyKey,
-          entry.referenceType ?? null,
-          entry.referenceId ?? null,
-          entry.description ?? null,
-          entry.reversesEntryId ?? null,
-          entry.postedAt
-        ]
-      );
-    } catch (error) {
-      mapPgError(error);
-    }
-    for (const posting of entry.postings) {
-      const account = await tx.query(`SELECT id FROM finance.ledger_accounts WHERE code = $1`, [
-        posting.accountCode
-      ]);
-      if (!account.rows[0]) {
-        throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
-      }
-      await tx.query(
-        `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
-         VALUES ($1, $2, $3, $4)`,
-        [entry.id, (account.rows[0] as { id: string }).id, posting.direction, posting.amountKobo]
-      );
-    }
-    // Solvency guard (funds-integrity wave): protected accounts must stay
-    // non-negative AFTER this entry. The balance is computed inside the
-    // posting transaction with the account rows locked (above), so an
-    // underfunded disbursement rolls the whole entry back atomically.
-    for (const accountCode of requireSolventAccounts ?? []) {
-      const balance = await tx.query(
-        `SELECT
-           COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
-           COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
-         FROM finance.ledger_entries e
-         JOIN finance.ledger_accounts a ON a.id = e.account_id
-         WHERE a.code = $1`,
-        [accountCode]
-      );
-      const balanceRow = balance.rows[0] as { debits?: unknown; credits?: unknown } | undefined;
-      const balanceKobo = num(balanceRow?.debits ?? 0) - num(balanceRow?.credits ?? 0);
-      if (balanceKobo < 0) {
-        throw new BadRequestException(
-          `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
-        );
-      }
-    }
-    if (outboxEvent) {
-      await tx.query(
-        `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          outboxEvent.id,
-          outboxEvent.name,
-          JSON.stringify(outboxEvent.payload ?? {}),
-          outboxEvent.actorId ?? null,
-          outboxEvent.occurredAt
-        ]
-      );
-    }
+    // Single posting path (merge-resolution doctrine): all in-transaction
+    // postings route through postLedgerEntryTx so the solvency guard, the
+    // WP-G2 atomic daily-limit reservation, and the same-transaction outbox
+    // append apply identically whether the caller owns the transaction
+    // (WP-G1 VSLA fold) or this repository opened it (postEntry above).
+    await postLedgerEntryTx(
+      tx as pg.PoolClient,
+      entry,
+      requireSolventAccounts,
+      outboxEvent,
+      dailyLimitReservation
+    );
     return entry;
   }
 

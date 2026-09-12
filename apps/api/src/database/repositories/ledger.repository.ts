@@ -25,6 +25,23 @@ export interface LedgerEntryCriteria {
 }
 
 /**
+ * Atomic daily cash-limit reservation (stage 27 WP-G2, funds-atomicity
+ * audit A1-7). When passed to postEntry, the per-(agent, business date)
+ * usage counter is incremented INSIDE the posting transaction, but only
+ * while `used + amountKobo <= limitKobo` — otherwise the whole posting is
+ * rejected with the standard limit-exceeded error and rolls back. A posting
+ * failure after the reservation releases it via the same rollback, so the
+ * counter never drifts from committed money movement.
+ */
+export interface DailyLimitReservation {
+  agentId: string;
+  /** UTC business date (YYYY-MM-DD); a new date starts a fresh counter. */
+  businessDate: string;
+  amountKobo: number;
+  limitKobo: number;
+}
+
+/**
  * Opaque caller-owned transaction handle for in-transaction postings
  * (WP-G1 VSLA fold). Mirrors the input-vouchers `AllocationTx` doctrine:
  * the pg implementation passes the open transaction's client so a caller
@@ -56,11 +73,15 @@ export interface LedgerEntryRepository {
    * same transaction, so an underfunded posting rolls back atomically.
    * `outboxEvent` is appended to events.outbox in the same transaction when
    * the implementation sets `transactionalOutbox` (ignored otherwise).
+   * `dailyLimitReservation` (stage 27 WP-G2, audit A1-7) atomically reserves
+   * against the per-(agent, business date) cash cap in the same transaction;
+   * when the cap would be exceeded the posting is rejected and rolls back.
    */
   postEntry(
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
-    outboxEvent?: DomainEvent
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
   ): Promise<LedgerJournalEntry>;
   /**
    * Optional (pg): the posting body of `postEntry` running on a CALLER-OWNED
@@ -104,6 +125,8 @@ export class InMemoryLedgerAccountRepository implements LedgerAccountRepository 
 
 export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
   private readonly items = new Map<string, LedgerJournalEntry>();
+  /** Per-(agent, business date) reserved usage, keyed `agentId|businessDate`. */
+  private readonly dailyUsage = new Map<string, number>();
 
   async findById(id: string): Promise<LedgerJournalEntry | undefined> {
     return this.items.get(id);
@@ -127,7 +150,9 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
 
   async postEntry(
     entry: LedgerJournalEntry,
-    requireSolventAccounts?: readonly string[]
+    requireSolventAccounts?: readonly string[],
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
   ): Promise<LedgerJournalEntry> {
     // Mirror the pg UNIQUE constraint on idempotency_key (23505 → 409):
     // concurrent posts with the same key cannot both persist.
@@ -135,6 +160,22 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
       if (existing.idempotencyKey === entry.idempotencyKey) {
         throw new ConflictException('A record with these unique values already exists');
       }
+    }
+    // Daily-limit reservation (stage 27 WP-G2, audit A1-7): the capacity
+    // check and the counter increment run synchronously — no await between
+    // the read and the write — so concurrent in-memory callers cannot
+    // interleave, mirroring the in-transaction conditional upsert of the pg
+    // posting (which serialises on the counter row's primary-key lock).
+    let reservationKey: string | undefined;
+    if (dailyLimitReservation) {
+      reservationKey = `${dailyLimitReservation.agentId}|${dailyLimitReservation.businessDate}`;
+      const used = this.dailyUsage.get(reservationKey) ?? 0;
+      if (used + dailyLimitReservation.amountKobo > dailyLimitReservation.limitKobo) {
+        throw new BadRequestException(
+          `Agent daily limit exceeded: ${used + dailyLimitReservation.amountKobo} kobo would pass the ${dailyLimitReservation.limitKobo} kobo daily limit`
+        );
+      }
+      this.dailyUsage.set(reservationKey, used + dailyLimitReservation.amountKobo);
     }
     this.items.set(entry.id, structuredClone(entry));
     // Solvency guard with rollback semantics: compute the post-entry balance
@@ -144,6 +185,14 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
       const { balanceKobo } = await this.balance(accountCode);
       if (balanceKobo < 0) {
         this.items.delete(entry.id);
+        // Rollback releases the reservation, exactly as the pg transaction
+        // rollback does.
+        if (reservationKey && dailyLimitReservation) {
+          this.dailyUsage.set(
+            reservationKey,
+            (this.dailyUsage.get(reservationKey) ?? 0) - dailyLimitReservation.amountKobo
+          );
+        }
         throw new BadRequestException(
           `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
         );
