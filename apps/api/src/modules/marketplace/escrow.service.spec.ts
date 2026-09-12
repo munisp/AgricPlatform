@@ -6,6 +6,11 @@ import { createInMemoryEscrowRepository, InMemoryEscrowRepository } from '../../
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryEscrowPayoutRepository, InMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from '../../database/repositories/ledger.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 import { ESCROW_HOLD_TTL_MS, EscrowService } from './escrow.service.js';
 import {
   LiveEscrowPayoutDriver,
@@ -23,18 +28,30 @@ const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['studen
 function makeService(
   provider?: PaymentProviderPort,
   payoutDriver?: EscrowPayoutDriverPort,
-  payouts = payoutDriver ? createInMemoryEscrowPayoutRepository() : undefined
+  payouts = payoutDriver ? createInMemoryEscrowPayoutRepository() : undefined,
+  withLedger = false
 ) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  // WP-G13: production deployments always have the ledger wired (FinanceModule
+  // is imported by MarketplaceModule); production-mode tests must wire it too.
+  const ledger = withLedger
+    ? new LedgerService(
+        events,
+        createInMemoryLedgerAccountRepository(),
+        createInMemoryLedgerEntryRepository()
+      )
+    : undefined;
   const service = new EscrowService(
     events,
     createInMemoryOrderRepository(),
     createInMemoryEscrowRepository(),
     provider,
     payoutDriver,
-    payouts
+    payouts,
+    undefined,
+    ledger
   );
-  return { service, events, payouts };
+  return { service, events, payouts, ledger };
 }
 
 describe('EscrowService', () => {
@@ -404,8 +421,7 @@ describe('EscrowService payout rails (Stage 23)', () => {
     process.env.NODE_ENV = originalNodeEnv;
   });
 
-  it('records and succeeds release payouts through the stub driver outside production', async () => {
-    const { driver, calls } = fakePayoutDriver();
+  it('records and succeeds release payouts through the stub driver outside production', async () => {    const { driver, calls } = fakePayoutDriver();
     const { service, payouts } = makeService(undefined, driver);
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
 
@@ -440,7 +456,7 @@ describe('EscrowService payout rails (Stage 23)', () => {
 
   it('fails closed 503 in production with a stub driver — nothing recorded, escrow untouched', async () => {
     process.env.NODE_ENV = 'production';
-    const { service, events, payouts } = makeService(undefined, new StubEscrowPayoutDriver());
+    const { service, events, payouts } = makeService(undefined, new StubEscrowPayoutDriver(), undefined, true);
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
       reference: 'paystack:dep-prod-1',
       verified: true
@@ -463,7 +479,7 @@ describe('EscrowService payout rails (Stage 23)', () => {
 
   it('fails closed 503 in production with no payout driver at all', async () => {
     process.env.NODE_ENV = 'production';
-    const { service } = makeService();
+    const { service } = makeService(undefined, undefined, undefined, true);
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
       reference: 'paystack:dep-prod-2',
       verified: true
@@ -474,9 +490,29 @@ describe('EscrowService payout rails (Stage 23)', () => {
     expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
   });
 
+  it('WP-G13: production without a ledger fails closed — no off-ledger hold is recorded', async () => {
+    process.env.NODE_ENV = 'production';
+    // No ledger wired (never happens through the Nest graph; direct
+    // construction only): the hold must refuse BEFORE persisting anything.
+    const { service } = makeService(undefined, undefined, undefined, false);
+    await expect(
+      service.holdForOrder('order-buyer-cassava', buyer.id, {
+        reference: 'paystack:dep-prod-no-ledger',
+        verified: true
+      })
+    ).rejects.toThrowError(ServiceUnavailableException);
+    await expect(
+      service.holdForOrder('order-buyer-cassava', buyer.id, {
+        reference: 'paystack:dep-prod-no-ledger',
+        verified: true
+      })
+    ).rejects.toThrowError(/no ledger is wired/);
+    expect(await service.escrowForOrder('order-buyer-cassava')).toBeUndefined();
+  });
+
   it('blocks order-completion auto-release in production while the rail is stubbed', async () => {
     process.env.NODE_ENV = 'production';
-    const { service } = makeService(undefined, new StubEscrowPayoutDriver());
+    const { service } = makeService(undefined, new StubEscrowPayoutDriver(), undefined, true);
     // Provider-verified deposit evidence (Stage 22 gate passes) — the payout
     // rail is the blocker now.
     await service.holdForOrder('order-buyer-cassava', buyer.id, {
@@ -492,7 +528,7 @@ describe('EscrowService payout rails (Stage 23)', () => {
   it('live driver (configured) answers 503 not-integrated; the escrow stays resumable', async () => {
     process.env.NODE_ENV = 'production';
     const live = new LiveEscrowPayoutDriver(DUMMY_URL, DUMMY_KEY, DUMMY_SECRET);
-    const { service, payouts } = makeService(undefined, live);
+    const { service, payouts } = makeService(undefined, live, undefined, true);
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id, {
       reference: 'paystack:dep-payout-2',
       verified: true
