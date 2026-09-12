@@ -1,4 +1,18 @@
 import { Module, type OnModuleInit } from '@nestjs/common';
+import type pg from 'pg';
+import { PG_POOL } from '../../database/persistence.tokens.js';
+import {
+  createInMemoryRegenDiscountRateCardRepository,
+  createInMemoryRegenDiscountRepository
+} from '../../database/repositories/insurance.repository.js';
+import {
+  createPgRegenDiscountRateCardRepository,
+  createPgRegenDiscountRepository
+} from '../../database/repositories/insurance.pg-repository.js';
+import {
+  REGEN_DISCOUNT_RATE_CARD_REPOSITORY,
+  REGEN_DISCOUNT_REPOSITORY
+} from '../../database/persistence.tokens.js';
 import { GeoModule } from '../geo/geo.module.js';
 import { FinanceModule } from '../finance/finance.module.js';
 import { PartnerApiModule } from '../partner-api/partner-api.module.js';
@@ -7,6 +21,8 @@ import { InsuranceService } from './insurance.service.js';
 import { InsurerApiController } from './insurer-api.controller.js';
 import { VoucherCoversController, VoucherRiderController } from './voucher-covers.controller.js';
 import { VoucherCoversService } from './voucher-covers.service.js';
+import { RegenDiscountController } from './regen-discount.controller.js';
+import { RegenDiscountService } from './regen-discount.service.js';
 
 /**
  * Parametric insurance rail (wave-insurance, additive). Plot-level
@@ -20,12 +36,44 @@ import { VoucherCoversService } from './voucher-covers.service.js';
  * voucher's funded envelope at redemption) plus the cover lifecycle
  * projector. The payout leg stays externally gated; this module adds no
  * payout execution path of its own.
+ *
+ * Stage 27 (Regen Discount): carbon-MRV-verified premium discount — a
+ * bounded, versioned admin rate card plus exactly-once-per-policy discount
+ * rows whose eligibility requires a recorded vsla-carbon seasonal
+ * attestation (never a fabricated satellite score). Ships behind the
+ * `regen-discount` flag (default OFF); adds no payout execution path. The
+ * two new repositories are provided module-locally (PG_POOL rides the
+ * global DatabaseModule export) so this wave adds ZERO edits to the shared
+ * database.module.ts and stays cleanly mergeable with in-flight insurance
+ * PRs.
  */
 @Module({
   imports: [GeoModule, FinanceModule, PartnerApiModule],
-  controllers: [InsuranceController, InsurerApiController, VoucherRiderController, VoucherCoversController],
-  providers: [InsuranceService, VoucherCoversService],
-  exports: [InsuranceService, VoucherCoversService]
+  controllers: [
+    InsuranceController,
+    InsurerApiController,
+    VoucherRiderController,
+    VoucherCoversController,
+    RegenDiscountController
+  ],
+  providers: [
+    InsuranceService,
+    VoucherCoversService,
+    RegenDiscountService,
+    {
+      provide: REGEN_DISCOUNT_RATE_CARD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRegenDiscountRateCardRepository(pool) : createInMemoryRegenDiscountRateCardRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REGEN_DISCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRegenDiscountRepository(pool) : createInMemoryRegenDiscountRepository(),
+      inject: [PG_POOL]
+    }
+  ],
+  exports: [InsuranceService, VoucherCoversService, RegenDiscountService]
 })
 export class InsuranceModule implements OnModuleInit {
   constructor(private readonly insurance: InsuranceService) {}
