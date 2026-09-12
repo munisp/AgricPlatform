@@ -152,11 +152,31 @@ export class PartnerApiController {
     return { data: await this.partnerApi.applicationCount(partnerId) };
   }
 
+  /**
+   * Consented member profile lookup (Stage 27, WP-G4 — V3 middleware audit).
+   * The requested member must be bound to the caller's bound partner
+   * organisation (at least one application to one of its programmes);
+   * unbound ids return 404, identical to an unknown user, so membership
+   * cannot be enumerated. Unbound credentials fail closed (403), matching
+   * assertPartnerTenant.
+   */
   @Get('members/:userId/profile')
   @PartnerScopes('profile:read')
-  @ApiOperation({ summary: 'Consented member profile lookup' })
-  async memberProfile(@Param('userId') userId: string) {
-    return { data: await this.partnerApi.consentedMemberProfile(userId) };
+  @ApiOperation({ summary: 'Consented member profile lookup (bound members only)' })
+  async memberProfile(@Param('userId') userId: string, @Req() request: Request) {
+    const identity = partnerIdentity(request);
+    if (!identity.partnerId) {
+      throw new ForbiddenException(
+        'This credential is not bound to a partner organisation; member profile reads require a bound client-credentials token'
+      );
+    }
+    return {
+      data: await this.partnerApi.consentedMemberProfile(
+        userId,
+        identity.partnerId,
+        identity.clientId
+      )
+    };
   }
 
   @Post('disbursements')
@@ -215,7 +235,13 @@ export class PartnerApiController {
         'Webhook subscriptions require a client-credentials access token'
       );
     }
-    const subscription = await this.partnerApi.createWebhookSubscription(identity.clientId, dto);
+    // The token's bound partnerId scopes the subscription (Stage 27 WP-G3);
+    // unbound credentials create platform-level subscriptions.
+    const subscription = await this.partnerApi.createWebhookSubscription(
+      identity.clientId,
+      dto,
+      identity.partnerId
+    );
     // Secret is returned once at creation for verification testing.
     return { data: subscription };
   }

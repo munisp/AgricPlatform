@@ -161,10 +161,31 @@ export class PartnerApiService {
     return { partnerId, applications: applications.length };
   }
 
-  /** Consented member profile lookup (lender credit-check style). */
+  /**
+   * Consented member profile lookup (lender credit-check style).
+   *
+   * Partner binding (Stage 27, WP-G4 — V3 middleware audit): the requested
+   * member must be bound to the caller's partner organisation, i.e. hold at
+   * least one application to one of that partner's programmes — the same
+   * member↔partner binding `consentedParticipation` uses. Unbound ids raise
+   * NotFoundException with the same shape as an unknown user, so partner
+   * membership cannot be enumerated (repo convention: cross-tenant lookups
+   * are 404, see `recordEnrolment`). Consent is checked after binding; a
+   * bound member without active `partner_data_sharing` consent is a 403 —
+   * the caller already knows its own applicants, so no extra signal leaks.
+   *
+   * Audit attribution: the actor is the partner client (never the member),
+   * the member is the subject (entityType user / entityId userId).
+   */
   async consentedMemberProfile(
-    userId: string
+    userId: string,
+    partnerId: string,
+    actorId: string
   ): Promise<{ user: User; profile: Profile; enrolments: Enrolment[] }> {
+    const applications = await this.opportunities.applicationsForPartner(partnerId);
+    if (!applications.some((application) => application.userId === userId)) {
+      throw new NotFoundException(`Member '${userId}' not found`);
+    }
     if (!(await this.hasSharingConsent(userId))) {
       throw new ForbiddenException(
         'Member has not granted partner_data_sharing consent (or it was revoked)'
@@ -174,10 +195,11 @@ export class PartnerApiService {
     const profile = await this.profiles.get(userId);
     const enrolments = await this.learning.enrolmentsForUser(userId);
     await this.audit.record({
-      actorId: userId,
+      actorId,
       action: 'partner.member_profile.read',
       entityType: 'user',
-      entityId: userId
+      entityId: userId,
+      metadata: { partnerId }
     });
     return { user, profile, enrolments };
   }
@@ -372,9 +394,16 @@ export class PartnerApiService {
 
   // --- Webhook subscription management -------------------------------------
 
+  /**
+   * Creates a webhook subscription scoped to the caller's bound partner
+   * (Stage 27 WP-G3): the token's partnerId is authoritative (never
+   * caller-supplied in the body), and crossTenant stays false — platform
+   * cross-tenant receivers are operator-managed, not API-settable.
+   */
   async createWebhookSubscription(
     clientId: string,
-    input: { eventTypes: string[]; targetUrl: string; secret: string }
+    input: { eventTypes: string[]; targetUrl: string; secret: string },
+    partnerId?: string
   ): Promise<WebhookSubscription> {
     const invalid = input.eventTypes.filter(
       (type) => !PARTNER_EVENT_TYPES.includes(type as PartnerEventType)
@@ -391,6 +420,8 @@ export class PartnerApiService {
       targetUrl: input.targetUrl,
       secret: input.secret,
       status: 'active',
+      partnerId,
+      crossTenant: false,
       createdAt: new Date().toISOString()
     });
   }
