@@ -67,6 +67,8 @@ export const ANALYTICS_MART_REPOSITORY = Symbol('ANALYTICS_MART_REPOSITORY');
 
 // Wave P2a: marketplace depth (escrow/invoicing/logistics) + finance/credit.
 export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');
+// Stage 27 Batch 1 (Innovation 2): coop pool & split settlement.
+export const COOP_POOL_REPOSITORY = Symbol('COOP_POOL_REPOSITORY');
 // Stage 23: recorded escrow payout attempts (release/refund rail).
 export const ESCROW_PAYOUT_REPOSITORY = Symbol('ESCROW_PAYOUT_REPOSITORY');
 export const INVOICE_REPOSITORY = Symbol('INVOICE_REPOSITORY');
@@ -208,6 +210,11 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
 
+// SeasonSync (innovation wave 27): pinned harvest-linked repayment schedules
+// (credit schema, migration 055). Schedule reshaping only — repayment posting
+// still flows through the existing credit.loan_repayments path.
+export const SEASONAL_SCHEDULE_REPOSITORY = Symbol('SEASONAL_SCHEDULE_REPOSITORY');
+
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
 // migration 032. Money movement stays in the finance ledger; these tables
@@ -228,6 +235,12 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+// Stage 27 (Insurance-in-the-Bag): voucher-bundled micro-parametric cover
+// (insurance schema, migration 057) — per-programme insurance riders and the
+// exactly-once cover bound at voucher redemption (premium debited from the
+// programme envelope in the same ledger entry as the redemption).
+export const VOUCHER_PROGRAMME_RIDER_REPOSITORY = Symbol('VOUCHER_PROGRAMME_RIDER_REPOSITORY');
+export const VOUCHER_COVER_REPOSITORY = Symbol('VOUCHER_COVER_REPOSITORY');
 
 // Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
 // cycles, contributions, share-outs, internal loans) + carbon MRV (plots,
@@ -275,6 +288,12 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Stage 27 innovation "Float Sentinel": deterministic fraud/liquidity anomaly
+// engine — versioned rule registry, dedup-keyed alert queue, admin case queue
+// (fraud schema, migration 059). Detective control only; read-only on the ledger.
+export const FRAUD_SENTINEL_REPOSITORY = Symbol('FRAUD_SENTINEL_REPOSITORY');
+
 // Stage 27 Batch 1 (innovation 4): Planting-Window Pulse — per-plot advisory
 // subscriptions + dispatch log (advisory schema, migration 058). No money
 // movement; operational records with basis honesty labelling only.
