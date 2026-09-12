@@ -129,6 +129,26 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/portfolio/scorecard",
+        "summary": "Standardized portfolio scorecard (PAR30/60/90 vintages, geo mix bands, product mix — aggregate only, zero farmer PII). Generated immutably on first request per (lender, version, period); carries a stale badge when the analytics projector heartbeat exceeds the version threshold.",
+        "auth": "client-credentials",
+        "scopes": [
+          "portfolio:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/portfolio/scorecard/export",
+        "summary": "Export the scorecard as parquet + manifest to object storage and return SigV4-presigned download URLs (1h). 503 when export storage is not configured.",
+        "auth": "client-credentials",
+        "scopes": [
+          "portfolio:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/traceability/shipments/{id}/dds",
         "summary": "Fetch the EUDR due-diligence statement JSON for a shipment. Scope: traceability:read.",
         "auth": "client-credentials",
