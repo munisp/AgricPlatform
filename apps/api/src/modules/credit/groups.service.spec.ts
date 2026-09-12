@@ -24,6 +24,8 @@ const memberA: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['farmer'
 const memberB: Pick<User, 'id' | 'roles'> = { id: 'user-bala', roles: ['farmer'] };
 const outsider: Pick<User, 'id' | 'roles'> = { id: 'user-chidi', roles: ['farmer'] };
 const lender: Pick<User, 'id' | 'roles'> = { id: 'user-lender', roles: ['lender'] };
+const admin: Pick<User, 'id' | 'roles'> = { id: 'user-admin', roles: ['admin'] };
+const stranger: Pick<User, 'id' | 'roles'> = { id: 'user-stranger', roles: ['farmer'] };
 
 const GROUP_PRODUCT: CreditLoanProduct = {
   id: 'cprd-vsla',
@@ -76,7 +78,7 @@ describe('CreditGroupsService', () => {
     );
     expect(members).toHaveLength(1);
     expect(members[0]!.role).toBe('leader');
-    const detail = await services.groupsService.getGroup(group.id);
+    const detail = await services.groupsService.getGroup(group.id, leader);
     expect(detail.group.name).toBe('Kano VSLA');
     expect(detail.group.chapterId).toBe('chapter-1');
   });
@@ -86,13 +88,13 @@ describe('CreditGroupsService', () => {
     const group = await threeMemberGroup(services);
     const rejoin = await services.groupsService.join(group.id, memberA);
     expect(rejoin.userId).toBe(memberA.id);
-    expect((await services.groupsService.getGroup(group.id)).members).toHaveLength(3);
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(3);
     await expect(services.groupsService.leave(group.id, leader)).rejects.toBeInstanceOf(
       BadRequestException
     );
     await services.groupsService.leave(group.id, memberA);
     await services.groupsService.leave(group.id, memberA); // idempotent
-    expect((await services.groupsService.getGroup(group.id)).members).toHaveLength(2);
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(2);
   });
 
   it('restricts member administration to the leader (or admin)', async () => {
@@ -102,13 +104,13 @@ describe('CreditGroupsService', () => {
       services.groupsService.addMember(group.id, outsider.id, memberA)
     ).rejects.toBeInstanceOf(ForbiddenException);
     await services.groupsService.addMember(group.id, outsider.id, leader);
-    expect((await services.groupsService.getGroup(group.id)).members).toHaveLength(4);
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(4);
     // The leader cannot be removed.
     await expect(
       services.groupsService.removeMember(group.id, leader.id, leader)
     ).rejects.toBeInstanceOf(BadRequestException);
     await services.groupsService.removeMember(group.id, outsider.id, leader);
-    expect((await services.groupsService.getGroup(group.id)).members).toHaveLength(3);
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(3);
   });
 
   it('lists the caller’s groups with members', async () => {
@@ -117,6 +119,62 @@ describe('CreditGroupsService', () => {
     const mine = await services.groupsService.listMyGroups(memberB);
     expect(mine).toHaveLength(1);
     expect(mine[0]!.members.map((member) => member.userId)).toContain(memberB.id);
+  });
+
+  it('scopes listing to the caller’s own groups (G5): non-members see only their groups', async () => {
+    const services = makeServices();
+    const first = await threeMemberGroup(services);
+    // A second group the caller has no membership in.
+    await services.groupsService.createGroup({ name: 'Ibadan VSLA' }, outsider);
+    const memberList = await services.groupsService.listGroups(memberA);
+    expect(memberList.map((group) => group.id)).toEqual([first.id]);
+    const strangerList = await services.groupsService.listGroups(stranger);
+    expect(strangerList).toHaveLength(0);
+    // The outsider created the second group, so they lead and see it only.
+    const creatorList = await services.groupsService.listGroups(outsider);
+    expect(creatorList).toHaveLength(1);
+    expect(creatorList[0]!.name).toBe('Ibadan VSLA');
+  });
+
+  it('refuses group detail to non-members (G5): 403 per CreditService.getLoan convention', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    await expect(services.groupsService.getGroup(group.id, outsider)).rejects.toBeInstanceOf(
+      ForbiddenException
+    );
+    // Members and the leader can read it.
+    await expect(services.groupsService.getGroup(group.id, memberA)).resolves.toBeDefined();
+  });
+
+  it('does not leak the member roster to non-members (G5)', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    // The only roster-bearing read rejects for non-members...
+    await expect(services.groupsService.getGroup(group.id, outsider)).rejects.toBeInstanceOf(
+      ForbiddenException
+    );
+    // ...and the membership-scoped listing never exposes rosters at all.
+    const listed = await services.groupsService.listGroups(outsider);
+    expect(listed).toHaveLength(0);
+    const memberView = await services.groupsService.getGroup(group.id, memberB);
+    expect(memberView.members.map((member) => member.userId).sort()).toEqual(
+      [leader.id, memberA.id, memberB.id].sort()
+    );
+  });
+
+  it('lets credit reviewers (admin|lender) list and read every group (G5)', async () => {
+    const services = makeServices();
+    const first = await threeMemberGroup(services);
+    const { group: second } = await services.groupsService.createGroup(
+      { name: 'Ibadan VSLA' },
+      outsider
+    );
+    const adminList = await services.groupsService.listGroups(admin);
+    expect(adminList.map((group) => group.id).sort()).toEqual([first.id, second.id].sort());
+    const adminDetail = await services.groupsService.getGroup(first.id, admin);
+    expect(adminDetail.members).toHaveLength(3);
+    const lenderList = await services.groupsService.listGroups(lender);
+    expect(lenderList).toHaveLength(2);
   });
 });
 

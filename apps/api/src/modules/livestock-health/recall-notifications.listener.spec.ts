@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Animal, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   createInMemoryAnimalRepository,
   createInMemoryLotRepository
@@ -60,13 +62,16 @@ describe('RecallNotificationsListener', () => {
   let service: LivestockHealthService;
   let listener: RecallNotificationsListener;
   let eventsRef: DomainEventsService;
+  let outbox: ReturnType<typeof createInMemoryOutboxRepository>;
+  let dedup: EventDedupService;
 
   beforeEach(() => {
     const animals = createInMemoryAnimalRepository(undefined, [animalA, animalC]);
     recalls = createInMemoryRecallRepository();
-    const outbox = createInMemoryOutboxRepository();
+    outbox = createInMemoryOutboxRepository();
     const events = new DomainEventsService(outbox);
     eventsRef = events;
+    dedup = new EventDedupService(createInMemoryProcessedEventRepository());
     service = new LivestockHealthService(
       { record: vi.fn().mockResolvedValue(undefined) } as never,
       events,
@@ -80,9 +85,18 @@ describe('RecallNotificationsListener', () => {
       createInMemoryDiseaseFlagRepository()
     );
     notifications = { send: vi.fn().mockResolvedValue({ id: 'notification-1' }) };
-    listener = new RecallNotificationsListener(events, notifications as never, service);
+    listener = new RecallNotificationsListener(events, notifications as never, service, dedup);
     listener.onModuleInit();
   });
+
+  /** The persisted livestock.recall.initiated event (for sweeper-redrive simulation). */
+  const recallInitiatedEvent = async () => {
+    const record = (await outbox.listRecords())
+      .map((entry) => entry.event)
+      .find((event) => event.name === 'livestock.recall.initiated');
+    expect(record).toBeDefined();
+    return record!;
+  };
 
   it('notifies every affected owner in-app and flips the recall to notified', async () => {
     const { recall } = await service.initiateRecall(regulator, {
@@ -168,5 +182,66 @@ describe('RecallNotificationsListener', () => {
     eventsRef.emit(redelivered as never);
     await flush();
     expect(notifications.send).toHaveBeenCalledTimes(2); // +1, not +2
+  });
+
+  it('re-drives the event after a post-processing failure (G14 mark-after)', async () => {
+    // The lifecycle flip throws AFTER the owner fan-out — under the old
+    // mark-before once() this permanently suppressed the event.
+    const flip = vi
+      .spyOn(service, 'markRecallNotified')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    const { recall } = await service.initiateRecall(regulator, {
+      ownerUserId: farmer.id,
+      reason: 'FMD-contaminated batch'
+    });
+    await flush();
+    expect(flip).toHaveBeenCalledTimes(1);
+    // Failed handling leaves the event UNPROCESSED and the case un-flipped.
+    expect((await recalls.getById(recall.id)).status).toBe('initiated');
+    // The outbox sweeper redelivers the SAME event id: not suppressed.
+    eventsRef.emit((await recallInitiatedEvent()) as never);
+    await flush();
+    expect(flip).toHaveBeenCalledTimes(2);
+    expect((await recalls.getById(recall.id)).status).toBe('notified');
+    // The redrive re-runs the fan-out (accepted duplicate window, same
+    // tradeoff as the analytics projector's replay-after-partial-failure).
+    expect(notifications.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks after success, so a sweeper redrive of the same event id is suppressed (G14)', async () => {
+    await service.initiateRecall(regulator, {
+      ownerUserId: farmer.id,
+      reason: 'FMD-contaminated batch'
+    });
+    await flush();
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+    const event = await recallInitiatedEvent();
+    eventsRef.emit(event as never);
+    eventsRef.emit(event as never);
+    await flush();
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('converges when the crash lands between the lifecycle flip and the ledger mark (G14)', async () => {
+    const mark = vi.spyOn(dedup, 'mark').mockRejectedValueOnce(new Error('ledger write failed'));
+    const { recall } = await service.initiateRecall(regulator, {
+      ownerUserId: farmer.id,
+      reason: 'FMD-contaminated batch'
+    });
+    await flush();
+    // The flip committed but the ledger mark did not — the event stays
+    // unprocessed, so the sweeper redrives it.
+    expect((await recalls.getById(recall.id)).status).toBe('notified');
+    const event = await recallInitiatedEvent();
+    eventsRef.emit(event as never);
+    await flush();
+    // The redriven flip is an idempotent no-op (already 'notified') and the
+    // mark now succeeds...
+    expect(mark).toHaveBeenCalledTimes(2);
+    expect((await recalls.getById(recall.id)).status).toBe('notified');
+    // ...so a further redrive is fully suppressed.
+    eventsRef.emit(event as never);
+    await flush();
+    expect(notifications.send).toHaveBeenCalledTimes(2); // two fan-outs total, not three
   });
 });

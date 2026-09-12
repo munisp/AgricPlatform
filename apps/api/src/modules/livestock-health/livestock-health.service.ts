@@ -225,7 +225,7 @@ export class LivestockHealthService {
     if (caller.id === ownerUserId || hasAnyRole(caller, PRIVILEGED_READERS)) {
       return caller;
     }
-    throw new ForbiddenException('You may only access your own animals\u2019 health data');
+    throw new ForbiddenException('You may only access your own animals’ health data');
   }
 
   private assertValidState(state: string): void {
@@ -966,9 +966,18 @@ export class LivestockHealthService {
   /**
    * Internal lifecycle hook: flips initiated → notified after the recall
    * listener has delivered owner notifications. Not an endpoint.
+   *
+   * Idempotent replay (G14): the recall listener marks its dedup ledger
+   * AFTER this flip succeeds, so an outbox-sweeper redrive can re-invoke it
+   * after a crash between flip and ledger mark. An already-'notified' recall
+   * is returned unchanged (same convention as CreditService.submit); any
+   * other non-'initiated' status (e.g. 'resolved') still fails closed.
    */
   async markRecallNotified(recallId: string): Promise<LivestockRecall> {
     const recall = await this.recalls.getById(recallId);
+    if (recall.status === 'notified') {
+      return recall; // idempotent replay
+    }
     if (recall.status !== 'initiated') {
       throw new BadRequestException(`Recall '${recallId}' is ${recall.status}, expected initiated`);
     }
