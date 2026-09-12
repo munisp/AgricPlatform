@@ -57,6 +57,7 @@ import { SyncModule } from './modules/sync/sync.module.js';
 import { FarmsModule } from './modules/farms/farms.module.js';
 // Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
 import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
+import { FraudModule } from './modules/fraud/fraud.module.js';
 // Wave GEO (additive): geospatial pack — H3 indexing, boundaries, contains.
 import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
@@ -80,6 +81,8 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
 import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
+// Stage 27 INNOVATION 7 Credit Passport — appended to minimise merge conflicts.
+import { CreditPassportModule } from './modules/credit-passport/credit-passport.module.js';
 
 @Module({
   imports: [
@@ -178,6 +181,11 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
     WarehouseModule,
+    // Stage 27 Float Sentinel fraud/liquidity anomaly engine (detective-only) — appended to minimise merge conflicts.
+    FraudModule,
+    // Stage 27 INNOVATION 7 Credit Passport (verifiable farmer credential) — appended to minimise merge conflicts.
+    CreditPassportModule,
+
     // Stage 27 Voice Teller transactional voice intents (flag `voice-teller`, default OFF) — appended to minimise merge conflicts.
     VoiceTellerModule
   ],
