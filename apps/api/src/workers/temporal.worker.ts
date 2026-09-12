@@ -1,7 +1,14 @@
 /**
- * Temporal worker bootstrap (wave FABRIC). NOT auto-started: the API entry
- * (src/main.ts) never imports this file, and no compose service runs it by
- * default. It hosts the credit loan disbursement workflow
+ * Temporal worker bootstrap (wave FABRIC). Runs as a SEPARATE process by
+ * doctrine: the API entry (src/main.ts) never imports this file. WP-G8
+ * closes the "no worker ever starts" gap two ways:
+ *   1. The compose `temporal` profile now includes a `temporal-worker`
+ *      service (same api image, this entrypoint) so enabling the profile
+ *      brings a worker up with the stack.
+ *   2. The API readiness probe (/health/ready, temporal-worker dependency)
+ *      reports 'down' whenever WORKFLOW_DRIVER=temporal but no worker is
+ *      polling the task queue — a missing worker is no longer silent.
+ * It hosts the credit loan disbursement workflow
  * (modules/finance/workflows/) so WORKFLOW_DRIVER=temporal has a real
  * worker to dispatch to. Activities are bound to the SAME CreditService /
  * LedgerService / NotificationsService instances as the API by booting a
