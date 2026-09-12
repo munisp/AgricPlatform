@@ -10,9 +10,11 @@ import { CreditService } from './credit.service.js';
 import { FinanceController } from './finance.controller.js';
 import { FinanceService } from './finance.service.js';
 import { LedgerController } from './ledger.controller.js';
+import { LedgerReconciliationService } from './ledger-reconciliation.service.js';
 import { LedgerService } from './ledger.service.js';
 import { LoanController } from './loan.controller.js';
 import { LoanService } from './loan.service.js';
+import { TbConsistencyChecker } from './tb-consistency.checker.js';
 
 @Module({
   imports: [LearningModule],
@@ -20,6 +22,11 @@ import { LoanService } from './loan.service.js';
   providers: [
     FinanceService,
     LedgerService,
+    // Stage 27 (WP-G13 ledger hardening): balance-invariant + escrow↔ledger
+    // reconciliation, and the pg↔TigerBeetle consistency checker (inert
+    // unless LEDGER_DRIVER=tigerbeetle).
+    LedgerReconciliationService,
+    TbConsistencyChecker,
     CreditService,
     LoanService,
     // Wave FABRIC: ledger-backend driver port (stub = Postgres ledger
@@ -32,6 +39,14 @@ import { LoanService } from './loan.service.js';
       inject: [TelemetryService]
     }
   ],
-  exports: [FinanceService, LedgerService, CreditService, LoanService, LEDGER_BACKEND]
+  exports: [
+    FinanceService,
+    LedgerService,
+    LedgerReconciliationService,
+    TbConsistencyChecker,
+    CreditService,
+    LoanService,
+    LEDGER_BACKEND
+  ]
 })
 export class FinanceModule {}
