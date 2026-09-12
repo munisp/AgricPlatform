@@ -84,6 +84,10 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
 // Stage 27 INNOVATION 7 Credit Passport — appended to minimise merge conflicts.
 import { CreditPassportModule } from './modules/credit-passport/credit-passport.module.js';
 
+// WP-G12 (additive): money-state sweepers (escrow expiry, stuck vouchers) +
+// the env-gated in-process scheduler.
+import { SweepersModule } from './modules/sweepers/sweepers.module.js';
+
 @Module({
   imports: [
     // Logging first: every module/service log line flows through pino.
@@ -187,7 +191,10 @@ import { CreditPassportModule } from './modules/credit-passport/credit-passport.
     CreditPassportModule,
 
     // Stage 27 Voice Teller transactional voice intents (flag `voice-teller`, default OFF) — appended to minimise merge conflicts.
-    VoiceTellerModule
+    VoiceTellerModule,
+
+    // WP-G12 money-state sweepers — appended to minimise merge conflicts.
+    SweepersModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
