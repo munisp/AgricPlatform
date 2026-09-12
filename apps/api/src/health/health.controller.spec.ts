@@ -101,6 +101,7 @@ function readyController(options: {
     {} as ModuleHealthService,
     new TelemetryService(),
     options.dependencies ?? [],
+    null, // pgPool (WP-G7 ctor param; the WP-G10 aggregation tests do not exercise it)
     options.probes ?? []
   );
 }
@@ -247,5 +248,65 @@ describe('HealthController /health/ready aggregation (WP-G10)', () => {
     const report = await controller.ready();
     expect(report.status).toBe('degraded');
     expect(report.degraded.map((entry) => entry.name)).toContain('integration:termii');
+  });
+});
+
+describe('HealthController.ready (WP-G7 pool stats, WP-G8 temporal readiness)', () => {
+  function controller(overrides: {
+    integrationsHealthy?: boolean;
+    dependencies?: import('./dependency-indicator.js').DependencyIndicator[];
+    pgPool?: unknown;
+  }) {
+    const integrations = {
+      list: () => [{ name: 'sms', driver: 'stub', healthy: overrides.integrationsHealthy ?? true }]
+    };
+    const moduleHealth = { report: () => ({}) };
+    return new HealthController(
+      integrations as never,
+      moduleHealth as never,
+      new TelemetryService(),
+      overrides.dependencies ?? [],
+      (overrides.pgPool ?? null) as never
+    );
+  }
+
+  it('reports pg pool occupancy (total/idle/waiting) when a pool is injected', async () => {
+    const result = await controller({
+      pgPool: { totalCount: 4, idleCount: 3, waitingCount: 1 }
+    }).ready();
+    expect(result.status).toBe('ok');
+    expect(result.pgPool).toEqual({ total: 4, idle: 3, waiting: 1 });
+  });
+
+  it("reports pgPool 'disabled' in in-memory mode", async () => {
+    const result = await controller({}).ready();
+    expect(result.pgPool).toBe('disabled');
+  });
+
+  it('stays ok under the stub workflow driver (temporal-worker skipped)', async () => {
+    const { TemporalWorkerIndicator } = await import('./temporal-worker.indicator.js');
+    const result = await controller({
+      dependencies: [new TemporalWorkerIndicator({})]
+    }).ready();
+    expect(result.status).toBe('ok');
+    expect(result.dependencies).toEqual([
+      { name: 'temporal-worker', status: 'skipped', latencyMs: 0 }
+    ]);
+  });
+
+  it('degrades readiness when WORKFLOW_DRIVER=temporal and no worker polls the task queue', async () => {
+    const { TemporalWorkerIndicator } = await import('./temporal-worker.indicator.js');
+    const result = await controller({
+      dependencies: [
+        new TemporalWorkerIndicator(
+          { WORKFLOW_DRIVER: 'temporal', TEMPORAL_ADDRESS: 'localhost:7233' },
+          () => Promise.resolve(0)
+        )
+      ]
+    }).ready();
+    expect(result.status).toBe('degraded');
+    expect(result.dependencies).toEqual([
+      expect.objectContaining({ name: 'temporal-worker', status: 'down' })
+    ]);
   });
 });

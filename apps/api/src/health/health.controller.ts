@@ -7,8 +7,11 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type pg from 'pg';
 import { Roles } from '../common/auth/roles.decorator.js';
 import { RolesGuard } from '../common/auth/roles.guard.js';
+import { PG_POOL } from '../database/persistence.tokens.js';
+import { pgPoolStats } from '../database/pg/pg-pool.provider.js';
 import { TelemetryService } from '../common/telemetry/telemetry.service.js';
 import { IntegrationsService } from '../modules/integrations/integrations.service.js';
 import {
@@ -58,6 +61,12 @@ export class HealthController {
     @Optional()
     @Inject(DEPENDENCY_INDICATORS)
     private readonly dependencies: DependencyIndicator[] = [],
+    // WP-G7: pool occupancy (total/idle/waiting) on the readiness payload;
+    // null in in-memory mode. Diagnostic counters only — never part of the
+    // up/down verdict.
+    @Optional()
+    @Inject(PG_POOL)
+    private readonly pgPool: pg.Pool | null = null,
     @Optional()
     @Inject(INFRA_DRIVER_PROBES)
     private readonly driverProbes: InfraDriverProbe[] = []
@@ -150,6 +159,7 @@ export class HealthController {
         status: degraded.length > 0 ? ('degraded' as const) : ('ok' as const),
         integrations: statuses,
         persistence,
+        pgPool: this.pgPool ? pgPoolStats(this.pgPool) : ('disabled' as const),
         dependencies,
         drivers,
         degraded
