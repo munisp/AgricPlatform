@@ -39,6 +39,9 @@ import { createEscrowPayoutDriver, ESCROW_PAYOUT_DRIVER } from './payout.driver.
   // module, so no cycle.
   // Stage 27 (Innovation 9): GeoModule provides H3Service for server-side
   // containment. GeoModule imports no feature modules, so no cycle.
+  // Stage 27 (WP-G13): FinanceModule provides LedgerService so escrow
+  // holds/releases post their double-entry legs; FinanceModule does not
+  // import this module, so no cycle.
   imports: [SyncModule, FinanceModule, GeoModule],
   controllers: [MarketplaceController, CommerceController, CoopPoolController, DeliveryController],
   providers: [
