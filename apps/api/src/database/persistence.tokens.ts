@@ -1,1 +1,1 @@
-/mnt/agents/output/stage27/checkpoints/pr-76/persistence.tokens.ts
+/** CONTENT_PLACEHOLDER_TOKENS */

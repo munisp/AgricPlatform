@@ -1,1 +1,1 @@
-/mnt/agents/output/stage27/checkpoints/pr-76/app.module.ts
+/** CONTENT_PLACEHOLDER_APPMOD */
