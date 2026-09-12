@@ -252,6 +252,27 @@ export class PartnerApiService {
     if (input.programmeId) {
       await this.assertProgrammeInScope(partnerId, input.programmeId);
     }
+    // WP-G22 follow-up (disbursement member-binding): the disbursement
+    // subject must be a member in this partner's scope — bound via an
+    // application to one of its programmes, or an explicit active consent
+    // record. Previously any existing userId was accepted, so a partner
+    // could record money movement against a user it has no relationship
+    // with. The check runs before the existence lookup so out-of-scope
+    // and unknown users stay 404-indistinguishable (WP-G4 convention).
+    try {
+      await this.assertMemberInScope(partnerId, input.userId);
+    } catch (error: unknown) {
+      // Security-relevant: a partner attempted a money event against a
+      // member outside its tenant scope — audit with the tenant id.
+      await this.audit.record({
+        actorId,
+        action: 'partner.disbursement.member_binding_rejected',
+        entityType: 'user',
+        entityId: input.userId,
+        metadata: { partnerId }
+      });
+      throw error;
+    }
     await this.users.getById(input.userId);
     const event: DisbursementEvent = {
       id: newId('disb'),
