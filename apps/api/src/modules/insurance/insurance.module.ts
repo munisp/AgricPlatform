@@ -19,6 +19,8 @@ import { PartnerApiModule } from '../partner-api/partner-api.module.js';
 import { InsuranceController } from './insurance.controller.js';
 import { InsuranceService } from './insurance.service.js';
 import { InsurerApiController } from './insurer-api.controller.js';
+import { VoucherCoversController, VoucherRiderController } from './voucher-covers.controller.js';
+import { VoucherCoversService } from './voucher-covers.service.js';
 import { RegenDiscountController } from './regen-discount.controller.js';
 import { RegenDiscountService } from './regen-discount.service.js';
 
@@ -28,6 +30,12 @@ import { RegenDiscountService } from './regen-discount.service.js';
  * payouts through the ledger in STUB execution mode, and a fail-closed
  * weather/flood provider doctrine identical to geo-intel. The catalog seeds
  * through the repository upsert on boot (never migration data).
+ *
+ * Stage 27 (Insurance-in-the-Bag): voucher-bundled micro-cover — sponsor
+ * riders on subsidy programmes (premium debited atomically from the
+ * voucher's funded envelope at redemption) plus the cover lifecycle
+ * projector. The payout leg stays externally gated; this module adds no
+ * payout execution path of its own.
  *
  * Stage 27 (Regen Discount): carbon-MRV-verified premium discount — a
  * bounded, versioned admin rate card plus exactly-once-per-policy discount
@@ -41,9 +49,16 @@ import { RegenDiscountService } from './regen-discount.service.js';
  */
 @Module({
   imports: [GeoModule, FinanceModule, PartnerApiModule],
-  controllers: [InsuranceController, InsurerApiController, RegenDiscountController],
+  controllers: [
+    InsuranceController,
+    InsurerApiController,
+    VoucherRiderController,
+    VoucherCoversController,
+    RegenDiscountController
+  ],
   providers: [
     InsuranceService,
+    VoucherCoversService,
     RegenDiscountService,
     {
       provide: REGEN_DISCOUNT_RATE_CARD_REPOSITORY,
@@ -58,7 +73,7 @@ import { RegenDiscountService } from './regen-discount.service.js';
       inject: [PG_POOL]
     }
   ],
-  exports: [InsuranceService, RegenDiscountService]
+  exports: [InsuranceService, VoucherCoversService, RegenDiscountService]
 })
 export class InsuranceModule implements OnModuleInit {
   constructor(private readonly insurance: InsuranceService) {}
