@@ -127,6 +127,84 @@ describe('CachedWeatherProvider (15-minute TTL)', () => {
   });
 });
 
+describe('OpenMeteoWeatherProvider.dailyForecast (Stage 27 planting pulse)', () => {
+  function dailyResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        daily: {
+          time: ['2026-06-01', '2026-06-02', '2026-06-03'],
+          precipitation_sum: [10, null, 4.25]
+        }
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  it('maps the daily series and stamps fetchedAt for the freshness gate', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(dailyResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenMeteoWeatherProvider();
+    const before = Date.now();
+    const forecast = await provider.dailyForecast(11.75, 8.43, 3);
+    expect(forecast.daily).toEqual([
+      { date: '2026-06-01', precipitationMm: 10 },
+      { date: '2026-06-02', precipitationMm: 0 },
+      { date: '2026-06-03', precipitationMm: 4.25 }
+    ]);
+    expect(Date.parse(forecast.fetchedAt)).toBeGreaterThanOrEqual(before);
+    expect(forecast.source).toContain('Open-Meteo');
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain('latitude=11.75');
+    expect(url).toContain('longitude=8.43');
+    expect(url).toContain('forecast_days=3');
+  });
+
+  it('defaults to the 14-day planting horizon', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(dailyResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenMeteoWeatherProvider();
+    await provider.dailyForecast(11.75, 8.43);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toContain('forecast_days=14');
+  });
+
+  it('fails closed on an empty daily series instead of fabricating a dry forecast', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ daily: { time: [], precipitation_sum: [] } }), { status: 200 })
+      )
+    );
+    const provider = new OpenMeteoWeatherProvider();
+    await expect(provider.dailyForecast(11.75, 8.43)).rejects.toThrow(ProviderHttpError);
+  });
+
+  it('maps API failures to ProviderHttpError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('oops', { status: 500 })));
+    const provider = new OpenMeteoWeatherProvider();
+    await expect(provider.dailyForecast(11.75, 8.43)).rejects.toThrow(ProviderHttpError);
+  });
+});
+
+describe('CachedWeatherProvider daily forecasts', () => {
+  it('caches per snapped coordinate and serves the second read from cache', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          daily: { time: ['2026-06-01'], precipitation_sum: [5] }
+        }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new CachedWeatherProvider(new OpenMeteoWeatherProvider(), new InMemoryKeyValueStore());
+    const first = await provider.dailyForecast(11.75001, 8.43001);
+    const second = await provider.dailyForecast(11.75004, 8.43004);
+    expect(second).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createWeatherProvider', () => {
   it('returns the raw Open-Meteo provider without a store, cached with one', () => {
     expect(createWeatherProvider()).toBeInstanceOf(OpenMeteoWeatherProvider);

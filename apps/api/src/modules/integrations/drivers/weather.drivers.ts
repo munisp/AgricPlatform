@@ -9,7 +9,7 @@
  */
 import type { KeyValueStore } from '../../../redis/key-value-store.js';
 import type { WeatherSnapshot } from '../adapters.js';
-import { httpJson } from './http.js';
+import { httpJson, ProviderHttpError } from './http.js';
 import { lookupStateCentroid } from './nigeria-states.js';
 
 const OPEN_METEO_BASE_URL = 'https://api.open-meteo.com';
@@ -20,7 +20,38 @@ export const WEATHER_CACHE_TTL_MS = 15 * 60 * 1000;
 export interface WeatherProvider {
   readonly name: string;
   snapshot(state: string): Promise<WeatherSnapshot>;
+  /**
+   * Per-coordinate daily precipitation forecast (Stage 27 Planting-Window
+   * Pulse). Same Open-Meteo feed, same fail-closed error contract as
+   * snapshot(): failures throw ProviderHttpError/ProviderRequestError —
+   * callers must never substitute fabricated rain data.
+   */
+  dailyForecast(latitude: number, longitude: number, days?: number): Promise<DailyForecast>;
 }
+
+/** One forecast day of the per-coordinate daily series. */
+export interface DailyForecastPoint {
+  /** ISO calendar day (yyyy-mm-dd, Africa/Lagos timezone). */
+  date: string;
+  precipitationMm: number;
+}
+
+/** Per-coordinate daily forecast with an honest fetch timestamp. */
+export interface DailyForecast {
+  latitude: number;
+  longitude: number;
+  daily: DailyForecastPoint[];
+  /**
+   * ISO timestamp of the successful upstream fetch. Consumers MUST apply a
+   * freshness gate on this stamp — a cached snapshot never outlives the
+   * cache TTL, but the stamp keeps the guarantee if the cache is bypassed.
+   */
+  fetchedAt: string;
+  source: string;
+}
+
+/** Default per-coordinate forecast horizon for planting-window generation. */
+export const DAILY_FORECAST_DAYS = 14;
 
 interface OpenMeteoForecast {
   current?: {
@@ -29,6 +60,7 @@ interface OpenMeteoForecast {
     precipitation?: number;
   };
   daily?: {
+    time?: string[];
     precipitation_sum?: Array<number | null>;
   };
 }
@@ -84,6 +116,44 @@ export class OpenMeteoWeatherProvider implements WeatherProvider {
       source: 'Open-Meteo (open data, CC-BY 4.0)'
     };
   }
+
+  async dailyForecast(
+    latitude: number,
+    longitude: number,
+    days: number = DAILY_FORECAST_DAYS
+  ): Promise<DailyForecast> {
+    const query = new URLSearchParams({
+      latitude: String(latitude),
+      longitude: String(longitude),
+      daily: 'precipitation_sum',
+      forecast_days: String(days),
+      timezone: 'Africa/Lagos'
+    });
+    const forecast = await httpJson<OpenMeteoForecast>(
+      this.name,
+      `${this.baseUrl}/v1/forecast?${query.toString()}`,
+      { method: 'GET' }
+    );
+    const dates = forecast.daily?.time ?? [];
+    const rain = forecast.daily?.precipitation_sum ?? [];
+    const daily: DailyForecastPoint[] = dates.map((date, index) => ({
+      date,
+      precipitationMm: rain[index] ?? 0
+    }));
+    if (daily.length === 0) {
+      // Fail closed: an empty series is unusable for agronomy — treat it as
+      // a provider failure (HTTP 200 with an unusable payload) rather than
+      // fabricating a dry forecast.
+      throw new ProviderHttpError(this.name, 200, 'Open-Meteo returned an empty daily series');
+    }
+    return {
+      latitude,
+      longitude,
+      daily,
+      fetchedAt: new Date().toISOString(),
+      source: 'Open-Meteo (open data, CC-BY 4.0)'
+    };
+  }
 }
 
 interface CachedSnapshot {
@@ -124,6 +194,36 @@ export class CachedWeatherProvider implements WeatherProvider {
     const entry: CachedSnapshot = { snapshot, expiresAt: Date.now() + this.ttlMs };
     await this.kv.set(key, JSON.stringify(entry), this.ttlMs).catch(() => undefined);
     return snapshot;
+  }
+
+  /**
+   * Cached per-coordinate forecast. Coordinates are snapped to 3 decimals
+   * (~110 m grid) for the cache key — plot-level precision is preserved
+   * while nearby plots share one upstream call, and no finer location is
+   * persisted in the shared cache.
+   */
+  async dailyForecast(
+    latitude: number,
+    longitude: number,
+    days: number = DAILY_FORECAST_DAYS
+  ): Promise<DailyForecast> {
+    const key = `weather:daily:${latitude.toFixed(3)}:${longitude.toFixed(3)}:${days}`;
+    const cached = await this.kv.get(key).catch(() => undefined);
+    if (cached) {
+      try {
+        const entry = JSON.parse(cached) as { forecast: DailyForecast; expiresAt: number };
+        if (entry.expiresAt > Date.now()) {
+          return entry.forecast;
+        }
+      } catch {
+        // Corrupt cache entry — fall through to a fresh fetch.
+      }
+    }
+    const forecast = await this.delegate.dailyForecast(latitude, longitude, days);
+    await this.kv
+      .set(key, JSON.stringify({ forecast, expiresAt: Date.now() + this.ttlMs }), this.ttlMs)
+      .catch(() => undefined);
+    return forecast;
   }
 }
 
