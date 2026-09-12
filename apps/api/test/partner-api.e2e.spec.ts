@@ -65,6 +65,47 @@ describe('Partner API (e2e)', () => {
     });
     limitedClientId = limited.client.clientId;
     limitedClientSecret = limited.clientSecret;
+
+    // Member-binding fixtures (Stage 27, WP-G22 follow-up): a disbursement
+    // subject must be a member of the partner's scope — an application to
+    // one of that partner's programmes, or an explicit active sharing
+    // consent. The seed farmer is bound to BOTH partner tenants via
+    // programme applications (deliberately NOT via consent records: the
+    // member-profile 403 test depends on user-adamu holding no
+    // partner_data_sharing consent).
+    async function createOpportunity(partnerId: string, title: string): Promise<string> {
+      const res = await fetch(`${base}/opportunities`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user-admin' },
+        body: JSON.stringify({
+          title,
+          type: 'loan',
+          description: 'Member-binding e2e fixture facility.',
+          states: ['Kano'],
+          valueChains: ['Cassava'],
+          eligibility: ['Tier 1 KYC'],
+          deadline: '2027-01-31T23:59:59.000Z',
+          partnerId
+        })
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { data: { id: string } };
+      return body.data.id;
+    }
+    async function applyAs(userId: string, opportunityId: string): Promise<void> {
+      const res = await fetch(`${base}/opportunities/${opportunityId}/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': userId },
+        body: JSON.stringify({ userId })
+      });
+      expect(res.status).toBe(201);
+    }
+    const demoOpportunity = await createOpportunity('partner-demo', 'E2E Demo Facility');
+    const otherOpportunity = await createOpportunity('partner-other', 'E2E Other Facility');
+    await applyAs('user-adamu', demoOpportunity);
+    await applyAs('user-adamu', otherOpportunity);
+    // Bound to partner-demo only — the cross-partner rejection subject.
+    await applyAs('user-farmer-2', demoOpportunity);
   });
 
   afterAll(async () => {
@@ -276,5 +317,38 @@ describe('Partner API (e2e)', () => {
       const body = (await res.json()) as { data: unknown };
       expect(body.data).toBeDefined();
     }
+  });
+
+  it('binds disbursement subjects to the partner programme scope (Stage 27, WP-G22 follow-up)', async () => {
+    const demoToken = await tokenFor(clientId, clientSecret);
+    const otherToken = await tokenFor(otherClientId, otherClientSecret);
+    const disburse = (token: string, userId: string) =>
+      fetch(`${base}/partner/disbursements`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ userId, amountNgn: 12_000 })
+      });
+
+    // Application-bound member (user-farmer-2 applied to a partner-demo
+    // facility in beforeAll): the owning partner may record a disbursement.
+    const allowed = await disburse(demoToken, 'user-farmer-2');
+    expect(allowed.status).toBe(201);
+    const allowedBody = (await allowed.json()) as { data: { partnerId: string } };
+    expect(allowedBody.data.partnerId).toBe('partner-demo');
+
+    // Cross-partner: user-farmer-2 is bound to partner-demo only, so the
+    // other partner's client is refused (404, never silently allowed).
+    const crossPartner = await disburse(otherToken, 'user-farmer-2');
+    expect(crossPartner.status).toBe(404);
+
+    // An existing but unbound user and an unknown user are refused with the
+    // same 404 shape, so membership cannot be enumerated (WP-G4 convention).
+    const unbound = await disburse(demoToken, 'user-aisha');
+    const ghost = await disburse(demoToken, 'user-ghost');
+    expect(unbound.status).toBe(404);
+    expect(ghost.status).toBe(404);
+    const unboundBody = (await unbound.json()) as { message: string };
+    const ghostBody = (await ghost.json()) as { message: string };
+    expect(unboundBody.message).toBe(ghostBody.message.replace('user-ghost', 'user-aisha'));
   });
 });
