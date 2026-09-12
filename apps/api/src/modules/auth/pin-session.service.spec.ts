@@ -1,5 +1,5 @@
-import { HttpException, UnauthorizedException } from '@nestjs/common';
-import { describe, expect, it, vi } from 'vitest';
+import { HttpException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import type { MetricsService } from '../../common/metrics/metrics.service.js';
 import type { DomainEventsService } from '../../core/domain-events.service.js';
@@ -7,8 +7,10 @@ import { createInMemoryAuthSessionRepository } from '../../database/repositories
 import { createInMemoryPinProfileRepository } from '../../database/repositories/pin-profile.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
+import { ProviderConfigError } from '../integrations/drivers/http.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
+import { AUTH_UNAVAILABLE, KeycloakPhoneTokenService } from './keycloak-phone-token.service.js';
 import { PinSessionService } from './pin-session.service.js';
 import { SessionService } from './session.service.js';
 
@@ -28,12 +30,46 @@ function build() {
   );
   const profiles = createInMemoryPinProfileRepository();
   const service = new PinSessionService(profiles, users, auth, events);
-  return { service, users, profiles, events };
+  return { service, users, profiles, events, auth };
 }
+
+/**
+ * PIN-swap stack with the flagged Keycloak issuer injected (the credential
+ * threading path): env carries obvious dummy values only — no real secrets.
+ */
+function buildFlagged(env: NodeJS.ProcessEnv) {
+  const users = new UsersService(createInMemoryUserRepository());
+  const events = { publish: vi.fn(async () => ({})) } as unknown as DomainEventsService;
+  const metrics = {} as unknown as MetricsService;
+  const otp = {} as unknown as OtpChallengeStore;
+  const keycloak = new KeycloakPhoneTokenService(env);
+  const auth = new AuthService(
+    users,
+    events,
+    metrics,
+    otp,
+    new SessionService(users, createInMemoryAuthSessionRepository()),
+    keycloak
+  );
+  const profiles = createInMemoryPinProfileRepository();
+  const service = new PinSessionService(profiles, users, auth, events);
+  return { service, users, profiles, events, auth, keycloak };
+}
+
+const FLAGGED_ENV: NodeJS.ProcessEnv = {
+  PHONE_AUTH_KEYCLOAK: 'true',
+  OIDC_ISSUER: 'http://keycloak.test/realms/agric-platform',
+  KEYCLOAK_CLIENT_ID: 'agric-api',
+  KEYCLOAK_CLIENT_SECRET: 'dummy-test-secret-not-real'
+};
 
 async function makeUser(users: UsersService, phone: string, name: string): Promise<User> {
   return users.create({ phone, fullName: name, roles: ['farmer'], preferredLanguage: 'en' });
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('PinSessionService', () => {
   it('stores only the salted hash, never the raw PIN', async () => {
@@ -96,7 +132,7 @@ describe('PinSessionService', () => {
     );
     expect((await profiles.find(DEVICE, user.id))?.attempts).toBe(1);
     const result = await service.switchProfile(DEVICE, user.id, '1234');
-    expect(result.token).toMatch(/^stub-token\./);
+    expect(result.token.startsWith('stub-token.')).toBe(true);
     expect(result.user.id).toBe(user.id);
     expect((await profiles.find(DEVICE, user.id))?.attempts).toBe(0);
   });
@@ -189,5 +225,104 @@ describe('PinSessionService', () => {
     const list = await service.listProfiles(DEVICE);
     expect(list.map((profile) => profile.userId).sort()).toEqual([a.id, b.id].sort());
     expect(JSON.stringify(list)).not.toContain('pinHash');
+  });
+});
+
+describe('PinSessionService credential threading (Stage-2 follow-up)', () => {
+  it('threads the verified PIN into token issuance as the credential', async () => {
+    const { service, users, auth } = build();
+    const user = await makeUser(users, '+234930', 'Thread Me');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const spy = vi.spyOn(auth, 'issueSessionFor');
+    await service.switchProfile(DEVICE, user.id, '1234');
+    expect(spy).toHaveBeenCalledWith(user.id, undefined, '1234');
+  });
+
+  it('never reaches token issuance on a wrong PIN (no credential threaded)', async () => {
+    const { service, users, auth } = build();
+    const user = await makeUser(users, '+234931', 'Wrong Pin');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const spy = vi.spyOn(auth, 'issueSessionFor');
+    await expect(service.switchProfile(DEVICE, user.id, '9999')).rejects.toBeInstanceOf(
+      UnauthorizedException
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('flag on + configured: the PIN swap exchanges the verified PIN at Keycloak', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ access_token: 'kc-pin-swap-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const { service, users } = buildFlagged(FLAGGED_ENV);
+    const user = await makeUser(users, '+234932', 'Flag Swap');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const result = await service.switchProfile(DEVICE, user.id, '1234');
+    expect(result.token).toBe('kc-pin-swap-token');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://keycloak.test/realms/agric-platform/protocol/openid-connect/token');
+    const body = String(init.body);
+    expect(body).toContain('grant_type=password');
+    expect(body).toContain(`username=${encodeURIComponent('+234932')}`);
+    expect(body).toContain('password=1234');
+    // Refresh-session contract is preserved alongside the swapped token.
+    expect(result.refreshToken).toBeTruthy();
+  });
+
+  it('flag on + unconfigured: boot aborts with ProviderConfigError', () => {
+    expect(() => new KeycloakPhoneTokenService({ PHONE_AUTH_KEYCLOAK: 'true' })).toThrow(
+      ProviderConfigError
+    );
+    expect(
+      () =>
+        new KeycloakPhoneTokenService({
+          PHONE_AUTH_KEYCLOAK: 'true',
+          OIDC_ISSUER: 'http://keycloak.test/realms/agric-platform'
+        })
+    ).toThrow(ProviderConfigError);
+  });
+
+  it('flag on + vendor down: the PIN swap fails closed with 503 AUTH_UNAVAILABLE', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('vendor-secret-error', { status: 500 }))
+    );
+    const { service, users } = buildFlagged(FLAGGED_ENV);
+    const user = await makeUser(users, '+234933', 'Vendor Down');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const error = await service.switchProfile(DEVICE, user.id, '1234').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as ServiceUnavailableException).getStatus()).toBe(503);
+    expect((error as Error).message).toContain(AUTH_UNAVAILABLE);
+    // Redaction doctrine: the vendor error body must not leak into the 503.
+    expect((error as Error).message).not.toContain('vendor-secret-error');
+  });
+
+  it('flag on + no credential threaded: issuance fails closed with 503 (placeholder semantics)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { auth, users } = buildFlagged(FLAGGED_ENV);
+    const user = await makeUser(users, '+234934', 'No Credential');
+    const error = await auth.issueSessionFor(user.id).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as Error).message).toContain(AUTH_UNAVAILABLE);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('flag off: the threaded credential is ignored and the dev stub path decides', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { service, users } = build();
+    const user = await makeUser(users, '+234935', 'Flag Off');
+    await service.addProfile(user.id, DEVICE, '1234');
+    const result = await service.switchProfile(DEVICE, user.id, '1234');
+    expect(result.token.startsWith('stub-token.')).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

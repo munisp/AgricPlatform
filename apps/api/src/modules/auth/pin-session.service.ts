@@ -20,7 +20,23 @@ export const PIN_MAX_PROFILES_PER_DEVICE = 5;
 export const PIN_MAX_ATTEMPTS = 5;
 export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 
-const PIN_PATTERN = /^\d{4}$/;
+/**
+ * Exactly 4 ASCII digits, checked with plain character comparisons. A
+ * regex would need a backslash-escape, and the patch channel that lands
+ * this file cannot transmit literal backslashes byte-exactly — keep this
+ * file 100% backslash-free.
+ */
+function isValidPin(pin: string): boolean {
+  if (pin.length !== 4) {
+    return false;
+  }
+  for (const char of pin) {
+    if (char < '0' || char > '9') {
+      return false;
+    }
+  }
+  return true;
+}
 
 export interface PinProfileView {
   deviceToken: string;
@@ -34,6 +50,13 @@ export interface PinProfileView {
  * device; each profile unlocks a fast session swap with a 4-digit PIN. PINs
  * are stored as salted hashes only, and the attempt/lockout policy reuses
  * the OTP challenge pattern (5 attempts → 15-minute lock).
+ *
+ * Credential threading (Stage-2 follow-up): after the PIN hash check passes,
+ * the verified PIN is threaded into AuthService.issueSessionFor as the
+ * second-factor credential. With PHONE_AUTH_KEYCLOAK on, that credential is
+ * exchanged at the realm token endpoint; without a verified credential the
+ * flagged path fails closed with 503 AUTH_UNAVAILABLE. The raw PIN is never
+ * logged or persisted — only the salted hash below.
  */
 @Injectable()
 export class PinSessionService {
@@ -51,7 +74,7 @@ export class PinSessionService {
 
   /** Adds (or re-pins) the authenticated user's profile on a device. */
   async addProfile(userId: string, deviceToken: string, pin: string): Promise<PinProfileView> {
-    if (!PIN_PATTERN.test(pin)) {
+    if (!isValidPin(pin)) {
       throw new BadRequestException('PIN must be exactly 4 digits');
     }
     // Confirms the account exists before linking it to a device.
@@ -99,8 +122,8 @@ export class PinSessionService {
     deviceToken: string,
     userId: string,
     pin: string
-  ): Promise<{ token: string; user: User }> {
-    if (!PIN_PATTERN.test(pin)) {
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
+    if (!isValidPin(pin)) {
       throw new BadRequestException('PIN must be exactly 4 digits');
     }
     const profile = await this.profiles.find(deviceToken, userId);
@@ -134,6 +157,9 @@ export class PinSessionService {
     if (profile.attempts > 0 || profile.lockedUntil) {
       await this.profiles.update(deviceToken, userId, { attempts: 0, lockedUntil: undefined });
     }
-    return this.auth.issueSessionFor(userId);
+    // Credential threading: the PIN survived the salted-hash check, so it is
+    // the verified second factor. It is threaded into token issuance — never
+    // logged, never persisted (only its salted hash is stored above).
+    return this.auth.issueSessionFor(userId, undefined, pin);
   }
 }
