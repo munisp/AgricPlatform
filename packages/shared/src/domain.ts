@@ -333,6 +333,40 @@ export interface AuditAnchor {
 }
 
 /**
+ * Evidence Locker item (Stage 27 Innovation 13, additive): one blob of
+ * dispute evidence pinned to an escrow/vsla/insurance/pool case. Postgres
+ * holds the reference and hash-chain fields only; the blob lives in
+ * S3-compatible object storage. Items are hash-chained per case
+ * (prevHash -> itemHash, genesis = 64 zeros); the hashed payload excludes
+ * `status`, the only mutable field (active -> sealed -> expunged via
+ * guarded CAS), so chain verification survives sealing and NDPA tombstones.
+ */
+export type EvidenceCaseType = 'escrow' | 'vsla' | 'insurance' | 'pool';
+
+export type EvidenceItemStatus = 'active' | 'sealed' | 'expunged';
+
+export interface EvidenceItem {
+  id: string;
+  caseType: EvidenceCaseType;
+  caseId: string;
+  uploaderId: string;
+  /** Object-storage key; one object maps to exactly one row (UNIQUE). */
+  objectKey: string;
+  /** Lowercase hex sha256 of the blob bytes. */
+  sha256: string;
+  /** Hash of the previous item in this case's chain (genesis = 64 zeros). */
+  prevHash: string;
+  /** sha256 over the canonical immutable payload + prevHash. */
+  itemHash: string;
+  /** When the evidence was captured (device time), if declared. */
+  capturedAt: string | null;
+  uploadedAt: string;
+  mime: string;
+  sizeBytes: number;
+  status: EvidenceItemStatus;
+}
+
+/**
  * Consistent API error envelope produced by the API exception filter.
  * `requestId` is additive: older clients ignore it (observability wave).
  */

@@ -88,6 +88,9 @@ import { CreditPassportModule } from './modules/credit-passport/credit-passport.
 // the env-gated in-process scheduler.
 import { SweepersModule } from './modules/sweepers/sweepers.module.js';
 
+// Stage 27 Innovation 13 (additive): hash-chained dispute evidence locker.
+import { EvidenceModule } from './modules/evidence/evidence.module.js';
+
 @Module({
   imports: [
     // Logging first: every module/service log line flows through pino.
@@ -194,7 +197,10 @@ import { SweepersModule } from './modules/sweepers/sweepers.module.js';
     VoiceTellerModule,
 
     // WP-G12 money-state sweepers — appended to minimise merge conflicts.
-    SweepersModule
+    SweepersModule,
+
+    // Stage 27 Innovation 13 evidence locker (flag `evidence-locker`, default OFF) — appended to minimise merge conflicts.
+    EvidenceModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
