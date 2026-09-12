@@ -18,6 +18,8 @@ import type {
   UssdSessionRepository
 } from '../../database/repositories/ussd-session.repository.js';
 import { ProviderConfigError } from '../integrations/drivers/http.js';
+import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service.js';
+import { PRICE_WIRE_FLAG, PriceWireService } from '../advisory/price-wire.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { UsersService } from '../users/users.service.js';
@@ -92,7 +94,12 @@ export class UssdService {
     private readonly learning: LearningService,
     @Inject(USSD_SESSION_REPOSITORY) private readonly sessions: UssdSessionRepository,
     @Inject(COMMODITY_PRICE_REPOSITORY) private readonly prices: CommodityPriceRepository,
-    @Optional() private readonly env: NodeJS.ProcessEnv = process.env
+    @Optional() private readonly env: NodeJS.ProcessEnv = process.env,
+    // Stage 27 (innovation 11): Price Wire pull path. Optional so bare
+    // service constructions in pre-existing unit tests keep working; when
+    // unwired the menu answers "unavailable" honestly.
+    @Optional() private readonly priceWire?: PriceWireService,
+    @Optional() private readonly flags?: FeatureFlagsService
   ) {
     this.driverConfig = resolveUssdDriver(env);
     // Fail closed at boot in production: a live/sandbox USSD driver without
@@ -166,7 +173,7 @@ export class UssdService {
     const engineState = stored?.engine ?? initialUssdState();
     const segment = text.split('*').pop() ?? '';
 
-    const data = await this.menuData();
+    const data = await this.menuData(input.phoneNumber);
     const turn = handleUssdTurn(engineState, segment, data);
     let response = turn.response;
 
@@ -225,11 +232,12 @@ export class UssdService {
   }
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */
-  private async menuData(): Promise<UssdMenuData> {
-    const [priceRows, opportunities, courses] = await Promise.all([
+  private async menuData(phone: string): Promise<UssdMenuData> {
+    const [priceRows, opportunities, courses, priceWire] = await Promise.all([
       this.prices.find({}),
       this.opportunities.all(),
-      this.learning.allCourses()
+      this.learning.allCourses(),
+      this.priceWireFor(phone)
     ]);
     const latestByCrop = new Map<string, (typeof priceRows)[number]>();
     for (const row of priceRows) {
@@ -263,7 +271,37 @@ export class UssdService {
         .slice()
         .sort((a, b) => a.id.localeCompare(b.id))
         .slice(0, 25)
-        .map((course) => ({ id: course.id, title: course.title }))
+        .map((course) => ({ id: course.id, title: course.title })),
+      ...(priceWire ? { priceWire } : {})
     };
+  }
+
+  /**
+   * Price Wire pull data (Stage 27, innovation 11). Fail-closed throughout:
+   * flag off/unwired or an unknown phone → undefined (the menu shows the
+   * honest unavailable message); stale/stub feeds make the advisory service
+   * itself mark quotes unavailable. Never fabricates a price.
+   */
+  private async priceWireFor(phone: string): Promise<UssdMenuData['priceWire']> {
+    if (!this.priceWire || !this.flags) {
+      return undefined;
+    }
+    try {
+      const user = await this.users.findByPhone(phone);
+      if (!user) {
+        return undefined;
+      }
+      const enabled = await this.flags.isEnabled(PRICE_WIRE_FLAG, {
+        userId: user.id,
+        roles: user.roles
+      });
+      if (!enabled) {
+        return undefined;
+      }
+      return await this.priceWire.wireMenuData();
+    } catch (error) {
+      this.logger.warn(`USSD price-wire lookup failed: ${(error as Error).message}`);
+      return undefined;
+    }
   }
 }

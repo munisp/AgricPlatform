@@ -8,10 +8,23 @@ import type { LanguageCode } from '@agric-platform/shared';
  * the current state, the latest input segment and the data the menu needs,
  * and receives the next state, the full response text and an optional side
  * effect (registration/enrolment) for the service layer to execute.
+ *
+ * This file intentionally contains no literal backslash sequences (MCP
+ * channel hazard — see PR #71 notes); multi-line menu text uses template
+ * literals with real newlines, which are byte-identical in value to escape
+ * sequences.
  */
 
 /** Africa's Talking turnaround limit for one USSD screen. */
 export const USSD_MAX_RESPONSE_CHARS = 182;
+
+/**
+ * A single newline, expressed as a real line break inside a template
+ * literal. Multi-line menu text is built from this constant so the file
+ * stays free of escape sequences.
+ */
+const NEWLINE = `
+`;
 
 /** Roles offered during USSD self-registration (KYC tier 0 phone identity). */
 export const USSD_REGISTRATION_ROLES = ['farmer', 'student', 'buyer', 'supplier'] as const;
@@ -23,6 +36,8 @@ export type UssdMenuId =
   | 'register_state'
   | 'register_role'
   | 'price_select'
+  | 'wire_commodity'
+  | 'wire_market'
   | 'course_code'
   | 'course_confirm'
   | 'language';
@@ -38,6 +53,8 @@ export interface UssdSessionState {
   draft: UssdRegistrationDraft;
   /** Course selected at course_code, awaiting confirmation. */
   courseId?: string;
+  /** Commodity selected at wire_commodity, awaiting the market pick. */
+  wireCommodity?: string;
 }
 
 /** Data the current turn may need; gathered by the service per callback. */
@@ -54,6 +71,19 @@ export interface UssdMenuData {
   opportunities: Array<{ id: string; title: string; type: string; deadline: string }>;
   /** Courses eligible for code-based enrolment. */
   courses: Array<{ id: string; title: string }>;
+  /**
+   * Price Wire pull path (Stage 27, innovation 11): commodities, markets
+   * and pre-rendered quotes computed by the advisory module. Absent or an
+   * unavailable quote → the menu answers honestly (never a fabricated
+   * price).
+   */
+  priceWire?: {
+    commodities: string[];
+    /** commodity → markets (most recently observed first). */
+    markets: Record<string, string[]>;
+    /** `${commodity}¦${market}` → rendered quote screen, when fresh+live. */
+    quotes: Record<string, { available: boolean; text?: string }>;
+  };
 }
 
 export type UssdEffect =
@@ -98,19 +128,35 @@ type StringKey =
   | 'enrolment_cancelled'
   | 'invalid_confirmation'
   | 'language_menu'
-  | 'language_set';
+  | 'language_set'
+  | 'wire_prompt'
+  | 'wire_market_prompt'
+  | 'wire_unavailable';
 
 const STRINGS: Record<'en', Record<StringKey, string>> = {
   en: {
-    main_menu:
-      'Welcome to AgricPlatform\n1 Register\n2 Market prices\n3 Opportunities\n4 Course enrolment\n0 Language',
+    main_menu: `Welcome to AgricPlatform
+1 Register
+2 Market prices
+3 Opportunities
+4 Course enrolment
+6 Price check
+0 Language`,
     invalid_choice: 'Invalid choice.',
     ask_name: 'Enter your full name:',
     invalid_name: 'Invalid name. Enter your full name (letters only):',
     ask_state: 'Enter your state (e.g. Kano):',
     invalid_state: 'Invalid state. Enter your state (e.g. Kano):',
-    ask_role: 'Select role:\n1 Farmer\n2 Student\n3 Buyer\n4 Supplier',
-    invalid_role: 'Invalid role. Select:\n1 Farmer\n2 Student\n3 Buyer\n4 Supplier',
+    ask_role: `Select role:
+1 Farmer
+2 Student
+3 Buyer
+4 Supplier`,
+    invalid_role: `Invalid role. Select:
+1 Farmer
+2 Student
+3 Buyer
+4 Supplier`,
     registration_done: 'Registration complete. Welcome to AgricPlatform!',
     no_prices: 'No market prices available right now. Please try again later.',
     price_prompt: 'Select crop:',
@@ -120,12 +166,18 @@ const STRINGS: Record<'en', Record<StringKey, string>> = {
     ask_course_code: 'Enter the course code (from the app or SMS):',
     no_courses: 'No courses are open for enrolment right now.',
     course_not_found: 'Course not found. Enter the course code:',
-    course_confirm: 'Enrol in this course?\n1 Yes\n2 No',
+    course_confirm: `Enrol in this course?
+1 Yes
+2 No`,
     enrolment_done: 'Enrolment confirmed. You will get an SMS shortly.',
     enrolment_cancelled: 'Enrolment cancelled.',
     invalid_confirmation: 'Reply 1 for Yes or 2 for No:',
-    language_menu: 'Language:\n1 English',
-    language_set: 'Language is English. Hausa, Yoruba and Igbo are coming soon.'
+    language_menu: `Language:
+1 English`,
+    language_set: 'Language is English. Hausa, Yoruba and Igbo are coming soon.',
+    wire_prompt: 'Price check — select crop:',
+    wire_market_prompt: 'Select market:',
+    wire_unavailable: 'Price unavailable right now. Please try again later.'
   }
 };
 
@@ -143,15 +195,37 @@ export function initialUssdState(language: LanguageCode = 'en'): UssdSessionStat
   return { menu: 'main', language, draft: {} };
 }
 
+/** Whitespace that can appear in a menu body (spaces and newlines only). */
+function isMenuWhitespace(char: string): boolean {
+  return char === ' ' || char === NEWLINE;
+}
+
+/**
+ * Drops a trailing partial word: the trailing whitespace run plus any
+ * non-whitespace run after it, mirroring the previous regex
+ * `[whitespace]+[non-whitespace]*$` — unchanged when the slice ends with a
+ * complete word preceded by no whitespace. Menu bodies only ever contain
+ * spaces and newlines, so the behaviour is identical on all real inputs.
+ */
+function dropTrailingPartialWord(text: string): string {
+  let wordStart = text.length;
+  while (wordStart > 0 && !isMenuWhitespace(text[wordStart - 1])) {
+    wordStart -= 1;
+  }
+  let keepEnd = wordStart;
+  while (keepEnd > 0 && isMenuWhitespace(text[keepEnd - 1])) {
+    keepEnd -= 1;
+  }
+  // No whitespace run before the tail word → nothing to drop.
+  return text.slice(0, keepEnd === wordStart ? text.length : keepEnd);
+}
+
 /** Caps a response body at the turnaround limit, preserving line structure. */
 export function capResponse(body: string, max: number = USSD_MAX_RESPONSE_CHARS): string {
   if (body.length <= max) {
     return body;
   }
-  return body
-    .slice(0, max - 1)
-    .replace(/[\n\s]+\S*$/, '')
-    .trimEnd();
+  return dropTrailingPartialWord(body.slice(0, max - 1)).trimEnd();
 }
 
 /** Body cap so the prefixed response stays within the turnaround limit. */
@@ -166,7 +240,7 @@ function end(state: UssdSessionState, body: string): UssdTurn {
 }
 
 function numbered(items: readonly string[]): string {
-  return items.map((item, index) => `${index + 1} ${item}`).join('\n');
+  return items.map((item, index) => `${index + 1} ${item}`).join(NEWLINE);
 }
 
 function formatPriceNgn(value: number): string {
@@ -200,6 +274,11 @@ export function resolveCourseCode(
   });
 }
 
+/** Quote lookup key for the Price Wire pull data (commodity¦market). */
+export function wireQuoteMenuKey(commodity: string, market: string): string {
+  return `${commodity}¦${market}`;
+}
+
 /**
  * Advances the machine one turn. `input` is the latest segment of the
  * Africa's Talking `text` field (empty string on the opening dial). In any
@@ -231,6 +310,10 @@ export function handleUssdTurn(
       return handleRegisterRole(state, text);
     case 'price_select':
       return handlePriceSelect(state, text, data);
+    case 'wire_commodity':
+      return handleWireCommodity(state, text, data);
+    case 'wire_market':
+      return handleWireMarket(state, text, data);
     case 'course_code':
       return handleCourseCode(state, text, data);
     case 'course_confirm':
@@ -252,7 +335,8 @@ function handleMain(state: UssdSessionState, text: string, data: UssdMenuData): 
       const crops = data.prices.slice(0, 6).map((price) => price.crop);
       return con(
         { ...state, menu: 'price_select' },
-        `${t(lang, 'price_prompt')}\n${numbered(crops)}`
+        `${t(lang, 'price_prompt')}
+${numbered(crops)}`
       );
     }
     case '3': {
@@ -261,7 +345,8 @@ function handleMain(state: UssdSessionState, text: string, data: UssdMenuData): 
         return end(state, t(lang, 'no_opportunities'));
       }
       const lines = open.map((opportunity, index) => `${index + 1} ${opportunity.title}`);
-      return end(state, `${t(lang, 'opportunities_header')}\n${lines.join('\n')}`);
+      return end(state, `${t(lang, 'opportunities_header')}
+${lines.join(NEWLINE)}`);
     }
     case '4': {
       if (data.courses.length === 0) {
@@ -269,10 +354,24 @@ function handleMain(state: UssdSessionState, text: string, data: UssdMenuData): 
       }
       return con({ ...state, menu: 'course_code', courseId: undefined }, t(lang, 'ask_course_code'));
     }
+    case '6': {
+      // Price Wire pull: commodities/markets/quotes arrive pre-computed from
+      // the advisory module; the engine never fabricates a price.
+      const wire = data.priceWire;
+      if (!wire || wire.commodities.length === 0) {
+        return end(state, t(lang, 'wire_unavailable'));
+      }
+      return con(
+        { ...state, menu: 'wire_commodity', wireCommodity: undefined },
+        `${t(lang, 'wire_prompt')}
+${numbered(wire.commodities)}`
+      );
+    }
     case '0':
       return con({ ...state, menu: 'language' }, t(lang, 'language_menu'));
     default:
-      return con(state, `${t(lang, 'invalid_choice')}\n${t(lang, 'main_menu')}`);
+      return con(state, `${t(lang, 'invalid_choice')}
+${t(lang, 'main_menu')}`);
   }
 }
 
@@ -322,14 +421,63 @@ function handlePriceSelect(state: UssdSessionState, text: string, data: UssdMenu
   if (!price) {
     return con(
       state,
-      `${t(lang, 'invalid_crop')}\n${numbered(crops.map((entry) => entry.crop))}`
+      `${t(lang, 'invalid_crop')}
+${numbered(crops.map((entry) => entry.crop))}`
     );
   }
   const day = price.observedAt.slice(0, 10);
   return end(
     initialUssdState(lang),
-    `${price.crop}: ${formatPriceNgn(price.priceNgn)}\n${price.market} (${price.state})\n${day}`
+    `${price.crop}: ${formatPriceNgn(price.priceNgn)}
+${price.market} (${price.state})
+${day}`
   );
+}
+
+function handleWireCommodity(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {
+  const lang = state.language;
+  const wire = data.priceWire;
+  const commodities = wire?.commodities ?? [];
+  const index = Number.parseInt(text, 10);
+  const commodity = commodities[index - 1];
+  if (!wire || !commodity) {
+    return con(
+      state,
+      `${t(lang, 'invalid_crop')}
+${numbered(commodities)}`
+    );
+  }
+  const markets = wire.markets[commodity] ?? [];
+  if (markets.length === 0) {
+    return end(state, t(lang, 'wire_unavailable'));
+  }
+  return con(
+    { ...state, menu: 'wire_market', wireCommodity: commodity },
+    `${t(lang, 'wire_market_prompt')}
+${numbered(markets)}`
+  );
+}
+
+function handleWireMarket(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {
+  const lang = state.language;
+  const wire = data.priceWire;
+  const commodity = state.wireCommodity;
+  const markets = (wire && commodity ? wire.markets[commodity] : undefined) ?? [];
+  const index = Number.parseInt(text, 10);
+  const market = markets[index - 1];
+  if (!wire || !commodity || !market) {
+    return con(
+      state,
+      `${t(lang, 'invalid_choice')}
+${numbered(markets)}`
+    );
+  }
+  const quote = wire.quotes[wireQuoteMenuKey(commodity, market)];
+  if (!quote || !quote.available || !quote.text) {
+    // Honest pull answer: stale/stub/unavailable feeds never render a number.
+    return end(initialUssdState(lang), t(lang, 'wire_unavailable'));
+  }
+  return end(initialUssdState(lang), quote.text);
 }
 
 function handleCourseCode(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {
@@ -340,7 +488,8 @@ function handleCourseCode(state: UssdSessionState, text: string, data: UssdMenuD
   }
   return con(
     { ...state, menu: 'course_confirm', courseId: course.id },
-    `${course.title}\n${t(lang, 'course_confirm')}`
+    `${course.title}
+${t(lang, 'course_confirm')}`
   );
 }
 
@@ -362,7 +511,8 @@ function handleCourseConfirm(state: UssdSessionState, text: string, data: UssdMe
   if (text === '2') {
     return end(initialUssdState(lang), t(lang, 'enrolment_cancelled'));
   }
-  return con(state, `${course.title}\n${t(lang, 'invalid_confirmation')}`);
+  return con(state, `${course.title}
+${t(lang, 'invalid_confirmation')}`);
 }
 
 function handleLanguage(state: UssdSessionState, text: string): UssdTurn {
@@ -370,5 +520,6 @@ function handleLanguage(state: UssdSessionState, text: string): UssdTurn {
   if (text === '1') {
     return end(initialUssdState(lang), t(lang, 'language_set'));
   }
-  return con(state, `${t(lang, 'invalid_choice')}\n${t(lang, 'language_menu')}`);
+  return con(state, `${t(lang, 'invalid_choice')}
+${t(lang, 'language_menu')}`);
 }
