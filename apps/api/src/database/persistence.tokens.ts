@@ -313,3 +313,8 @@ export const CREDIT_PASSPORT_DISCLOSURE_REPOSITORY = Symbol('CREDIT_PASSPORT_DIS
 // roster port over chapters.chapter_members. Aggregates only; no PII.
 export const CHAPTER_MAP_SNAPSHOT_REPOSITORY = Symbol('CHAPTER_MAP_SNAPSHOT_REPOSITORY');
 export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
+// Stage 27 / Innovation 8: Receipt LTV Guardian — collateral positions +
+// append-only LTV observation log (warehouse schema, migration 066). The
+// outstanding balance is read from the finance ledger, never stored here.
+export const COLLATERAL_POSITION_REPOSITORY = Symbol('COLLATERAL_POSITION_REPOSITORY');
+export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
