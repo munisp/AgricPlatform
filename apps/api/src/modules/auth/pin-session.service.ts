@@ -20,7 +20,17 @@ export const PIN_MAX_PROFILES_PER_DEVICE = 5;
 export const PIN_MAX_ATTEMPTS = 5;
 export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
 
-const PIN_PATTERN = /^\d{4}$/;
+// Character class (not a digit escape) keeps this source file free of literal backslashes.
+const PIN_PATTERN = /^[0-9]{4}$/;
+
+/**
+ * Pure salted PIN hash (Stage 27 Voice Teller reuses this for IVR caller
+ * verification so the formula can never drift between channels). The raw
+ * PIN never leaves the request.
+ */
+export function hashSharedDevicePin(deviceToken: string, userId: string, pin: string): string {
+  return createHash('sha256').update(`pin:${deviceToken}:${userId}:${pin}`).digest('hex');
+}
 
 export interface PinProfileView {
   deviceToken: string;
@@ -46,7 +56,7 @@ export class PinSessionService {
 
   /** Salted PIN hash — the raw PIN never leaves the request. */
   hashPin(deviceToken: string, userId: string, pin: string): string {
-    return createHash('sha256').update(`pin:${deviceToken}:${userId}:${pin}`).digest('hex');
+    return hashSharedDevicePin(deviceToken, userId, pin);
   }
 
   /** Adds (or re-pins) the authenticated user's profile on a device. */

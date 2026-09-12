@@ -27,6 +27,15 @@ export class PgPinProfileRepository implements PinProfileRepository {
     return result.rows.map((row) => this.fromRow(row));
   }
 
+  async listForUser(userId: string): Promise<PinProfile[]> {
+    const result = await this.pool.query(
+      'SELECT device_token, user_id, pin_hash, attempts, locked_until, created_at ' +
+        'FROM channels.pin_profiles WHERE user_id = $1 ORDER BY created_at, device_token',
+      [userId]
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
   async countForDevice(deviceToken: string): Promise<number> {
     const result = await this.pool.query(
       'SELECT count(*)::int AS total FROM channels.pin_profiles WHERE device_token = $1',

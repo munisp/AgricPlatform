@@ -20,6 +20,12 @@ export interface PinProfile {
 export interface PinProfileRepository {
   find(deviceToken: string, userId: string): Promise<PinProfile | undefined>;
   listForDevice(deviceToken: string): Promise<PinProfile[]>;
+  /**
+   * All profiles belonging to one user across devices (Stage 27 Voice
+   * Teller): the IVR channel authenticates the CALLER, not a specific
+   * device, so PIN verification checks the user's shared-device PINs.
+   */
+  listForUser(userId: string): Promise<PinProfile[]>;
   countForDevice(deviceToken: string): Promise<number>;
   /** Upsert keyed on (deviceToken, userId). */
   save(profile: PinProfile): Promise<PinProfile>;
@@ -54,6 +60,12 @@ export class InMemoryPinProfileRepository implements PinProfileRepository {
   async listForDevice(deviceToken: string): Promise<PinProfile[]> {
     return [...this.items.values()]
       .filter((profile) => profile.deviceToken === deviceToken)
+      .map((profile) => ({ ...profile }));
+  }
+
+  async listForUser(userId: string): Promise<PinProfile[]> {
+    return [...this.items.values()]
+      .filter((profile) => profile.userId === userId)
       .map((profile) => ({ ...profile }));
   }
 
