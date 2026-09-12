@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import {
@@ -17,6 +17,9 @@ import { NotificationsService } from '../notifications/notifications.service.js'
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { ProfilesService } from '../profiles/profiles.service.js';
 import { UsersService } from '../users/users.service.js';
+// Value import (not `import type`): Nest resolves the @Optional()
+// EvidenceService dependency through emitted decorator metadata.
+import { EvidenceService } from '../evidence/evidence.service.js';
 
 export interface ProcessingRegisterEntry {
   purpose: string;
@@ -61,6 +64,8 @@ const PROCESSING_REGISTER: ProcessingRegisterEntry[] = [
 
 @Injectable()
 export class PrivacyService {
+  private readonly logger = new Logger(PrivacyService.name);
+
   constructor(
     private readonly users: UsersService,
     private readonly profiles: ProfilesService,
@@ -73,7 +78,12 @@ export class PrivacyService {
     private readonly events: DomainEventsService,
     @Inject(CONSENT_REPOSITORY) private readonly consents: ConsentRepository,
     @Inject(DELETION_REQUEST_REPOSITORY)
-    private readonly deletionRequests: DeletionRequestRepository
+    private readonly deletionRequests: DeletionRequestRepository,
+    // Stage 27 Innovation 13 (optional, additive): NDPA deletion also
+    // expunges dispute-evidence blobs the user uploaded, leaving hash
+    // tombstones so evidence chains stay verifiable. Optional so the
+    // privacy surface boots unchanged when the locker is absent.
+    @Optional() private readonly evidence?: EvidenceService
   ) {}
 
   async grantConsent(input: {
@@ -202,6 +212,25 @@ export class PrivacyService {
       throw new NotFoundException(`Deletion request '${requestId}' not found`);
     }
     await this.users.anonymize(request.userId);
+    // Stage 27 Innovation 13: expunge the user's dispute-evidence blobs
+    // (object deleted, hash tombstone retained). Failures are logged, never
+    // swallowed; the sweep result is auditable via evidence.item.expunged
+    // audit events per item.
+    if (this.evidence) {
+      try {
+        const sweep = await this.evidence.expungeForUser(request.userId, actorId);
+        if (sweep.failed > 0) {
+          this.logger.warn(
+            `Evidence expunge sweep for user '${request.userId}' left ${sweep.failed} item(s) ` +
+              `unexpunged (${sweep.expunged} expunged) — manual follow-up required`
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Evidence expunge sweep for user '${request.userId}' failed: ${(error as Error).message}`
+        );
+      }
+    }
     const updated = await this.deletionRequests.update(requestId, {
       status: 'completed',
       completedAt: new Date().toISOString()

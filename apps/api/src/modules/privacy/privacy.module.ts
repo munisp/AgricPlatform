@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EvidenceModule } from '../evidence/evidence.module.js';
 import { FinanceModule } from '../finance/finance.module.js';
 import { LearningModule } from '../learning/learning.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
@@ -15,7 +16,9 @@ import { PrivacyService } from './privacy.service.js';
     OpportunitiesModule,
     MarketplaceModule,
     FinanceModule,
-    NotificationsModule
+    NotificationsModule,
+    // Stage 27 Innovation 13: NDPA deletion sweeps the user's evidence blobs.
+    EvidenceModule
   ],
   controllers: [PrivacyController],
   providers: [PrivacyService],
