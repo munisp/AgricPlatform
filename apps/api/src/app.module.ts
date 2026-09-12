@@ -57,11 +57,13 @@ import { SyncModule } from './modules/sync/sync.module.js';
 import { FarmsModule } from './modules/farms/farms.module.js';
 // Wave AGENTS (additive): field-agent (enumerator) assignments + capture.
 import { FieldAgentsModule } from './modules/field-agents/field-agents.module.js';
+import { FraudModule } from './modules/fraud/fraud.module.js';
 // Wave GEO (additive): geospatial pack — H3 indexing, boundaries, contains.
 import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 import { VoiceModule } from './modules/voice/voice.module.js';
+import { VoiceTellerModule } from './modules/voice/voice-teller.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
@@ -79,6 +81,13 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
 import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
+// Stage 27 INNOVATION 7 Credit Passport — appended to minimise merge conflicts.
+import { CreditPassportModule } from './modules/credit-passport/credit-passport.module.js';
+
+// WP-G12 (additive): money-state sweepers (escrow expiry, stuck vouchers) +
+// the env-gated in-process scheduler.
+import { SweepersModule } from './modules/sweepers/sweepers.module.js';
+
 // Stage 27 Innovation 13 (additive): hash-chained dispute evidence locker.
 import { EvidenceModule } from './modules/evidence/evidence.module.js';
 
@@ -179,6 +188,17 @@ import { EvidenceModule } from './modules/evidence/evidence.module.js';
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
     WarehouseModule,
+    // Stage 27 Float Sentinel fraud/liquidity anomaly engine (detective-only) — appended to minimise merge conflicts.
+    FraudModule,
+    // Stage 27 INNOVATION 7 Credit Passport (verifiable farmer credential) — appended to minimise merge conflicts.
+    CreditPassportModule,
+
+    // Stage 27 Voice Teller transactional voice intents (flag `voice-teller`, default OFF) — appended to minimise merge conflicts.
+    VoiceTellerModule,
+
+    // WP-G12 money-state sweepers — appended to minimise merge conflicts.
+    SweepersModule,
+
     // Stage 27 Innovation 13 evidence locker (flag `evidence-locker`, default OFF) — appended to minimise merge conflicts.
     EvidenceModule
   ],

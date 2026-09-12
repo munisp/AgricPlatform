@@ -424,7 +424,8 @@ export const ESCROW_STATUSES = [
   'released',
   'refunding',
   'refunded',
-  'disputed'
+  'disputed',
+  'delivered_pending_confirm'
 ] as const;
 export type EscrowStatus = (typeof ESCROW_STATUSES)[number];
 
@@ -454,6 +455,21 @@ export interface EscrowRecord {
   /** Expiry deadline: a held escrow past this timestamp is auto-refunded. */
   heldUntil?: string;
   resolvedAt?: string;
+  /**
+   * Geo-sealed delivery (Stage 27, Innovation 9): the agreed drop point as a
+   * res-9 H3 cell, computed server-side from buyer-supplied coordinates.
+   * Nullable — orders opt in; an escrow without it is not geo-sealed.
+   */
+  deliveryPointH3?: string;
+  /** k-ring radius (cells) around the drop cell that counts as in-geofence. */
+  geofenceRadiusCells?: number;
+  /**
+   * Confirm-window deadline set when a geo-verified attestation moves the
+   * escrow to 'delivered_pending_confirm': past this timestamp the confirm
+   * sweep auto-releases. NULL means a manual-basis attestation — policy
+   * requires an explicit buyer confirm, the sweep never auto-releases it.
+   */
+  deliveryConfirmUntil?: string;
 }
 
 /**
@@ -715,6 +731,14 @@ export interface Lender {
   minScore: number;
   criteria: string[];
   isActive: boolean;
+  /**
+   * Provenance of the catalogue row (WP-G18): 'sample_catalogue' for the
+   * built-in unverified fixtures, 'admin_registered' for rows registered
+   * through the admin API, or an import-rail tag. Never silently absent.
+   */
+  source: string;
+  /** Vetted-lender flag — false until ops verifies the lender. */
+  verified: boolean;
 }
 
 export interface CreditScoreResult {
