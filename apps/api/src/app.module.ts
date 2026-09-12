@@ -79,6 +79,8 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
 import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
+// Stage 27 innovation #20 (additive): Lender Lens — standardized lender portfolio scorecards.
+import { LenderLensModule } from './modules/analytics/lender-lens.module.js';
 
 @Module({
   imports: [
@@ -176,7 +178,9 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
-    WarehouseModule
+    WarehouseModule,
+    // Stage 27 innovation #20 Lender Lens — standardized lender portfolio scorecards — appended to minimise merge conflicts.
+    LenderLensModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
