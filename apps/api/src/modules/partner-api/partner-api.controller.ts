@@ -201,14 +201,22 @@ export class PartnerApiController {
     };
   }
 
+  /**
+   * farmOS-compatible farm data push (Stage 27, WP-G22): the credential
+   * must be bound to a partner organisation (403 otherwise, fail closed —
+   * same convention as writeTenantFor) and the subject farmer must be in
+   * the partner's scope (service-enforced, 404 when unbound).
+   */
   @Post('farm-data')
   @HttpCode(202)
   @PartnerScopes('farm_data:write')
-  @ApiOperation({ summary: 'farmOS-compatible farm data push' })
+  @ApiOperation({ summary: 'farmOS-compatible farm data push (bound members only)' })
   async farmDataPush(@Body() dto: FarmDataPushDto, @Req() request: Request) {
     const identity = partnerIdentity(request);
+    const partnerId = writeTenantFor(identity);
     return {
       data: await this.partnerApi.recordFarmDataPush(
+        partnerId,
         dto.userId,
         dto as unknown as Record<string, unknown>,
         identity.clientId

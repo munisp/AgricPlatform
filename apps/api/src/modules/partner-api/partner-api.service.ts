@@ -204,12 +204,54 @@ export class PartnerApiService {
     return { user, profile, enrolments };
   }
 
+  /**
+   * Member↔partner scope guard for partner writes (Stage 27, WP-G22 —
+   * extends the WP-G4 binding pattern to the write paths). A member is in
+   * the partner's scope when they hold at least one application to one of
+   * that partner's programmes (the same binding `consentedParticipation`
+   * and WP-G4's member-profile read use), OR an explicit active
+   * `partner_data_sharing` consent record. Out-of-scope members raise
+   * NotFoundException with the same shape WP-G4 uses for an unknown user,
+   * so partner membership cannot be enumerated through the write paths.
+   */
+  private async assertMemberInScope(partnerId: string, userId: string): Promise<void> {
+    const applications = await this.opportunities.applicationsForPartner(partnerId);
+    const bound = applications.some((application) => application.userId === userId);
+    if (!bound && !(await this.hasSharingConsent(userId))) {
+      throw new NotFoundException(`Member '${userId}' not found`);
+    }
+  }
+
+  /**
+   * Programme binding for disbursements (Stage 27, WP-G22): a referenced
+   * loan/programme must belong to this partner — or be unassigned
+   * (partnerId unset), which any partner may record against per the
+   * existing domain rules (opportunities carry an optional partnerId; there
+   * is no separate claim workflow). Foreign programmes raise the same 404
+   * shape as an unknown id, so programme ownership cannot be probed.
+   */
+  private async assertProgrammeInScope(partnerId: string, programmeId: string): Promise<void> {
+    let programme: Opportunity | undefined;
+    try {
+      programme = await this.opportunities.get(programmeId);
+    } catch (error: unknown) {
+      if (!(error instanceof NotFoundException)) throw error;
+      programme = undefined;
+    }
+    if (!programme || (programme.partnerId !== undefined && programme.partnerId !== partnerId)) {
+      throw new NotFoundException(`Programme '${programmeId}' not found`);
+    }
+  }
+
   /** Records a disbursement event and publishes it for webhook fan-out. */
   async recordDisbursement(
     partnerId: string,
     input: { userId: string; amountNgn: number; programmeId?: string; reference?: string },
     actorId: string
   ): Promise<DisbursementEvent> {
+    if (input.programmeId) {
+      await this.assertProgrammeInScope(partnerId, input.programmeId);
+    }
     await this.users.getById(input.userId);
     const event: DisbursementEvent = {
       id: newId('disb'),
@@ -237,12 +279,16 @@ export class PartnerApiService {
     input: { userId: string; programmeId: string; cohortLabel?: string },
     actorId: string
   ): Promise<PartnerEnrolmentEvent> {
+    // WP-G22: the enrollee must be a member in this partner's scope (bound
+    // via an application to one of its programmes, or an explicit consent
+    // record) — previously any userId was accepted.
+    await this.assertMemberInScope(partnerId, input.userId);
     await this.users.getById(input.userId);
     const programmes = await this.opportunities.opportunitiesForPartner(partnerId);
     if (!programmes.some((programme: Opportunity) => programme.id === input.programmeId)) {
-      throw new NotFoundException(
-        `Programme ${input.programmeId} does not belong to partner ${partnerId}`
-      );
+      // 404 indistinguishable from an unknown programme (WP-G4 convention:
+      // cross-tenant lookups must not leak ownership).
+      throw new NotFoundException(`Programme '${input.programmeId}' not found`);
     }
     const event: PartnerEnrolmentEvent = {
       id: newId('penrol'),
@@ -276,12 +322,23 @@ export class PartnerApiService {
    * as a replay-safe inbound event (event_type farm_data.pending_link) whose
    * payload carries the `pending-link:{userId}` marker; a later account
    * linkage can replay these into farm_records.
+   *
+   * Tenant binding (Stage 27, WP-G22): the caller's credential must be bound
+   * to a partner organisation (enforced by the controller via the token's
+   * partnerId claim — unbound credentials are 403, fail closed), and the
+   * subject farmer must be in that partner's scope — bound via an
+   * application to one of the partner's programmes or an explicit active
+   * `partner_data_sharing` consent record. Unbound subjects are 404,
+   * indistinguishable from an unknown user. Audit attribution: the actor is
+   * the partner client, the farmer is the subject (entityType user).
    */
   async recordFarmDataPush(
+    partnerId: string,
     userId: string,
     payload: Record<string, unknown>,
     actorId: string
   ): Promise<FarmDataPushResult> {
+    await this.assertMemberInScope(partnerId, userId);
     await this.users.getById(userId);
     const result: FarmDataPushResult = {
       id: newId('farmdata'),
@@ -317,6 +374,13 @@ export class PartnerApiService {
       });
       result.pendingLink = true;
     }
+    await this.audit.record({
+      actorId,
+      action: 'partner.farm_data.received',
+      entityType: 'user',
+      entityId: userId,
+      metadata: { partnerId, linked: result.linked }
+    });
     await this.events.publish(
       'partner.farm_data.received',
       {
