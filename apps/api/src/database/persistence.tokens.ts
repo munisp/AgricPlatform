@@ -275,3 +275,11 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Wave HARVEST-FORWARD (additive, Stage 27 Innovation 18): milestone-
+// tracked offtake agreements (marketplace schema, migration 077). Distinct
+// from the livestock-trade OFFTAKE_CONTRACT_REPOSITORY (buyer price offers
+// on certified animal listings). Money movement stays in the finance ledger
+// and rides the existing order/invoice/escrow rails; these tables hold
+// contract, milestone and delivery operational records only.
+export const HARVEST_FORWARD_CONTRACT_REPOSITORY = Symbol('HARVEST_FORWARD_CONTRACT_REPOSITORY');
