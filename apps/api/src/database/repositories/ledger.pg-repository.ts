@@ -15,7 +15,8 @@ import type {
   DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
-  LedgerEntryRepository
+  LedgerEntryRepository,
+  LedgerPostingTx
 } from './ledger.repository.js';
 
 /**
@@ -295,15 +296,45 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await postLedgerEntryTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation);
+      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation);
       await client.query('COMMIT');
-      return entry;
+      return posted;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * The posting body of `postEntry` on a CALLER-OWNED transaction client
+   * (WP-G1 VSLA fold): no BEGIN/COMMIT here — the caller's transaction
+   * decides commit/rollback, so a wider logical money movement (e.g. the
+   * VSLA repayment claim + this posting + the repayment row) commits or
+   * rolls back as ONE unit. Lock order, solvency guard and outbox insert
+   * are identical to the standalone path.
+   */
+  async postEntryInTx(
+    tx: LedgerPostingTx,
+    entry: LedgerJournalEntry,
+    requireSolventAccounts?: readonly string[],
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
+  ): Promise<LedgerJournalEntry> {
+    // Single posting path (merge-resolution doctrine): all in-transaction
+    // postings route through postLedgerEntryTx so the solvency guard, the
+    // WP-G2 atomic daily-limit reservation, and the same-transaction outbox
+    // append apply identically whether the caller owns the transaction
+    // (WP-G1 VSLA fold) or this repository opened it (postEntry above).
+    await postLedgerEntryTx(
+      tx as pg.PoolClient,
+      entry,
+      requireSolventAccounts,
+      outboxEvent,
+      dailyLimitReservation
+    );
+    return entry;
   }
 
   async entriesForAccount(accountCode: string): Promise<LedgerJournalEntry[]> {
