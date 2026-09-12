@@ -178,7 +178,7 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       {
         "method": "POST",
         "path": "/api/v1/partner/farm-data",
-        "summary": "farmOS-compatible farm data push",
+        "summary": "farmOS-compatible farm data push (bound members only)",
         "auth": "client-credentials",
         "scopes": [
           "farm_data:write"
