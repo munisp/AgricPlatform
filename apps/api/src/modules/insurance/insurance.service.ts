@@ -774,9 +774,30 @@ export class InsuranceService {
    * settlement entry (claims payable debit / farmer payout credit) through
    * the ledger; no real disbursement happens (external gates: insurer MOU +
    * payment rail activation).
+   *
+   * FAIL-CLOSED (WP-G15, mirrors the Stage 23 escrow payout rail): stub
+   * execution is the ONLY execution mode wired in this build, so in
+   * production this endpoint refuses with 503 BEFORE anything is persisted
+   * — a payout marked PAID against stub money movement would be a
+   * fabricated financial record. Activation requires a real disbursement
+   * rail (insurer MOU + payment provider), which is a separate package.
    */
   async confirmPayout(actor: User, payoutId: string): Promise<ParametricPayout> {
     requireAdmin(actor);
+    if (isProduction()) {
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'insurance.payout.unavailable',
+        entityType: 'insurance_payout',
+        entityId: payoutId,
+        metadata: { execution: 'stub', production: true }
+      });
+      throw new ServiceUnavailableException(
+        'Insurance payout execution is stub-only in this build — confirming would mark a payout ' +
+          'PAID with no real disbursement. Production requires an insurer-approved live payout ' +
+          'rail (not yet wired); refusing to confirm payout — nothing was posted or recorded.'
+      );
+    }
     const payout = await this.payouts.findById(payoutId);
     if (!payout) {
       throw new NotFoundException(`Insurance payout '${payoutId}' not found`);
