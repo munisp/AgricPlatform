@@ -21,6 +21,7 @@ import {
   LEDGER_ENTRY_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
+  DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
   LedgerEntryRepository
@@ -40,6 +41,13 @@ export interface PostEntryInput {
    * an underfunded posting is rejected atomically (funds-integrity wave).
    */
   requireSolventAccounts?: readonly string[];
+  /**
+   * Atomic daily cash-limit reservation (stage 27 WP-G2, audit A1-7): the
+   * per-(agent, business date) counter is incremented inside the posting
+   * transaction only while the cap holds; a breached cap or a failed
+   * posting rolls counter and money movement back together.
+   */
+  dailyLimitReservation?: DailyLimitReservation;
 }
 
 /**
@@ -129,7 +137,12 @@ export class LedgerService {
       { entryId: entry.id, idempotencyKey: entry.idempotencyKey, referenceId: entry.referenceId },
       actorId
     );
-    const posted = await this.entries.postEntry(entry, input.requireSolventAccounts, event);
+    const posted = await this.entries.postEntry(
+      entry,
+      input.requireSolventAccounts,
+      event,
+      input.dailyLimitReservation
+    );
     if (this.entries.transactionalOutbox) {
       this.events.emit(event);
     } else {
