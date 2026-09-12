@@ -69,6 +69,7 @@ import {
   IMPORT_BATCH_REPOSITORY,
   IMPORT_RECORD_REPOSITORY,
   INBOUND_EVENT_REPOSITORY,
+  BRIDGE_SYNC_STATE_REPOSITORY,
   RECOMMENDATION_FEEDBACK_REPOSITORY,
   ANALYTICS_MART_REPOSITORY,
   WEBHOOK_DEDUPE_STORE,
@@ -283,6 +284,9 @@ import {
   createPgWebhookDedupeStore
 } from './repositories/phase3.pg-repository.js';
 import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
+// WP-G20: bridge sync-state (Moodle/Discourse/Directus scheduled sync).
+import { createInMemoryBridgeSyncStateRepository } from './repositories/bridge-sync-state.repository.js';
+import { createPgBridgeSyncStateRepository } from './repositories/bridge-sync-state.pg-repository.js';
 // USSD channel + lightweight-channel depth wave (P5b) repositories.
 import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
 import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
@@ -1181,6 +1185,13 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
         pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
       inject: [PG_POOL]
     },
+    // WP-G20: bridge sync-state bookkeeping (integrations.bridge_sync_state).
+    {
+      provide: BRIDGE_SYNC_STATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBridgeSyncStateRepository(pool) : createInMemoryBridgeSyncStateRepository(),
+      inject: [PG_POOL]
+    },
     {
       // Durable provider-webhook dedupe (funds-integrity wave): pg mode
       // persists receipts in integrations.inbound_events; in-memory mode
@@ -1995,6 +2006,7 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
+    BRIDGE_SYNC_STATE_REPOSITORY,
     WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
     PIN_PROFILE_REPOSITORY,

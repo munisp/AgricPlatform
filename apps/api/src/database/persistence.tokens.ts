@@ -87,6 +87,8 @@ export const FARM_RECORD_REPOSITORY = Symbol('FARM_RECORD_REPOSITORY');
 export const IMPORT_BATCH_REPOSITORY = Symbol('IMPORT_BATCH_REPOSITORY');
 export const IMPORT_RECORD_REPOSITORY = Symbol('IMPORT_RECORD_REPOSITORY');
 export const INBOUND_EVENT_REPOSITORY = Symbol('INBOUND_EVENT_REPOSITORY');
+// WP-G20: Moodle/Discourse/Directus bridge sync-state bookkeeping.
+export const BRIDGE_SYNC_STATE_REPOSITORY = Symbol('BRIDGE_SYNC_STATE_REPOSITORY');
 // Wave P5b: USSD channel + shared-device PIN profiles.
 export const USSD_SESSION_REPOSITORY = Symbol('USSD_SESSION_REPOSITORY');
 export const PIN_PROFILE_REPOSITORY = Symbol('PIN_PROFILE_REPOSITORY');

@@ -9,7 +9,7 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { CreditService } from './credit.service.js';
 import { LoanService } from './loan.service.js';
 
-class CreateLenderDto implements Omit<Lender, 'id' | 'isActive'> {
+class CreateLenderDto implements Omit<Lender, 'id' | 'isActive' | 'source' | 'verified'> {
   @IsString()
   name!: string;
 

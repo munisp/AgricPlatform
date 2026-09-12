@@ -5,6 +5,7 @@ import { FinanceModule } from '../finance/finance.module.js';
 import { MarketplaceModule } from '../marketplace/marketplace.module.js';
 import { createCommodityPriceProvider } from './drivers/commodity-price.provider.js';
 import { MOJALOOP_ADAPTER, createMojaloopAdapter } from './drivers/mojaloop.driver.js';
+import { BridgeSyncService } from './bridge-sync.service.js';
 import { IntegrationsController } from './integrations.controller.js';
 import { IntegrationsService } from './integrations.service.js';
 import { MarketDataIngestionService } from './market-data-ingestion.service.js';
@@ -24,6 +25,7 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
   providers: [
     IntegrationsService,
     MarketDataIngestionService,
+    BridgeSyncService,
     ExternalAccountsService,
     FarmRecordsService,
     OfnSyndicationService,
@@ -42,6 +44,6 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
       inject: [TelemetryService]
     }
   ],
-  exports: [IntegrationsService, COMMODITY_PRICE_PROVIDER, MOJALOOP_ADAPTER]
+  exports: [IntegrationsService, BridgeSyncService, COMMODITY_PRICE_PROVIDER, MOJALOOP_ADAPTER]
 })
 export class IntegrationsModule {}

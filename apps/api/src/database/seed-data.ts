@@ -553,7 +553,9 @@ export const seedLenders: Lender[] = [
     maxTicketKobo: 50_000_000,
     minScore: 40,
     criteria: ['Credit score 40+', 'Verified membership'],
-    isActive: true
+    isActive: true,
+    source: 'sample_catalogue',
+    verified: false
   },
   {
     id: 'lender-partner-mfi',
@@ -563,7 +565,9 @@ export const seedLenders: Lender[] = [
     maxTicketKobo: 300_000_000,
     minScore: 60,
     criteria: ['Credit score 60+', 'Two verified vault documents'],
-    isActive: true
+    isActive: true,
+    source: 'sample_catalogue',
+    verified: false
   },
   {
     id: 'lender-commercial-agri',
@@ -573,6 +577,8 @@ export const seedLenders: Lender[] = [
     maxTicketKobo: 1_000_000_000,
     minScore: 75,
     criteria: ['Credit score 75+', 'Tier 2 KYC'],
-    isActive: true
+    isActive: true,
+    source: 'sample_catalogue',
+    verified: false
   }
 ];

@@ -8,6 +8,7 @@ import type { RawBodyRequest } from '../../bootstrap.js';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { BridgeSyncService } from './bridge-sync.service.js';
 import { IntegrationsService } from './integrations.service.js';
 
 @ApiTags('integrations')
@@ -17,7 +18,8 @@ export class IntegrationsController {
     private readonly integrations: IntegrationsService,
     private readonly audit: AuditService,
     private readonly events: DomainEventsService,
-    private readonly metrics: MetricsService
+    private readonly metrics: MetricsService,
+    private readonly bridgeSync: BridgeSyncService
   ) {}
 
   @Get()
@@ -42,6 +44,27 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'Provider adapter health check' })
   health(@Param('provider') provider: string) {
     return { data: this.integrations.health(provider) };
+  }
+
+  @Post('bridges/:bridge/sync')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Manually run one bridge sync pass (WP-G20: moodle | discourse | directus). ' +
+      'FAIL-CLOSED: 404 for an unknown bridge, 503 when the job is flag-disabled ' +
+      '(BRIDGE_SYNC_<BRIDGE>) or the bridge client is unconfigured.'
+  })
+  async syncBridge(@Param('bridge') bridge: string, @ActorId() actorId: string) {
+    const outcome = await this.bridgeSync.syncNow(bridge);
+    await this.audit.record({
+      actorId,
+      action: 'integration.bridge_sync',
+      entityType: 'bridge_sync_state',
+      entityId: outcome.bridge,
+      metadata: { status: outcome.status, synced: outcome.synced }
+    });
+    return { data: outcome };
   }
 
   @Post('webhooks/:provider')
