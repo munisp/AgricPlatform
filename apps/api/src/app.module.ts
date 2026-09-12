@@ -63,6 +63,7 @@ import { GeoModule } from './modules/geo/geo.module.js';
 // Wave ML (additive): geo-intel flood-risk (optional flood-ml sidecar).
 import { GeoIntelModule } from './modules/geo-intel/geo-intel.module.js';
 import { VoiceModule } from './modules/voice/voice.module.js';
+import { VoiceTellerModule } from './modules/voice/voice-teller.module.js';
 // Wave CREDIT (additive): microfinance suite (loans, scoring, VSLA, savings).
 import { CreditModule } from './modules/credit/credit.module.js';
 import { TraceabilityModule } from './modules/traceability/traceability.module.js';
@@ -183,7 +184,10 @@ import { CreditPassportModule } from './modules/credit-passport/credit-passport.
     // Stage 27 Float Sentinel fraud/liquidity anomaly engine (detective-only) — appended to minimise merge conflicts.
     FraudModule,
     // Stage 27 INNOVATION 7 Credit Passport (verifiable farmer credential) — appended to minimise merge conflicts.
-    CreditPassportModule
+    CreditPassportModule,
+
+    // Stage 27 Voice Teller transactional voice intents (flag `voice-teller`, default OFF) — appended to minimise merge conflicts.
+    VoiceTellerModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
