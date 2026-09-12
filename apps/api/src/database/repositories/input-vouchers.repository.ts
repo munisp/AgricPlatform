@@ -95,6 +95,27 @@ export interface InputVoucherRecord {
   /** Redemption ledger entry id (set on REDEEMED). */
   ledgerEntryId?: string;
   createdAt: string;
+  /**
+   * Last state-write timestamp (WP-G12; column added by migration 061).
+   * Stamped by every updateExpected write; older rows fall back to
+   * createdAt. The stuck-voucher sweeper uses it to age pending states
+   * (VOIDING/REDEEMING) against the stuck TTL.
+   */
+  updatedAt?: string;
+}
+
+/**
+ * WP-G12 stuck-voucher sweeper selection: ISSUED/EXPIRING vouchers whose
+ * expiresAt has passed (expiry sweep), plus VOIDING/REDEEMING pending claims
+ * last touched before the stuck TTL cutoff (crash-resume sweep).
+ */
+export interface VoucherSweepCriteria {
+  /** ISO now: ISSUED/EXPIRING vouchers with expiresAt <= nowIso are due. */
+  nowIso: string;
+  /** ISO cutoff: VOIDING/REDEEMING rows not updated since this are stuck. */
+  stuckBeforeIso: string;
+  /** Batch cap per sweep pass. */
+  limit: number;
 }
 
 export interface InputVoucherCriteria {
@@ -255,6 +276,14 @@ export interface InputVoucherRepository {
     patch: Partial<InputVoucherRecord>,
     expected: Partial<InputVoucherRecord>
   ): Promise<InputVoucherRecord>;
+  /**
+   * WP-G12 batch selection for the stuck-voucher sweeper. The pg
+   * implementation selects FOR UPDATE SKIP LOCKED so concurrent sweepers
+   * never block on rows locked by an in-flight transition; state
+   * re-verification on write stays with the updateExpected CAS, so a
+   * double-run is a no-op.
+   */
+  findSweepCandidates?(criteria: VoucherSweepCriteria): Promise<InputVoucherRecord[]>;
 }
 
 export interface RedemptionRepository {
@@ -413,9 +442,32 @@ export class InMemoryInputVoucherRepository implements InputVoucherRepository {
     if (!current || !matches(current, expected)) {
       throw new ConflictException(`Voucher '${id}' changed concurrently; reload and retry`);
     }
-    const updated = { ...current, ...patch };
+    // WP-G12: stamp the state-write time (mirrors the pg repo's
+    // updated_at = now() on every guarded write) so the stuck-voucher
+    // sweeper can age pending claims.
+    const updated = { ...current, ...patch, updatedAt: new Date().toISOString() };
     this.items.set(id, updated);
     return structuredClone(updated);
+  }
+
+  /** Single-process equivalent of the pg FOR UPDATE SKIP LOCKED batch. */
+  async findSweepCandidates(criteria: VoucherSweepCriteria): Promise<InputVoucherRecord[]> {
+    return [...this.items.values()]
+      .filter((item) => {
+        if (
+          (item.status === 'ISSUED' || item.status === 'EXPIRING') &&
+          item.expiresAt <= criteria.nowIso
+        ) {
+          return true;
+        }
+        if (item.status === 'VOIDING' || item.status === 'REDEEMING') {
+          return (item.updatedAt ?? item.createdAt) <= criteria.stuckBeforeIso;
+        }
+        return false;
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(0, Math.max(0, criteria.limit))
+      .map((item) => structuredClone(item));
   }
 }
 

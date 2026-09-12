@@ -25,6 +25,7 @@ import {
   claimPayoutAttempt,
   finalizePayoutAttempt,
   hashPayoutPayload,
+  revalidatePayoutClaimLease,
   type EscrowPayoutRepository
 } from '../../database/repositories/payout.repository.js';
 import { ESCROW_PAYOUT_DRIVER, type EscrowPayoutDriverPort } from './payout.driver.js';
@@ -173,7 +174,11 @@ export class EscrowService {
    *      time; an already-succeeded attempt replays without any driver
    *      call; the same key with a different payload is a 409 (the repo's
    *      idempotency contract).
-   *   4. The driver is called by the claim holder only; the guarded
+   *   4. Immediately BEFORE the driver call the claimant CAS-revalidates the
+   *      lease (WP-G12): a claimant that stalled past the claim lease between
+   *      steps 3 and 4 may have lost the lease to a crash-recovery re-claim;
+   *      it backs off instead of driving the same payout a second time.
+   *   5. The driver is called by the claim holder only; the guarded
    *      finalize can never regress 'succeeded' to 'failed'. A driver
    *      failure leaves the escrow in the pending state and the attempt
    *      marked 'failed' so a retry re-claims and converges instead of
@@ -237,19 +242,29 @@ export class EscrowService {
       // before the terminal write: never pay twice.
       return current;
     }
+    // WP-G12 (lease-expiry double-drive fix): CAS-claim the lease AGAIN
+    // immediately before invoking the driver. A claimant that stalled past
+    // PAYOUT_CLAIM_LEASE_MS between the claim and this point may have lost
+    // the lease to a retry's crash-recovery re-claim; without this check it
+    // would wake up and drive the same payout a second time. The loser backs
+    // off (adopting a succeeded twin, or surfacing 409 for a safe retry).
+    const revalidation = await revalidatePayoutClaimLease(this.payouts, claim.attempt);
+    if (!revalidation.held) {
+      return current;
+    }
     try {
       const result = await this.payoutDriver.payout({
         ...payload,
         idempotencyKey,
         depositProviderReference: record.providerReference
       });
-      await finalizePayoutAttempt(this.payouts, claim.attempt, {
+      await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
         status: 'succeeded',
         providerReference: result.providerReference
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const finalized = await finalizePayoutAttempt(this.payouts, claim.attempt, {
+      const finalized = await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
         status: 'failed',
         failureReason: message
       });

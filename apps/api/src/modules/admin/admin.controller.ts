@@ -49,7 +49,7 @@ export class AdminController {
   }
 
   @Patch('users/:id/roles')
-  @ApiOperation({ summary: 'Set a user\'s roles (audited)' })
+  @ApiOperation({ summary: "Set a user's roles (audited)" })
   async setRoles(@Param('id') id: string, @Body() dto: UpdateRolesDto, @CurrentUser() actor: User | null) {
     return { data: await this.admin.setRoles(id, dto.roles, actor?.id ?? 'admin') };
   }
@@ -61,7 +61,7 @@ export class AdminController {
   }
 
   @Patch('users/:id/verification')
-  @ApiOperation({ summary: 'Set a user\'s verification state (audited)' })
+  @ApiOperation({ summary: "Set a user's verification state (audited)" })
   async setVerification(
     @Param('id') id: string,
     @Body() dto: UpdateVerificationDto,
@@ -182,5 +182,29 @@ export class AdminController {
   @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
   async outboxDeadLetters() {
     return { data: await this.admin.outboxDeadLetters() };
+  }
+
+  @Post('sweeps/escrow-expiry')
+  @ApiOperation({
+    summary:
+      'Run one escrow-expiry sweeper pass (WP-G12): auto-refunds held escrows past their ' +
+      'heldUntil deadline and resumes stuck release/refund drives, all through the guarded ' +
+      'escrow service semantics. Idempotent — an external scheduler (k8s CronJob) invokes ' +
+      'this endpoint periodically.'
+  })
+  async sweepEscrowExpiry() {
+    return { data: await this.admin.sweepEscrowExpiry() };
+  }
+
+  @Post('sweeps/voucher-stuck')
+  @ApiOperation({
+    summary:
+      'Run one stuck-voucher sweeper pass (WP-G12): expires ISSUED vouchers past their ' +
+      'expiry and recovers stuck EXPIRING/VOIDING/REDEEMING claims with ledger-proof ' +
+      'compensation. Idempotent — an external scheduler (k8s CronJob) invokes this ' +
+      'endpoint periodically.'
+  })
+  async sweepVoucherStuck() {
+    return { data: await this.admin.sweepVoucherStuck() };
   }
 }

@@ -5,7 +5,7 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryEscrowRepository, InMemoryEscrowRepository } from '../../database/repositories/escrow.repository.js';
 import { createInMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
-import { createInMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
+import { createInMemoryEscrowPayoutRepository, InMemoryEscrowPayoutRepository } from '../../database/repositories/payout.repository.js';
 import { ESCROW_HOLD_TTL_MS, EscrowService } from './escrow.service.js';
 import {
   LiveEscrowPayoutDriver,
@@ -744,5 +744,83 @@ describe('EscrowService payout attempt claims (Stage 24, audit A4-3)', () => {
       )
     ).rejects.toThrowError(ConflictException);
     expect((await payouts!.all())[0].status).toBe('succeeded');
+  });
+});
+
+// WP-G12: payout lease-expiry double-drive fix — a claimant that stalls past
+// PAYOUT_CLAIM_LEASE_MS between winning the claim and invoking the driver
+// must CAS-revalidate the lease BEFORE driving; a stale claimant backs off.
+describe('EscrowService payout lease revalidation (WP-G12)', () => {
+  /**
+   * Wraps the in-memory payout repo so that the service's pre-drive lease
+   * revalidation (updateExpected with a claimedAt-only patch) loses to a
+   * twin that re-claimed the expired lease and completed the payout while
+   * the original claimant was stalled. Pre-fix there is NO revalidation
+   * write, so the race hook never fires and the stalled claimant drives —
+   * this spec then fails on the zero-driver-call assertion.
+   */
+  function raceOnRevalidation(inner: InMemoryEscrowPayoutRepository) {
+    const original = inner.updateExpected.bind(inner);
+    let raced = false;
+    const wrapper = Object.create(inner) as InMemoryEscrowPayoutRepository;
+    wrapper.updateExpected = async (id, patch, expected, ...rest) => {
+      const isLeaseRevalidation =
+        !raced &&
+        patch !== undefined &&
+        'claimedAt' in patch &&
+        !('status' in patch) &&
+        expected !== undefined &&
+        'claimedAt' in expected;
+      if (isLeaseRevalidation) {
+        raced = true;
+        // The twin's drive already landed: the attempt succeeded while the
+        // stalled claimant was still waking up.
+        await inner.update(id, {
+          status: 'succeeded',
+          providerReference: 'psp-twin',
+          updatedAt: new Date().toISOString()
+        });
+      }
+      return original(id, patch, expected, ...rest);
+    };
+    return wrapper;
+  }
+
+  it('a stalled claimant whose lease was taken over backs off BEFORE the driver call (no double drive)', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const inner = createInMemoryEscrowPayoutRepository();
+    const raced = raceOnRevalidation(inner);
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      createInMemoryEscrowRepository(),
+      undefined,
+      driver,
+      raced
+    );
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+
+    const released = await service.transition(record.id, 'released', buyer);
+    // The twin's win is adopted: the escrow still reaches the terminal state
+    // through the guarded write, but THIS claimant never invoked the driver.
+    expect(released.status).toBe('released');
+    expect(calls).toHaveLength(0);
+    const attempts = await inner.all();
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].status).toBe('succeeded');
+    expect(attempts[0].providerReference).toBe('psp-twin');
+  });
+
+  it('the adopted attempt replays idempotently: a retry never drives a second time', async () => {
+    const { driver, calls } = fakePayoutDriver();
+    const { service } = makeService(undefined, driver);
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    await service.transition(record.id, 'released', buyer);
+    expect(calls).toHaveLength(1);
+    // Replay of the terminal transition: no new claim, no new driver call.
+    const replayed = await service.transition(record.id, 'released', buyer);
+    expect(replayed.status).toBe('released');
+    expect(calls).toHaveLength(1);
   });
 });

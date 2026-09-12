@@ -1,0 +1,65 @@
+# Webhook deliveries CronJob (WP-G12). NOT part of any kustomization:
+# review and apply deliberately once a cluster exists.
+#
+#   kubectl apply -f infra/k8s/cronjobs/webhook-deliveries.yaml
+#
+# Drives POST /admin/webhooks/reprocess: re-drives recorded provider webhook
+# deliveries whose processing never completed (dedupe insert succeeded, side
+# effects failed). Without this job the webhook recovery path silently stops.
+#
+# Auth: SWEEPER_ADMIN_TOKEN must be an admin OIDC JWT (provisioned as the
+# SWEEPER_ADMIN_TOKEN key of the agric-secrets Secret — see
+# infra/k8s/secrets-provisioning.md). Without it the API answers 401 and the
+# job FAILS LOUDLY (never a silent skip).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: webhook-deliveries
+  namespace: agric-platform
+spec:
+  schedule: "*/5 * * * *" # every 5 minutes
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: webhook-deliveries
+            app.kubernetes.io/part-of: agric-platform
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: trigger
+              image: ghcr.io/PLACEHOLDER_ORG/agric-api:0.1.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: API_BASE_URL
+                  value: "http://api.agric-platform.svc.cluster.local/api/v1"
+                - name: SWEEPER_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: agric-secrets
+                      key: SWEEPER_ADMIN_TOKEN
+                      optional: true
+              command: ["/bin/sh", "-c"]
+              args:
+                - wget -q -T 30 -O- --header="Authorization: Bearer ${SWEEPER_ADMIN_TOKEN:-}" --post-data='' "${API_BASE_URL}/admin/webhooks/reprocess"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

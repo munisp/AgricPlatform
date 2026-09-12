@@ -29,6 +29,14 @@ import {
 import { LearningService } from '../learning/learning.service.js';
 import { MarketplaceService } from '../marketplace/marketplace.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
+import {
+  EscrowExpirySweeperService,
+  type EscrowExpirySweepResult
+} from '../sweepers/escrow-expiry-sweeper.service.js';
+import {
+  VoucherStuckSweeperService,
+  type VoucherStuckSweepResult
+} from '../sweepers/voucher-stuck-sweeper.service.js';
 import { UsersService } from '../users/users.service.js';
 
 export type { AccountStatus };
@@ -69,7 +77,12 @@ export class AdminService {
     @Optional() private readonly integrations?: IntegrationsService,
     // Stage 23: anchoring checkpoints. Optional so older tests/wiring keep
     // working; always provided in the deployed app via the global CoreModule.
-    @Optional() private readonly auditAnchors?: AuditAnchorService
+    @Optional() private readonly auditAnchors?: AuditAnchorService,
+    // WP-G12 money-state sweepers. Optional only so bare unit-test
+    // constructions keep working; AdminModule imports SweepersModule at
+    // runtime.
+    @Optional() private readonly escrowExpirySweeper?: EscrowExpirySweeperService,
+    @Optional() private readonly voucherStuckSweeper?: VoucherStuckSweeperService
   ) {}
 
   async listUsers(role?: UserRole): Promise<AdminUserView[]> {
@@ -280,6 +293,35 @@ export class AdminService {
       );
     }
     return this.integrations.reprocessUnprocessedWebhooks();
+  }
+
+  /**
+   * WP-G12: one escrow-expiry sweeper pass (auto-refund of held escrows past
+   * their deadline + resume of stuck release/refund drives). Same
+   * external-scheduler pattern as the outbox sweep — the k8s CronJob fleet
+   * (infra/k8s/cronjobs/) calls POST /admin/sweeps/escrow-expiry.
+   */
+  async sweepEscrowExpiry(): Promise<EscrowExpirySweepResult> {
+    if (!this.escrowExpirySweeper) {
+      throw new ServiceUnavailableException(
+        'EscrowExpirySweeperService is not wired into the admin module'
+      );
+    }
+    return this.escrowExpirySweeper.sweep();
+  }
+
+  /**
+   * WP-G12: one stuck-voucher sweeper pass (expire due vouchers + recover
+   * stuck VOIDING/REDEEMING claims). Invoked by the CronJob fleet via
+   * POST /admin/sweeps/voucher-stuck.
+   */
+  async sweepVoucherStuck(): Promise<VoucherStuckSweepResult> {
+    if (!this.voucherStuckSweeper) {
+      throw new ServiceUnavailableException(
+        'VoucherStuckSweeperService is not wired into the admin module'
+      );
+    }
+    return this.voucherStuckSweeper.sweep();
   }
 
   /** Wave P: dead-lettered outbox rows awaiting operator action. */
