@@ -137,8 +137,8 @@ export interface Course {
 
 export interface Enrolment {
   id: string;
-  userId: string;
   courseId: string;
+  userId: string;
   progressPercent: number;
   status: 'enrolled' | 'in_progress' | 'completed';
   enrolledAt: string;
@@ -211,6 +211,7 @@ export interface Chapter {
 
 export interface ChapterEvent {
   id: string;
+  chapterId: string;
   title: string;
   type: 'meeting' | 'training' | 'field_visit' | 'programme';
   startsAt: string;
