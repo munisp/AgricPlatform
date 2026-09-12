@@ -275,3 +275,7 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Stage 27 (innovation 11): Price Wire — crop-price subscriptions + dispatch
+// log (advisory schema, migration 069). No money movement; operational
+// records with basis honesty labelling only.
+export const PRICE_WIRE_REPOSITORY = Symbol('PRICE_WIRE_REPOSITORY');
