@@ -175,6 +175,16 @@ export class OfftakeController {
   async view(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.offtake.getContract(actor as User, id) };
   }
+
+  @Post('sweep')
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Missed/defaulted sweep: milestones past due_date become missed; contracts past their window default (guarded CAS, idempotent)'
+  })
+  async sweep(@CurrentUser() actor: User | null) {
+    return { data: await this.offtake.sweep(actor as User) };
+  }
 }
 
 /**
