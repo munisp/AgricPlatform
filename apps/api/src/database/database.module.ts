@@ -756,6 +756,19 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Innovation 10 (Stage 27): Chapter Map persistence (additive).
+import {
+  CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+  CHAPTER_MEMBER_DIRECTORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryChapterMapSnapshotRepository,
+  createInMemoryChapterMemberDirectory
+} from './repositories/chapter-map.repository.js';
+import {
+  createPgChapterMapSnapshotRepository,
+  createPgChapterMemberDirectory
+} from './repositories/chapter-map.pg-repository.js';
 
 // Stage 27 innovation "Float Sentinel" (additive): fraud/liquidity anomaly
 // engine persistence (fraud schema, migration 059).
@@ -1966,6 +1979,19 @@ import {
           ? createPgCreditPassportDisclosureRepository(pool)
           : createInMemoryCreditPassportDisclosureRepository(),
       inject: [PG_POOL]
+    },
+    // Innovation 10 (Stage 27): Chapter Map providers (additive).
+    {
+      provide: CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMapSnapshotRepository(pool) : createInMemoryChapterMapSnapshotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CHAPTER_MEMBER_DIRECTORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMemberDirectory(pool) : createInMemoryChapterMemberDirectory(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2162,7 +2188,11 @@ import {
 
     // Stage 27 INNOVATION 7 Credit Passport (additive).
     CREDIT_PASSPORT_REPOSITORY,
-    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY
+    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+
+    // Innovation 10 (Stage 27): Chapter Map (additive).
+    CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+    CHAPTER_MEMBER_DIRECTORY
   ]
 })
 export class DatabaseModule {}
