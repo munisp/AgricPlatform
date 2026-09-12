@@ -3,6 +3,8 @@ import type pg from 'pg';
 import { PgPoolProvider } from './pg/pg-pool.provider.js';
 import {
   ADVISORY_REPOSITORY,
+  // Stage 27 (innovation 11): Price Wire persistence (additive).
+  PRICE_WIRE_REPOSITORY,
   ANNOUNCEMENT_REPOSITORY,
   APPLICATION_REPOSITORY,
   AUDIT_REPOSITORY,
@@ -76,6 +78,9 @@ import {
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
+// Stage 27 (innovation 11): Price Wire persistence (additive).
+import { createInMemoryPriceWireRepository } from './repositories/price-wire.repository.js';
+import { createPgPriceWireRepository } from './repositories/price-wire.pg-repository.js';
 import { createInMemoryAnnouncementRepository } from './repositories/announcement.repository.js';
 import { createInMemoryApplicationRepository } from './repositories/application.repository.js';
 import { createInMemoryAuditRepository } from './repositories/audit.repository.js';
@@ -856,6 +861,13 @@ import {
       provide: ADVISORY_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAdvisoryRepository(pool) : createInMemoryAdvisoryRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 11): Price Wire repositories.
+    {
+      provide: PRICE_WIRE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceWireRepository(pool) : createInMemoryPriceWireRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1891,6 +1903,8 @@ import {
     EVENT_RSVP_REPOSITORY,
     ANNOUNCEMENT_REPOSITORY,
     ADVISORY_REPOSITORY,
+    // Stage 27 (innovation 11): Price Wire.
+    PRICE_WIRE_REPOSITORY,
     LISTING_REPOSITORY,
     ORDER_REPOSITORY,
     REVIEW_REPOSITORY,
