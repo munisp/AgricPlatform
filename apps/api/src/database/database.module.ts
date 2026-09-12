@@ -762,6 +762,19 @@ import {
 import { FRAUD_SENTINEL_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryFraudSentinelRepository } from './repositories/fraud.repository.js';
 import { createPgFraudSentinelRepository } from './repositories/fraud.pg-repository.js';
+// Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential persistence.
+import {
+  CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+  CREDIT_PASSPORT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditPassportCredentialRepository,
+  createInMemoryCreditPassportDisclosureRepository
+} from './repositories/credit-passport.repository.js';
+import {
+  createPgCreditPassportCredentialRepository,
+  createPgCreditPassportDisclosureRepository
+} from './repositories/credit-passport.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1936,6 +1949,23 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgFraudSentinelRepository(pool) : createInMemoryFraudSentinelRepository(),
       inject: [PG_POOL]
+    },
+    // Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential.
+    {
+      provide: CREDIT_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportCredentialRepository(pool)
+          : createInMemoryCreditPassportCredentialRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportDisclosureRepository(pool)
+          : createInMemoryCreditPassportDisclosureRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2128,7 +2158,11 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
     FRAUD_SENTINEL_REPOSITORY,
 
     // Stage 27 (innovation 4): Planting-Window Pulse.
-    ADVISORY_PULSE_REPOSITORY
+    ADVISORY_PULSE_REPOSITORY,
+
+    // Stage 27 INNOVATION 7 Credit Passport (additive).
+    CREDIT_PASSPORT_REPOSITORY,
+    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY
   ]
 })
 export class DatabaseModule {}
