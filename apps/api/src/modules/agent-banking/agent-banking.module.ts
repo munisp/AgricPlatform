@@ -5,6 +5,11 @@ import { UsersModule } from '../users/users.module.js';
 import { AgentBankingController, AgentUssdController } from './agent-banking.controller.js';
 import { AgentBankingService } from './agent-banking.service.js';
 import { AgentUssdService } from './agent-ussd.service.js';
+// Stage 27 Innovation 16 (DEALER QR PAY, additive): HMAC-signed merchant QR
+// codes + Mojaloop merchant payments with signed-voucher co-pay, flag-gated
+// behind `dealer-qr-pay` (default OFF).
+import { DealerQrController, DealerQrWebhookController } from './dealer-qr.controller.js';
+import { DealerQrService } from './dealer-qr.service.js';
 import { OTP_DRIVER_TOKEN, createOtpDriver } from './otp.driver.js';
 
 /**
@@ -17,12 +22,13 @@ import { OTP_DRIVER_TOKEN, createOtpDriver } from './otp.driver.js';
  */
 @Module({
   imports: [FinanceModule, IntegrationsModule, UsersModule],
-  controllers: [AgentBankingController, AgentUssdController],
+  controllers: [AgentBankingController, AgentUssdController, DealerQrController, DealerQrWebhookController],
   providers: [
     AgentBankingService,
     AgentUssdService,
+    DealerQrService,
     { provide: OTP_DRIVER_TOKEN, useFactory: () => createOtpDriver(process.env) }
   ],
-  exports: [AgentBankingService, AgentUssdService, OTP_DRIVER_TOKEN]
+  exports: [AgentBankingService, AgentUssdService, DealerQrService, OTP_DRIVER_TOKEN]
 })
 export class AgentBankingModule {}
