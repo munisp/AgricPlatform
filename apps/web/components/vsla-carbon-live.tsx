@@ -389,10 +389,13 @@ export function VslaLoansSection({ groupId }: { groupId: string }) {
 
   const issue = useApiMutation<{ memberId: string; principalKobo: number; bps: number }, unknown>({
     mutationFn: async (input) =>
+      // One key per submitted form attempt: a transport retry of THIS request
+      // replays server-side; a fresh submit is a new loan by definition.
       issueVslaLoan(groupId, {
         memberId: input.memberId,
         principalKobo: input.principalKobo,
-        interestRateBps: input.bps
+        interestRateBps: input.bps,
+        idempotencyKey: newKey('web-loan-issue')
       }),
     onSuccess: () => {
       setPrincipal('');

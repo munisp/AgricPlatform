@@ -5,7 +5,8 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  Optional
+  Optional,
+  ServiceUnavailableException
 } from '@nestjs/common';
 import type {
   LedgerAccount,
@@ -24,8 +25,10 @@ import type {
   DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
-  LedgerEntryRepository
+  LedgerEntryRepository,
+  LedgerPostingTx
 } from '../../database/repositories/ledger.repository.js';
+import type { DomainEvent } from '../../core/domain-events.service.js';
 
 export interface PostEntryInput {
   idempotencyKey: string;
@@ -48,6 +51,20 @@ export interface PostEntryInput {
    * posting rolls counter and money movement back together.
    */
   dailyLimitReservation?: DailyLimitReservation;
+}
+
+/**
+ * Result of postEntryInTx (WP-G1 caller-owned transaction fold). When the
+ * posting ran inside a caller-owned pg transaction, `event` was appended to
+ * the transactional outbox in that transaction and the caller MUST hand the
+ * result to `finalizePostedEntry` after its commit (emit + audit). On the
+ * non-transactional path `event` is undefined — postEntry already persisted
+ * and audited. `replayed` is true when the idempotency key already existed.
+ */
+export interface PreparedLedgerPost {
+  entry: LedgerJournalEntry;
+  event?: DomainEvent;
+  replayed: boolean;
 }
 
 /**
@@ -161,6 +178,86 @@ export class LedgerService {
       }
     });
     return posted;
+  }
+
+  /**
+   * Posts inside a CALLER-OWNED transaction (WP-G1 VSLA money-path fold):
+   * with a `tx` handle (pg), the transfer + posting rows + solvency guard +
+   * outbox event run on the caller's transaction — they commit or roll back
+   * TOGETHER with the caller's own state change, and the caller finalizes
+   * side effects via `finalizePostedEntry` AFTER its commit. Without a `tx`
+   * handle (in-memory) this delegates to the standard postEntry path, which
+   * persists/audits inline and returns `event: undefined`. Idempotent:
+   * an existing key replays with `replayed: true` and no new event.
+   */
+  async postEntryInTx(
+    tx: LedgerPostingTx | undefined,
+    input: PostEntryInput,
+    actorId: string
+  ): Promise<PreparedLedgerPost> {
+    if (!tx) {
+      // In-memory: no caller transaction exists; the standard path is the
+      // atomic unit and handles outbox persist + audit itself.
+      const existing = await this.entries.findByIdempotencyKey(input.idempotencyKey);
+      const entry = await this.postEntry(input, actorId);
+      return { entry, replayed: existing !== undefined };
+    }
+    if (!this.entries.postEntryInTx) {
+      // Fail closed: a caller-owned pg transaction requires a ledger repo
+      // that can post on it — never silently fall back to autocommit here.
+      throw new ServiceUnavailableException(
+        'Ledger repository does not support caller-owned transaction postings'
+      );
+    }
+    const existing = await this.entries.findByIdempotencyKey(input.idempotencyKey);
+    if (existing) {
+      return { entry: existing, replayed: true };
+    }
+    this.assertBalanced(input.postings);
+    for (const posting of input.postings) {
+      await this.getAccountByCode(posting.accountCode);
+    }
+    const entry: LedgerJournalEntry = {
+      id: randomUUID(),
+      idempotencyKey: input.idempotencyKey,
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      description: input.description,
+      reversesEntryId: input.reversesEntryId,
+      postedAt: new Date().toISOString(),
+      postings: input.postings
+    };
+    const event = this.events.build(
+      'finance.ledger.entry_posted',
+      { entryId: entry.id, idempotencyKey: entry.idempotencyKey, referenceId: entry.referenceId },
+      actorId
+    );
+    await this.entries.postEntryInTx(tx, entry, input.requireSolventAccounts, event);
+    return { entry, event, replayed: false };
+  }
+
+  /**
+   * Post-commit side effects for a caller-transactional postEntryInTx
+   * (WP-G1): emit the outbox event (persisted with the caller's commit) and
+   * record the audit row. No-op for replayed or inline-persisted results.
+   */
+  async finalizePostedEntry(prepared: PreparedLedgerPost, actorId: string): Promise<void> {
+    if (!prepared.event) {
+      return;
+    }
+    this.events.emit(prepared.event);
+    await this.audit?.record({
+      actorId,
+      action: 'finance.ledger.entry_posted',
+      entityType: 'ledger_journal_entry',
+      entityId: prepared.entry.id,
+      metadata: {
+        idempotencyKey: prepared.entry.idempotencyKey,
+        referenceType: prepared.entry.referenceType,
+        referenceId: prepared.entry.referenceId,
+        postings: prepared.entry.postings
+      }
+    });
   }
 
   /**

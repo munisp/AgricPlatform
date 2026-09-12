@@ -51,7 +51,7 @@ import type {
   VslaShareOutRecord,
   VslaShareOutRepository
 } from '../../database/repositories/vsla-carbon.repository.js';
-import { LedgerService } from '../finance/ledger.service.js';
+import { LedgerService, type PreparedLedgerPost } from '../finance/ledger.service.js';
 import { H3Service } from '../geo/h3.service.js';
 import {
   CARBON_COEFFICIENTS,
@@ -104,6 +104,13 @@ export interface IssueLoanInput {
   memberId: string;
   principalKobo: number;
   interestRateBps: number;
+  /**
+   * Client idempotency key (WP-G1, stage-27 V2 audit): MANDATORY. The ledger
+   * idempotency key is derived from it, so a transport retry replays the
+   * original loan instead of double-disbursing the pool; the same key with
+   * a different payload is a 409.
+   */
+  idempotencyKey: string;
 }
 
 export interface RepaymentInput {
@@ -485,8 +492,35 @@ export class VslaCarbonService {
     // remaining members from the PERSISTED plan — shares are never recomputed
     // from the reduced live pool, which previously underpaid members, stranded
     // funds in the pool and falsified the close report.
+    //
+    // WP-G1 (stage-27 V2 audit): a plan is trusted ONLY with its completion
+    // marker. Pre-054 rows were inserted one-by-one in autocommit, so a crash
+    // mid-insert left a PARTIAL plan that any non-empty check mistook for
+    // complete — permanently underpaying unplanned members. The writer now
+    // inserts ALL rows plus the marker in one transaction (replacePlan), and
+    // unmarked rows are rebuilt, never paid.
     let plan = await this.shareOutPlan.find({ cycleId });
-    if (plan.length === 0) {
+    let meta = await this.shareOutPlan.findMeta(cycleId);
+    if (!meta && plan.length > 0) {
+      // Rows without a marker: either a complete LEGACY plan or a partial
+      // one. Recorded payouts prove the insert loop finished (payouts start
+      // only after it), so a plan with payouts is complete — backfill its
+      // marker. Anything else is a crash-truncated plan: rebuild it below
+      // (no payout has posted, so the pool is intact and the deterministic
+      // recompute yields identical shares).
+      const recorded = await this.shareOuts.find({ cycleId });
+      if (recorded.length > 0) {
+        await this.shareOutPlan.markPlanComplete(
+          cycleId,
+          plan.length,
+          plan.reduce((sum, row) => sum + row.shareKobo, 0)
+        );
+        meta = await this.shareOutPlan.findMeta(cycleId);
+      } else {
+        plan = [];
+      }
+    }
+    if (!meta) {
       const cycleContributions = await this.contributions.find({ cycleId });
       const memberIds = [...new Set(cycleContributions.map((row) => row.memberId))];
       const memberRows: Array<{ memberId: string; contributedKobo: number }> = [];
@@ -505,24 +539,28 @@ export class VslaCarbonService {
         groupCashAccountCode(cycle.groupId)
       );
       const payouts = computeShareOut(memberRows, Math.max(0, distributableKobo));
-      for (const payout of payouts) {
-        try {
-          await this.shareOutPlan.create({
-            id: newId('vslaplan'),
-            cycleId,
-            memberId: payout.memberId,
-            shareKobo: payout.shareKobo,
-            contributedKobo: payout.contributedKobo,
-            residualKobo: payout.residualKobo,
-            createdAt: new Date().toISOString()
-          });
-        } catch (error) {
-          if (!(error instanceof ConflictException)) {
-            throw error;
-          }
-          // A concurrent closer already persisted this member's plan row.
+      const now = new Date().toISOString();
+      // One atomic unit: partial rows are deleted, the FULL plan and its
+      // completion marker commit together; a concurrent closer loses the
+      // marker race and re-reads the winner's plan below.
+      await this.shareOutPlan.replacePlan(
+        cycleId,
+        payouts.map((payout) => ({
+          id: newId('vslaplan'),
+          cycleId,
+          memberId: payout.memberId,
+          shareKobo: payout.shareKobo,
+          contributedKobo: payout.contributedKobo,
+          residualKobo: payout.residualKobo,
+          createdAt: now
+        })),
+        {
+          cycleId,
+          rowCount: payouts.length,
+          totalShareKobo: payouts.reduce((sum, payout) => sum + payout.shareKobo, 0),
+          createdAt: now
         }
-      }
+      );
       // Re-read so every closer pays from the same authoritative stored plan.
       plan = await this.shareOutPlan.find({ cycleId });
     }
@@ -637,15 +675,34 @@ export class VslaCarbonService {
 
   // --------------------------------------------------------------- loans
 
+  /**
+   * Issues an internal loan from the pool. Exactly-once by client key
+   * (WP-G1, stage-27 V2 audit): the disbursement posting and the loan row
+   * commit in ONE caller-owned transaction (pg) keyed by the client
+   * idempotency key — a transport retry replays the stored loan, a
+   * concurrent twin loses the unique-key race and adopts it, and the same
+   * key with a different payload is a 409. Before this fix the ledger key
+   * contained a per-call loanId, so any retry double-disbursed the pool.
+   */
   async issueLoan(actor: User, groupId: string, input: IssueLoanInput): Promise<VslaLoanRecord> {
     const group = await this.getGroup(groupId);
     requireGroupAdmin(actor, group);
     assertLoanTerms(input.principalKobo, input.interestRateBps);
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required');
+    }
     const cycle = await this.cycles.findOpenByGroup(groupId);
     if (!cycle) {
       throw new ConflictException('Loans are only issued against an open cycle');
     }
     const member = await this.requireActiveMember(groupId, input.memberId);
+
+    // Idempotent replay: the same client key returns the original loan.
+    const existing = await this.loans.findByIdempotencyKey(input.idempotencyKey);
+    if (existing) {
+      return this.assertLoanIssuePayload(existing, groupId, member.id, input);
+    }
+
     const interestKobo = simpleInterestKobo(input.principalKobo, input.interestRateBps);
     const totalKobo = totalDueKobo(input.principalKobo, input.interestRateBps);
     const postings = [
@@ -670,34 +727,95 @@ export class VslaCarbonService {
         : [])
     ];
     const loanId = newId('vslaloan');
-    const entry = await this.ledger.postEntry(
-      {
-        idempotencyKey: `vsla-loan-issue:${loanId}`,
-        referenceType: 'vsla_loan',
-        referenceId: loanId,
-        description: `VSLA internal loan ${loanId} group ${groupId}`,
-        postings,
-        // Never-negative: the pool cannot lend cash it does not hold.
-        requireSolventAccounts: [groupCashAccountCode(groupId)]
-      },
-      actor.id
-    );
-    const record = await this.loans.create({
-      id: loanId,
-      groupId,
-      cycleId: cycle.id,
-      memberId: member.id,
-      principalKobo: input.principalKobo,
-      interestRateBps: input.interestRateBps,
-      totalDueKobo: totalKobo,
-      repaidKobo: 0,
-      status: 'ACTIVE',
-      issuedAt: new Date().toISOString(),
-      ledgerEntryId: entry.id,
-      createdAt: new Date().toISOString()
-    });
+    // The ledger key derives from the CLIENT key — never a per-call id — so
+    // a retry of the same logical disbursement replays instead of reposting.
+    const ledgerKey = `vsla-loan-issue:${input.idempotencyKey}`;
+    let prepared: PreparedLedgerPost | undefined;
+    let record: VslaLoanRecord;
+    try {
+      record = await this.loans.withLoanTransaction(groupId, async (tx) => {
+        const posted = await this.ledger.postEntryInTx(
+          tx,
+          {
+            idempotencyKey: ledgerKey,
+            referenceType: 'vsla_loan',
+            referenceId: loanId,
+            description: `VSLA internal loan ${loanId} group ${groupId}`,
+            postings,
+            // Never-negative: the pool cannot lend cash it does not hold.
+            requireSolventAccounts: [groupCashAccountCode(groupId)]
+          },
+          actor.id
+        );
+        if (posted.replayed && !this.entryMatchesLoanIssue(posted.entry, totalKobo)) {
+          // Fail closed: the client key already funded a DIFFERENT loan
+          // payload — never bind this loan row to someone else's posting.
+          throw new ConflictException(
+            `Idempotency key '${input.idempotencyKey}' was already used for a different loan payload`
+          );
+        }
+        prepared = posted;
+        return this.loans.create(
+          {
+            id: loanId,
+            groupId,
+            cycleId: cycle.id,
+            memberId: member.id,
+            principalKobo: input.principalKobo,
+            interestRateBps: input.interestRateBps,
+            totalDueKobo: totalKobo,
+            repaidKobo: 0,
+            status: 'ACTIVE',
+            issuedAt: new Date().toISOString(),
+            ledgerEntryId: posted.entry.id,
+            idempotencyKey: input.idempotencyKey,
+            createdAt: new Date().toISOString()
+          },
+          tx
+        );
+      });
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        // Adopt-on-23505: a concurrent twin with the same client key
+        // committed its loan first (pg rolled OUR unit back). Replay the
+        // twin when the payload matches; 409 when it does not.
+        const twin = await this.loans.findByIdempotencyKey(input.idempotencyKey);
+        if (twin) {
+          return this.assertLoanIssuePayload(twin, groupId, member.id, input);
+        }
+      }
+      throw error;
+    }
+    if (prepared) {
+      await this.ledger.finalizePostedEntry(prepared, actor.id);
+    }
     await this.events.publish('vslacarbon.loan.issued', { groupId, loanId }, actor.id);
     return record;
+  }
+
+  /** Same-key replay guard: identical payload replays, anything else 409s. */
+  private assertLoanIssuePayload(
+    record: VslaLoanRecord,
+    groupId: string,
+    memberId: string,
+    input: IssueLoanInput
+  ): VslaLoanRecord {
+    if (
+      record.groupId !== groupId ||
+      record.memberId !== memberId ||
+      record.principalKobo !== input.principalKobo ||
+      record.interestRateBps !== input.interestRateBps
+    ) {
+      throw new ConflictException(
+        `Idempotency key '${input.idempotencyKey}' was already used for a different loan payload`
+      );
+    }
+    return record;
+  }
+
+  /** Defense for an adopted entry: the receivable debit leg equals total due. */
+  private entryMatchesLoanIssue(entry: LedgerJournalEntry, totalKobo: number): boolean {
+    return entry.postings.find((posting) => posting.direction === 'debit')?.amountKobo === totalKobo;
   }
 
   async listLoans(groupId: string): Promise<VslaLoanRecord[]> {
@@ -713,6 +831,16 @@ export class VslaCarbonService {
     return loan;
   }
 
+  /**
+   * Records a loan repayment. Atomic fold (WP-G1, stage-27 V2 audit): the
+   * claim UPDATE, the ledger posting and the repayment row commit in ONE
+   * caller-owned transaction (pg) — a crash between them can no longer
+   * leave the loan marked REPAID with no money moved (the phantom-claim
+   * gap). On the in-memory path the per-loan mutex serialises the same
+   * steps and failure compensation keeps the old claim-rollback doctrine.
+   * Legacy pre-fold crash states are repaired by reconcileRepaymentClaims
+   * and the prior-entry resume below.
+   */
   async repayLoan(
     actor: User,
     loanId: string,
@@ -735,37 +863,44 @@ export class VslaCarbonService {
     const amountKobo = Math.min(input.amountKobo, outstanding);
     const ledgerKey = `vsla-loan-repayment:${input.idempotencyKey}`;
 
-    // Crashed-saga / same-key-twin resume: if the ledger entry for this client
-    // key already exists, the earlier attempt (possibly crashed or still
-    // racing) already reserved the amount on the loan row — adopt the entry
-    // and only materialise the missing repayment row. Claiming again here
-    // would double-credit the loan for one payment.
-    const priorEntry = (
-      await this.ledger.listEntries({ referenceType: 'vsla_loan_repayment', referenceId: loanId })
-    ).find((candidate) => candidate.idempotencyKey === ledgerKey);
-
-    let entry: LedgerJournalEntry;
-    let claimed = false;
+    // Crashed-saga / same-key-twin resume (pre-fold legacy): if the ledger
+    // entry for this client key already exists, the earlier attempt already
+    // reserved the amount on the loan row — adopt the entry and only
+    // materialise the missing repayment row. Claiming again here would
+    // double-credit the loan for one payment.
+    const priorEntry = await this.ledger.findEntryByIdempotencyKey(ledgerKey);
     if (priorEntry) {
-      entry = priorEntry;
-    } else {
-      if (loan.status === 'REPAID') {
-        throw new ConflictException('Loan is already fully repaid');
-      }
-      // Claim-first (stage-24 audit A1-4/A4-5): atomically reserve the
-      // repayment on the loan row BEFORE any money movement. The guarded
-      // UPDATE serializes concurrent repayments on the loan row — a loser
-      // whose payment would overshoot total_due_kobo updates zero rows and
-      // 409s here, before its kobo ever reaches the ledger.
-      const claim = await this.loans.claimRepayment(loanId, amountKobo);
-      if (!claim) {
-        throw new ConflictException(
-          `VSLA loan '${loanId}' cannot accept this repayment (changed concurrently or already settled); reload and retry`
-        );
-      }
-      claimed = true;
-      try {
-        entry = await this.ledger.postEntry(
+      const repayment = await this.materialiseRepaymentRow(loanId, input.idempotencyKey, priorEntry);
+      return { loan: await this.getLoan(loanId), repayment };
+    }
+
+    if (loan.status === 'REPAID') {
+      throw new ConflictException('Loan is already fully repaid');
+    }
+
+    let claimed = false;
+    let postedDurable = false;
+    let inMemoryUnit = false;
+    let prepared: PreparedLedgerPost | undefined;
+    let repayment: VslaLoanRepaymentRecord;
+    try {
+      repayment = await this.loans.withLoanTransaction(loanId, async (tx) => {
+        inMemoryUnit = tx === undefined;
+        // Claim-first (stage-24 audit A1-4/A4-5): atomically reserve the
+        // repayment on the loan row BEFORE any money movement. The guarded
+        // UPDATE serializes concurrent repayments on the loan row — a loser
+        // whose payment would overshoot total_due_kobo updates zero rows and
+        // 409s here, before its kobo ever reaches the ledger. With the WP-G1
+        // fold the claim now commits WITH the posting and the row.
+        const claim = await this.loans.claimRepayment(loanId, amountKobo, tx);
+        if (!claim) {
+          throw new ConflictException(
+            `VSLA loan '${loanId}' cannot accept this repayment (changed concurrently or already settled); reload and retry`
+          );
+        }
+        claimed = true;
+        const posted = await this.ledger.postEntryInTx(
+          tx,
           {
             idempotencyKey: ledgerKey,
             referenceType: 'vsla_loan_repayment',
@@ -788,78 +923,172 @@ export class VslaCarbonService {
           },
           actor.id
         );
-      } catch (error) {
-        if (error instanceof ConflictException) {
-          // A racing twin with the same client key committed the posting
-          // first (pg 23505): adopt the twin's entry (bounded retry) instead
-          // of surfacing a 409 after our claim. Both claims stay in place —
-          // whichever twin loses the repayment-row insert below releases its
-          // duplicate claim, leaving exactly one claim per committed entry.
-          const twin = await this.findRepaymentEntry(loanId, ledgerKey);
-          if (twin && this.entryAmountKobo(twin) === amountKobo) {
-            entry = twin;
-          } else {
-            await this.loans.rollbackRepaymentClaim(loanId, amountKobo);
-            throw error;
-          }
-        } else {
-          // Posting failed before commit — release the claim so the loan
-          // aggregate never diverges from the ledger.
-          await this.loans.rollbackRepaymentClaim(loanId, amountKobo);
-          throw error;
+        if (posted.replayed && this.entryAmountKobo(posted.entry) !== amountKobo) {
+          // Fail closed: the client key already posted a DIFFERENT amount —
+          // a 409 here rolls our claim back with the unit (pg) or triggers
+          // the compensation below (in-memory).
+          throw new ConflictException(
+            `Idempotency key '${input.idempotencyKey}' was already used for a different repayment amount`
+          );
         }
-      }
-    }
-
-    let repayment: VslaLoanRepaymentRecord;
-    try {
-      repayment = await this.repayments.create({
-        id: newId('vslarepay'),
-        loanId,
-        // The entry is the money truth: the row records what actually posted.
-        amountKobo: this.entryAmountKobo(entry),
-        idempotencyKey: input.idempotencyKey,
-        ledgerEntryId: entry.id,
-        createdAt: new Date().toISOString()
+        prepared = posted;
+        // On the in-memory path the entry is already durable at this point;
+        // on pg nothing is durable until the unit commits.
+        postedDurable = tx === undefined;
+        return this.repayments.create(
+          {
+            id: newId('vslarepay'),
+            loanId,
+            // The entry is the money truth: the row records what actually posted.
+            amountKobo: this.entryAmountKobo(posted.entry),
+            idempotencyKey: input.idempotencyKey,
+            ledgerEntryId: posted.entry.id,
+            createdAt: new Date().toISOString()
+          },
+          tx
+        );
       });
     } catch (error) {
+      // pg: the whole unit (claim + posting + row) already rolled back — no
+      // compensation needed or allowed. In-memory: release the claim when it
+      // stands without a committed entry, or when a twin owns the key.
+      if (
+        inMemoryUnit &&
+        claimed &&
+        (!postedDurable || error instanceof ConflictException)
+      ) {
+        await this.loans.rollbackRepaymentClaim(loanId, amountKobo);
+      }
       if (error instanceof ConflictException) {
-        // A twin with the same client key already recorded the repayment row;
-        // its claim is the one the shared entry/row account for — release our
-        // duplicate claim and replay the twin's outcome.
-        if (claimed) {
-          await this.loans.rollbackRepaymentClaim(loanId, amountKobo);
-        }
+        // Adopt-on-conflict: a twin with the same client key committed the
+        // whole unit first — replay its outcome instead of surfacing a 409
+        // for a retry of the same logical payment.
         const twin = await this.repayments.findByIdempotencyKey(input.idempotencyKey);
         if (twin) {
           return { loan: await this.getLoan(loanId), repayment: twin };
         }
       }
-      // Non-conflict failure AFTER the entry committed: never roll the claim
-      // back — the claim matches the committed entry, and a same-key retry
-      // resumes through the prior-entry path above to materialise the row.
+      // Non-conflict failure AFTER the entry committed (in-memory only):
+      // the claim was deliberately left standing — it matches the committed
+      // entry, and a same-key retry resumes through the prior-entry path
+      // above to materialise the row.
       throw error;
+    }
+    if (prepared) {
+      await this.ledger.finalizePostedEntry(prepared, actor.id);
     }
     await this.events.publish('vslacarbon.loan.repayment_recorded', { loanId }, actor.id);
     return { loan: await this.getLoan(loanId), repayment };
   }
 
-  /** Bounded-retry lookup for adopt-on-23505 (pg commits are visible, but the
-   * retry bound keeps the contract explicit for lagging read paths). */
-  private async findRepaymentEntry(
+  /**
+   * Materialises the repayment row for an entry that already committed under
+   * the client key (crashed-saga resume). Adopts a racing twin's row on
+   * conflict. Never claims: the claim matching this entry already stands.
+   */
+  private async materialiseRepaymentRow(
     loanId: string,
-    ledgerKey: string,
-    attempts = 3
-  ): Promise<LedgerJournalEntry | undefined> {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const found = (
-        await this.ledger.listEntries({ referenceType: 'vsla_loan_repayment', referenceId: loanId })
-      ).find((candidate) => candidate.idempotencyKey === ledgerKey);
-      if (found) {
-        return found;
+    idempotencyKey: string,
+    entry: LedgerJournalEntry
+  ): Promise<VslaLoanRepaymentRecord> {
+    try {
+      return await this.repayments.create({
+        id: newId('vslarepay'),
+        loanId,
+        // The entry is the money truth: the row records what actually posted.
+        amountKobo: this.entryAmountKobo(entry),
+        idempotencyKey,
+        ledgerEntryId: entry.id,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const twin = await this.repayments.findByIdempotencyKey(idempotencyKey);
+        if (twin) {
+          return twin;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Reconciler sweep (WP-G1, stage-27 V2 audit — phantom repayment claims):
+   * repairs loans whose repaid_kobo diverges from the committed money truth.
+   * For each divergent loan, repayment rows are materialised for entries
+   * that committed without one (re-drive), and any remaining claim NOT
+   * backed by a ledger entry is released (a phantom claim left by a pre-fold
+   * crash — the borrower never actually paid it, so the loan must not stay
+   * REPAID/409-locked). With the folded write path a claim, its entry and
+   * its row commit atomically, so a divergent loan is always legacy or
+   * corrupt state. Run when no repayments are in flight (scheduler wiring:
+   * WP-G12). Returns the corrections applied.
+   */
+  async reconcileRepaymentClaims(): Promise<
+    Array<{ loanId: string; materialisedRows: number; releasedKobo: number }>
+  > {
+    const corrections: Array<{ loanId: string; materialisedRows: number; releasedKobo: number }> =
+      [];
+    const loans = await this.loans.find({});
+    for (const loan of loans) {
+      const rows = await this.repayments.findByLoan(loan.id);
+      const recordedKobo = rows.reduce((sum, row) => sum + row.amountKobo, 0);
+      if (recordedKobo === loan.repaidKobo) {
+        continue; // loan aggregate and money truth agree
+      }
+      const entries = await this.ledger.listEntries({
+        referenceType: 'vsla_loan_repayment',
+        referenceId: loan.id
+      });
+      // Re-drive: every committed repayment entry must have its row.
+      const rowedEntryIds = new Set(rows.map((row) => row.ledgerEntryId));
+      let materialisedRows = 0;
+      for (const entry of entries) {
+        if (rowedEntryIds.has(entry.id)) {
+          continue;
+        }
+        const clientKey = entry.idempotencyKey.replace(/^vsla-loan-repayment:/, '');
+        try {
+          await this.repayments.create({
+            id: newId('vslarepay'),
+            loanId: loan.id,
+            amountKobo: this.entryAmountKobo(entry),
+            idempotencyKey: clientKey,
+            ledgerEntryId: entry.id,
+            createdAt: entry.postedAt
+          });
+          materialisedRows += 1;
+        } catch (error) {
+          if (!(error instanceof ConflictException)) {
+            throw error;
+          }
+          // A concurrent resume already materialised the row.
+        }
+      }
+      // Release: a claim no committed entry backs is a phantom — the money
+      // never moved, so the loan aggregate must give it back.
+      const postedKobo = entries.reduce((sum, entry) => sum + this.entryAmountKobo(entry), 0);
+      const phantomKobo = loan.repaidKobo - postedKobo;
+      let releasedKobo = 0;
+      if (phantomKobo > 0) {
+        await this.loans.rollbackRepaymentClaim(loan.id, phantomKobo);
+        releasedKobo = phantomKobo;
+        // rollbackRepaymentClaim unconditionally re-opens the loan; when the
+        // committed entries still cover the full total, restore REPAID.
+        const after = await this.loans.findById(loan.id);
+        if (after && after.status === 'ACTIVE' && after.repaidKobo >= after.totalDueKobo) {
+          await this.loans.updateExpected(
+            after.id,
+            { status: 'REPAID', repaidAt: new Date().toISOString() },
+            { status: 'ACTIVE' }
+          );
+        }
+      }
+      if (materialisedRows > 0 || releasedKobo > 0) {
+        corrections.push({ loanId: loan.id, materialisedRows, releasedKobo });
       }
     }
-    return undefined;
+    return corrections;
   }
 
   /** Amount posted by a repayment entry (the group-cash debit leg). */

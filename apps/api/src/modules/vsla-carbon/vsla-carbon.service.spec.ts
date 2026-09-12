@@ -279,7 +279,8 @@ describe('internal loans with simple interest', () => {
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
-      interestRateBps: 1_000
+      interestRateBps: 1_000,
+      idempotencyKey: 'issue-key-1'
     });
     expect(loan.totalDueKobo).toBe(110_000);
     const entry = await ledger.getEntry(loan.ledgerEntryId);
@@ -304,7 +305,8 @@ describe('internal loans with simple interest', () => {
       service.issueLoan(lead, group.id, {
         memberId: member2.id,
         principalKobo: 100_000,
-        interestRateBps: 500
+        interestRateBps: 500,
+        idempotencyKey: 'issue-key-2'
       })
     ).rejects.toThrow(BadRequestException);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(20_000);
@@ -319,7 +321,8 @@ describe('internal loans with simple interest', () => {
       service.issueLoan(lead, group.id, {
         memberId: member.id,
         principalKobo: 10_000,
-        interestRateBps: 0
+        interestRateBps: 0,
+        idempotencyKey: 'issue-key-3'
       })
     ).rejects.toThrow(ConflictException);
   });
@@ -331,7 +334,8 @@ describe('internal loans with simple interest', () => {
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
-      interestRateBps: 1_000
+      interestRateBps: 1_000,
+      idempotencyKey: 'issue-key-4'
     });
     const first = await service.repayLoan(farmer, loan.id, {
       amountKobo: 50_000,
@@ -357,7 +361,8 @@ describe('internal loans with simple interest', () => {
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 10_000,
-      interestRateBps: 0
+      interestRateBps: 0,
+      idempotencyKey: 'issue-key-5'
     });
     const first = await service.repayLoan(farmer, loan.id, {
       amountKobo: 10_000,
@@ -381,7 +386,8 @@ describe('internal loans with simple interest', () => {
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 10_000,
-      interestRateBps: 0
+      interestRateBps: 0,
+      idempotencyKey: 'issue-key-6'
     });
     await expect(
       service.repayLoan(farmer2, loan.id, { amountKobo: 1_000, idempotencyKey: 'z1' })
@@ -397,7 +403,8 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     const loan = await ctx.service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
-      interestRateBps: 0
+      interestRateBps: 0,
+      idempotencyKey: 'issue-key-7'
     });
     return { ...ctx, group, loan };
   }
@@ -542,7 +549,8 @@ describe('deterministic share-out at cycle close', () => {
     await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
-      interestRateBps: 0
+      interestRateBps: 0,
+      idempotencyKey: 'issue-key-8'
     });
     const report = await service.closeCycle(lead, cycle.id);
     expect(report.distributableKobo).toBe(300_000);
@@ -564,7 +572,8 @@ describe('deterministic share-out at cycle close', () => {
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
-      interestRateBps: 1_000
+      interestRateBps: 1_000,
+      idempotencyKey: 'issue-key-9'
     });
     await service.repayLoan(farmer, loan.id, { amountKobo: 110_000, idempotencyKey: 'full' });
     const report = await service.closeCycle(lead, cycle.id);
@@ -948,5 +957,373 @@ describe('carbon ESTIMATEs + donor/MRV reporting', () => {
     expect(serialized).not.toContain('verified credit');
     expect(serialized).not.toContain('credits issued');
     expect(serialized).toContain('estimate');
+  });
+});
+
+/* ------------------------------------------------------------------------
+ * WP-G1 (stage-27 V2 funds-atomicity audit): VSLA money-path fixes.
+ *  - issueLoan is exactly-once by client idempotency key (no more
+ *    double-disbursement on transport retry);
+ *  - repayment claim + ledger posting + repayment row are one unit of work
+ *    (no phantom REPAID claims), with a reconciler for legacy crash states;
+ *  - the close-cycle distribution plan commits with a completion marker, so
+ *    a crash mid-insert is rebuilt, never paid out partially.
+ * ---------------------------------------------------------------------- */
+
+describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
+  async function makeFundedGroup() {
+    const ctx = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(ctx.service);
+    await contributeBoth(ctx.service, cycle.id, leadMember.id, member2.id);
+    return { ...ctx, group, cycle, leadMember, member2 };
+  }
+
+  it('requires an idempotency key (fail closed on the money path)', async () => {
+    const { service, group, member2 } = await makeFundedGroup();
+    await expect(
+      service.issueLoan(lead, group.id, {
+        memberId: member2.id,
+        principalKobo: 10_000,
+        interestRateBps: 0,
+        idempotencyKey: ''
+      })
+    ).rejects.toThrow(BadRequestException);
+    expect(await service.listLoans(group.id)).toHaveLength(0);
+  });
+
+  it('concurrent duplicate issueLoan with the same key disburses EXACTLY once', async () => {
+    const { service, ledger, group, member2 } = await makeFundedGroup();
+    const input = {
+      memberId: member2.id,
+      principalKobo: 100_000,
+      interestRateBps: 0,
+      idempotencyKey: 'loan-dup-key'
+    };
+    const [a, b] = await Promise.allSettled([
+      service.issueLoan(lead, group.id, input),
+      service.issueLoan(lead, group.id, { ...input })
+    ]);
+    expect(a.status).toBe('fulfilled');
+    expect(b.status).toBe('fulfilled');
+    const first = (a as PromiseFulfilledResult<Awaited<ReturnType<typeof service.issueLoan>>>).value;
+    const second = (b as PromiseFulfilledResult<Awaited<ReturnType<typeof service.issueLoan>>>).value;
+    // Both callers converge on the SAME loan — no double disbursement.
+    expect(second.id).toBe(first.id);
+    expect(await service.listLoans(group.id)).toHaveLength(1);
+    // Exactly ONE balanced disbursement posting: pool debited once.
+    const entries = await ledger.listEntries({ referenceType: 'vsla_loan' });
+    expect(entries).toHaveLength(1);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(300_000);
+    expect((await ledger.balance(groupLoansReceivableAccountCode(group.id))).balanceKobo).toBe(
+      100_000
+    );
+  });
+
+  it('a sequential transport retry with the same key replays the original loan', async () => {
+    const { service, ledger, group, member2 } = await makeFundedGroup();
+    const input = {
+      memberId: member2.id,
+      principalKobo: 50_000,
+      interestRateBps: 1_000,
+      idempotencyKey: 'loan-retry-key'
+    };
+    const first = await service.issueLoan(lead, group.id, input);
+    const replay = await service.issueLoan(lead, group.id, { ...input });
+    expect(replay.id).toBe(first.id);
+    expect(replay.ledgerEntryId).toBe(first.ledgerEntryId);
+    expect(await service.listLoans(group.id)).toHaveLength(1);
+    expect(await ledger.listEntries({ referenceType: 'vsla_loan' })).toHaveLength(1);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(350_000);
+  });
+
+  it('same key with a different amount is a 409 and posts nothing new', async () => {
+    const { service, ledger, group, member2 } = await makeFundedGroup();
+    await service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 100_000,
+      interestRateBps: 0,
+      idempotencyKey: 'loan-mismatch-key'
+    });
+    await expect(
+      service.issueLoan(lead, group.id, {
+        memberId: member2.id,
+        principalKobo: 150_000, // same key, different payload
+        interestRateBps: 0,
+        idempotencyKey: 'loan-mismatch-key'
+      })
+    ).rejects.toThrow(ConflictException);
+    // The conflicting retry moved no money and created no loan.
+    expect(await service.listLoans(group.id)).toHaveLength(1);
+    expect(await ledger.listEntries({ referenceType: 'vsla_loan' })).toHaveLength(1);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(300_000);
+  });
+
+  it('same key with a different member is a 409', async () => {
+    const { service, group, leadMember, member2 } = await makeFundedGroup();
+    await service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 10_000,
+      interestRateBps: 0,
+      idempotencyKey: 'loan-member-mismatch'
+    });
+    await expect(
+      service.issueLoan(lead, group.id, {
+        memberId: leadMember.id,
+        principalKobo: 10_000,
+        interestRateBps: 0,
+        idempotencyKey: 'loan-member-mismatch'
+      })
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('a failed disbursement (insufficient pool) burns nothing and can be retried', async () => {
+    const { service, ledger, group, cycle, leadMember, member2 } = await (async () => {
+      const ctx = makeService();
+      const fixture = await makeGroupWithCycle(ctx.service);
+      await contributeBoth(
+        ctx.service,
+        fixture.cycle.id,
+        fixture.leadMember.id,
+        fixture.member2.id,
+        [10_000, 10_000]
+      );
+      return { ...ctx, ...fixture };
+    })();
+    const input = {
+      memberId: member2.id,
+      principalKobo: 100_000,
+      interestRateBps: 0,
+      idempotencyKey: 'loan-underfunded'
+    };
+    await expect(service.issueLoan(lead, group.id, input)).rejects.toThrow(BadRequestException);
+    expect(await service.listLoans(group.id)).toHaveLength(0);
+    // Fund the pool, then the SAME key retries cleanly into a real loan.
+    await service.contribute(lead, cycle.id, {
+      memberId: leadMember.id,
+      amountKobo: 200_000,
+      idempotencyKey: 'c-topup'
+    });
+    const retried = await service.issueLoan(lead, group.id, input);
+    expect(retried.principalKobo).toBe(100_000);
+    expect((await ledger.balance(groupLoansReceivableAccountCode(group.id))).balanceKobo).toBe(
+      100_000
+    );
+  });
+});
+
+describe('WP-G1: phantom repayment claim — reconciler + atomic fold', () => {
+  async function makeRepayableLoan() {
+    const ctx = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(ctx.service);
+    await contributeBoth(ctx.service, cycle.id, leadMember.id, member2.id);
+    const loan = await ctx.service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 100_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-phantom-fixture'
+    });
+    return { ...ctx, group, loan };
+  }
+
+  it('crash between claim and posting (pre-fold state): reconciler releases the phantom REPAID', async () => {
+    const { service, loans, ledger, group, loan } = await makeRepayableLoan();
+    // Simulate the pre-fold crash: the claim committed (loan flipped to
+    // REPAID) but the process died BEFORE the ledger posting — the borrower
+    // never paid, yet the loan looks settled and 409-locks any retry.
+    await loans.claimRepayment(loan.id, 100_000);
+    const stuck = await service.getLoan(loan.id);
+    expect(stuck.status).toBe('REPAID');
+    expect(stuck.repaidKobo).toBe(100_000);
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 100_000, idempotencyKey: 'after-crash' })
+    ).rejects.toThrow(ConflictException);
+
+    const corrections = await service.reconcileRepaymentClaims();
+    expect(corrections).toEqual([{ loanId: loan.id, materialisedRows: 0, releasedKobo: 100_000 }]);
+
+    // The phantom is released: the loan is ACTIVE again, no money moved, and
+    // the borrower can actually repay.
+    const healed = await service.getLoan(loan.id);
+    expect(healed.status).toBe('ACTIVE');
+    expect(healed.repaidKobo).toBe(0);
+    expect(
+      (await ledger.balance(groupLoansReceivableAccountCode(group.id))).balanceKobo
+    ).toBe(100_000);
+    const repaid = await service.repayLoan(farmer, loan.id, {
+      amountKobo: 100_000,
+      idempotencyKey: 'after-crash'
+    });
+    expect(repaid.loan.status).toBe('REPAID');
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(400_000);
+  });
+
+  it('reconciler re-drives a committed entry whose repayment row is missing', async () => {
+    const { service, ledger, repayments, loan } = await makeRepayableLoan();
+    // Crash AFTER the posting committed but BEFORE the row insert (claim,
+    // entry — no row).
+    const originalCreate = repayments.create.bind(repayments);
+    let sabotaged = true;
+    repayments.create = ((record: Parameters<typeof originalCreate>[0]) =>
+      sabotaged
+        ? Promise.reject(new Error('process crash'))
+        : originalCreate(record)) as typeof repayments.create;
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-crash-2' })
+    ).rejects.toThrow('process crash');
+    sabotaged = false;
+    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(40_000);
+
+    const corrections = await service.reconcileRepaymentClaims();
+    expect(corrections).toEqual([{ loanId: loan.id, materialisedRows: 1, releasedKobo: 0 }]);
+    const rows = await service.listRepayments(loan.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountKobo).toBe(40_000);
+    // Claim, row and ledger agree — nothing was released (the money DID move).
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(40_000);
+    void ledger;
+  });
+
+  it('posting failure inside the folded unit leaves no claim, entry or row', async () => {
+    const { service, ledger, loan } = await makeRepayableLoan();
+    const original = ledger.postEntry.bind(ledger);
+    let sabotaged = true;
+    ledger.postEntry = ((input: Parameters<LedgerService['postEntry']>[0], actorId: string) =>
+      sabotaged
+        ? Promise.reject(new Error('ledger down'))
+        : original(input, actorId)) as LedgerService['postEntry'];
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 60_000, idempotencyKey: 'repay-fold-fail' })
+    ).rejects.toThrow('ledger down');
+    // The unit rolled back cleanly: the loan is untouched and fully retryable.
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(0);
+    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    sabotaged = false;
+    const retried = await service.repayLoan(farmer, loan.id, {
+      amountKobo: 60_000,
+      idempotencyKey: 'repay-fold-fail'
+    });
+    expect(retried.loan.repaidKobo).toBe(60_000);
+    expect(await service.listRepayments(loan.id)).toHaveLength(1);
+    // A healthy loan shows up as NO correction in the reconciler.
+    expect(await service.reconcileRepaymentClaims()).toEqual([]);
+  });
+});
+
+describe('WP-G1: share-out plan completion marker (partial-plan fix)', () => {
+  it('a crash mid plan-insert (partial plan, no marker) is rebuilt and pays ALL members', async () => {
+    const { service, ledger, shareOutPlan } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id, [100_000, 300_000]);
+    // Simulate the pre-054 crash: ONE plan row persisted in autocommit before
+    // the process died — no completion marker, no payout posted. The old
+    // resume treated this partial plan as complete and underpaid member2.
+    await shareOutPlan.create({
+      id: 'plan-partial-lead',
+      cycleId: cycle.id,
+      memberId: leadMember.id,
+      shareKobo: 100_000,
+      contributedKobo: 100_000,
+      residualKobo: 0,
+      createdAt: new Date().toISOString()
+    });
+
+    const report = await service.closeCycle(lead, cycle.id);
+    // The partial plan was discarded and rebuilt: BOTH members are paid.
+    expect(report.payouts).toHaveLength(2);
+    expect(report.distributableKobo).toBe(400_000);
+    expect(report.payouts.find((p) => p.memberId === leadMember.id)?.shareKobo).toBe(100_000);
+    expect(report.payouts.find((p) => p.memberId === member2.id)?.shareKobo).toBe(300_000);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
+    // The rebuilt plan carries its completion marker.
+    const meta = await shareOutPlan.findMeta(cycle.id);
+    expect(meta).toMatchObject({ cycleId: cycle.id, rowCount: 2, totalShareKobo: 400_000 });
+    expect(await shareOutPlan.find({ cycleId: cycle.id })).toHaveLength(2);
+  });
+
+  it('a legacy plan WITH recorded payouts is backfilled (marker), never recomputed from the reduced pool', async () => {
+    const { service, ledger, shareOuts, shareOutPlan } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    // Equal contributions: the fair close pays 100k to each member.
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id, [100_000, 100_000]);
+    // Legacy (pre-054) crash state: the full plan persisted WITHOUT a marker,
+    // and the lead member's payout already posted (pool now holds 100k).
+    const now = new Date().toISOString();
+    for (const member of [leadMember, member2]) {
+      await shareOutPlan.create({
+        id: `legacy-plan-${member.id}`,
+        cycleId: cycle.id,
+        memberId: member.id,
+        shareKobo: 100_000,
+        contributedKobo: 100_000,
+        residualKobo: 0,
+        createdAt: now
+      });
+    }
+    const leadEntry = await ledger.postEntry(
+      {
+        idempotencyKey: `vsla-shareout:${cycle.id}:${leadMember.id}`,
+        referenceType: 'vsla_share_out',
+        referenceId: cycle.id,
+        description: 'legacy payout',
+        postings: [
+          {
+            accountCode: memberSavingsAccountCode(group.id, lead.id),
+            direction: 'debit',
+            amountKobo: 100_000
+          },
+          {
+            accountCode: groupCashAccountCode(group.id),
+            direction: 'credit',
+            amountKobo: 100_000
+          }
+        ],
+        requireSolventAccounts: [groupCashAccountCode(group.id)]
+      },
+      lead.id
+    );
+    await shareOuts.create({
+      id: 'legacy-shareout-lead',
+      cycleId: cycle.id,
+      memberId: leadMember.id,
+      shareKobo: 100_000,
+      contributedKobo: 100_000,
+      residualKobo: 0,
+      ledgerEntryId: leadEntry.id,
+      createdAt: now
+    });
+
+    const report = await service.closeCycle(lead, cycle.id);
+    // member2 is paid the ORIGINAL 100k share — not a share recomputed from
+    // the reduced 100k pool — and the plan gained its completion marker.
+    expect(report.payouts).toHaveLength(2);
+    expect(report.payouts.find((p) => p.memberId === member2.id)?.shareKobo).toBe(100_000);
+    expect(report.distributableKobo).toBe(200_000);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
+    expect(await shareOutPlan.findMeta(cycle.id)).toMatchObject({ rowCount: 2 });
+  });
+
+  it('concurrent closers write exactly ONE plan and pay every member once', async () => {
+    const { service, ledger, shareOutPlan } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id, [100_000, 300_000]);
+    // The OPEN→CLOSED CAS elects a single closer; the loser 409s and its
+    // retry replays the winner's close (single-closer doctrine).
+    const [a, b] = await Promise.allSettled([
+      service.closeCycle(lead, cycle.id),
+      service.closeCycle(lead, cycle.id)
+    ]);
+    const winner = (a.status === 'fulfilled' ? a : b) as PromiseFulfilledResult<
+      Awaited<ReturnType<typeof service.closeCycle>>
+    >;
+    const loserReplay = await service.closeCycle(lead, cycle.id);
+    expect(winner.value.payouts.map((p) => [p.memberId, p.shareKobo].join(':'))).toEqual(
+      loserReplay.payouts.map((p) => [p.memberId, p.shareKobo].join(':'))
+    );
+    // One marker, two plan rows, two payout rows, pool fully distributed.
+    expect(await shareOutPlan.findMeta(cycle.id)).toMatchObject({ rowCount: 2 });
+    expect(await shareOutPlan.find({ cycleId: cycle.id })).toHaveLength(2);
+    expect(await service.getShareOut(cycle.id)).toHaveLength(2);
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
   });
 });
