@@ -566,6 +566,9 @@ import {
   PARAMETRIC_POLICY_REPOSITORY,
   PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
   PARAMETRIC_PAYOUT_REPOSITORY,
+  // Stage 27 (Insurance-in-the-Bag, additive).
+  VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+  VOUCHER_COVER_REPOSITORY,
   // Wave VSLACARBON (additive).
   VSLA_GROUP_REPOSITORY,
   VSLA_MEMBER_REPOSITORY,
@@ -650,13 +653,17 @@ import {
   createInMemoryParametricProductRepository,
   createInMemoryParametricPolicyRepository,
   createInMemoryParametricTriggerEventRepository,
-  createInMemoryParametricPayoutRepository
+  createInMemoryParametricPayoutRepository,
+  createInMemoryVoucherProgrammeRiderRepository,
+  createInMemoryVoucherCoverRepository
 } from './repositories/insurance.repository.js';
 import {
   createPgParametricProductRepository,
   createPgParametricPolicyRepository,
   createPgParametricTriggerEventRepository,
-  createPgParametricPayoutRepository
+  createPgParametricPayoutRepository,
+  createPgVoucherProgrammeRiderRepository,
+  createPgVoucherCoverRepository
 } from './repositories/insurance.pg-repository.js';
 // Wave VSLACARBON (additive): VSLA groups + carbon MRV repositories.
 import {
@@ -1723,6 +1730,19 @@ import {
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
       inject: [PG_POOL]
     },
+    // Stage 27 (Insurance-in-the-Bag, additive): voucher-bundled cover.
+    {
+      provide: VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherProgrammeRiderRepository(pool) : createInMemoryVoucherProgrammeRiderRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOUCHER_COVER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherCoverRepository(pool) : createInMemoryVoucherCoverRepository(),
+      inject: [PG_POOL]
+    },
     // Wave VSLACARBON (additive): VSLA groups + carbon MRV.
     {
       provide: VSLA_GROUP_REPOSITORY,
@@ -2027,6 +2047,9 @@ import {
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
     PARAMETRIC_PAYOUT_REPOSITORY,
+    // Stage 27 (Insurance-in-the-Bag, additive).
+    VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+    VOUCHER_COVER_REPOSITORY,
     // Wave VSLACARBON (additive).
     VSLA_GROUP_REPOSITORY,
     VSLA_MEMBER_REPOSITORY,

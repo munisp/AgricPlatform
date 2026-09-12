@@ -230,6 +230,12 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+// Stage 27 (Insurance-in-the-Bag): voucher-bundled micro-parametric cover
+// (insurance schema, migration 057) — per-programme insurance riders and the
+// exactly-once cover bound at voucher redemption (premium debited from the
+// programme envelope in the same ledger entry as the redemption).
+export const VOUCHER_PROGRAMME_RIDER_REPOSITORY = Symbol('VOUCHER_PROGRAMME_RIDER_REPOSITORY');
+export const VOUCHER_COVER_REPOSITORY = Symbol('VOUCHER_COVER_REPOSITORY');
 
 // Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
 // cycles, contributions, share-outs, internal loans) + carbon MRV (plots,

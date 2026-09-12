@@ -1,4 +1,5 @@
 import type {
+  FloodSeverityRank,
   ParametricPayout,
   ParametricPolicy,
   ParametricPolicyStatus,
@@ -319,4 +320,213 @@ export class InMemoryParametricPayoutRepository implements ParametricPayoutRepos
 
 export function createInMemoryParametricPayoutRepository(): InMemoryParametricPayoutRepository {
   return new InMemoryParametricPayoutRepository();
+}
+
+// ---------------------------------------------------------------------------
+// Stage 27 (Insurance-in-the-Bag, migration 057): voucher-bundled cover.
+
+export const RIDER_STATUSES = ['active', 'suspended'] as const;
+export type RiderStatus = (typeof RIDER_STATUSES)[number];
+
+/**
+ * Per-programme insurance rider (Stage 27): the sponsor-defined product
+ * terms that bind a micro-parametric cover onto every redeemed voucher of
+ * the programme. One rider per programme (UNIQUE programme_id). The flood
+ * band is captured at definition time so redemption-time premium pricing
+ * stays deterministic (the stub flood driver is never consulted on the
+ * money path).
+ */
+export interface VoucherProgrammeRiderRecord {
+  id: string;
+  /** UNIQUE — one rider per subsidy programme. */
+  programmeId: string;
+  /** Catalog product code (trigger type source), e.g. 'NG-RAIN-WET-26'. */
+  productCode: string;
+  sumInsuredKobo: number;
+  premiumRateBps: number;
+  floodBand: FloodSeverityRank;
+  status: RiderStatus;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoucherProgrammeRiderRepository {
+  /** Throws ConflictException when a rider already exists for the programme. */
+  create(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord>;
+  update(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord>;
+  findById(id: string): Promise<VoucherProgrammeRiderRecord | undefined>;
+  findByProgrammeId(programmeId: string): Promise<VoucherProgrammeRiderRecord | undefined>;
+  all(): Promise<VoucherProgrammeRiderRecord[]>;
+}
+
+export class InMemoryVoucherProgrammeRiderRepository implements VoucherProgrammeRiderRepository {
+  private readonly items = new Map<string, VoucherProgrammeRiderRecord>();
+
+  async create(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord> {
+    for (const existing of this.items.values()) {
+      if (existing.programmeId === record.programmeId) {
+        throw new ConflictException(`Programme '${record.programmeId}' already has an insurance rider`);
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async update(record: VoucherProgrammeRiderRecord): Promise<VoucherProgrammeRiderRecord> {
+    if (!this.items.has(record.id)) {
+      throw new ConflictException(`Insurance rider '${record.id}' not found`);
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findById(id: string): Promise<VoucherProgrammeRiderRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByProgrammeId(programmeId: string): Promise<VoucherProgrammeRiderRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.programmeId === programmeId);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async all(): Promise<VoucherProgrammeRiderRecord[]> {
+    return [...this.items.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((item) => structuredClone(item));
+  }
+}
+
+export function createInMemoryVoucherProgrammeRiderRepository(): InMemoryVoucherProgrammeRiderRepository {
+  return new InMemoryVoucherProgrammeRiderRepository();
+}
+
+// ---------------------------------------------------------------------------
+
+export const VOUCHER_COVER_STATUSES = ['quoted', 'bound', 'expired', 'triggered', 'paid'] as const;
+export type VoucherCoverStatus = (typeof VOUCHER_COVER_STATUSES)[number];
+
+/**
+ * Cover bound onto a redeemed voucher (Stage 27). UNIQUE voucher_id makes
+ * the bind exactly-once per voucher behind the redemption state machine
+ * (crash-resume replays adopt the existing row instead of double-binding);
+ * UNIQUE policy_id pins the 1:1 link to the parametric policy whose
+ * lifecycle drives the triggered/paid projections. Status is projected
+ * from policy lifecycle events; persisted rows start at 'bound' because
+ * pricing ('quoted') is atomic with binding on the redemption path.
+ */
+export interface VoucherCoverRecord {
+  id: string;
+  /** UNIQUE — one cover per voucher, ever. */
+  voucherId: string;
+  /** UNIQUE — the bound parametric policy. */
+  policyId: string;
+  programmeId: string;
+  plotId: string;
+  farmerId: string;
+  premiumKobo: number;
+  /** Honest provenance label — 'stub' until the live weather provider gate. */
+  coverBasis: 'stub' | 'live';
+  status: VoucherCoverStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VoucherCoverCriteria {
+  voucherId?: string;
+  policyId?: string;
+  programmeId?: string;
+  farmerId?: string;
+  status?: VoucherCoverStatus;
+}
+
+export interface VoucherCoverRepository {
+  /** Throws ConflictException when voucherId or policyId already exists. */
+  create(record: VoucherCoverRecord): Promise<VoucherCoverRecord>;
+  /** Compare-and-set; throws ConflictException when the row moved on. */
+  updateExpected(
+    id: string,
+    patch: Partial<VoucherCoverRecord>,
+    expected: Partial<VoucherCoverRecord>
+  ): Promise<VoucherCoverRecord>;
+  findById(id: string): Promise<VoucherCoverRecord | undefined>;
+  findByVoucherId(voucherId: string): Promise<VoucherCoverRecord | undefined>;
+  find(criteria: VoucherCoverCriteria): Promise<VoucherCoverRecord[]>;
+  all(): Promise<VoucherCoverRecord[]>;
+}
+
+export function voucherCoverMatcher(criteria: VoucherCoverCriteria): (record: VoucherCoverRecord) => boolean {
+  return (record) =>
+    (!criteria.voucherId || record.voucherId === criteria.voucherId) &&
+    (!criteria.policyId || record.policyId === criteria.policyId) &&
+    (!criteria.programmeId || record.programmeId === criteria.programmeId) &&
+    (!criteria.farmerId || record.farmerId === criteria.farmerId) &&
+    (!criteria.status || record.status === criteria.status);
+}
+
+export class InMemoryVoucherCoverRepository implements VoucherCoverRepository {
+  private readonly items = new Map<string, VoucherCoverRecord>();
+
+  async create(record: VoucherCoverRecord): Promise<VoucherCoverRecord> {
+    for (const existing of this.items.values()) {
+      if (existing.voucherId === record.voucherId) {
+        throw new ConflictException(`Voucher '${record.voucherId}' already has a bound cover`);
+      }
+      if (existing.policyId === record.policyId) {
+        throw new ConflictException(`Policy '${record.policyId}' is already linked to a cover`);
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  /**
+   * Synchronous check-and-set (no await between read and write) so the
+   * precondition cannot be defeated by a concurrent projection — mirrors
+   * the guarded SQL UPDATE in the pg implementation.
+   */
+  updateExpected(
+    id: string,
+    patch: Partial<VoucherCoverRecord>,
+    expected: Partial<VoucherCoverRecord>
+  ): Promise<VoucherCoverRecord> {
+    const current = this.items.get(id);
+    const matchesExpected = current
+      ? Object.entries(expected).every(([key, value]) => current[key as keyof VoucherCoverRecord] === value)
+      : false;
+    if (!current || !matchesExpected) {
+      throw new ConflictException(`Voucher cover '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = { ...current, ...patch };
+    this.items.set(id, updated);
+    return Promise.resolve(structuredClone(updated));
+  }
+
+  async findById(id: string): Promise<VoucherCoverRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByVoucherId(voucherId: string): Promise<VoucherCoverRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.voucherId === voucherId);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async find(criteria: VoucherCoverCriteria): Promise<VoucherCoverRecord[]> {
+    return [...this.items.values()]
+      .filter(voucherCoverMatcher(criteria))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((item) => structuredClone(item));
+  }
+
+  async all(): Promise<VoucherCoverRecord[]> {
+    return [...this.items.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((item) => structuredClone(item));
+  }
+}
+
+export function createInMemoryVoucherCoverRepository(): InMemoryVoucherCoverRepository {
+  return new InMemoryVoucherCoverRepository();
 }

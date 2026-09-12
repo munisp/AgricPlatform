@@ -101,6 +101,16 @@ class RedeemVoucherDto {
   @IsString()
   @IsNotEmpty()
   invoiceRef!: string;
+
+  /**
+   * Stage 27 (Insurance-in-the-Bag): the farmer's planted plot the bundled
+   * parametric cover attaches to. Required at redemption when the programme
+   * has an active insurance rider (422 otherwise); ignored when the
+   * `voucher-insurance-rider` flag is off.
+   */
+  @IsOptional()
+  @IsString()
+  plotId?: string;
 }
 
 class FundProgrammeDto {
@@ -291,9 +301,14 @@ export class InputVouchersController {
   @Post('vouchers/:id/redeem')
   @UseGuards(RolesGuard)
   @Roles('supplier', 'admin')
-  @ApiOperation({ summary: 'Redeem a voucher at an agro-dealer against an invoice (replay → 409)' })
+  @ApiOperation({
+    summary:
+      'Redeem a voucher at an agro-dealer against an invoice (replay → 409). With an active programme ' +
+      'insurance rider + voucher-insurance-rider flag, the premium debits the envelope atomically and a ' +
+      'parametric cover binds in the same operation.'
+  })
   async redeemVoucher(@Param('id') id: string, @Body() dto: RedeemVoucherDto, @CurrentUser() actor: User | null) {
-    return { data: await this.vouchers.redeemVoucher(id, dto.invoiceRef, actorOf(actor)) };
+    return { data: await this.vouchers.redeemVoucher(id, dto.invoiceRef, actorOf(actor), { plotId: dto.plotId }) };
   }
 
   @Post('vouchers/:id/void')
