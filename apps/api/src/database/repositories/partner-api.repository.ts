@@ -62,12 +62,29 @@ export interface WebhookSubscription {
   /** HMAC delivery secret (used to sign outbound payloads). */
   secret: string;
   status: WebhookSubscriptionStatus;
+  /**
+   * Tenant binding (Stage 27 WP-G3, V3 middleware audit): the partner
+   * organisation this subscription belongs to, copied from the bound
+   * client's partnerId at creation and backfilled by migration 053.
+   * Dispatch is scoped — an event carrying a partnerId is delivered only to
+   * subscriptions with the same partnerId. Undefined marks a platform-level
+   * subscription, which only receives events that carry no partnerId
+   * (e.g. learning events). Fail closed.
+   */
+  partnerId?: string;
+  /**
+   * Platform/admin opt-in to receive cross-tenant traffic. Defaults to
+   * scoped (false) and is never settable via the partner API — flipping it
+   * is an operator action on partners.webhook_subscriptions.cross_tenant.
+   */
+  crossTenant?: boolean;
   createdAt: string;
 }
 
 export interface WebhookSubscriptionCriteria {
   clientId?: string;
   status?: WebhookSubscriptionStatus;
+  partnerId?: string;
 }
 
 export type PartnerClientRepository = AsyncRepository<PartnerClient, PartnerClientCriteria>;
@@ -96,7 +113,8 @@ export function webhookSubscriptionMatcher(
 ): (item: WebhookSubscription) => boolean {
   return (item) =>
     (!criteria.clientId || item.clientId === criteria.clientId) &&
-    (!criteria.status || item.status === criteria.status);
+    (!criteria.status || item.status === criteria.status) &&
+    (!criteria.partnerId || item.partnerId === criteria.partnerId);
 }
 
 export class InMemoryPartnerClientRepository

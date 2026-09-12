@@ -308,9 +308,16 @@ export class PartnerApiService {
 
   // --- Webhook subscription management -------------------------------------
 
+  /**
+   * Creates a webhook subscription scoped to the caller's bound partner
+   * (Stage 27 WP-G3): the token's partnerId is authoritative (never
+   * caller-supplied in the body), and crossTenant stays false — platform
+   * cross-tenant receivers are operator-managed, not API-settable.
+   */
   async createWebhookSubscription(
     clientId: string,
-    input: { eventTypes: string[]; targetUrl: string; secret: string }
+    input: { eventTypes: string[]; targetUrl: string; secret: string },
+    partnerId?: string
   ): Promise<WebhookSubscription> {
     const invalid = input.eventTypes.filter(
       (type) => !PARTNER_EVENT_TYPES.includes(type as PartnerEventType)
@@ -327,6 +334,8 @@ export class PartnerApiService {
       targetUrl: input.targetUrl,
       secret: input.secret,
       status: 'active',
+      partnerId,
+      crossTenant: false,
       createdAt: new Date().toISOString()
     });
   }

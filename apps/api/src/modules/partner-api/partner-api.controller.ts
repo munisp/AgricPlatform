@@ -207,7 +207,13 @@ export class PartnerApiController {
         'Webhook subscriptions require a client-credentials access token'
       );
     }
-    const subscription = await this.partnerApi.createWebhookSubscription(identity.clientId, dto);
+    // The token's bound partnerId scopes the subscription (Stage 27 WP-G3);
+    // unbound credentials create platform-level subscriptions.
+    const subscription = await this.partnerApi.createWebhookSubscription(
+      identity.clientId,
+      dto,
+      identity.partnerId
+    );
     // Secret is returned once at creation for verification testing.
     return { data: subscription };
   }

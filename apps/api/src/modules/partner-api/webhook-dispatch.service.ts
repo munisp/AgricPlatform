@@ -42,8 +42,117 @@ export interface WebhookDelivery {
 
 export type WebhookFetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string }
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    signal?: AbortSignal;
+  }
 ) => Promise<{ status: number }>;
+
+/** Default outbound delivery timeout; override via WEBHOOK_FETCH_TIMEOUT_MS. */
+export const DEFAULT_WEBHOOK_FETCH_TIMEOUT_MS = 10_000;
+
+/** Outbound fetch timeout in ms (env-configurable, fail-safe default). */
+export function webhookFetchTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.WEBHOOK_FETCH_TIMEOUT_MS;
+  if (!raw) return DEFAULT_WEBHOOK_FETCH_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WEBHOOK_FETCH_TIMEOUT_MS;
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a, b] = parts;
+  return (
+    a === 0 || // "this" network
+    a === 10 || // RFC 1918
+    a === 127 || // loopback
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64.0.0/10
+    (a === 169 && b === 254) || // link-local (cloud metadata)
+    (a === 172 && b >= 16 && b <= 31) || // RFC 1918
+    (a === 192 && b === 0) || // IETF protocol assignments 192.0.0.0/24
+    (a === 192 && b === 168) || // RFC 1918
+    (a === 198 && (b === 18 || b === 19)) || // benchmark
+    a >= 224 // multicast / reserved
+  );
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === '::1' || h === '::') return true; // loopback / unspecified
+  if (h.startsWith('::ffff:')) return isPrivateIpv4(h.slice('::ffff:'.length)); // v4-mapped
+  return h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80'); // ULA + link-local
+}
+
+const BLOCKED_HOSTNAMES = new Set(['localhost', 'metadata.google.internal']);
+
+/**
+ * SSRF guard for outbound webhook target URLs (Stage 27 WP-G3). Returns a
+ * human-readable block reason, or null when the URL is deliverable. The URL
+ * parser normalises decimal/hex/octal IPv4 literals (e.g. http://2130706433)
+ * to dotted-quad before the range checks below run.
+ *
+ * Fail closed in every environment: private/loopback/link-local addresses
+ * and local hostnames are always blocked; plain http is allowed only outside
+ * production (NODE_ENV != 'production').
+ */
+export function webhookUrlBlockReason(
+  targetUrl: string,
+  env: NodeJS.ProcessEnv = process.env
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(targetUrl);
+  } catch {
+    return 'unparseable target URL';
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return `unsupported scheme '${url.protocol}'`;
+  }
+  if (url.protocol === 'http:' && env.NODE_ENV === 'production') {
+    return 'plain http target URLs are not allowed in production';
+  }
+  // WHATWG URL keeps IPv6 hostnames bracketed; strip for the range checks.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    BLOCKED_HOSTNAMES.has(hostname) ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.internal')
+  ) {
+    return `blocked local hostname '${hostname}'`;
+  }
+  if (isPrivateIpv4(hostname) || isPrivateIpv6(hostname)) {
+    return `private/loopback/link-local address '${hostname}'`;
+  }
+  return null;
+}
+
+/**
+ * Owning partner for a domain event, when the payload carries one. Events
+ * without a partnerId (e.g. learning.*) are platform-scoped.
+ */
+export function eventPartnerId(event: DomainEvent): string | undefined {
+  const payload = event.payload as { partnerId?: unknown } | null | undefined;
+  return payload && typeof payload.partnerId === 'string' ? payload.partnerId : undefined;
+}
+
+/**
+ * Tenant-scope check (Stage 27 WP-G3, V3 middleware audit): an event is
+ * delivered to a subscription only when both belong to the same tenant —
+ * same partnerId, or both platform-level (no partnerId) — unless the
+ * subscription is an explicit cross-tenant platform/admin receiver.
+ */
+export function subscriptionInScope(
+  subscription: WebhookSubscription,
+  owningPartnerId: string | undefined
+): boolean {
+  if (subscription.crossTenant === true) return true;
+  return subscription.partnerId === owningPartnerId;
+}
 
 /** HMAC-SHA256 signature over the exact JSON payload (sha256=<hex>). */
 export function signWebhookPayload(secret: string, payload: string): string {
@@ -118,16 +227,24 @@ export class WebhookDispatchService implements OnModuleInit {
   }
 
   /**
-   * Fans the event out to all matching active subscriptions. The delivery id
-   * is derived from the event id (not regenerated per attempt) so a partner
-   * can dedupe a re-driven delivery against the first attempt.
+   * Fans the event out to all matching active subscriptions IN THE EVENT'S
+   * TENANT SCOPE (Stage 27 WP-G3: previously type-only filtering leaked
+   * partner.* payloads — partnerId + userId + amountNgn — to every
+   * subscriber). The delivery id is derived from the event id (not
+   * regenerated per attempt) so a partner can dedupe a re-driven delivery
+   * against the first attempt.
    */
   private async fanOut(
     type: PartnerEventType,
     event: DomainEvent
   ): Promise<{ delivered: number; targets: number }> {
     const active = await this.subscriptions.find({ status: 'active' });
-    const targets = active.filter((subscription) => subscription.eventTypes.includes(type));
+    const owningPartnerId = eventPartnerId(event);
+    const targets = active.filter(
+      (subscription) =>
+        subscription.eventTypes.includes(type) &&
+        subscriptionInScope(subscription, owningPartnerId)
+    );
     const delivery: WebhookDelivery = {
       id: `whd_${event.id}`,
       type,
@@ -143,28 +260,58 @@ export class WebhookDispatchService implements OnModuleInit {
     return { delivered, targets: targets.length };
   }
 
-  /** Signs and POSTs a single delivery. Returns true on a 2xx response. */
+  /**
+   * Signs and POSTs a single delivery. Returns true on a 2xx response.
+   * Fail-closed (Stage 27 WP-G3): SSRF-guard rejections, transport errors
+   * and timeouts are recorded as delivery failures (warn log + false → the
+   * event stays unprocessed for the sweeper) and never silently skipped.
+   */
   async deliver(
     subscription: WebhookSubscription,
     delivery: WebhookDelivery,
     body = JSON.stringify(delivery)
   ): Promise<boolean> {
-    const response = await this.fetchImpl(subscription.targetUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-agric-signature': signWebhookPayload(subscription.secret, body),
-        'x-agric-event': delivery.type,
-        'x-agric-delivery': delivery.id
-      },
-      body
-    });
-    if (response.status < 200 || response.status >= 300) {
+    const blockReason = webhookUrlBlockReason(subscription.targetUrl);
+    if (blockReason) {
       this.logger.warn(
-        `webhook ${delivery.id} to ${subscription.targetUrl} returned ${response.status}`
+        `webhook ${delivery.id} to ${subscription.targetUrl} blocked by SSRF guard: ${blockReason}`
       );
       return false;
     }
-    return true;
+    const timeoutMs = webhookFetchTimeoutMs();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Never hold the event loop open for a delivery timer.
+    (timer as { unref?: () => void }).unref?.();
+    try {
+      const response = await this.fetchImpl(subscription.targetUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-agric-signature': signWebhookPayload(subscription.secret, body),
+          'x-agric-event': delivery.type,
+          'x-agric-delivery': delivery.id
+        },
+        body,
+        signal: controller.signal
+      });
+      if (response.status < 200 || response.status >= 300) {
+        this.logger.warn(
+          `webhook ${delivery.id} to ${subscription.targetUrl} returned ${response.status}`
+        );
+        return false;
+      }
+      return true;
+    } catch (error: unknown) {
+      const reason = controller.signal.aborted
+        ? `timed out after ${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      this.logger.warn(`webhook ${delivery.id} to ${subscription.targetUrl} failed: ${reason}`);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
