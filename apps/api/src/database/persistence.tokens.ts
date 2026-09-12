@@ -67,6 +67,8 @@ export const ANALYTICS_MART_REPOSITORY = Symbol('ANALYTICS_MART_REPOSITORY');
 
 // Wave P2a: marketplace depth (escrow/invoicing/logistics) + finance/credit.
 export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');
+// Stage 27 Batch 1 (Innovation 2): coop pool & split settlement.
+export const COOP_POOL_REPOSITORY = Symbol('COOP_POOL_REPOSITORY');
 // Stage 23: recorded escrow payout attempts (release/refund rail).
 export const ESCROW_PAYOUT_REPOSITORY = Symbol('ESCROW_PAYOUT_REPOSITORY');
 // Stage 27 (Innovation 9): geo-sealed delivery attestations (migration 067).
@@ -87,6 +89,8 @@ export const FARM_RECORD_REPOSITORY = Symbol('FARM_RECORD_REPOSITORY');
 export const IMPORT_BATCH_REPOSITORY = Symbol('IMPORT_BATCH_REPOSITORY');
 export const IMPORT_RECORD_REPOSITORY = Symbol('IMPORT_RECORD_REPOSITORY');
 export const INBOUND_EVENT_REPOSITORY = Symbol('INBOUND_EVENT_REPOSITORY');
+// WP-G20: Moodle/Discourse/Directus bridge sync-state bookkeeping.
+export const BRIDGE_SYNC_STATE_REPOSITORY = Symbol('BRIDGE_SYNC_STATE_REPOSITORY');
 // Wave P5b: USSD channel + shared-device PIN profiles.
 export const USSD_SESSION_REPOSITORY = Symbol('USSD_SESSION_REPOSITORY');
 export const PIN_PROFILE_REPOSITORY = Symbol('PIN_PROFILE_REPOSITORY');
@@ -210,6 +214,11 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
 
+// SeasonSync (innovation wave 27): pinned harvest-linked repayment schedules
+// (credit schema, migration 055). Schedule reshaping only — repayment posting
+// still flows through the existing credit.loan_repayments path.
+export const SEASONAL_SCHEDULE_REPOSITORY = Symbol('SEASONAL_SCHEDULE_REPOSITORY');
+
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
 // migration 032. Money movement stays in the finance ledger; these tables
@@ -230,6 +239,12 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+// Stage 27 (Insurance-in-the-Bag): voucher-bundled micro-parametric cover
+// (insurance schema, migration 057) — per-programme insurance riders and the
+// exactly-once cover bound at voucher redemption (premium debited from the
+// programme envelope in the same ledger entry as the redemption).
+export const VOUCHER_PROGRAMME_RIDER_REPOSITORY = Symbol('VOUCHER_PROGRAMME_RIDER_REPOSITORY');
+export const VOUCHER_COVER_REPOSITORY = Symbol('VOUCHER_COVER_REPOSITORY');
 
 // Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
 // cycles, contributions, share-outs, internal loans) + carbon MRV (plots,
@@ -277,3 +292,31 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Stage 27 innovation "Float Sentinel": deterministic fraud/liquidity anomaly
+// engine — versioned rule registry, dedup-keyed alert queue, admin case queue
+// (fraud schema, migration 059). Detective control only; read-only on the ledger.
+export const FRAUD_SENTINEL_REPOSITORY = Symbol('FRAUD_SENTINEL_REPOSITORY');
+
+// Stage 27 Batch 1 (innovation 4): Planting-Window Pulse — per-plot advisory
+// subscriptions + dispatch log (advisory schema, migration 058). No money
+// movement; operational records with basis honesty labelling only.
+export const ADVISORY_PULSE_REPOSITORY = Symbol('ADVISORY_PULSE_REPOSITORY');
+
+// Stage 27 INNOVATION 7 (Credit Passport): portable, verifiable farmer
+// credit credential — append-only per-farmer credential chain plus
+// consent-scoped, expiring disclosures (schema `credit_passport`, migration
+// 065). Composes credit/vsla-carbon/learning/geo-verification repositories;
+// these tokens hold only the credential chain and disclosure records.
+export const CREDIT_PASSPORT_REPOSITORY = Symbol('CREDIT_PASSPORT_REPOSITORY');
+export const CREDIT_PASSPORT_DISCLOSURE_REPOSITORY = Symbol('CREDIT_PASSPORT_DISCLOSURE_REPOSITORY');
+// Innovation 10 (Stage 27): Chapter Map — recomputable per-chapter H3 res-7
+// aggregate cache (geo_intel schema, migration 068) plus the read-only
+// roster port over chapters.chapter_members. Aggregates only; no PII.
+export const CHAPTER_MAP_SNAPSHOT_REPOSITORY = Symbol('CHAPTER_MAP_SNAPSHOT_REPOSITORY');
+export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
+// Stage 27 / Innovation 8: Receipt LTV Guardian — collateral positions +
+// append-only LTV observation log (warehouse schema, migration 066). The
+// outstanding balance is read from the finance ledger, never stored here.
+export const COLLATERAL_POSITION_REPOSITORY = Symbol('COLLATERAL_POSITION_REPOSITORY');
+export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
