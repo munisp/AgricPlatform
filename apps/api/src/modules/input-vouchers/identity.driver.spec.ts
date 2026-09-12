@@ -149,3 +149,96 @@ describe('identity.driver live (fail-closed, wave NINVOUCHER)', () => {
     expect(driver.name).toBe('live');
   });
 });
+
+describe('LiveIdentityDriver vendor client (WP-G17)', () => {
+  const INPUT = { nin: NIN, fullName: 'Amina Bello', dateOfBirth: '1990-01-01' };
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('maps a verified vendor response onto the port contract', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ verified: true, nameMatchScore: 87 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    const result = await driver.verify(INPUT);
+    expect(result).toEqual({ verified: true, nameMatchScore: 87, basis: 'live' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://vendor.example/verify');
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer key');
+  });
+
+  it('maps a rejected vendor verdict to verified: false (not an error)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ verified: false })));
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    const result = await driver.verify(INPUT);
+    expect(result.verified).toBe(false);
+    expect(result.basis).toBe('live');
+    expect(result.nameMatchScore).toBeUndefined();
+  });
+
+  it('fails closed with 503 on a malformed vendor response (missing verdict)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'ok' })));
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    await expect(driver.verify(INPUT)).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('fails closed with 503 on vendor HTTP errors and never echoes the NIN', async () => {
+    // Vendor error bodies may echo the PII we sent; they must not surface.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(`unknown nin ${NIN}`, { status: 400 }))
+    );
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    const error = await driver.verify(INPUT).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(String((error as Error).message)).not.toContain(NIN);
+  });
+
+  it('retries a transient 5xx exactly once, then succeeds', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: 'down' }, 503))
+      .mockResolvedValueOnce(jsonResponse({ verified: true, nameMatchScore: 60 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    const result = await driver.verify(INPUT);
+    expect(result.verified).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('maps a vendor timeout to 503', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          (init.signal as AbortSignal).addEventListener('abort', () => reject(new Error('aborted')));
+        })
+      )
+    );
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key', 10);
+    await expect(driver.verify(INPUT)).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('opens the circuit breaker after 3 failures and fails fast', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('connection refused'));
+    vi.stubGlobal('fetch', fetchMock);
+    const driver = new LiveIdentityDriver('https://vendor.example', 'key');
+    for (let i = 0; i < 3; i += 1) {
+      await driver.verify(INPUT).catch(() => undefined);
+    }
+    expect(driver.circuitOpen).toBe(true);
+    await expect(driver.verify(INPUT)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    // The open breaker short-circuits: still only 3 network attempts.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});

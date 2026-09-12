@@ -1,5 +1,13 @@
 import { createHash, randomInt } from 'node:crypto';
-import { HttpException, HttpStatus, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
+  UnauthorizedException
+} from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { newId } from '../../common/async-repository.js';
@@ -8,6 +16,7 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import { OTP_STORE } from '../../database/persistence.tokens.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
 import { UsersService, type CreateUserInput } from '../users/users.service.js';
+import { AUTH_UNAVAILABLE, KeycloakPhoneTokenService } from './keycloak-phone-token.service.js';
 import { SessionService } from './session.service.js';
 
 const OTP_TTL_MS = 5 * 60 * 1000;
@@ -51,7 +60,13 @@ export class AuthService {
     private readonly events: DomainEventsService,
     private readonly metrics: MetricsService,
     @Inject(OTP_STORE) private readonly otp: OtpChallengeStore,
-    private readonly sessions: SessionService
+    private readonly sessions: SessionService,
+    /**
+     * WP-G16 flagged Keycloak token issuer. Optional so legacy plain
+     * constructions (unit tests) keep working: when absent a fresh instance
+     * is resolved from the environment at issuance time.
+     */
+    @Optional() private readonly phoneTokens?: KeycloakPhoneTokenService
   ) {}
 
   async requestOtp(phone: string): Promise<OtpRequestResult> {
@@ -141,7 +156,7 @@ export class AuthService {
       throw new UnauthorizedException('No account for this phone number. Register first.');
     }
     this.metrics.otpVerification('success');
-    return this.withRefreshToken(user, meta);
+    return this.withRefreshToken(user, meta, code);
   }
 
   async register(
@@ -159,32 +174,65 @@ export class AuthService {
 
   /**
    * Issues a session for an identity already verified by another factor
-   * (wave P5b shared-device PIN swap). Same stub-token contract as OTP.
+   * (wave P5b shared-device PIN swap). Same token contract as OTP. The
+   * optional credential is the verified second factor (PIN) forwarded to
+   * Keycloak when PHONE_AUTH_KEYCLOAK is on; without one the Keycloak path
+   * fails closed with 503 AUTH_UNAVAILABLE.
    */
   async issueSessionFor(
     userId: string,
-    meta?: { userAgent?: string; ipAddress?: string }
+    meta?: { userAgent?: string; ipAddress?: string },
+    credential?: string
   ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
     const user = await this.users.getById(userId);
-    return this.withRefreshToken(user, meta);
+    return this.withRefreshToken(user, meta, credential);
   }
 
   /** Access token plus a rotated refresh-token session (Wave P). */
   private async withRefreshToken(
     user: User,
-    meta?: { userAgent?: string; ipAddress?: string }
+    meta?: { userAgent?: string; ipAddress?: string },
+    credential?: string
   ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
+    // Mint the access token FIRST: when issuance fails closed (production
+    // guard / Keycloak outage) no orphaned refresh session is persisted.
+    const token = await this.issueAccessToken(user, credential);
     const session = await this.sessions.issue(user.id, meta ?? {});
     return {
-      token: this.issueStubToken(user),
+      token,
       user,
       refreshToken: session.refreshToken,
       refreshTokenExpiresAt: session.expiresAt
     };
   }
 
+  /**
+   * Access-token issuance (WP-G16). PHONE_AUTH_KEYCLOAK=true routes through
+   * the Keycloak token endpoint; with the flag off the stub remains for
+   * dev/test ONLY — production fails closed with 503 AUTH_UNAVAILABLE and
+   * the stub path can NEVER issue a token there.
+   */
+  private issueAccessToken(user: User, credential?: string): Promise<string> {
+    const tokens = this.phoneTokens ?? new KeycloakPhoneTokenService();
+    if (tokens.enabled) {
+      return tokens.issueToken(user, credential);
+    }
+    if (isProduction()) {
+      return Promise.reject(
+        new ServiceUnavailableException(
+          `${AUTH_UNAVAILABLE}: phone-auth token issuance is disabled (PHONE_AUTH_KEYCLOAK is not ` +
+            'true) and the development stub token is forbidden in production. Configure Keycloak ' +
+            'token issuance or phone login stays closed.'
+        )
+      );
+    }
+    // Explicit non-production assertion: the stub token exists only here.
+    return Promise.resolve(this.issueStubToken(user));
+  }
+
   private issueStubToken(user: User): string {
-    // Not a real JWT. Keycloak-issued tokens replace this in production.
+    // Not a real JWT. Dev/test only — issueAccessToken refuses this path in
+    // production, and PHONE_AUTH_KEYCLOAK=true replaces it with Keycloak.
     return `stub-token.${Buffer.from(user.id).toString('base64url')}`;
   }
 

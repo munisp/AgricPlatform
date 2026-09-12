@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ProviderConfigError } from '../integrations/drivers/http.js';
+import { VendorHttpClient, parseVendorTimeoutMs } from '../integrations/drivers/vendor-client.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { InvalidNinError, normalizeNin } from './nin-crypto.js';
 
@@ -15,15 +16,21 @@ import { InvalidNinError, normalizeNin } from './nin-crypto.js';
  * identity check: nothing is queried anywhere and `basis: 'stub'` labels
  * every result honestly (API fields, UI badges, docs).
  *
- * NIN_DRIVER=live: reserved for NIMC or a licensed identity vendor. It
- * REQUIRES NIN_PROVIDER_URL + NIN_PROVIDER_API_KEY and fails CLOSED: boot
- * aborts in production when they are missing, and every verification call
- * answers 503 (ServiceUnavailable) until a vendor client is integrated —
- * never a silent pass and never a silent stub substitution.
+ * NIN_DRIVER=live: licensed identity vendor client (WP-G17). It REQUIRES
+ * NIN_PROVIDER_URL + NIN_PROVIDER_API_KEY (per-attempt timeout via
+ * NIN_PROVIDER_TIMEOUT_MS, default 5000) and fails CLOSED: boot aborts in
+ * production when they are missing, an unconfigured client answers 503 on
+ * every call, and every vendor failure mode (timeout, transport, 4xx/5xx,
+ * open circuit breaker, malformed response) maps to 503 — never a silent
+ * pass and never a silent stub substitution. Resilience per platform
+ * pattern: AbortController timeout, circuit breaker (3 fails/30s), bounded
+ * retry with jitter on transient 5xx only (VendorHttpClient). Vendor
+ * request/response bodies carry PII and are never logged or echoed in
+ * errors.
  *
- * EXTERNAL GATE: NIMC/licensed identity vendor contract + programme sponsor
- * MOU (see apps/api/src/modules/input-vouchers/README.md and
- * docs/input-vouchers.md).
+ * EXTERNAL GATE: real NIMC/licensed identity vendor credentials are a
+ * MAINTAINER ACTION (vendor contract + programme sponsor MOU — see
+ * apps/api/src/modules/input-vouchers/README.md and docs/input-vouchers.md).
  */
 
 export const IDENTITY_VERIFICATION_PORT = Symbol('INPUT_VOUCHERS_IDENTITY_VERIFICATION');
@@ -80,33 +87,72 @@ export class StubIdentityDriver implements IdentityVerificationPort {
 }
 
 /**
- * Live driver placeholder: a real NIMC/licensed vendor integration is an
- * EXTERNAL GATE (vendor contract + sponsor MOU). Until one is wired, every
- * call fails closed with 503 so no deployment can pretend to verify a NIN.
+ * Vendor-agnostic NIN verification response contract: POST {base}/verify
+ * with { nin, fullName, dateOfBirth? } expects 200 JSON { verified: boolean,
+ * nameMatchScore?: number }. A missing `verified` field is a contract
+ * violation and fails closed with 503 — never interpreted as a verdict.
+ */
+interface NinVendorVerifyResponse {
+  verified?: boolean;
+  nameMatchScore?: number;
+}
+
+/**
+ * Live driver (WP-G17): vendor HTTP client scaffolding against the licensed
+ * NIN identity vendor. Real credentials remain an EXTERNAL GATE (vendor
+ * contract + sponsor MOU — maintainer action); until configured, every call
+ * fails closed with 503 so no deployment can pretend to verify a NIN.
  */
 export class LiveIdentityDriver implements IdentityVerificationPort {
   readonly name = 'live' as const;
+  private readonly client?: VendorHttpClient;
 
-  constructor(
-    private readonly providerUrl: string | undefined,
-    private readonly apiKey: string | undefined
-  ) {}
+  constructor(providerUrl?: string, apiKey?: string, timeoutMs?: number) {
+    if (providerUrl && apiKey) {
+      this.client = new VendorHttpClient({
+        provider: 'nin-identity',
+        baseUrl: providerUrl,
+        apiKey,
+        timeoutMs
+      });
+    }
+  }
 
-  verify(_input: IdentityVerificationInput): Promise<never> {
-    if (!this.providerUrl || !this.apiKey) {
-      return Promise.reject(
-        new ServiceUnavailableException(
-          'NIN_DRIVER=live requires NIN_PROVIDER_URL and NIN_PROVIDER_API_KEY (fail-closed: no identity verification possible).'
-        )
+  /** Visible for tests/status: whether the circuit breaker is open. */
+  get circuitOpen(): boolean {
+    return this.client?.circuitOpen ?? false;
+  }
+
+  async verify(input: IdentityVerificationInput): Promise<IdentityVerificationResult> {
+    if (!this.client) {
+      throw new ServiceUnavailableException(
+        'NIN_DRIVER=live requires NIN_PROVIDER_URL and NIN_PROVIDER_API_KEY (fail-closed: no identity verification possible).'
       );
     }
-    // No vendor client is integrated yet — fail closed rather than silently
-    // accepting an unverifiable identity.
-    return Promise.reject(
-      new ServiceUnavailableException(
-        'Live NIN identity provider client is not integrated in this build (fail-closed).'
-      )
-    );
+    let json: NinVendorVerifyResponse;
+    try {
+      json = await this.client.postJson<NinVendorVerifyResponse>('/verify', {
+        nin: input.nin,
+        fullName: input.fullName,
+        dateOfBirth: input.dateOfBirth
+      });
+    } catch {
+      // Timeout / transport / HTTP error / open breaker: one uniform
+      // fail-closed answer; the underlying error carries no vendor body.
+      throw new ServiceUnavailableException(
+        'NIN identity provider request failed (fail-closed: timeout, transport error, HTTP error or open circuit breaker).'
+      );
+    }
+    if (!json || typeof json.verified !== 'boolean') {
+      throw new ServiceUnavailableException(
+        'NIN identity provider returned a malformed verification response (fail-closed).'
+      );
+    }
+    return {
+      verified: json.verified,
+      nameMatchScore: typeof json.nameMatchScore === 'number' ? json.nameMatchScore : undefined,
+      basis: 'live'
+    };
   }
 }
 
@@ -117,7 +163,11 @@ export function createIdentityDriver(env: NodeJS.ProcessEnv = process.env): Iden
     if (isProduction() && missing.length > 0) {
       throw new ProviderConfigError('nin-identity', missing);
     }
-    return new LiveIdentityDriver(env.NIN_PROVIDER_URL, env.NIN_PROVIDER_API_KEY);
+    return new LiveIdentityDriver(
+      env.NIN_PROVIDER_URL,
+      env.NIN_PROVIDER_API_KEY,
+      parseVendorTimeoutMs(env.NIN_PROVIDER_TIMEOUT_MS)
+    );
   }
   // Fail closed (mirrors createOtpDriver / assertProductionDriverConfig): the
   // stub verdict is a PUBLICLY COMPUTABLE hash, so a stub identity check in
