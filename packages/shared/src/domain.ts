@@ -697,6 +697,14 @@ export interface Lender {
   minScore: number;
   criteria: string[];
   isActive: boolean;
+  /**
+   * Provenance of the catalogue row (WP-G18): 'sample_catalogue' for the
+   * built-in unverified fixtures, 'admin_registered' for rows registered
+   * through the admin API, or an import-rail tag. Never silently absent.
+   */
+  source: string;
+  /** Vetted-lender flag — false until ops verifies the lender. */
+  verified: boolean;
 }
 
 export interface CreditScoreResult {
