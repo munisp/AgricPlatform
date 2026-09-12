@@ -530,3 +530,144 @@ export class InMemoryVoucherCoverRepository implements VoucherCoverRepository {
 export function createInMemoryVoucherCoverRepository(): InMemoryVoucherCoverRepository {
   return new InMemoryVoucherCoverRepository();
 }
+
+
+// ---------------------------------------------------------------------------
+// Stage 27 (Regen Discount, migration 070): carbon-MRV-verified premium
+// discount — versioned admin rate card + one discount per policy.
+
+/**
+ * One version of the regen-discount rate card. Append-only: every admin
+ * change inserts a new row with a monotonically increasing version so the
+ * terms that priced any historical policy stay reproducible; the current
+ * card is the highest version. Bounded 0..5000 bps (mirrors
+ * MAX_REGEN_DISCOUNT_BPS in premium.ts and the CHECK in migration 070).
+ */
+export interface RegenDiscountRateCardRecord {
+  version: number;
+  discountBps: number;
+  setBy: string;
+  createdAt: string;
+}
+
+export interface RegenDiscountRateCardRepository {
+  /** Append-only; throws ConflictException when the version already exists. */
+  append(record: RegenDiscountRateCardRecord): Promise<RegenDiscountRateCardRecord>;
+  /** Highest-version row (the current card), if any has been set. */
+  current(): Promise<RegenDiscountRateCardRecord | undefined>;
+  all(): Promise<RegenDiscountRateCardRecord[]>;
+}
+
+export class InMemoryRegenDiscountRateCardRepository implements RegenDiscountRateCardRepository {
+  private readonly items = new Map<number, RegenDiscountRateCardRecord>();
+
+  async append(record: RegenDiscountRateCardRecord): Promise<RegenDiscountRateCardRecord> {
+    if (this.items.has(record.version)) {
+      throw new ConflictException(`Regen rate-card version ${record.version} already exists`);
+    }
+    this.items.set(record.version, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async current(): Promise<RegenDiscountRateCardRecord | undefined> {
+    const versions = [...this.items.keys()].sort((a, b) => b - a);
+    const record = versions.length > 0 ? this.items.get(versions[0]) : undefined;
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async all(): Promise<RegenDiscountRateCardRecord[]> {
+    return [...this.items.values()]
+      .sort((a, b) => a.version - b.version)
+      .map((item) => structuredClone(item));
+  }
+}
+
+export function createInMemoryRegenDiscountRateCardRepository(): InMemoryRegenDiscountRateCardRepository {
+  return new InMemoryRegenDiscountRateCardRepository();
+}
+
+// ---------------------------------------------------------------------------
+
+/** Honest provenance of the discount evidence (never upgraded). */
+export type RegenEvidenceBasis = 'live' | 'estimate';
+
+/**
+ * The regen discount applied to a policy (Stage 27). UNIQUE policy_id
+ * makes the discount exactly-once per policy; attestationId pins the
+ * vsla-carbon seasonal evidence row that established eligibility (a real,
+ * recorded attestation — never a fabricated satellite score);
+ * rateCardVersion pins the rate-card version that priced the policy.
+ */
+export interface RegenDiscountRecord {
+  id: string;
+  /** UNIQUE — one discount per policy, ever. */
+  policyId: string;
+  /** The insured farm plot the discounted premium attaches to. */
+  plotId: string;
+  /** FK to vsla_carbon.carbon_evidence — the eligibility attestation. */
+  attestationId: string;
+  discountBps: number;
+  discountKobo: number;
+  rateCardVersion: number;
+  evidenceBasis: RegenEvidenceBasis;
+  appliedAt: string;
+}
+
+export interface RegenDiscountCriteria {
+  policyId?: string;
+  plotId?: string;
+  attestationId?: string;
+  evidenceBasis?: RegenEvidenceBasis;
+}
+
+export interface RegenDiscountRepository {
+  /** Throws ConflictException when policyId already has a discount. */
+  create(record: RegenDiscountRecord): Promise<RegenDiscountRecord>;
+  findByPolicyId(policyId: string): Promise<RegenDiscountRecord | undefined>;
+  find(criteria: RegenDiscountCriteria): Promise<RegenDiscountRecord[]>;
+  all(): Promise<RegenDiscountRecord[]>;
+}
+
+export function regenDiscountMatcher(criteria: RegenDiscountCriteria): (record: RegenDiscountRecord) => boolean {
+  return (record) =>
+    (!criteria.policyId || record.policyId === criteria.policyId) &&
+    (!criteria.plotId || record.plotId === criteria.plotId) &&
+    (!criteria.attestationId || record.attestationId === criteria.attestationId) &&
+    (!criteria.evidenceBasis || record.evidenceBasis === criteria.evidenceBasis);
+}
+
+export class InMemoryRegenDiscountRepository implements RegenDiscountRepository {
+  private readonly items = new Map<string, RegenDiscountRecord>();
+
+  async create(record: RegenDiscountRecord): Promise<RegenDiscountRecord> {
+    for (const existing of this.items.values()) {
+      if (existing.policyId === record.policyId) {
+        throw new ConflictException(`Policy '${record.policyId}' already has a regen discount`);
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findByPolicyId(policyId: string): Promise<RegenDiscountRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.policyId === policyId);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async find(criteria: RegenDiscountCriteria): Promise<RegenDiscountRecord[]> {
+    return [...this.items.values()]
+      .filter(regenDiscountMatcher(criteria))
+      .sort((a, b) => a.appliedAt.localeCompare(b.appliedAt))
+      .map((item) => structuredClone(item));
+  }
+
+  async all(): Promise<RegenDiscountRecord[]> {
+    return [...this.items.values()]
+      .sort((a, b) => a.appliedAt.localeCompare(b.appliedAt))
+      .map((item) => structuredClone(item));
+  }
+}
+
+export function createInMemoryRegenDiscountRepository(): InMemoryRegenDiscountRepository {
+  return new InMemoryRegenDiscountRepository();
+}
