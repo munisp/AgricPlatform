@@ -275,3 +275,10 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Stage 27 Innovation 16 (DEALER QR PAY, additive): HMAC-signed merchant QR
+// codes and Mojaloop merchant payments with signed-voucher co-pay — schema
+// `agent_banking`, migration 075. Money movement stays in the finance
+// ledger; these tables hold operational records only.
+export const MERCHANT_QR_CODE_REPOSITORY = Symbol('MERCHANT_QR_CODE_REPOSITORY');
+export const MERCHANT_PAYMENT_REPOSITORY = Symbol('MERCHANT_PAYMENT_REPOSITORY');
