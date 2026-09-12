@@ -243,6 +243,13 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
     endpoints: [
       {
         "method": "GET",
+        "path": "/api/v1/embed/price-quote",
+        "summary": "Single freshness-gated crop-price quote for embeds (Price Wire, Stage 27). No PII; answers available:false honestly when the feed is stub, stale or flagged off.",
+        "auth": "none",
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/embed/opportunities",
         "summary": "Public opportunity directory for embeds (no PII)",
         "auth": "none",
