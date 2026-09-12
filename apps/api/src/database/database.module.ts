@@ -737,6 +737,10 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Wave DDS-STUDIO (additive, innovation 17): DDS package persistence.
+import { DDS_PACKAGE_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryDdsPackageRepository } from './repositories/dds-package.repository.js';
+import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repository.js';
 
 /**
  * Global persistence module. Repository tokens resolve to the pg
@@ -1870,6 +1874,13 @@ import {
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
+    },
+    // Wave DDS-STUDIO (additive): DDS package repository (guarded status CAS).
+    {
+      provide: DDS_PACKAGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDdsPackageRepository(pool) : createInMemoryDdsPackageRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
@@ -2052,7 +2063,9 @@ import {
     WAREHOUSE_DEPOSIT_REPOSITORY,
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
-    WAREHOUSE_TRANSFER_REPOSITORY
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Wave DDS-STUDIO (additive).
+    DDS_PACKAGE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

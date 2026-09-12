@@ -275,3 +275,8 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+// Wave DDS-STUDIO (additive, innovation #17): EUDR due-diligence statement
+// packages over traceability shipments (traceability schema, migration 076).
+// Lifecycle draft → validated → exported with guarded status CAS; exported
+// packages are immutable (package_hash anchors the exact evidence set).
+export const DDS_PACKAGE_REPOSITORY = Symbol('DDS_PACKAGE_REPOSITORY');
