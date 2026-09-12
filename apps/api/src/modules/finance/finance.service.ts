@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { CreditProfile, KycTier, VaultDocument } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import {
   CREDIT_PROFILE_REPOSITORY,
   DOCUMENT_REPOSITORY
@@ -23,6 +24,14 @@ export interface LenderMatch {
   maxAmountNaira: number;
   eligible: boolean;
   reason: string;
+  /**
+   * Provenance label (WP-G15): the built-in catalogue is a hardcoded SAMPLE
+   * — never a verified, live lender repository. A real repository is a
+   * separate package; until one is wired every row is 'sample_catalogue'.
+   */
+  source: 'sample_catalogue';
+  /** Always false for the sample catalogue — these are NOT vetted lenders. */
+  verified: boolean;
 }
 
 export interface KycStatus {
@@ -136,8 +145,26 @@ export class FinanceService {
     };
   }
 
-  /** Lender matching against the credit profile (stub lenders, no network). */
+  /**
+   * Lender matching against the credit profile (SAMPLE catalogue, no
+   * network). Every row is explicitly labelled source 'sample_catalogue'
+   * with verified: false — these are illustrative fixtures, not vetted
+   * lenders. FAIL-CLOSED (WP-G15): in production the sample catalogue is
+   * suppressed with 503 unless LENDER_CATALOGUE=sample is set explicitly
+   * (demos/fixture seeding); serving unverified lenders as real matches in
+   * prod would be fabricated financial guidance.
+   */
   async lenderMatches(userId: string): Promise<LenderMatch[]> {
+    if (
+      isProduction() &&
+      (process.env.LENDER_CATALOGUE ?? '').trim().toLowerCase() !== 'sample'
+    ) {
+      throw new ServiceUnavailableException(
+        'Lender matching is unavailable: no verified lender repository is wired in production ' +
+          'and the built-in catalogue is unverified sample data. Set LENDER_CATALOGUE=sample to ' +
+          'explicitly serve the sample catalogue (clearly labelled, unverified).'
+      );
+    }
     const profile = await this.creditProfile(userId);
     return [
       {
@@ -145,21 +172,27 @@ export class FinanceService {
         product: 'Input financing (per season)',
         maxAmountNaira: 500000,
         eligible: profile.score >= 40,
-        reason: 'Requires credit score 40+ and verified membership'
+        reason: 'Requires credit score 40+ and verified membership',
+        source: 'sample_catalogue',
+        verified: false
       },
       {
         lender: 'Partner MFI Network',
         product: 'Asset financing (equipment)',
         maxAmountNaira: 3000000,
         eligible: profile.score >= 60 && profile.documentCount >= 2,
-        reason: 'Requires credit score 60+ and two vault documents'
+        reason: 'Requires credit score 60+ and two vault documents',
+        source: 'sample_catalogue',
+        verified: false
       },
       {
         lender: 'Commercial Agri Desk',
         product: 'Working capital line',
         maxAmountNaira: 10000000,
         eligible: profile.score >= 75,
-        reason: 'Requires credit score 75+ and tier 2 KYC'
+        reason: 'Requires credit score 75+ and tier 2 KYC',
+        source: 'sample_catalogue',
+        verified: false
       }
     ];
   }

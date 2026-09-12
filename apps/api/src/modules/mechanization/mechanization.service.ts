@@ -4,7 +4,8 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  Optional
+  Optional,
+  ServiceUnavailableException
 } from '@nestjs/common';
 import type {
   AvailabilityWindow,
@@ -21,6 +22,7 @@ import type {
   User
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -741,8 +743,31 @@ export class MechanizationService {
     });
   }
 
-  /** Ledger hold: farmer wallet → platform holds account (stub execution). */
+  /**
+   * Ledger hold: farmer wallet → platform holds account (stub execution).
+   *
+   * FAIL-CLOSED (WP-G15, mirrors the Stage 23 escrow payout rail): the hold
+   * is stub money movement — the double-entry record is the system of
+   * record and no real charge rail is wired. In production a confirmed
+   * booking would fabricate a lien against the farmer wallet and a payable
+   * to the owner, so postHold refuses with 503 BEFORE any ledger write;
+   * confirmBooking therefore never transitions the booking either.
+   */
   private async postHold(booking: EquipmentBooking, actorId: string) {
+    if (isProduction()) {
+      await this.audit?.record({
+        actorId,
+        action: 'mechanization.hold.unavailable',
+        entityType: 'equipment_booking',
+        entityId: booking.id,
+        metadata: { execution: 'stub', production: true }
+      });
+      throw new ServiceUnavailableException(
+        'Mechanization booking holds run in stub execution mode (no real charge rail wired). ' +
+          'Production requires a live payment/hold rail before bookings can be confirmed; ' +
+          `refusing to confirm booking ${booking.id} — no hold was posted and the booking was not transitioned.`
+      );
+    }
     const amountKobo = booking.quote!.totalKobo;
     await this.ledger.ensureAccount({ code: MECH_HOLDS_ACCOUNT, type: 'asset' });
     await this.ledger.ensureAccount({

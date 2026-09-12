@@ -13,6 +13,7 @@ import type {
   GeoCreditShadowScore
 } from '@agric-platform/shared';
 import { newId } from '../../../common/async-repository.js';
+import { isProduction } from '../../../common/auth/auth.config.js';
 import { AuditService } from '../../../core/audit.service.js';
 import {
   CREDIT_LOAN_REPOSITORY,
@@ -60,6 +61,8 @@ export interface GeoShadowRecomputeReport {
   recomputed: number;
   /** Unchanged input fingerprint — no new row written. */
   skipped: number;
+  /** Stub-derived score in production — computed but NOT persisted (WP-G15). */
+  suppressed: number;
   /** Live crop-ml configured but unreachable — fail-closed, no score. */
   unavailable: number;
   /** Unexpected per-application errors (batch continues). */
@@ -262,10 +265,35 @@ export class GeoVerificationService {
   }
 
   /**
+   * Production persistence gate (WP-G15). Shadow-mode computation stays
+   * available everywhere, but a score derived from STUB provider fixtures
+   * must never be written to credit.geo_credit_shadow_scores in production
+   * — a fabricated input would otherwise sit in the database looking like
+   * a real assessment. In production a score is persisted only when BOTH
+   * bases are 'live', or when the explicit SHADOW_FIXTURES=true escape
+   * hatch is set (fixture seeding in prod-like test environments; default
+   * off). Outside production the current behaviour is unchanged.
+   */
+  private mayPersistShadowScore(
+    computed: GeoCreditShadowScore,
+    env: NodeJS.ProcessEnv = process.env
+  ): boolean {
+    if (!isProduction(env)) {
+      return true;
+    }
+    if ((env.SHADOW_FIXTURES ?? '').trim().toLowerCase() === 'true') {
+      return true;
+    }
+    return computed.basis.flood === 'live' && computed.basis.crop === 'live';
+  }
+
+  /**
    * Read-only shadow view for credit officers (admin|lender). Returns the
    * latest persisted shadow score; computes + persists one on first access
    * (the shadow table is the only legal persistence target). Fail-closed:
-   * answers 503 when a required live provider is unreachable.
+   * answers 503 when a required live provider is unreachable. In production
+   * a stub-derived score is computed and returned but NOT persisted (see
+   * mayPersistShadowScore).
    */
   async getShadowScore(applicationId: string, actor: CreditActor): Promise<GeoCreditShadowScore> {
     this.assertEnabled();
@@ -281,6 +309,16 @@ export class GeoVerificationService {
         'Geo verification is unavailable: the configured crop-ml sidecar could not be reached. ' +
           'No shadow score was recorded — try again later.'
       );
+    }
+    if (!this.mayPersistShadowScore(computed)) {
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'credit.geo_shadow.persistence_suppressed',
+        entityType: 'geo_credit_shadow_scores',
+        entityId: loan.id,
+        metadata: { basis: computed.basis, reason: 'stub_fixture_in_production' }
+      });
+      return computed;
     }
     await this.shadow.upsert({ id: newId('gcs'), ...computed });
     return computed;
@@ -301,6 +339,7 @@ export class GeoVerificationService {
       applications: open.length,
       recomputed: 0,
       skipped: 0,
+      suppressed: 0,
       unavailable: 0,
       failed: 0,
       computedAt: new Date().toISOString()
@@ -318,6 +357,10 @@ export class GeoVerificationService {
         });
         if (unchanged) {
           report.skipped += 1;
+          continue;
+        }
+        if (!this.mayPersistShadowScore(computed)) {
+          report.suppressed += 1;
           continue;
         }
         await this.shadow.upsert({ id: newId('gcs'), ...computed });

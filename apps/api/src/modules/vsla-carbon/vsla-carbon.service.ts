@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import type { LedgerJournalEntry, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { isProduction } from '../../common/auth/auth.config.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CARBON_ESTIMATE_REPOSITORY,
@@ -968,6 +969,18 @@ export class VslaCarbonService {
       'ndviHealthScore' | 'ndviClassification' | 'ndviBasis'
     > = {};
     if (input.linkNdvi) {
+      // FAIL-CLOSED (WP-G15, mirrors the geo-intel stub guard): the stub
+      // NDVI provider returns a deterministic FABRICATED fixture — persisting
+      // it on a carbon evidence record in production would contaminate MRV /
+      // donor reporting with stub-derived values. Refuse before ANY write;
+      // resubmit without linkNdvi or wire CROP_ML_DRIVER=http + CROP_ML_URL.
+      if (isProduction() && this.ndvi.name === 'stub') {
+        throw new ServiceUnavailableException(
+          'NDVI evidence linkage requires the live crop-ml sidecar in production ' +
+            '(CROP_ML_DRIVER=http + CROP_ML_URL); the stub provider would persist fabricated ' +
+            'fixture values on a carbon evidence record. Evidence was NOT recorded.'
+        );
+      }
       try {
         const assessment = await this.ndvi.assess({ plotId, season: input.season });
         ndviLink = {

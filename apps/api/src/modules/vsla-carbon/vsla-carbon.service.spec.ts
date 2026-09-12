@@ -770,6 +770,46 @@ describe('carbon MRV plots + seasonal evidence', () => {
     expect(evidence.ndviClassification).toBe('normal');
   });
 
+  it('fails closed in production: stub NDVI never lands on a carbon evidence record (WP-G15)', async () => {
+    const previousEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const { service } = makeService(); // default stub NDVI provider
+      const { group } = await makeGroupWithCycle(service);
+      const plot = await service.registerPlot(lead, {
+        groupId: group.id,
+        ownerUserId: farmer.id,
+        name: 'A',
+        practiceType: 'fmnr',
+        hectares: 1,
+        centroidLat: 11,
+        centroidLong: 7
+      });
+      await expect(
+        service.submitEvidence(farmer, plot.id, {
+          season: '2026-wet',
+          idempotencyKey: 'ndvi-prod',
+          linkNdvi: true
+        })
+      ).rejects.toThrow(ServiceUnavailableException);
+      // Fail closed: NO evidence row was written.
+      expect(await service.listEvidence(plot.id)).toHaveLength(0);
+
+      // The endpoint stays functional in production without the stub
+      // linkage (real farmer-supplied inputs persist fine).
+      const evidence = await service.submitEvidence(farmer, plot.id, {
+        season: '2026-wet',
+        survivalRatePct: 80,
+        idempotencyKey: 'ndvi-prod-plain'
+      });
+      expect(evidence.ndviBasis).toBeUndefined();
+      expect(await service.listEvidence(plot.id)).toHaveLength(1);
+    } finally {
+      if (previousEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousEnv;
+    }
+  });
+
   it('fails closed with 503 when the NDVI provider is unreachable (no evidence written)', async () => {
     const failingNdvi: NdviProvider = {
       name: 'http',
