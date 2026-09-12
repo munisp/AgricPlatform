@@ -79,6 +79,27 @@ describe('MeilisearchSearchProvider', () => {
     const provider = new MeilisearchSearchProvider('http://meili:7700');
     await expect(provider.search('x')).rejects.toThrow(ProviderHttpError);
   });
+
+  it('status() reports last success / last error class (WP-G10)', async () => {
+    const provider = new MeilisearchSearchProvider('http://meili:7700');
+    const initial = await provider.status();
+    expect(initial.configured).toBe(true);
+    expect(initial.healthy).toBe(true);
+    expect(initial.lastErrorClass).toBeNull();
+    expect(initial.lastSuccessAt).toBeNull();
+    expect(initial.detail).toContain('http://meili:7700');
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ hits: [] })));
+    await provider.search('x');
+    const afterSuccess = await provider.status();
+    expect(afterSuccess.lastSuccessAt).not.toBeNull();
+    expect(Number.isNaN(Date.parse(afterSuccess.lastSuccessAt as string))).toBe(false);
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('boom', { status: 503 })));
+    await expect(provider.search('x')).rejects.toThrow(ProviderHttpError);
+    const afterFailure = await provider.status();
+    expect(afterFailure.lastErrorClass).toBe('http-5xx');
+  });
 });
 
 describe('createSearchProvider factory (fail closed)', () => {

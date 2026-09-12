@@ -15,6 +15,11 @@ import {
   ProviderRequestError,
   requireEnv
 } from '../../modules/integrations/drivers/http.js';
+import {
+  circuitBreakerState,
+  DriverHealthTracker,
+  type DriverHealthFields
+} from '../../modules/integrations/drivers/driver-health.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import type { DomainEvent } from '../domain-events.service.js';
 import { FluvioEventBus } from './fluvio-event-bus.driver.js';
@@ -29,7 +34,7 @@ export const EVENT_BUS_CIRCUIT_COOLDOWN_MS = 30_000;
 /** Default Kafka topic prefix; the full topic is `${prefix}.${event.name}`. */
 export const EVENT_BUS_DEFAULT_TOPIC_PREFIX = 'agric.domain';
 
-export interface EventBusDriverStatus {
+export interface EventBusDriverStatus extends DriverHealthFields {
   configured: boolean;
   healthy: boolean;
   detail: string;
@@ -87,6 +92,8 @@ export class StubEventBus implements EventBus {
     return Promise.resolve({
       configured: true,
       healthy: true,
+      lastErrorClass: null,
+      lastSuccessAt: null,
       detail:
         'Stub driver: in-process outbox + EventEmitter transport (no external bus). ' +
         'Set EVENT_BUS_DRIVER=kafka and KAFKA_BROKERS to publish domain events to Kafka.'
@@ -112,6 +119,7 @@ export class KafkaEventBus implements EventBus {
   private connected = false;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly tracker = new DriverHealthTracker();
   private readonly telemetry: TelemetryService;
 
   constructor(
@@ -164,7 +172,7 @@ export class KafkaEventBus implements EventBus {
           });
           this.recordSuccess();
         } catch (error) {
-          this.recordFailure();
+          this.recordFailure(error);
           if (error instanceof ProviderRequestError) {
             throw error;
           }
@@ -187,6 +195,13 @@ export class KafkaEventBus implements EventBus {
     return Promise.resolve({
       configured: true,
       healthy: this.connected && !this.circuitOpen,
+      circuitBreaker: circuitBreakerState(
+        this.consecutiveFailures,
+        EVENT_BUS_CIRCUIT_THRESHOLD,
+        this.circuitOpenUntil
+      ),
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
       detail: this.connected
         ? this.circuitOpen
           ? `Kafka producer connected but circuit open after ${this.consecutiveFailures} consecutive failures.`
@@ -238,11 +253,13 @@ export class KafkaEventBus implements EventBus {
   private recordSuccess(): void {
     this.consecutiveFailures = 0;
     this.circuitOpenUntil = 0;
+    this.tracker.recordSuccess();
   }
 
-  private recordFailure(): void {
+  private recordFailure(error: unknown): void {
     this.consecutiveFailures += 1;
     this.connected = false;
+    this.tracker.recordError(error);
     if (this.consecutiveFailures >= EVENT_BUS_CIRCUIT_THRESHOLD) {
       this.circuitOpenUntil = Date.now() + EVENT_BUS_CIRCUIT_COOLDOWN_MS;
     }

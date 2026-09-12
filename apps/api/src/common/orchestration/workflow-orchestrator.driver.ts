@@ -14,6 +14,11 @@
  */
 import { newId } from '../async-repository.js';
 import {
+  circuitBreakerState,
+  DriverHealthTracker,
+  type DriverHealthFields
+} from '../../modules/integrations/drivers/driver-health.js';
+import {
   ProviderConfigError,
   ProviderRequestError,
   requireEnv
@@ -47,7 +52,7 @@ export interface WorkflowExecution<R = unknown> {
   result?: R;
 }
 
-export interface WorkflowOrchestratorStatus {
+export interface WorkflowOrchestratorStatus extends DriverHealthFields {
   configured: boolean;
   healthy: boolean;
   detail: string;
@@ -140,6 +145,8 @@ export class StubWorkflowOrchestrator implements WorkflowOrchestrator {
     return Promise.resolve({
       configured: true,
       healthy: true,
+      lastErrorClass: null,
+      lastSuccessAt: null,
       detail:
         `Stub driver: direct in-process invocation (${this.handlers.size} workflow(s) registered). ` +
         'Set WORKFLOW_DRIVER=temporal and TEMPORAL_ADDRESS to orchestrate via Temporal.'
@@ -159,6 +166,7 @@ export class TemporalWorkflowOrchestrator implements WorkflowOrchestrator {
   private client?: TemporalClientLike;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly tracker = new DriverHealthTracker();
 
   constructor(
     private readonly address: string,
@@ -192,7 +200,7 @@ export class TemporalWorkflowOrchestrator implements WorkflowOrchestrator {
         state: 'running'
       };
     } catch (error) {
-      this.recordFailure();
+      this.recordFailure(error);
       if (error instanceof ProviderRequestError) {
         throw error;
       }
@@ -204,6 +212,13 @@ export class TemporalWorkflowOrchestrator implements WorkflowOrchestrator {
     return Promise.resolve({
       configured: true,
       healthy: this.client !== undefined && !this.circuitOpen,
+      circuitBreaker: circuitBreakerState(
+        this.consecutiveFailures,
+        WORKFLOW_CIRCUIT_THRESHOLD,
+        this.circuitOpenUntil
+      ),
+      lastErrorClass: this.tracker.lastErrorClass,
+      lastSuccessAt: this.tracker.lastSuccessAt,
       detail: this.client
         ? this.circuitOpen
           ? `Temporal client connected but circuit open after ${this.consecutiveFailures} consecutive failures.`
@@ -245,10 +260,12 @@ export class TemporalWorkflowOrchestrator implements WorkflowOrchestrator {
   private recordSuccess(): void {
     this.consecutiveFailures = 0;
     this.circuitOpenUntil = 0;
+    this.tracker.recordSuccess();
   }
 
-  private recordFailure(): void {
+  private recordFailure(error: unknown): void {
     this.consecutiveFailures += 1;
+    this.tracker.recordError(error);
     if (this.consecutiveFailures >= WORKFLOW_CIRCUIT_THRESHOLD) {
       this.circuitOpenUntil = Date.now() + WORKFLOW_CIRCUIT_COOLDOWN_MS;
     }
