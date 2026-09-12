@@ -71,6 +71,8 @@ export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');
 export const COOP_POOL_REPOSITORY = Symbol('COOP_POOL_REPOSITORY');
 // Stage 23: recorded escrow payout attempts (release/refund rail).
 export const ESCROW_PAYOUT_REPOSITORY = Symbol('ESCROW_PAYOUT_REPOSITORY');
+// Stage 27 (Innovation 9): geo-sealed delivery attestations (migration 067).
+export const DELIVERY_ATTESTATION_REPOSITORY = Symbol('DELIVERY_ATTESTATION_REPOSITORY');
 export const INVOICE_REPOSITORY = Symbol('INVOICE_REPOSITORY');
 export const SHIPMENT_REPOSITORY = Symbol('SHIPMENT_REPOSITORY');
 export const LEDGER_ACCOUNT_REPOSITORY = Symbol('LEDGER_ACCOUNT_REPOSITORY');
