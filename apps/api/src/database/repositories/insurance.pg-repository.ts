@@ -18,6 +18,11 @@ import type {
   ParametricProductRepository,
   ParametricTriggerEventCriteria,
   ParametricTriggerEventRepository,
+  RegenDiscountCriteria,
+  RegenDiscountRateCardRecord,
+  RegenDiscountRateCardRepository,
+  RegenDiscountRecord,
+  RegenDiscountRepository,
   VoucherCoverCriteria,
   VoucherCoverRecord,
   VoucherCoverRepository,
@@ -747,4 +752,149 @@ export class PgVoucherCoverRepository implements VoucherCoverRepository {
 
 export function createPgVoucherCoverRepository(pool: pg.Pool): PgVoucherCoverRepository {
   return new PgVoucherCoverRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 27 (Regen Discount, migration 070): versioned discount rate card +
+// one-discount-per-policy records.
+
+interface RegenRateCardRow {
+  version: number;
+  discount_bps: number;
+  set_by: string;
+  created_at: string;
+}
+
+function regenRateCardFromRow(row: RegenRateCardRow): RegenDiscountRateCardRecord {
+  return {
+    version: Number(row.version),
+    discountBps: Number(row.discount_bps),
+    setBy: row.set_by,
+    createdAt: ts(row.created_at)
+  };
+}
+
+export class PgRegenDiscountRateCardRepository implements RegenDiscountRateCardRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async append(record: RegenDiscountRateCardRecord): Promise<RegenDiscountRateCardRecord> {
+    try {
+      await this.pool.query(
+        `INSERT INTO insurance.regen_discount_rate_card (version, discount_bps, set_by, created_at)
+         VALUES ($1, $2, $3, $4)`,
+        [record.version, record.discountBps, record.setBy, record.createdAt]
+      );
+    } catch (error) {
+      mapPgError(error);
+    }
+    return record;
+  }
+
+  async current(): Promise<RegenDiscountRateCardRecord | undefined> {
+    const result = await this.pool.query<RegenRateCardRow>(
+      'SELECT * FROM insurance.regen_discount_rate_card ORDER BY version DESC LIMIT 1'
+    );
+    return result.rows[0] ? regenRateCardFromRow(result.rows[0]) : undefined;
+  }
+
+  async all(): Promise<RegenDiscountRateCardRecord[]> {
+    const result = await this.pool.query<RegenRateCardRow>(
+      'SELECT * FROM insurance.regen_discount_rate_card ORDER BY version'
+    );
+    return result.rows.map(regenRateCardFromRow);
+  }
+}
+
+export function createPgRegenDiscountRateCardRepository(pool: pg.Pool): PgRegenDiscountRateCardRepository {
+  return new PgRegenDiscountRateCardRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+
+interface RegenDiscountRow {
+  id: string;
+  policy_id: string;
+  plot_id: string;
+  attestation_id: string;
+  discount_bps: number;
+  discount_kobo: number;
+  rate_card_version: number;
+  evidence_basis: RegenDiscountRecord['evidenceBasis'];
+  applied_at: string;
+}
+
+function regenDiscountFromRow(row: RegenDiscountRow): RegenDiscountRecord {
+  return {
+    id: row.id,
+    policyId: row.policy_id,
+    plotId: row.plot_id,
+    attestationId: row.attestation_id,
+    discountBps: Number(row.discount_bps),
+    discountKobo: Number(row.discount_kobo),
+    rateCardVersion: Number(row.rate_card_version),
+    evidenceBasis: row.evidence_basis,
+    appliedAt: ts(row.applied_at)
+  };
+}
+
+export class PgRegenDiscountRepository implements RegenDiscountRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: RegenDiscountRecord): Promise<RegenDiscountRecord> {
+    try {
+      await this.pool.query(
+        `INSERT INTO insurance.regen_discounts
+           (id, policy_id, plot_id, attestation_id, discount_bps, discount_kobo,
+            rate_card_version, evidence_basis, applied_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          record.id,
+          record.policyId,
+          record.plotId,
+          record.attestationId,
+          record.discountBps,
+          record.discountKobo,
+          record.rateCardVersion,
+          record.evidenceBasis,
+          record.appliedAt
+        ]
+      );
+    } catch (error) {
+      mapPgError(error);
+    }
+    return record;
+  }
+
+  async findByPolicyId(policyId: string): Promise<RegenDiscountRecord | undefined> {
+    const result = await this.pool.query<RegenDiscountRow>(
+      'SELECT * FROM insurance.regen_discounts WHERE policy_id = $1',
+      [policyId]
+    );
+    return result.rows[0] ? regenDiscountFromRow(result.rows[0]) : undefined;
+  }
+
+  async find(criteria: RegenDiscountCriteria): Promise<RegenDiscountRecord[]> {
+    const where = composeWhere(
+      eq('policy_id', criteria.policyId),
+      eq('plot_id', criteria.plotId),
+      eq('attestation_id', criteria.attestationId),
+      eq('evidence_basis', criteria.evidenceBasis)
+    );
+    const result = await this.pool.query<RegenDiscountRow>(
+      `SELECT * FROM insurance.regen_discounts ${where.where} ORDER BY applied_at, id`,
+      where.params
+    );
+    return result.rows.map(regenDiscountFromRow);
+  }
+
+  async all(): Promise<RegenDiscountRecord[]> {
+    const result = await this.pool.query<RegenDiscountRow>(
+      'SELECT * FROM insurance.regen_discounts ORDER BY applied_at, id'
+    );
+    return result.rows.map(regenDiscountFromRow);
+  }
+}
+
+export function createPgRegenDiscountRepository(pool: pg.Pool): PgRegenDiscountRepository {
+  return new PgRegenDiscountRepository(pool);
 }
