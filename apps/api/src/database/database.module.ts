@@ -1152,7 +1152,7 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
     },
     // Phase-3 federated integration wave (P5a) providers.
     {
-      provide: EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+      provide: EXTERNAL_ACCOUNT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgExternalAccountLinkRepository(pool) : createInMemoryExternalAccountLinkRepository(),
       inject: [PG_POOL]
@@ -2059,6 +2059,7 @@ import { createPgFraudSentinelRepository } from './repositories/fraud.pg-reposit
     CREDIT_LOAN_REPOSITORY,
     CREDIT_REPAYMENT_REPOSITORY,
     CREDIT_COLLATERAL_REPOSITORY,
+    CREDIT_GUARANTOR_REPOSITORY,
     CREDIT_GROUP_REPOSITORY,
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
