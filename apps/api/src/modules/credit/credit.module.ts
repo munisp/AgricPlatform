@@ -7,6 +7,7 @@ import { CreditPortfolioController } from './portfolio.controller.js';
 import { CreditProductsController } from './products.controller.js';
 import { CreditSavingsController } from './savings.controller.js';
 import { CreditSavingsService } from './savings.service.js';
+import { SeasonalScheduleService } from './seasonal-schedule.service.js';
 import { GeoVerificationModule } from './geo-verification/geo-verification.module.js';
 
 /**
@@ -30,7 +31,8 @@ import { GeoVerificationModule } from './geo-verification/geo-verification.modul
     CreditSavingsController,
     CreditPortfolioController
   ],
-  providers: [CreditService, CreditGroupsService, CreditSavingsService],
-  exports: [CreditService, CreditGroupsService, CreditSavingsService]
+  // SeasonSync (innovation wave 27, additive): harvest-linked schedules.
+  providers: [CreditService, CreditGroupsService, CreditSavingsService, SeasonalScheduleService],
+  exports: [CreditService, CreditGroupsService, CreditSavingsService, SeasonalScheduleService]
 })
 export class CreditModule {}

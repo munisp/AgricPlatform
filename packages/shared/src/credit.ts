@@ -132,6 +132,53 @@ export interface CreditCollateral {
   status: CreditCollateralStatus;
 }
 
+/* ----------------------------------------- seasonal schedules (SeasonSync) -- */
+
+export const CREDIT_SEASONAL_SCHEDULE_STATUSES = [
+  'previewed',
+  'accepted',
+  'superseded'
+] as const;
+export type CreditSeasonalScheduleStatus = (typeof CREDIT_SEASONAL_SCHEDULE_STATUSES)[number];
+
+/**
+ * One seasonal installment: due date + integer kobo amount. The sum of a
+ * schedule's installments always equals principal + prorated interest —
+ * identical to the equal-installment invariant (largest-remainder rounding).
+ */
+export interface CreditSeasonalInstallment {
+  /** 1-based position in the schedule. */
+  sequence: number;
+  dueAt: string;
+  amountKobo: number;
+}
+
+/**
+ * SeasonSync pinned seasonal schedule (migration 055): an immutable
+ * snapshot of the crop-calendar inputs and the computed installments.
+ * Accepting a schedule replaces the loan's pending credit.loan_repayments
+ * rows with these installments; the repayment posting path is unchanged.
+ */
+export interface CreditSeasonalSchedule {
+  id: string;
+  loanId: string;
+  /** Plot whose planting produced the calendar; undefined when the calendar
+   * was captured explicitly at preview time. */
+  plotId?: string;
+  crop: string;
+  /** ISO date (YYYY-MM-DD). */
+  plantingDate: string;
+  harvestWindowStart: string;
+  harvestWindowEnd: string;
+  installments: CreditSeasonalInstallment[];
+  /** 1-based per-loan version; re-previews append, never mutate. */
+  version: number;
+  status: CreditSeasonalScheduleStatus;
+  createdBy: string;
+  createdAt: string;
+  acceptedAt?: string;
+}
+
 export interface CreditGuarantor {
   id: string;
   loanId: string;

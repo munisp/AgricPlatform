@@ -560,6 +560,7 @@ import {
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
   GEO_CREDIT_SHADOW_REPOSITORY,
+  SEASONAL_SCHEDULE_REPOSITORY,
   EQUIPMENT_LISTING_REPOSITORY,
   EQUIPMENT_BOOKING_REPOSITORY,
   PARAMETRIC_PRODUCT_REPOSITORY,
@@ -629,6 +630,9 @@ import {
 } from './repositories/traceability.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// SeasonSync (innovation wave 27): pinned seasonal repayment schedules.
+import { createInMemorySeasonalScheduleRepository } from './repositories/seasonal-schedule.repository.js';
+import { createPgSeasonalScheduleRepository } from './repositories/seasonal-schedule.pg-repository.js';
 // Wave AGENTBANK: agent banking persistence (additive).
 import {
   AGENT_BANKING_AGENT_REPOSITORY,
@@ -1665,6 +1669,13 @@ import {
         pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
       inject: [PG_POOL]
     },
+    // SeasonSync (innovation wave 27, additive): pinned seasonal schedules.
+    {
+      provide: SEASONAL_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSeasonalScheduleRepository(pool) : createInMemorySeasonalScheduleRepository(),
+      inject: [PG_POOL]
+    },
     // Wave AGENTBANK (additive): agent banking (float, top-ups, vouchers, tx log).
     {
       provide: AGENT_BANKING_AGENT_REPOSITORY,
@@ -2037,6 +2048,7 @@ import {
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
     GEO_CREDIT_SHADOW_REPOSITORY,
+    SEASONAL_SCHEDULE_REPOSITORY,
     AGENT_BANKING_AGENT_REPOSITORY,
     AGENT_FLOAT_TOPUP_REPOSITORY,
     AGENT_VOUCHER_REPOSITORY,
