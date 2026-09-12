@@ -90,7 +90,7 @@ export class AuthService {
     this.metrics.otpRequested('sms');
     await this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
     const result: OtpRequestResult = {
-      requestId,
+      requestId: challenge.id,
       expiresInSeconds: OTP_TTL_MS / 1000
     };
     if (!isProduction()) {
