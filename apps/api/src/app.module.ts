@@ -79,6 +79,8 @@ import { LivestockPassportModule } from './modules/livestock-passport/livestock-
 import { InputVouchersModule } from './modules/input-vouchers/input-vouchers.module.js';
 // Wave-WAREHOUSE (additive): electronic warehouse receipts (e-WHR).
 import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
+// Wave HARVEST-FORWARD (additive): milestone-tracked offtake agreements (Stage 27 Inn 18).
+import { OfftakeModule } from './modules/marketplace/offtake.module.js';
 
 @Module({
   imports: [
@@ -176,7 +178,9 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module.js';
     // Wave NINVOUCHER input subsidy e-vouchers (NIN-verified, ledger-backed) — appended to minimise merge conflicts.
     InputVouchersModule,
     // Wave-WAREHOUSE electronic warehouse receipts (e-WHR) — appended to minimise merge conflicts.
-    WarehouseModule
+    WarehouseModule,
+    // Wave HARVEST-FORWARD milestone-tracked offtake agreements — appended to minimise merge conflicts.
+    OfftakeModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
