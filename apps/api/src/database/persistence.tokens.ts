@@ -246,6 +246,12 @@ export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY
 export const VOUCHER_PROGRAMME_RIDER_REPOSITORY = Symbol('VOUCHER_PROGRAMME_RIDER_REPOSITORY');
 export const VOUCHER_COVER_REPOSITORY = Symbol('VOUCHER_COVER_REPOSITORY');
 
+// Stage 27 (Regen Discount, migration 070): carbon-MRV-verified premium
+// discount — versioned admin rate card (append-only, audit-chained) and the
+// exactly-once-per-policy discount rows with their evidence FK.
+export const REGEN_DISCOUNT_RATE_CARD_REPOSITORY = Symbol('REGEN_DISCOUNT_RATE_CARD_REPOSITORY');
+export const REGEN_DISCOUNT_REPOSITORY = Symbol('REGEN_DISCOUNT_REPOSITORY');
+
 // Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
 // cycles, contributions, share-outs, internal loans) + carbon MRV (plots,
 // seasonal evidence, estimates) — schema `vsla_carbon`, migration 037.
