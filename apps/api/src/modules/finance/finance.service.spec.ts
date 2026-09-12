@@ -5,6 +5,7 @@ import { createInMemoryCertificateRepository } from '../../database/repositories
 import { createInMemoryCourseRepository } from '../../database/repositories/course.repository.js';
 import { createInMemoryCreditProfileRepository } from '../../database/repositories/credit-profile.repository.js';
 import { createInMemoryDocumentRepository } from '../../database/repositories/document.repository.js';
+import { InMemoryLenderRepository } from '../../database/repositories/lender.repository.js';
 import { createInMemoryEnrolmentRepository } from '../../database/repositories/enrolment.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
@@ -32,7 +33,10 @@ function makeService() {
     users,
     learning,
     createInMemoryCreditProfileRepository(),
-    createInMemoryDocumentRepository()
+    createInMemoryDocumentRepository(),
+    // Empty catalogue on purpose (WP-G18 merge union): the WP-G15
+    // fail-closed gate tests below exercise the empty-catalogue fallback.
+    new InMemoryLenderRepository([])
   );
   return { service };
 }
