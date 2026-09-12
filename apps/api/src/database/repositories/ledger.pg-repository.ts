@@ -12,6 +12,7 @@ import { creditScoreMapper } from '../pg/row-mappers.js';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { CreditScoreRepository } from './credit-score.repository.js';
 import type {
+  DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
   LedgerEntryRepository
@@ -98,7 +99,8 @@ export async function postLedgerEntryTx(
   client: pg.PoolClient,
   entry: LedgerJournalEntry,
   requireSolventAccounts?: readonly string[],
-  outboxEvent?: DomainEvent
+  outboxEvent?: DomainEvent,
+  dailyLimitReservation?: DailyLimitReservation
 ): Promise<void> {
   // Lock the solvency-protected account rows up front (sorted, to keep a
   // single global lock order) so concurrent postings touching them
@@ -108,6 +110,37 @@ export async function postLedgerEntryTx(
       `SELECT id FROM finance.ledger_accounts WHERE code = $1 FOR UPDATE`,
       [accountCode]
     );
+  }
+  // Daily-limit reservation (stage 27 WP-G2, audit A1-7): ONE atomic
+  // conditional upsert replaces the old check-then-act sum. Concurrent
+  // same-day requests for an agent serialise on the counter row's
+  // primary-key lock; the loser re-evaluates the WHERE against the
+  // winner's committed value, so the cap can never be exceeded. No row
+  // returned means the reservation would breach the cap — the whole
+  // posting (transfer + postings + reservation) rolls back. Likewise a
+  // posting failure after this point rolls the reservation back with it.
+  if (dailyLimitReservation) {
+    const reserved = await client.query(
+      `INSERT INTO agent_banking.agent_daily_limits (agent_id, business_date, used_amount_kobo)
+       SELECT $1, $2::date, $3::bigint
+       WHERE $3::bigint <= $4::bigint
+       ON CONFLICT (agent_id, business_date) DO UPDATE
+         SET used_amount_kobo = agent_daily_limits.used_amount_kobo + EXCLUDED.used_amount_kobo,
+             updated_at = now()
+         WHERE agent_daily_limits.used_amount_kobo + EXCLUDED.used_amount_kobo <= $4::bigint
+       RETURNING used_amount_kobo`,
+      [
+        dailyLimitReservation.agentId,
+        dailyLimitReservation.businessDate,
+        dailyLimitReservation.amountKobo,
+        dailyLimitReservation.limitKobo
+      ]
+    );
+    if (reserved.rows.length === 0) {
+      throw new BadRequestException(
+        `Agent daily limit exceeded: ${dailyLimitReservation.amountKobo} kobo would pass the ${dailyLimitReservation.limitKobo} kobo daily limit`
+      );
+    }
   }
   try {
     await client.query(
@@ -256,12 +289,13 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
   async postEntry(
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
-    outboxEvent?: DomainEvent
+    outboxEvent?: DomainEvent,
+    dailyLimitReservation?: DailyLimitReservation
   ): Promise<LedgerJournalEntry> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await postLedgerEntryTx(client, entry, requireSolventAccounts, outboxEvent);
+      await postLedgerEntryTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation);
       await client.query('COMMIT');
       return entry;
     } catch (error) {
