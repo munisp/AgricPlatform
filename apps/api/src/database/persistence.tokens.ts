@@ -308,3 +308,8 @@ export const ADVISORY_PULSE_REPOSITORY = Symbol('ADVISORY_PULSE_REPOSITORY');
 // these tokens hold only the credential chain and disclosure records.
 export const CREDIT_PASSPORT_REPOSITORY = Symbol('CREDIT_PASSPORT_REPOSITORY');
 export const CREDIT_PASSPORT_DISCLOSURE_REPOSITORY = Symbol('CREDIT_PASSPORT_DISCLOSURE_REPOSITORY');
+// Innovation 10 (Stage 27): Chapter Map — recomputable per-chapter H3 res-7
+// aggregate cache (geo_intel schema, migration 068) plus the read-only
+// roster port over chapters.chapter_members. Aggregates only; no PII.
+export const CHAPTER_MAP_SNAPSHOT_REPOSITORY = Symbol('CHAPTER_MAP_SNAPSHOT_REPOSITORY');
+export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
