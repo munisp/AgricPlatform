@@ -170,6 +170,10 @@ describePg('pg seasonal_schedules contract (SeasonSync, migration 055)', () => {
   });
 
   it('partial unique index: exactly one accepted schedule per loan', async () => {
+    // Isolate from the accept-CAS test above: it left an accepted schedule
+    // for LOAN, and the partial unique index allows exactly one accepted
+    // schedule per loan — clear it so THIS test exercises the index itself.
+    await pool!.query(`DELETE FROM credit.seasonal_schedules WHERE loan_id = $1`, [LOAN]);
     const repo = createPgSeasonalScheduleRepository(pool!);
     const first = makeSchedule();
     const second = makeSchedule();

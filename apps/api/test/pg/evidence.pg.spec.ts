@@ -278,6 +278,16 @@ const MIGRATION = join(
 
 const CASE_ID = 'pgtest-evidence-case';
 
+// Live items must carry the live CASE_ID: unsignedItem() defaults to the
+// query-spy case 'escrow-1', while listCaseItems()/clean() key on CASE_ID.
+const liveItem = (
+  id: string,
+  objectKey: string
+): Omit<EvidenceItem, 'prevHash' | 'itemHash'> => ({
+  ...unsignedItem(id, objectKey),
+  caseId: CASE_ID
+});
+
 async function clean(): Promise<void> {
   await livePool!.query('DELETE FROM evidence.items WHERE case_id = $1', [CASE_ID]);
 }
@@ -296,17 +306,17 @@ describePg('pg evidence.items contract (migration 071)', () => {
 
   it('appends a hash chain, enforces UNIQUE object_key, and verifies end-to-end', async () => {
     const repository = createPgEvidenceItemRepository(livePool!);
-    const first = await repository.append(unsignedItem('pgtest-evi-1', `evidence/escrow/${CASE_ID}/evi-1`));
+    const first = await repository.append(liveItem('pgtest-evi-1', `evidence/escrow/${CASE_ID}/evi-1`));
     expect(first.prevHash).toBe(EVIDENCE_GENESIS_HASH);
     const second = await repository.append({
-      ...unsignedItem('pgtest-evi-2', `evidence/escrow/${CASE_ID}/evi-2`),
+      ...liveItem('pgtest-evi-2', `evidence/escrow/${CASE_ID}/evi-2`),
       uploadedAt: '2026-09-01T10:01:00.000Z'
     });
     expect(second.prevHash).toBe(first.itemHash);
 
     // UNIQUE object_key: same object, different id -> ConflictException.
     await expect(
-      repository.append(unsignedItem('pgtest-evi-3', `evidence/escrow/${CASE_ID}/evi-1`))
+      repository.append(liveItem('pgtest-evi-3', `evidence/escrow/${CASE_ID}/evi-1`))
     ).rejects.toBeInstanceOf(ConflictException);
 
     const items = await repository.listCaseItems('escrow', CASE_ID);
@@ -321,7 +331,7 @@ describePg('pg evidence.items contract (migration 071)', () => {
     const results = await Promise.allSettled(
       ['a', 'b', 'c'].map((suffix) =>
         repository.append(
-          unsignedItem(`pgtest-evi-race-${suffix}`, `evidence/escrow/${CASE_ID}/evi-race-${suffix}`)
+          liveItem(`pgtest-evi-race-${suffix}`, `evidence/escrow/${CASE_ID}/evi-race-${suffix}`)
         )
       )
     );
