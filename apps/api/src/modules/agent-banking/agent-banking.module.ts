@@ -5,6 +5,10 @@ import { UsersModule } from '../users/users.module.js';
 import { AgentBankingController, AgentUssdController } from './agent-banking.controller.js';
 import { AgentBankingService } from './agent-banking.service.js';
 import { AgentUssdService } from './agent-ussd.service.js';
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): deterministic float
+// forecasting + rebalancing alerts, flag-gated behind `float-forecaster`.
+import { FloatForecastController } from './float-forecast.controller.js';
+import { FloatForecastService } from './float-forecast.service.js';
 // Stage 27 Innovation 16 (DEALER QR PAY, additive): HMAC-signed merchant QR
 // codes + Mojaloop merchant payments with signed-voucher co-pay, flag-gated
 // behind `dealer-qr-pay` (default OFF).
@@ -40,10 +44,11 @@ import {
  */
 @Module({
   imports: [FinanceModule, IntegrationsModule, UsersModule],
-  controllers: [AgentBankingController, AgentUssdController, DealerQrController, DealerQrWebhookController],
+  controllers: [AgentBankingController, AgentUssdController, FloatForecastController, DealerQrController, DealerQrWebhookController],
   providers: [
     AgentBankingService,
     AgentUssdService,
+    FloatForecastService,
     DealerQrService,
     {
       provide: MERCHANT_QR_CODE_REPOSITORY,
@@ -59,6 +64,6 @@ import {
     },
     { provide: OTP_DRIVER_TOKEN, useFactory: () => createOtpDriver(process.env) }
   ],
-  exports: [AgentBankingService, AgentUssdService, DealerQrService, OTP_DRIVER_TOKEN]
+  exports: [AgentBankingService, AgentUssdService, FloatForecastService, DealerQrService, OTP_DRIVER_TOKEN]
 })
 export class AgentBankingModule {}
