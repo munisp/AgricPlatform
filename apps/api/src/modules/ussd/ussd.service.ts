@@ -17,8 +17,12 @@ import type {
   UssdSessionRecord,
   UssdSessionRepository
 } from '../../database/repositories/ussd-session.repository.js';
-import { ProviderConfigError } from '../integrations/drivers/http.js';
 import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.service.js';
+import { ProviderConfigError } from '../integrations/drivers/http.js';
+import {
+  PLANTING_PULSE_FLAG,
+  PlantingPulseService
+} from '../advisory/planting-pulse.service.js';
 import { PRICE_WIRE_FLAG, PriceWireService } from '../advisory/price-wire.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
@@ -95,6 +99,10 @@ export class UssdService {
     @Inject(USSD_SESSION_REPOSITORY) private readonly sessions: UssdSessionRepository,
     @Inject(COMMODITY_PRICE_REPOSITORY) private readonly prices: CommodityPriceRepository,
     @Optional() private readonly env: NodeJS.ProcessEnv = process.env,
+    // Stage 27 (innovation 4): Planting-Window Pulse pull path. Optional so
+    // bare service constructions in pre-existing unit tests keep working;
+    // when unwired the menu answers "unavailable" honestly.
+    @Optional() private readonly pulse?: PlantingPulseService,
     // Stage 27 (innovation 11): Price Wire pull path. Optional so bare
     // service constructions in pre-existing unit tests keep working; when
     // unwired the menu answers "unavailable" honestly.
@@ -233,10 +241,11 @@ export class UssdService {
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */
   private async menuData(phone: string): Promise<UssdMenuData> {
-    const [priceRows, opportunities, courses, priceWire] = await Promise.all([
+    const [priceRows, opportunities, courses, plantingPulse, priceWire] = await Promise.all([
       this.prices.find({}),
       this.opportunities.all(),
       this.learning.allCourses(),
+      this.plantingPulseFor(phone),
       this.priceWireFor(phone)
     ]);
     const latestByCrop = new Map<string, (typeof priceRows)[number]>();
@@ -272,8 +281,43 @@ export class UssdService {
         .sort((a, b) => a.id.localeCompare(b.id))
         .slice(0, 25)
         .map((course) => ({ id: course.id, title: course.title })),
+      ...(plantingPulse ? { plantingPulse } : {}),
       ...(priceWire ? { priceWire } : {})
     };
+  }
+
+  /**
+   * Planting-Window Pulse pull data (Stage 27, innovation 4). Fail-closed
+   * throughout: flag off/unwired → undefined (menu shows the honest
+   * unavailable message); weather stub/outage/stale → the advisory service
+   * itself returns available:false. Never fabricates a window.
+   */
+  private async plantingPulseFor(phone: string): Promise<UssdMenuData['plantingPulse']> {
+    if (!this.pulse || !this.flags) {
+      return undefined;
+    }
+    try {
+      const user = await this.users.findByPhone(phone);
+      if (!user) {
+        return { available: false, reason: 'no_active_subscription' };
+      }
+      const enabled = await this.flags.isEnabled(PLANTING_PULSE_FLAG, {
+        userId: user.id,
+        roles: user.roles
+      });
+      if (!enabled) {
+        return undefined;
+      }
+      const preview = await this.pulse.previewForUser(user.id);
+      return {
+        available: preview.available,
+        ...(preview.reason ? { reason: preview.reason } : {}),
+        ...(preview.message ? { text: preview.message } : {})
+      };
+    } catch (error) {
+      this.logger.warn(`USSD planting-pulse lookup failed: ${(error as Error).message}`);
+      return { available: false };
+    }
   }
 
   /**
