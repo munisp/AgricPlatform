@@ -345,3 +345,8 @@ export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
 // log (advisory schema, migration 069). No money movement; operational
 // records with basis honesty labelling only.
 export const PRICE_WIRE_REPOSITORY = Symbol('PRICE_WIRE_REPOSITORY');
+// Wave DDS-STUDIO (additive, innovation #17): EUDR due-diligence statement
+// packages over traceability shipments (traceability schema, migration 076).
+// Lifecycle draft → validated → exported with guarded status CAS; exported
+// packages are immutable (package_hash anchors the exact evidence set).
+export const DDS_PACKAGE_REPOSITORY = Symbol('DDS_PACKAGE_REPOSITORY');
