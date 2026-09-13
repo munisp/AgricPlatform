@@ -8,6 +8,8 @@ import { UssdService } from './ussd.service.js';
 /**
  * USSD channel (wave P5b): feature-phone access to registration, market
  * prices, opportunities and course enrolment via Africa's Talking.
+ * Stage 27 (innovation 4) adds the Planting-Window Pulse pull node
+ * (AdvisoryModule; no cycle — advisory imports integrations only).
  * Stage 27 (innovation 11) adds the Price Wire pull node (AdvisoryModule;
  * no cycle — advisory imports integrations only).
  */
