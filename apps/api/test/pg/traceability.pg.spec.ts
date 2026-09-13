@@ -73,6 +73,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
     expect(tables.rows.map((row) => row.table_name)).toEqual([
       'commodity_lots',
       'custody_events',
+      'dds_packages',
       'lot_plot_links',
       'shipment_lots',
       'shipments'

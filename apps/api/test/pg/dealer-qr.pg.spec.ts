@@ -231,10 +231,10 @@ describePg('pg dealer qr pay (live)', () => {
 
   async function seedPrerequisites(pool: pg.Pool): Promise<{ qrId: string }> {
     await pool.query(
-      "INSERT INTO identity.users (id, phone, full_name, roles) VALUES ('user-dqr-dealer','+2348001000001','Dealer QR Live','{agent}') ON CONFLICT (id) DO NOTHING"
+      "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-dqr-dealer','+2348001000001','Dealer QR Live') ON CONFLICT (id) DO NOTHING"
     );
     await pool.query(
-      "INSERT INTO identity.users (id, phone, full_name, roles) VALUES ('user-dqr-farmer','+2348001000002','Farmer QR Live','{farmer}') ON CONFLICT (id) DO NOTHING"
+      "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-dqr-farmer','+2348001000002','Farmer QR Live') ON CONFLICT (id) DO NOTHING"
     );
     await pool.query(
       "INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, commission_account_code, daily_limit_kobo) " +

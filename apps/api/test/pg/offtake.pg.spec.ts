@@ -299,7 +299,7 @@ describePg('pg offtake contract (live)', () => {
   it('rejects inverted delivery windows (CHECK window_end > window_start)', async () => {
     await expect(
       insertContract({ id: 'pgtest-off-contract-badwindow', window_start: '2027-12-31', window_end: '2027-01-01' })
-    ).rejects.toThrow(/window_end/);
+    ).rejects.toThrow(/offtake_contracts_window_(start|end)_check/);
   });
 
   it('rejects invalid price bands (CHECK floor > 0, cap >= floor)', async () => {
@@ -337,6 +337,6 @@ describePg('pg offtake contract (live)', () => {
         `UPDATE marketplace.offtake_milestones SET delivered_qty_kg = 2001 WHERE id = $1`,
         [milestone.id]
       )
-    ).rejects.toThrow(/delivered_qty_kg/);
+    ).rejects.toThrow(/offtake_milestones_(delivered_qty_kg|qty_kg)_check/);
   });
 });

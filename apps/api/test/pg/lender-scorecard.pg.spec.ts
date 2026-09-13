@@ -199,7 +199,7 @@ const pool = process.env.DATABASE_URL
   : null;
 
 const MIGRATIONS = ['019_analytics.sql', '079_lender_scorecards.sql'].map((file) =>
-  join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'infra', 'postgres', file)
+  join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'infra', 'postgres', file)
 );
 
 async function clean(): Promise<void> {
