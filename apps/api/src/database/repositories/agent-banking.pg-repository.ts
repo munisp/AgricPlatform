@@ -155,8 +155,9 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.float_topups (id, agent_id, amount_kobo, status, requested_by, ' +
-          'decided_by, decided_at, settled_at, ledger_entry_id, rejection_reason, idempotency_key, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+          'decided_by, decided_at, settled_at, ledger_entry_id, rejection_reason, idempotency_key, ' +
+          'payload_hash, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
         [
           record.id,
           record.agentId,
@@ -169,6 +170,7 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
           record.ledgerEntryId ?? null,
           record.rejectionReason ?? null,
           record.idempotencyKey ?? null,
+          record.payloadHash ?? null,
           record.createdAt
         ]
       );
@@ -265,6 +267,7 @@ export class PgAgentFloatTopUpRepository implements AgentFloatTopUpRepository {
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
       rejectionReason: (row.rejection_reason as string) ?? undefined,
       idempotencyKey: (row.idempotency_key as string) ?? undefined,
+      payloadHash: (row.payload_hash as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -277,8 +280,8 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, ' +
-          'signature, status, redeemed_at, ledger_entry_id, idempotency_key, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+          'signature, status, redeemed_at, ledger_entry_id, idempotency_key, payload_hash, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
         [
           record.id,
           record.agentId,
@@ -291,6 +294,7 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
           record.redeemedAt ?? null,
           record.ledgerEntryId ?? null,
           record.idempotencyKey ?? null,
+          record.payloadHash ?? null,
           record.createdAt
         ]
       );
@@ -386,6 +390,7 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
       redeemedAt: toIso(row.redeemed_at),
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
       idempotencyKey: (row.idempotency_key as string) ?? undefined,
+      payloadHash: (row.payload_hash as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -398,8 +403,8 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.transactions (id, agent_id, farmer_id, type, amount_kobo, ' +
-          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, otp_basis, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, otp_basis, payload_hash, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
         [
           record.id,
           record.agentId,
@@ -411,6 +416,7 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
           record.ledgerEntryId,
           record.voucherId ?? null,
           record.otpBasis ?? null,
+          record.payloadHash ?? null,
           record.createdAt
         ]
       );
@@ -475,6 +481,7 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
       ledgerEntryId: row.ledger_entry_id as string,
       voucherId: (row.voucher_id as string) ?? undefined,
       otpBasis: (row.otp_basis as AgentTransactionRecord['otpBasis']) ?? undefined,
+      payloadHash: (row.payload_hash as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
