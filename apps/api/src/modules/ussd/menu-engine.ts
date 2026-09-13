@@ -8,6 +8,11 @@ import type { LanguageCode } from '@agric-platform/shared';
  * the current state, the latest input segment and the data the menu needs,
  * and receives the next state, the full response text and an optional side
  * effect (registration/enrolment) for the service layer to execute.
+ *
+ * This file intentionally contains no literal backslash sequences (MCP
+ * channel hazard — see PR #71 notes); multi-line menu text uses template
+ * literals with real newlines, which are byte-identical in value to escape
+ * sequences.
  */
 
 /** Africa's Talking turnaround limit for one USSD screen. */
@@ -32,6 +37,8 @@ export type UssdMenuId =
   | 'register_state'
   | 'register_role'
   | 'price_select'
+  | 'wire_commodity'
+  | 'wire_market'
   | 'course_code'
   | 'course_confirm'
   | 'language';
@@ -47,6 +54,8 @@ export interface UssdSessionState {
   draft: UssdRegistrationDraft;
   /** Course selected at course_code, awaiting confirmation. */
   courseId?: string;
+  /** Commodity selected at wire_commodity, awaiting the market pick. */
+  wireCommodity?: string;
 }
 
 /** Data the current turn may need; gathered by the service per callback. */
@@ -73,6 +82,19 @@ export interface UssdMenuData {
     /** 'no_active_subscription' shows the subscribe hint instead. */
     reason?: string;
     text?: string;
+  };
+  /**
+   * Price Wire pull path (Stage 27, innovation 11): commodities, markets
+   * and pre-rendered quotes computed by the advisory module. Absent or an
+   * unavailable quote → the menu answers honestly (never a fabricated
+   * price).
+   */
+  priceWire?: {
+    commodities: string[];
+    /** commodity → markets (most recently observed first). */
+    markets: Record<string, string[]>;
+    /** `${commodity}¦${market}` → rendered quote screen, when fresh+live. */
+    quotes: Record<string, { available: boolean; text?: string }>;
   };
 }
 
@@ -120,7 +142,10 @@ type StringKey =
   | 'language_menu'
   | 'language_set'
   | 'pulse_unavailable'
-  | 'pulse_none';
+  | 'pulse_none'
+  | 'wire_prompt'
+  | 'wire_market_prompt'
+  | 'wire_unavailable';
 
 const STRINGS: Record<'en', Record<StringKey, string>> = {
   en: {
@@ -130,6 +155,7 @@ const STRINGS: Record<'en', Record<StringKey, string>> = {
 3 Opportunities
 4 Course enrolment
 5 Planting window
+6 Price check
 0 Language`,
     invalid_choice: 'Invalid choice.',
     ask_name: 'Enter your full name:',
@@ -166,7 +192,10 @@ const STRINGS: Record<'en', Record<StringKey, string>> = {
     language_set: 'Language is English. Hausa, Yoruba and Igbo are coming soon.',
     pulse_unavailable: 'Planting advisory is unavailable right now. Please try again later.',
     pulse_none:
-      'No planting advisory subscription found for this phone. Use the app or ask your field agent to subscribe a plot.'
+      'No planting advisory subscription found for this phone. Use the app or ask your field agent to subscribe a plot.',
+    wire_prompt: 'Price check — select crop:',
+    wire_market_prompt: 'Select market:',
+    wire_unavailable: 'Price unavailable right now. Please try again later.'
   }
 };
 
@@ -263,6 +292,11 @@ export function resolveCourseCode(
   });
 }
 
+/** Quote lookup key for the Price Wire pull data (commodity¦market). */
+export function wireQuoteMenuKey(commodity: string, market: string): string {
+  return `${commodity}¦${market}`;
+}
+
 /**
  * Advances the machine one turn. `input` is the latest segment of the
  * Africa's Talking `text` field (empty string on the opening dial). In any
@@ -294,6 +328,10 @@ export function handleUssdTurn(
       return handleRegisterRole(state, text);
     case 'price_select':
       return handlePriceSelect(state, text, data);
+    case 'wire_commodity':
+      return handleWireCommodity(state, text, data);
+    case 'wire_market':
+      return handleWireMarket(state, text, data);
     case 'course_code':
       return handleCourseCode(state, text, data);
     case 'course_confirm':
@@ -345,6 +383,19 @@ ${lines.join(NEWLINE)}`);
         );
       }
       return end(initialUssdState(lang), pulse.text);
+    }
+    case '6': {
+      // Price Wire pull: commodities/markets/quotes arrive pre-computed from
+      // the advisory module; the engine never fabricates a price.
+      const wire = data.priceWire;
+      if (!wire || wire.commodities.length === 0) {
+        return end(state, t(lang, 'wire_unavailable'));
+      }
+      return con(
+        { ...state, menu: 'wire_commodity', wireCommodity: undefined },
+        `${t(lang, 'wire_prompt')}
+${numbered(wire.commodities)}`
+      );
     }
     case '0':
       return con({ ...state, menu: 'language' }, t(lang, 'language_menu'));
@@ -411,6 +462,52 @@ ${numbered(crops.map((entry) => entry.crop))}`
 ${price.market} (${price.state})
 ${day}`
   );
+}
+
+function handleWireCommodity(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {
+  const lang = state.language;
+  const wire = data.priceWire;
+  const commodities = wire?.commodities ?? [];
+  const index = Number.parseInt(text, 10);
+  const commodity = commodities[index - 1];
+  if (!wire || !commodity) {
+    return con(
+      state,
+      `${t(lang, 'invalid_crop')}
+${numbered(commodities)}`
+    );
+  }
+  const markets = wire.markets[commodity] ?? [];
+  if (markets.length === 0) {
+    return end(state, t(lang, 'wire_unavailable'));
+  }
+  return con(
+    { ...state, menu: 'wire_market', wireCommodity: commodity },
+    `${t(lang, 'wire_market_prompt')}
+${numbered(markets)}`
+  );
+}
+
+function handleWireMarket(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {
+  const lang = state.language;
+  const wire = data.priceWire;
+  const commodity = state.wireCommodity;
+  const markets = (wire && commodity ? wire.markets[commodity] : undefined) ?? [];
+  const index = Number.parseInt(text, 10);
+  const market = markets[index - 1];
+  if (!wire || !commodity || !market) {
+    return con(
+      state,
+      `${t(lang, 'invalid_choice')}
+${numbered(markets)}`
+    );
+  }
+  const quote = wire.quotes[wireQuoteMenuKey(commodity, market)];
+  if (!quote || !quote.available || !quote.text) {
+    // Honest pull answer: stale/stub/unavailable feeds never render a number.
+    return end(initialUssdState(lang), t(lang, 'wire_unavailable'));
+  }
+  return end(initialUssdState(lang), quote.text);
 }
 
 function handleCourseCode(state: UssdSessionState, text: string, data: UssdMenuData): UssdTurn {

@@ -294,3 +294,62 @@ describe('USSD planting-window pulse node (Stage 27, innovation 4)', () => {
     expect(turn.response).toContain('unavailable');
   });
 });
+
+
+describe('USSD price-wire node (Stage 27, innovation 11)', () => {
+  const WIRE_DATA: UssdMenuData = {
+    ...DATA,
+    priceWire: {
+      commodities: ['maize', 'rice'],
+      markets: {
+        maize: ['Dawanau', 'Mile 12'],
+        rice: ['Bodija']
+      },
+      quotes: {
+        'maize¦Dawanau': { available: true, text: 'maize: ₦425/kg at Dawanau (12 Jun 2026)' },
+        'maize¦Mile 12': { available: true, text: 'maize: ₦470/kg at Mile 12 (12 Jun 2026)' },
+        'rice¦Bodija': { available: false }
+      }
+    }
+  };
+
+  it('main menu advertises option 6', () => {
+    const [turn] = run([''], WIRE_DATA);
+    expect(turn.response).toContain('6 Price check');
+  });
+
+  it('traverses commodity → market and renders the naira/kg quote', () => {
+    const [, pickCrop, pickMarket] = run(['', '6', '1', '2'], WIRE_DATA);
+    expect(pickCrop.response).toContain('Price check');
+    expect(pickCrop.response).toContain('1 maize');
+    expect(pickMarket.response).toContain('Select market:');
+    const [, , , quote] = run(['', '6', '1', '2'], WIRE_DATA);
+    expect(quote.end).toBe(true);
+    expect(quote.response).toContain('₦470/kg at Mile 12');
+    expect(quote.response.length).toBeLessThanOrEqual(4 + USSD_MAX_RESPONSE_CHARS);
+  });
+
+  it('answers "price unavailable" honestly when the quote is stale/stub (never fabricates)', () => {
+    const [, , , turn] = run(['', '6', '2', '1'], WIRE_DATA);
+    expect(turn.end).toBe(true);
+    expect(turn.response).toContain('Price unavailable');
+  });
+
+  it('answers unavailable when the wire feature supplies no data (flag off)', () => {
+    const [, turn] = run(['', '6'], DATA);
+    expect(turn.end).toBe(true);
+    expect(turn.response).toContain('Price unavailable');
+  });
+
+  it('re-prompts on an invalid commodity pick', () => {
+    const [, , turn] = run(['', '6', '9'], WIRE_DATA);
+    expect(turn.end).toBe(false);
+    expect(turn.response).toContain('Invalid crop');
+  });
+
+  it('navigates back to the main menu on 0 from the commodity pick', () => {
+    const [, , turn] = run(['', '6', '0'], WIRE_DATA);
+    expect(turn.state.menu).toBe('main');
+    expect(turn.response).toContain('1 Register');
+  });
+});

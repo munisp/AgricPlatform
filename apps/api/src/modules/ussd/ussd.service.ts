@@ -23,6 +23,7 @@ import {
   PLANTING_PULSE_FLAG,
   PlantingPulseService
 } from '../advisory/planting-pulse.service.js';
+import { PRICE_WIRE_FLAG, PriceWireService } from '../advisory/price-wire.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { UsersService } from '../users/users.service.js';
@@ -102,6 +103,10 @@ export class UssdService {
     // bare service constructions in pre-existing unit tests keep working;
     // when unwired the menu answers "unavailable" honestly.
     @Optional() private readonly pulse?: PlantingPulseService,
+    // Stage 27 (innovation 11): Price Wire pull path. Optional so bare
+    // service constructions in pre-existing unit tests keep working; when
+    // unwired the menu answers "unavailable" honestly.
+    @Optional() private readonly priceWire?: PriceWireService,
     @Optional() private readonly flags?: FeatureFlagsService
   ) {
     this.driverConfig = resolveUssdDriver(env);
@@ -236,11 +241,12 @@ export class UssdService {
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */
   private async menuData(phone: string): Promise<UssdMenuData> {
-    const [priceRows, opportunities, courses, plantingPulse] = await Promise.all([
+    const [priceRows, opportunities, courses, plantingPulse, priceWire] = await Promise.all([
       this.prices.find({}),
       this.opportunities.all(),
       this.learning.allCourses(),
-      this.plantingPulseFor(phone)
+      this.plantingPulseFor(phone),
+      this.priceWireFor(phone)
     ]);
     const latestByCrop = new Map<string, (typeof priceRows)[number]>();
     for (const row of priceRows) {
@@ -275,7 +281,8 @@ export class UssdService {
         .sort((a, b) => a.id.localeCompare(b.id))
         .slice(0, 25)
         .map((course) => ({ id: course.id, title: course.title })),
-      ...(plantingPulse ? { plantingPulse } : {})
+      ...(plantingPulse ? { plantingPulse } : {}),
+      ...(priceWire ? { priceWire } : {})
     };
   }
 
@@ -310,6 +317,35 @@ export class UssdService {
     } catch (error) {
       this.logger.warn(`USSD planting-pulse lookup failed: ${(error as Error).message}`);
       return { available: false };
+    }
+  }
+
+  /**
+   * Price Wire pull data (Stage 27, innovation 11). Fail-closed throughout:
+   * flag off/unwired or an unknown phone → undefined (the menu shows the
+   * honest unavailable message); stale/stub feeds make the advisory service
+   * itself mark quotes unavailable. Never fabricates a price.
+   */
+  private async priceWireFor(phone: string): Promise<UssdMenuData['priceWire']> {
+    if (!this.priceWire || !this.flags) {
+      return undefined;
+    }
+    try {
+      const user = await this.users.findByPhone(phone);
+      if (!user) {
+        return undefined;
+      }
+      const enabled = await this.flags.isEnabled(PRICE_WIRE_FLAG, {
+        userId: user.id,
+        roles: user.roles
+      });
+      if (!enabled) {
+        return undefined;
+      }
+      return await this.priceWire.wireMenuData();
+    } catch (error) {
+      this.logger.warn(`USSD price-wire lookup failed: ${(error as Error).message}`);
+      return undefined;
     }
   }
 }
