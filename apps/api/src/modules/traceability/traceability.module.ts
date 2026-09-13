@@ -3,6 +3,9 @@ import { CoreModule } from '../../core/core.module.js';
 import { FarmsModule } from '../farms/farms.module.js';
 import { GeoIntelModule } from '../geo-intel/geo-intel.module.js';
 import { PartnerApiModule } from '../partner-api/partner-api.module.js';
+import { DdsStudioPartnerController } from './dds-studio-partner.controller.js';
+import { DdsStudioController } from './dds-studio.controller.js';
+import { DdsStudioService } from './dds-studio.service.js';
 import { TraceabilityPartnerController } from './traceability-partner.controller.js';
 import { TraceabilityController } from './traceability.controller.js';
 import { TraceabilityService } from './traceability.service.js';
@@ -17,8 +20,13 @@ import { TraceabilityService } from './traceability.service.js';
  */
 @Module({
   imports: [CoreModule, FarmsModule, GeoIntelModule, PartnerApiModule],
-  controllers: [TraceabilityController, TraceabilityPartnerController],
-  providers: [TraceabilityService],
-  exports: [TraceabilityService]
+  controllers: [
+    TraceabilityController,
+    TraceabilityPartnerController,
+    DdsStudioController,
+    DdsStudioPartnerController
+  ],
+  providers: [TraceabilityService, DdsStudioService],
+  exports: [TraceabilityService, DdsStudioService]
 })
 export class TraceabilityModule {}
