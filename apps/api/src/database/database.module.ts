@@ -650,7 +650,10 @@ import {
   AGENT_BANKING_AGENT_REPOSITORY,
   AGENT_FLOAT_TOPUP_REPOSITORY,
   AGENT_TRANSACTION_REPOSITORY,
-  AGENT_VOUCHER_REPOSITORY
+  AGENT_VOUCHER_REPOSITORY,
+  FLOAT_FORECAST_REPOSITORY,
+  REBALANCE_ALERT_REPOSITORY,
+  REBALANCE_RUN_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryAgentBankingAgentRepository,
@@ -664,6 +667,18 @@ import {
   createPgAgentTransactionRepository,
   createPgAgentVoucherRepository
 } from './repositories/agent-banking.pg-repository.js';
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): agent float forecasts
+// + rebalancing alerts (migration 073).
+import {
+  createInMemoryFloatForecastRepository,
+  createInMemoryRebalanceAlertRepository,
+  createInMemoryRebalanceRunRepository
+} from './repositories/float-forecast.repository.js';
+import {
+  createPgFloatForecastRepository,
+  createPgRebalanceAlertRepository,
+  createPgRebalanceRunRepository
+} from './repositories/float-forecast.pg-repository.js';
 // Wave-INSURANCE (additive): parametric insurance rail repositories.
 import {
   createInMemoryParametricProductRepository,
@@ -1790,6 +1805,26 @@ import {
         pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
       inject: [PG_POOL]
     },
+    // Stage 27 Innovation 15 (FLOAT FORECASTER, additive): float forecasts +
+    // rebalancing alert queue (migration 073).
+    {
+      provide: FLOAT_FORECAST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFloatForecastRepository(pool) : createInMemoryFloatForecastRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_ALERT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceAlertRepository(pool) : createInMemoryRebalanceAlertRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_RUN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceRunRepository(pool) : createInMemoryRebalanceRunRepository(),
+      inject: [PG_POOL]
+    },
     // Wave MECHANIZATION (additive): equipment hire marketplace.
     {
       provide: EQUIPMENT_LISTING_REPOSITORY,
@@ -2196,6 +2231,9 @@ import {
     AGENT_FLOAT_TOPUP_REPOSITORY,
     AGENT_VOUCHER_REPOSITORY,
     AGENT_TRANSACTION_REPOSITORY,
+    FLOAT_FORECAST_REPOSITORY,
+    REBALANCE_ALERT_REPOSITORY,
+    REBALANCE_RUN_REPOSITORY,
     EQUIPMENT_LISTING_REPOSITORY,
     EQUIPMENT_BOOKING_REPOSITORY,
     PARAMETRIC_PRODUCT_REPOSITORY,
