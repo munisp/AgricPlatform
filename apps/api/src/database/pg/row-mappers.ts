@@ -652,6 +652,8 @@ export const orderMapper: RowMapper<Order> = {
     'total_naira',
     'status',
     'escrow_required',
+    'idempotency_key',
+    'payload_hash',
     'created_at'
   ],
   fromRow: (row) => ({
@@ -663,6 +665,8 @@ export const orderMapper: RowMapper<Order> = {
     totalNaira: num(row.total_naira),
     status: row.status as Order['status'],
     escrowRequired: row.escrow_required as boolean,
+    idempotencyKey: (row.idempotency_key as string) ?? undefined,
+    payloadHash: (row.payload_hash as string) ?? undefined,
     createdAt: ts(row.created_at)
   }),
   toRow: (item) =>
@@ -675,6 +679,8 @@ export const orderMapper: RowMapper<Order> = {
       total_naira: 'totalNaira',
       status: 'status',
       escrow_required: 'escrowRequired',
+      idempotency_key: 'idempotencyKey',
+      payload_hash: 'payloadHash',
       created_at: 'createdAt'
     })
 };
@@ -934,7 +940,7 @@ export const serviceOfferingMapper: RowMapper<ServiceOffering> = {
     title: row.title as string,
     description: row.description as string,
     priceNaira: num(row.price_naira),
-    pricingUnit: row.pricing_unit as ServiceOffering['pricingUnit'],
+    pricingUnit: row.pricingUnit as ServiceOffering['pricingUnit'],
     isActive: row.is_active as boolean,
     createdAt: ts(row.created_at)
   }),
