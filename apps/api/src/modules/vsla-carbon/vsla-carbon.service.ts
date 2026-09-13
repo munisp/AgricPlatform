@@ -10,6 +10,10 @@ import {
 import type { LedgerJournalEntry, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
+import {
+  assertSameIdempotencyPayload,
+  hashIdempotencyPayload
+} from '../../common/idempotency/payload-hash.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CARBON_ESTIMATE_REPOSITORY,
@@ -411,48 +415,97 @@ export class VslaCarbonService {
     ) {
       throw new ForbiddenException('Members may only record their own contributions');
     }
-    // Idempotent replay: the same client key returns the original record.
+    // Canonical payload fingerprint (WP-G11): stored with the key so the
+    // same key with a DIFFERENT payload is a 409 instead of a silent replay.
+    const payloadHash = hashIdempotencyPayload({
+      cycleId,
+      memberId: member.id,
+      amountKobo: input.amountKobo
+    });
+    // Idempotent replay: the same client key with the same payload returns
+    // the original record; a divergent payload fails closed with a 409.
     const replay = await this.contributions.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      assertSameIdempotencyPayload(replay.idempotencyKey, replay.payloadHash, payloadHash);
       return replay;
     }
-    const entry = await this.ledger.postEntry(
-      {
-        idempotencyKey: `vsla-contribution:${input.idempotencyKey}`,
-        referenceType: 'vsla_contribution',
-        referenceId: cycleId,
-        description: `VSLA contribution cycle ${cycleId} member ${member.id}`,
-        postings: [
-          {
-            accountCode: groupCashAccountCode(cycle.groupId),
-            direction: 'debit',
-            amountKobo: input.amountKobo
-          },
-          {
-            accountCode: memberSavingsAccountCode(cycle.groupId, member.userId),
-            direction: 'credit',
-            amountKobo: input.amountKobo
-          }
-        ]
-      },
-      actor.id
-    );
-    const record = await this.contributions.create({
-      id: newId('vslacontrib'),
-      cycleId,
-      groupId: cycle.groupId,
-      memberId: member.id,
-      amountKobo: input.amountKobo,
-      idempotencyKey: input.idempotencyKey,
-      ledgerEntryId: entry.id,
-      createdAt: new Date().toISOString()
-    });
+    let record: VslaContributionRecord;
+    try {
+      const entry = await this.ledger.postEntry(
+        {
+          idempotencyKey: `vsla-contribution:${input.idempotencyKey}`,
+          referenceType: 'vsla_contribution',
+          referenceId: cycleId,
+          description: `VSLA contribution cycle ${cycleId} member ${member.id}`,
+          postings: [
+            {
+              accountCode: groupCashAccountCode(cycle.groupId),
+              direction: 'debit',
+              amountKobo: input.amountKobo
+            },
+            {
+              accountCode: memberSavingsAccountCode(cycle.groupId, member.userId),
+              direction: 'credit',
+              amountKobo: input.amountKobo
+            }
+          ]
+        },
+        actor.id
+      );
+      record = await this.contributions.create({
+        id: newId('vslacontrib'),
+        cycleId,
+        groupId: cycle.groupId,
+        memberId: member.id,
+        amountKobo: input.amountKobo,
+        idempotencyKey: input.idempotencyKey,
+        ledgerEntryId: entry.id,
+        payloadHash,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        // Adopt-on-23505 (WP-G11): a concurrent twin with the same client
+        // key committed first — under pg its posting insert AND its
+        // contribution row serialise on the same UNIQUE keys, so a loser
+        // can surface the conflict from either. Adopt the twin when the
+        // payload matches (the ledger key is derived from the client key,
+        // so the losing posting moved no extra money); 409 when it does
+        // not.
+        const twin = await this.findContributionTwin(input.idempotencyKey);
+        if (twin) {
+          assertSameIdempotencyPayload(twin.idempotencyKey, twin.payloadHash, payloadHash);
+          return twin;
+        }
+      }
+      throw error;
+    }
     await this.events.publish(
       'vslacarbon.contribution.recorded',
       { cycleId, contributionId: record.id },
       actor.id
     );
     return record;
+  }
+
+  /**
+   * Bounded-retry twin lookup for adopt-on-23505 (WP-G11): the winner's
+   * ledger entry commits before its contribution row, so the loser's
+   * conflict can surface a tick before the row is visible. Mirrors the
+   * bounded-retry doctrine of the repayment adopt path.
+   */
+  private async findContributionTwin(
+    idempotencyKey: string,
+    attempts = 3
+  ): Promise<VslaContributionRecord | undefined> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const found = await this.contributions.findByIdempotencyKey(idempotencyKey);
+      if (found) {
+        return found;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    return undefined;
   }
 
   async listContributions(cycleId: string): Promise<VslaContributionRecord[]> {
