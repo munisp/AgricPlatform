@@ -240,6 +240,13 @@ describePg('pg dealer qr pay (live)', () => {
       "INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, commission_account_code, daily_limit_kobo, low_float_threshold_kobo) " +
         "VALUES ('agent-dqr-live','user-dqr-dealer','QR Live Org','ACTIVE','agent:agent-dqr-live:float','agent:agent-dqr-live:commission_payable',25000000,1000000) ON CONFLICT (id) DO NOTHING"
     );
+    // merchant_payments.voucher_id FKs to agent_banking.vouchers — the live
+    // payment template tenders 'voucher-1', so seed it (agent + farmer
+    // rows above satisfy its own FKs).
+    await pool.query(
+      "INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, signature) " +
+        "VALUES ('voucher-1','agent-dqr-live','user-dqr-farmer',40000,'2030-01-01T00:00:00Z','nonce-dqr-live','sig-dqr-live') ON CONFLICT (id) DO NOTHING"
+    );
     const qrId = `qr-live-${Date.now()}`;
     await pool.query(
       "INSERT INTO agent_banking.merchant_qr_codes (id, agent_org_id, dealer_user_id, payload_hmac, label) VALUES ($1,'agent-dqr-live','user-dqr-dealer',$2,'live shop')",
