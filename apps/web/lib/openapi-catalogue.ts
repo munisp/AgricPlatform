@@ -79,6 +79,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/credit/coop-score/{cooperativeId}",
+        "summary": "Latest cooperative score with 5-factor explainability (partner read; scope: profile:read). Identical payload to the in-app GET.",
+        "auth": "client-credentials",
+        "scopes": [
+          "profile:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/impact/{partnerId}",
         "summary": "Aggregate impact metrics (counts only, no PII)",
         "auth": "client-credentials",
@@ -124,26 +134,6 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
         "auth": "client-credentials",
         "scopes": [
           "programmes:read"
-        ],
-        "response": "{ 200 }"
-      },
-      {
-        "method": "GET",
-        "path": "/api/v1/partner/traceability/dds/{id}",
-        "summary": "Fetch a DDS package with its checklist. Scope: traceability:dds.",
-        "auth": "client-credentials",
-        "scopes": [
-          "traceability:dds"
-        ],
-        "response": "{ 200 }"
-      },
-      {
-        "method": "GET",
-        "path": "/api/v1/partner/traceability/dds/{id}/export",
-        "summary": "Export the deterministic hash-manifested DDS package (JSON + evidence annex). Scope: traceability:dds.",
-        "auth": "client-credentials",
-        "scopes": [
-          "traceability:dds"
         ],
         "response": "{ 200 }"
       },
@@ -198,7 +188,7 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       {
         "method": "POST",
         "path": "/api/v1/partner/farm-data",
-        "summary": "farmOS-compatible farm data push",
+        "summary": "farmOS-compatible farm data push (bound members only)",
         "auth": "client-credentials",
         "scopes": [
           "farm_data:write"
@@ -207,31 +197,11 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "POST",
-        "path": "/api/v1/partner/traceability/dds/{id}/validate",
-        "summary": "Run the DDS validation checklist. Scope: traceability:dds. Failures stay draft; never auto-passed.",
-        "auth": "client-credentials",
-        "scopes": [
-          "traceability:dds"
-        ],
-        "response": "{ 201 }"
-      },
-      {
-        "method": "POST",
         "path": "/api/v1/partner/traceability/shipments",
         "summary": "Create a shipment from commodity lots (exporter). Scope: traceability:write.",
         "auth": "client-credentials",
         "scopes": [
           "traceability:write"
-        ],
-        "response": "{ 201 }"
-      },
-      {
-        "method": "POST",
-        "path": "/api/v1/partner/traceability/shipments/{id}/dds",
-        "summary": "Create a draft DDS package for a partner shipment. Scope: traceability:dds.",
-        "auth": "client-credentials",
-        "scopes": [
-          "traceability:dds"
         ],
         "response": "{ 201 }"
       }

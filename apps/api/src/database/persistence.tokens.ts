@@ -33,6 +33,10 @@ export const NOTIFICATION_PREFERENCE_REPOSITORY = Symbol('NOTIFICATION_PREFERENC
 export const DELIVERY_LOG_REPOSITORY = Symbol('DELIVERY_LOG_REPOSITORY');
 export const AUDIT_REPOSITORY = Symbol('AUDIT_REPOSITORY');
 export const AUDIT_ANCHOR_REPOSITORY = Symbol('AUDIT_ANCHOR_REPOSITORY');
+// Stage 27 Innovation 13 (evidence locker): hash-chained dispute evidence
+// items (migration 071). The binding lives in the evidence module next to
+// its only consumer, following the AUDIT_ANCHOR_REPOSITORY precedent.
+export const EVIDENCE_ITEM_REPOSITORY = Symbol('EVIDENCE_ITEM_REPOSITORY');
 export const OUTBOX_REPOSITORY = Symbol('OUTBOX_REPOSITORY');
 export const COMMODITY_PRICE_REPOSITORY = Symbol('COMMODITY_PRICE_REPOSITORY');
 
@@ -67,8 +71,12 @@ export const ANALYTICS_MART_REPOSITORY = Symbol('ANALYTICS_MART_REPOSITORY');
 
 // Wave P2a: marketplace depth (escrow/invoicing/logistics) + finance/credit.
 export const ESCROW_REPOSITORY = Symbol('ESCROW_REPOSITORY');
+// Stage 27 Batch 1 (Innovation 2): coop pool & split settlement.
+export const COOP_POOL_REPOSITORY = Symbol('COOP_POOL_REPOSITORY');
 // Stage 23: recorded escrow payout attempts (release/refund rail).
 export const ESCROW_PAYOUT_REPOSITORY = Symbol('ESCROW_PAYOUT_REPOSITORY');
+// Stage 27 (Innovation 9): geo-sealed delivery attestations (migration 067).
+export const DELIVERY_ATTESTATION_REPOSITORY = Symbol('DELIVERY_ATTESTATION_REPOSITORY');
 export const INVOICE_REPOSITORY = Symbol('INVOICE_REPOSITORY');
 export const SHIPMENT_REPOSITORY = Symbol('SHIPMENT_REPOSITORY');
 export const LEDGER_ACCOUNT_REPOSITORY = Symbol('LEDGER_ACCOUNT_REPOSITORY');
@@ -85,6 +93,8 @@ export const FARM_RECORD_REPOSITORY = Symbol('FARM_RECORD_REPOSITORY');
 export const IMPORT_BATCH_REPOSITORY = Symbol('IMPORT_BATCH_REPOSITORY');
 export const IMPORT_RECORD_REPOSITORY = Symbol('IMPORT_RECORD_REPOSITORY');
 export const INBOUND_EVENT_REPOSITORY = Symbol('INBOUND_EVENT_REPOSITORY');
+// WP-G20: Moodle/Discourse/Directus bridge sync-state bookkeeping.
+export const BRIDGE_SYNC_STATE_REPOSITORY = Symbol('BRIDGE_SYNC_STATE_REPOSITORY');
 // Wave P5b: USSD channel + shared-device PIN profiles.
 export const USSD_SESSION_REPOSITORY = Symbol('USSD_SESSION_REPOSITORY');
 export const PIN_PROFILE_REPOSITORY = Symbol('PIN_PROFILE_REPOSITORY');
@@ -208,6 +218,14 @@ export const TRACEABILITY_SHIPMENT_REPOSITORY = Symbol('TRACEABILITY_SHIPMENT_RE
 // 028). Shadow mode only — the live decision path never injects this token.
 export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY');
 
+// SeasonSync (innovation wave 27): pinned harvest-linked repayment schedules
+// (credit schema, migration 055). Schedule reshaping only — repayment posting
+// still flows through the existing credit.loan_repayments path.
+export const SEASONAL_SCHEDULE_REPOSITORY = Symbol('SEASONAL_SCHEDULE_REPOSITORY');
+// Stage-27 Innovation 14: Cooperative Score — versioned, append-only
+// institution credit readiness (credit.coop_scores, migration 072).
+export const COOP_SCORE_REPOSITORY = Symbol('COOP_SCORE_REPOSITORY');
+
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
 // migration 032. Money movement stays in the finance ledger; these tables
@@ -216,6 +234,13 @@ export const AGENT_BANKING_AGENT_REPOSITORY = Symbol('AGENT_BANKING_AGENT_REPOSI
 export const AGENT_FLOAT_TOPUP_REPOSITORY = Symbol('AGENT_FLOAT_TOPUP_REPOSITORY');
 export const AGENT_VOUCHER_REPOSITORY = Symbol('AGENT_VOUCHER_REPOSITORY');
 export const AGENT_TRANSACTION_REPOSITORY = Symbol('AGENT_TRANSACTION_REPOSITORY');
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): deterministic agent
+// float forecasts + rebalancing alert queue — schema `agent_banking`,
+// migration 073. Forecasting is read-only on the finance ledger; these
+// tables hold operational forecast/alert records only.
+export const FLOAT_FORECAST_REPOSITORY = Symbol('FLOAT_FORECAST_REPOSITORY');
+export const REBALANCE_ALERT_REPOSITORY = Symbol('REBALANCE_ALERT_REPOSITORY');
+export const REBALANCE_RUN_REPOSITORY = Symbol('REBALANCE_RUN_REPOSITORY');
 // Wave MECHANIZATION: equipment hire marketplace (mechanization schema,
 // migration 033) — listings with H3 service areas + the booking workflow.
 export const EQUIPMENT_LISTING_REPOSITORY = Symbol('EQUIPMENT_LISTING_REPOSITORY');
@@ -228,6 +253,18 @@ export const PARAMETRIC_PRODUCT_REPOSITORY = Symbol('PARAMETRIC_PRODUCT_REPOSITO
 export const PARAMETRIC_POLICY_REPOSITORY = Symbol('PARAMETRIC_POLICY_REPOSITORY');
 export const PARAMETRIC_TRIGGER_EVENT_REPOSITORY = Symbol('PARAMETRIC_TRIGGER_EVENT_REPOSITORY');
 export const PARAMETRIC_PAYOUT_REPOSITORY = Symbol('PARAMETRIC_PAYOUT_REPOSITORY');
+// Stage 27 (Insurance-in-the-Bag): voucher-bundled micro-parametric cover
+// (insurance schema, migration 057) — per-programme insurance riders and the
+// exactly-once cover bound at voucher redemption (premium debited from the
+// programme envelope in the same ledger entry as the redemption).
+export const VOUCHER_PROGRAMME_RIDER_REPOSITORY = Symbol('VOUCHER_PROGRAMME_RIDER_REPOSITORY');
+export const VOUCHER_COVER_REPOSITORY = Symbol('VOUCHER_COVER_REPOSITORY');
+
+// Stage 27 (Regen Discount, migration 070): carbon-MRV-verified premium
+// discount — versioned admin rate card (append-only, audit-chained) and the
+// exactly-once-per-policy discount rows with their evidence FK.
+export const REGEN_DISCOUNT_RATE_CARD_REPOSITORY = Symbol('REGEN_DISCOUNT_RATE_CARD_REPOSITORY');
+export const REGEN_DISCOUNT_REPOSITORY = Symbol('REGEN_DISCOUNT_REPOSITORY');
 
 // Wave VSLACARBON (additive): VSLA groups (registry, membership, savings
 // cycles, contributions, share-outs, internal loans) + carbon MRV (plots,
@@ -275,6 +312,39 @@ export const WAREHOUSE_DEPOSIT_REPOSITORY = Symbol('WAREHOUSE_DEPOSIT_REPOSITORY
 export const WAREHOUSE_RECEIPT_REPOSITORY = Symbol('WAREHOUSE_RECEIPT_REPOSITORY');
 export const WAREHOUSE_PLEDGE_REPOSITORY = Symbol('WAREHOUSE_PLEDGE_REPOSITORY');
 export const WAREHOUSE_TRANSFER_REPOSITORY = Symbol('WAREHOUSE_TRANSFER_REPOSITORY');
+
+// Stage 27 innovation "Float Sentinel": deterministic fraud/liquidity anomaly
+// engine — versioned rule registry, dedup-keyed alert queue, admin case queue
+// (fraud schema, migration 059). Detective control only; read-only on the ledger.
+export const FRAUD_SENTINEL_REPOSITORY = Symbol('FRAUD_SENTINEL_REPOSITORY');
+
+// Stage 27 Batch 1 (innovation 4): Planting-Window Pulse — per-plot advisory
+// subscriptions + dispatch log (advisory schema, migration 058). No money
+// movement; operational records with basis honesty labelling only.
+export const ADVISORY_PULSE_REPOSITORY = Symbol('ADVISORY_PULSE_REPOSITORY');
+
+// Stage 27 INNOVATION 7 (Credit Passport): portable, verifiable farmer
+// credit credential — append-only per-farmer credential chain plus
+// consent-scoped, expiring disclosures (schema `credit_passport`, migration
+// 065). Composes credit/vsla-carbon/learning/geo-verification repositories;
+// these tokens hold only the credential chain and disclosure records.
+export const CREDIT_PASSPORT_REPOSITORY = Symbol('CREDIT_PASSPORT_REPOSITORY');
+export const CREDIT_PASSPORT_DISCLOSURE_REPOSITORY = Symbol('CREDIT_PASSPORT_DISCLOSURE_REPOSITORY');
+// Innovation 10 (Stage 27): Chapter Map — recomputable per-chapter H3 res-7
+// aggregate cache (geo_intel schema, migration 068) plus the read-only
+// roster port over chapters.chapter_members. Aggregates only; no PII.
+export const CHAPTER_MAP_SNAPSHOT_REPOSITORY = Symbol('CHAPTER_MAP_SNAPSHOT_REPOSITORY');
+export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
+// Stage 27 / Innovation 8: Receipt LTV Guardian — collateral positions +
+// append-only LTV observation log (warehouse schema, migration 066). The
+// outstanding balance is read from the finance ledger, never stored here.
+export const COLLATERAL_POSITION_REPOSITORY = Symbol('COLLATERAL_POSITION_REPOSITORY');
+export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
+
+// Stage 27 (innovation 11): Price Wire — crop-price subscriptions + dispatch
+// log (advisory schema, migration 069). No money movement; operational
+// records with basis honesty labelling only.
+export const PRICE_WIRE_REPOSITORY = Symbol('PRICE_WIRE_REPOSITORY');
 // Wave DDS-STUDIO (additive, innovation #17): EUDR due-diligence statement
 // packages over traceability shipments (traceability schema, migration 076).
 // Lifecycle draft → validated → exported with guarded status CAS; exported
