@@ -145,6 +145,16 @@ class CreateOrderDto {
   @IsInt()
   @Min(1)
   quantity!: number;
+
+  /**
+   * Optional client idempotency key (Stage 27 WP-G11): a same-key retry
+   * with the same (listing, buyer, quantity) replays the original order;
+   * the same key with a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH.
+   */
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
 
 class OrderStatusDto {
@@ -225,7 +235,9 @@ export class MarketplaceController {
   @ApiOperation({ summary: 'Place an order against a listing (escrow-ready above threshold)' })
   async placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto, @CurrentUser() actor: User | null) {
     assertSelfOrAdmin(actor, dto.buyerId);
-    return { data: await this.marketplace.placeOrder(id, dto.buyerId, dto.quantity) };
+    return {
+      data: await this.marketplace.placeOrder(id, dto.buyerId, dto.quantity, dto.idempotencyKey)
+    };
   }
 
   @Get('orders')
