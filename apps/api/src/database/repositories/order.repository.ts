@@ -9,6 +9,8 @@ export interface OrderCriteria {
   buyerId?: string;
   sellerId?: string;
   status?: OrderStatus;
+  /** Stage 27 (coop pool): match orders against a specific listing. */
+  listingId?: string;
   /** Stage 27 (WP-G11): replay lookup by client idempotency key. */
   idempotencyKey?: string;
 }
@@ -27,6 +29,7 @@ export function orderMatcher(criteria: OrderCriteria): (order: Order) => boolean
     (!criteria.buyerId || order.buyerId === criteria.buyerId) &&
     (!criteria.sellerId || order.sellerId === criteria.sellerId) &&
     (!criteria.status || order.status === criteria.status) &&
+    (!criteria.listingId || order.listingId === criteria.listingId) &&
     (!criteria.idempotencyKey || order.idempotencyKey === criteria.idempotencyKey);
 }
 
