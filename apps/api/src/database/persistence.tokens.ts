@@ -350,3 +350,10 @@ export const PRICE_WIRE_REPOSITORY = Symbol('PRICE_WIRE_REPOSITORY');
 // Lifecycle draft → validated → exported with guarded status CAS; exported
 // packages are immutable (package_hash anchors the exact evidence set).
 export const DDS_PACKAGE_REPOSITORY = Symbol('DDS_PACKAGE_REPOSITORY');
+
+// Stage 27 Innovation 16 (DEALER QR PAY, additive): HMAC-signed merchant QR
+// codes and Mojaloop merchant payments with signed-voucher co-pay — schema
+// `agent_banking`, migration 075. Money movement stays in the finance
+// ledger; these tables hold operational records only.
+export const MERCHANT_QR_CODE_REPOSITORY = Symbol('MERCHANT_QR_CODE_REPOSITORY');
+export const MERCHANT_PAYMENT_REPOSITORY = Symbol('MERCHANT_PAYMENT_REPOSITORY');
