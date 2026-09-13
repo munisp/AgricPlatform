@@ -133,7 +133,6 @@ export const COMMODITY_PRICE_PROVIDER = Symbol('COMMODITY_PRICE_PROVIDER');
 
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const KEY_VALUE_STORE = Symbol('KEY_VALUE_STORE');
-
 export const IDEMPOTENCY_STORE = Symbol('IDEMPOTENCY_STORE');
 export const OTP_STORE = Symbol('OTP_STORE');
 // Funds-integrity wave: durable provider-webhook dedupe (integrations.inbound_events).
