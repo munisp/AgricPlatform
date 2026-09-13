@@ -222,6 +222,9 @@ export const GEO_CREDIT_SHADOW_REPOSITORY = Symbol('GEO_CREDIT_SHADOW_REPOSITORY
 // (credit schema, migration 055). Schedule reshaping only — repayment posting
 // still flows through the existing credit.loan_repayments path.
 export const SEASONAL_SCHEDULE_REPOSITORY = Symbol('SEASONAL_SCHEDULE_REPOSITORY');
+// Stage-27 Innovation 14: Cooperative Score — versioned, append-only
+// institution credit readiness (credit.coop_scores, migration 072).
+export const COOP_SCORE_REPOSITORY = Symbol('COOP_SCORE_REPOSITORY');
 
 // Wave AGENTBANK: agent banking (agent registry, float top-up workflow,
 // signed offline vouchers, agent transaction log) — schema `agent_banking`,
