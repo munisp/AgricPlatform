@@ -71,7 +71,9 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   donor: 'Donor',
   enumerator: 'Enumerator',
   agronomist: 'Agronomist',
-  agent: 'Agent banker'
+  agent: 'Agent banker',
+  // Stage 27 innovation #19 (appended): agronomist-console quality sampling.
+  supervisor: 'Supervisor'
 };
 
 export const ROLE_SUMMARIES: Record<UserRole, string> = {
@@ -89,7 +91,9 @@ export const ROLE_SUMMARIES: Record<UserRole, string> = {
   donor: 'Schedule and track milestone-based programme disbursements.',
   enumerator: 'Capture farmer data in the field and work through your assignment queue.',
   agronomist: 'Work the voice-agronomist escalation queue: grounded AI answers stay automated, hard cases reach you.',
-  agent: 'Run your agent-banking float: cash-in/cash-out, signed offline vouchers and commissions.'
+  agent: 'Run your agent-banking float: cash-in/cash-out, signed offline vouchers and commissions.',
+  // Stage 27 innovation #19 (appended).
+  supervisor: 'Sample agronomist answer quality and keep the escalation queue honest on its SLA.'
 };
 
 export interface ModuleDef {

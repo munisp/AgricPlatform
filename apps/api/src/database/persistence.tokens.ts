@@ -357,3 +357,9 @@ export const DDS_PACKAGE_REPOSITORY = Symbol('DDS_PACKAGE_REPOSITORY');
 // ledger; these tables hold operational records only.
 export const MERCHANT_QR_CODE_REPOSITORY = Symbol('MERCHANT_QR_CODE_REPOSITORY');
 export const MERCHANT_PAYMENT_REPOSITORY = Symbol('MERCHANT_PAYMENT_REPOSITORY');
+
+// Stage 27 innovation #19 (additive): agronomist SLA console — operated
+// escalation queue mirroring voice agent cases into voice.escalation_cases
+// (migration 078) with business-hours SLAs, CAS claim, honest answer
+// delivery and supervisor quality sampling.
+export const ESCALATION_CASE_REPOSITORY = Symbol('ESCALATION_CASE_REPOSITORY');

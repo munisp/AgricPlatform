@@ -217,5 +217,7 @@ export const QUICK_ACTIONS: Record<UserRole, QuickAction[]> = {
     { href: '/agents', labelKey: 'nav.agents' }
   ],
   agronomist: [{ href: '/agent-assist', labelKey: 'products.items.voiceAgronomist.title' }],
-  agent: [{ href: '/agent-banking', labelKey: 'products.items.agentBanking.title' }]
+  agent: [{ href: '/agent-banking', labelKey: 'products.items.agentBanking.title' }],
+  // Stage 27 innovation #19 (appended): supervisors work the same console queue.
+  supervisor: [{ href: '/agent-assist', labelKey: 'products.items.voiceAgronomist.title' }]
 };

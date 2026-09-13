@@ -343,6 +343,10 @@ import {
   createPgVoiceSessionRepository,
   createPgVoiceTurnRepository
 } from './repositories/voice.pg-repository.js';
+// Stage 27 innovation #19 (additive): agronomist SLA console persistence.
+import { ESCALATION_CASE_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryEscalationCaseRepository } from './repositories/escalation-console.repository.js';
+import { createPgEscalationCaseRepository } from './repositories/escalation-console.pg-repository.js';
 // Wave L1a: ALTP livestock core persistence (additive).
 import {
   ANIMAL_REPOSITORY,
@@ -1763,6 +1767,13 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
       inject: [PG_POOL]
     },
+    // Stage 27 innovation #19 (additive): agronomist SLA console queue.
+    {
+      provide: ESCALATION_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEscalationCaseRepository(pool) : createInMemoryEscalationCaseRepository(),
+      inject: [PG_POOL]
+    },
     // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
     {
       provide: GEO_CREDIT_SHADOW_REPOSITORY,
@@ -2299,7 +2310,10 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     LTV_OBSERVATION_REPOSITORY,
 
     // Wave DDS-STUDIO (additive).
-    DDS_PACKAGE_REPOSITORY
+    DDS_PACKAGE_REPOSITORY,
+
+    // Stage 27 innovation #19 (additive): agronomist SLA console.
+    ESCALATION_CASE_REPOSITORY
   ]
 })
 export class DatabaseModule {}

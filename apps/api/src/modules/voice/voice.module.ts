@@ -6,7 +6,10 @@ import { UsersModule } from '../users/users.module.js';
 import { AdvisoryService } from '../advisory/advisory.service.js';
 import { KnowledgeService } from '../knowledge/knowledge.service.js';
 import { LearningService } from '../learning/learning.service.js';
+import { IntegrationsModule } from '../integrations/integrations.module.js';
 import { AgronomyRagService, RepositoryAgronomyCorpus } from './agronomy-rag.service.js';
+import { AgronomistConsoleController } from './console.controller.js';
+import { EscalationConsoleService } from './escalation-console.service.js';
 import { VoiceController } from './voice.controller.js';
 import { VoiceService } from './voice.service.js';
 
@@ -16,10 +19,16 @@ import { VoiceService } from './voice.service.js';
  * learning corpus (no external LLM, no vector DB); ASR and TTS are
  * fail-closed driver ports (stub default, live env-gated). Escalations open
  * agent cases worked from the agent-assist console (agronomist/admin).
+ *
+ * Stage 27 innovation #19 (additive): the Agronomist SLA Console mirrors
+ * every escalation into an operated queue (voice.escalation_cases,
+ * migration 078) with business-hours SLAs, CAS claim, honest channel
+ * delivery and supervisor quality sampling — behind the `agronomist-console`
+ * feature flag (default OFF).
  */
 @Module({
-  imports: [AdvisoryModule, KnowledgeModule, LearningModule, UsersModule],
-  controllers: [VoiceController],
+  imports: [AdvisoryModule, KnowledgeModule, LearningModule, UsersModule, IntegrationsModule],
+  controllers: [VoiceController, AgronomistConsoleController],
   providers: [
     {
       provide: AgronomyRagService,
@@ -27,8 +36,9 @@ import { VoiceService } from './voice.service.js';
         new AgronomyRagService(new RepositoryAgronomyCorpus(advisory, knowledge, learning)),
       inject: [AdvisoryService, KnowledgeService, LearningService]
     },
-    VoiceService
+    VoiceService,
+    EscalationConsoleService
   ],
-  exports: [VoiceService, AgronomyRagService]
+  exports: [VoiceService, AgronomyRagService, EscalationConsoleService]
 })
 export class VoiceModule {}
