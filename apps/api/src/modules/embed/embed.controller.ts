@@ -2,6 +2,7 @@ import { Controller, Get, Header, Inject, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { COMMODITY_PRICE_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { CommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
+import { PriceWireService } from '../advisory/price-wire.service.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 
@@ -17,7 +18,8 @@ export class EmbedController {
   constructor(
     private readonly opportunities: OpportunitiesService,
     private readonly learning: LearningService,
-    @Inject(COMMODITY_PRICE_REPOSITORY) private readonly prices: CommodityPriceRepository
+    @Inject(COMMODITY_PRICE_REPOSITORY) private readonly prices: CommodityPriceRepository,
+    private readonly priceWire: PriceWireService
   ) {}
 
   @Get('opportunities')
@@ -57,6 +59,19 @@ export class EmbedController {
         observedAt: price.observedAt
       }));
     return { data: latest, generatedAt: new Date().toISOString() };
+  }
+
+  @Get('price-quote')
+  @Header('Access-Control-Allow-Origin', '*')
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
+  @ApiOperation({
+    summary:
+      'Single freshness-gated crop-price quote for embeds (Price Wire, Stage 27). ' +
+      'No PII; answers available:false honestly when the feed is stub, stale or flagged off.'
+  })
+  async priceQuote(@Query('commodity') commodity = '', @Query('market') market?: string) {
+    const quote = await this.priceWire.quotePublic(commodity, market);
+    return { data: quote, generatedAt: new Date().toISOString() };
   }
 
   @Get('courses')
