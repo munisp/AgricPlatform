@@ -45,6 +45,8 @@ import type {
 } from '../../database/repositories/credit-suite.repository.js';
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 import type { ProfileRepository } from '../../database/repositories/profile.repository.js';
+// Stage 27 (innovation #20): shared pure PAR accumulation — see ./par.ts.
+import { computeParMetrics, type ParLoanFact } from './par.js';
 
 /** Actor driving a credit mutation: the applicant or a reviewer (admin|lender). */
 export type CreditActor = Pick<User, 'id' | 'roles'>;
@@ -1001,53 +1003,20 @@ export class CreditService {
     requireReviewer(actor);
     const nowMs = Date.now();
     const loans = await this.loans.all();
-    let activeLoans = 0;
-    let defaultedLoans = 0;
-    let outstandingKobo = 0;
-    let defaultedKobo = 0;
-    let par30Kobo = 0;
-    let par60Kobo = 0;
-    let par90Kobo = 0;
+    // Single PAR implementation (Stage 27, innovation #20): the accumulation
+    // lives in ./par.ts so the analytics lender-scorecard assembly reuses the
+    // exact same formula instead of a drifting copy.
+    const facts: ParLoanFact[] = [];
     for (const loan of loans) {
-      if (loan.status !== 'disbursed' && loan.status !== 'repaying' && loan.status !== 'defaulted') {
-        continue;
-      }
-      const schedule = await this.repayments.find({ loanId: loan.id });
-      const unpaid = schedule.filter((repayment) => repayment.status !== 'paid');
-      const unpaidKobo = unpaid.reduce((sum, repayment) => sum + repayment.amountKobo, 0);
-      if (loan.status === 'defaulted') {
-        defaultedLoans += 1;
-        defaultedKobo += unpaidKobo;
-        continue;
-      }
-      activeLoans += 1;
-      outstandingKobo += unpaidKobo;
-      let maxOverdueDays = 0;
-      for (const repayment of unpaid) {
-        const overdueMs = nowMs - Date.parse(repayment.dueAt);
-        if (overdueMs > 0) {
-          maxOverdueDays = Math.max(maxOverdueDays, Math.floor(overdueMs / DAY_MS));
-        }
-      }
-      if (maxOverdueDays >= 30) par30Kobo += unpaidKobo;
-      if (maxOverdueDays >= 60) par60Kobo += unpaidKobo;
-      if (maxOverdueDays >= 90) par90Kobo += unpaidKobo;
+      facts.push({
+        status: loan.status,
+        repayments: await this.repayments.find({ loanId: loan.id })
+      });
     }
-    const ratioBps = (part: number): number =>
-      outstandingKobo > 0 ? Math.round((part * 10_000) / outstandingKobo) : 0;
     return {
       generatedAt: new Date(nowMs).toISOString(),
       totalLoans: loans.length,
-      activeLoans,
-      defaultedLoans,
-      outstandingKobo,
-      defaultedKobo,
-      par30Kobo,
-      par60Kobo,
-      par90Kobo,
-      par30Bps: ratioBps(par30Kobo),
-      par60Bps: ratioBps(par60Kobo),
-      par90Bps: ratioBps(par90Kobo)
+      ...computeParMetrics(facts, nowMs)
     };
   }
 }
