@@ -156,6 +156,9 @@ export class AuthService {
       throw new UnauthorizedException('No account for this phone number. Register first.');
     }
     this.metrics.otpVerification('success');
+    // Credential threading: the just-consumed OTP code is the verified
+    // second factor; the flagged Keycloak issuer exchanges it (flag off →
+    // the credential is ignored and the dev/test stub path decides).
     return this.withRefreshToken(user, meta, code);
   }
 

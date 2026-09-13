@@ -44,6 +44,13 @@ export interface PinProfileView {
  * device; each profile unlocks a fast session swap with a 4-digit PIN. PINs
  * are stored as salted hashes only, and the attempt/lockout policy reuses
  * the OTP challenge pattern (5 attempts → 15-minute lock).
+ *
+ * Credential threading (Stage-2 follow-up): after the PIN hash check passes,
+ * the verified PIN is threaded into AuthService.issueSessionFor as the
+ * second-factor credential. With PHONE_AUTH_KEYCLOAK on, that credential is
+ * exchanged at the realm token endpoint; without a verified credential the
+ * flagged path fails closed with 503 AUTH_UNAVAILABLE. The raw PIN is never
+ * logged or persisted — only the salted hash below.
  */
 @Injectable()
 export class PinSessionService {
@@ -109,7 +116,7 @@ export class PinSessionService {
     deviceToken: string,
     userId: string,
     pin: string
-  ): Promise<{ token: string; user: User }> {
+  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
     if (!PIN_PATTERN.test(pin)) {
       throw new BadRequestException('PIN must be exactly 4 digits');
     }
@@ -144,6 +151,9 @@ export class PinSessionService {
     if (profile.attempts > 0 || profile.lockedUntil) {
       await this.profiles.update(deviceToken, userId, { attempts: 0, lockedUntil: undefined });
     }
-    return this.auth.issueSessionFor(userId);
+    // Credential threading: the PIN survived the salted-hash check, so it is
+    // the verified second factor. It is threaded into token issuance — never
+    // logged, never persisted (only its salted hash is stored above).
+    return this.auth.issueSessionFor(userId, undefined, pin);
   }
 }
