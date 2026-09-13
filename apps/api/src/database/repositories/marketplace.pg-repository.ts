@@ -62,7 +62,8 @@ export function orderCriteriaSql(criteria: OrderCriteria): WhereClause {
     eq('buyer_id', criteria.buyerId),
     eq('seller_id', criteria.sellerId),
     eq('status', criteria.status),
-    eq('listing_id', criteria.listingId)
+    eq('listing_id', criteria.listingId),
+    eq('idempotency_key', criteria.idempotencyKey)
   );
 }
 
