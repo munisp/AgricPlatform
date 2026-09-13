@@ -55,7 +55,9 @@ export const DEV_PREVIEW_USERS: Record<UserRole, { userId: string; displayName: 
   donor: { userId: 'user-donor', displayName: 'Rural Livelihoods Donor Programme' },
   enumerator: { userId: 'user-enumerator', displayName: 'Field Enumerator' },
   agronomist: { userId: 'user-agronomist', displayName: 'Extension Agronomist' },
-  agent: { userId: 'user-agent-banker', displayName: 'Village Agent Banker' }
+  agent: { userId: 'user-agent-banker', displayName: 'Village Agent Banker' },
+  // Stage 27 innovation #19 (appended).
+  supervisor: { userId: 'user-supervisor', displayName: 'Console Supervisor' }
 };
 
 const SESSION_KEY = 'agric.session';
