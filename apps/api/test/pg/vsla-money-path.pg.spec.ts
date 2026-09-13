@@ -223,6 +223,10 @@ describe('pg vsla money path (query spy)', () => {
       if (text.includes('SELECT id FROM finance.ledger_accounts')) {
         return { rows: [{ id: 'acct-1' }] };
       }
+      if (text.includes('finance.transfer_is_balanced')) {
+        // WP-G13 balanced-journal invariant: benign balanced verdict for the spy.
+        return { rows: [{ balanced: true, posting_count: 2 }] };
+      }
       if (text.includes('COALESCE')) {
         return { rows: [{ debits: 100_000, credits: 40_000 }] };
       }

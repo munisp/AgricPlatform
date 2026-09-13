@@ -92,6 +92,10 @@ const successBehavior = (text: string): QueryOutcome => {
   if (text.startsWith('SELECT id FROM finance.ledger_accounts')) {
     return { rows: [{ id: `acct-${text.length}` }] };
   }
+  if (text.includes('finance.transfer_is_balanced')) {
+    // WP-G13 balanced-journal invariant: benign balanced verdict for the spy.
+    return { rows: [{ balanced: true, posting_count: 2 }] };
+  }
   if (text.includes('FROM finance.ledger_entries')) {
     return { rows: [{ debits: 0, credits: 0 }] };
   }

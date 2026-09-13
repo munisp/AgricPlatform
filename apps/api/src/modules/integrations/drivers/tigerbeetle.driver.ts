@@ -374,7 +374,7 @@ export class TigerBeetleLedgerBackendDriver implements LedgerBackendDriver {
         };
       });
     } catch (error) {
-      this.recordFailure();
+      this.recordFailure(error);
       if (error instanceof ProviderRequestError) {
         throw error;
       }
