@@ -370,7 +370,7 @@ export class PgVslaContributionRepository implements VslaContributionRepository 
     try {
       await this.pool.query(
         'INSERT INTO vsla_carbon.vsla_contributions (id, cycle_id, group_id, member_id, amount_kobo, ' +
-          'idempotency_key, ledger_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+          'idempotency_key, ledger_entry_id, payload_hash, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         [
           record.id,
           record.cycleId,
@@ -379,6 +379,7 @@ export class PgVslaContributionRepository implements VslaContributionRepository 
           record.amountKobo,
           record.idempotencyKey,
           record.ledgerEntryId,
+          record.payloadHash ?? null,
           record.createdAt
         ]
       );
@@ -428,6 +429,7 @@ export class PgVslaContributionRepository implements VslaContributionRepository 
       amountKobo: Number(row.amount_kobo),
       idempotencyKey: row.idempotency_key as string,
       ledgerEntryId: row.ledger_entry_id as string,
+      payloadHash: (row.payload_hash as string | null) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
