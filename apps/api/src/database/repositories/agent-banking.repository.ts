@@ -63,6 +63,12 @@ export interface AgentFloatTopUpRecord {
    * second settleable row. NULL only on rows predating migration 042.
    */
   idempotencyKey?: string;
+  /**
+   * Canonical payload fingerprint (Stage 27 WP-G11): same key + same
+   * payload replays; same key + a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
+   */
+  payloadHash?: string;
   createdAt: string;
 }
 
@@ -85,6 +91,12 @@ export interface AgentVoucherRecord {
   ledgerEntryId?: string;
   /** Optional client idempotency key — transport retries replay, never duplicate. */
   idempotencyKey?: string;
+  /**
+   * Canonical payload fingerprint (Stage 27 WP-G11): same key + same
+   * payload replays; same key + a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
+   */
+  payloadHash?: string;
   createdAt: string;
 }
 
@@ -104,6 +116,12 @@ export interface AgentTransactionRecord {
   /** UNIQUE — transport retries with the same key replay, never double-post. */
   idempotencyKey: string;
   ledgerEntryId: string;
+  /**
+   * Canonical payload fingerprint (Stage 27 WP-G11): same key + same
+   * payload replays; same key + a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
+   */
+  payloadHash?: string;
   voucherId?: string;
   /**
    * Basis of the farmer presence proof (OTP) that authorised the cash
