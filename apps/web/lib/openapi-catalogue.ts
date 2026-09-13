@@ -79,6 +79,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/credit-passports/{userId}",
+        "summary": "Read a farmer's credit passport. Scope: credit-passport:read. Requires an active, unexpired consent-scoped disclosure naming this partner.",
+        "auth": "client-credentials",
+        "scopes": [
+          "credit-passport:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/credit/coop-score/{cooperativeId}",
         "summary": "Latest cooperative score with 5-factor explainability (partner read; scope: profile:read). Identical payload to the in-app GET.",
         "auth": "client-credentials",
@@ -120,7 +130,7 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       {
         "method": "GET",
         "path": "/api/v1/partner/members/{userId}/profile",
-        "summary": "Consented member profile lookup",
+        "summary": "Consented member profile lookup (bound members only)",
         "auth": "client-credentials",
         "scopes": [
           "profile:read"
@@ -134,6 +144,46 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
         "auth": "client-credentials",
         "scopes": [
           "programmes:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/portfolio/scorecard",
+        "summary": "Standardized portfolio scorecard (PAR30/60/90 vintages, geo mix bands, product mix — aggregate only, zero farmer PII). Generated immutably on first request per (lender, version, period); carries a stale badge when the analytics projector heartbeat exceeds the version threshold.",
+        "auth": "client-credentials",
+        "scopes": [
+          "portfolio:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/portfolio/scorecard/export",
+        "summary": "Export the scorecard as parquet + manifest to object storage and return SigV4-presigned download URLs (1h). 503 when export storage is not configured.",
+        "auth": "client-credentials",
+        "scopes": [
+          "portfolio:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/traceability/dds/{id}",
+        "summary": "Fetch a DDS package with its checklist. Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/partner/traceability/dds/{id}/export",
+        "summary": "Export the deterministic hash-manifested DDS package (JSON + evidence annex). Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
         ],
         "response": "{ 200 }"
       },
@@ -197,11 +247,31 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "POST",
+        "path": "/api/v1/partner/traceability/dds/{id}/validate",
+        "summary": "Run the DDS validation checklist. Scope: traceability:dds. Failures stay draft; never auto-passed.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
+        ],
+        "response": "{ 201 }"
+      },
+      {
+        "method": "POST",
         "path": "/api/v1/partner/traceability/shipments",
         "summary": "Create a shipment from commodity lots (exporter). Scope: traceability:write.",
         "auth": "client-credentials",
         "scopes": [
           "traceability:write"
+        ],
+        "response": "{ 201 }"
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/partner/traceability/shipments/{id}/dds",
+        "summary": "Create a draft DDS package for a partner shipment. Scope: traceability:dds.",
+        "auth": "client-credentials",
+        "scopes": [
+          "traceability:dds"
         ],
         "response": "{ 201 }"
       }
@@ -251,6 +321,13 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
     description:
       'Anonymous, read-only JSON feeds backing the embeddable widgets. CORS-open, cache-friendly (60s), and contain no PII.',
     endpoints: [
+      {
+        "method": "GET",
+        "path": "/api/v1/embed/price-quote",
+        "summary": "Single freshness-gated crop-price quote for embeds (Price Wire, Stage 27). No PII; answers available:false honestly when the feed is stub, stale or flagged off.",
+        "auth": "none",
+        "response": "{ 200 }"
+      },
       {
         "method": "GET",
         "path": "/api/v1/embed/opportunities",
