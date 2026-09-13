@@ -79,6 +79,16 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       },
       {
         "method": "GET",
+        "path": "/api/v1/partner/credit/coop-score/{cooperativeId}",
+        "summary": "Latest cooperative score with 5-factor explainability (partner read; scope: profile:read). Identical payload to the in-app GET.",
+        "auth": "client-credentials",
+        "scopes": [
+          "profile:read"
+        ],
+        "response": "{ 200 }"
+      },
+      {
+        "method": "GET",
         "path": "/api/v1/partner/impact/{partnerId}",
         "summary": "Aggregate impact metrics (counts only, no PII)",
         "auth": "client-credentials",
@@ -178,7 +188,7 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
       {
         "method": "POST",
         "path": "/api/v1/partner/farm-data",
-        "summary": "farmOS-compatible farm data push",
+        "summary": "farmOS-compatible farm data push (bound members only)",
         "auth": "client-credentials",
         "scopes": [
           "farm_data:write"
@@ -241,13 +251,6 @@ export const OPENAPI_CATALOGUE: CatalogueSection[] = [
     description:
       'Anonymous, read-only JSON feeds backing the embeddable widgets. CORS-open, cache-friendly (60s), and contain no PII.',
     endpoints: [
-      {
-        "method": "GET",
-        "path": "/api/v1/embed/price-quote",
-        "summary": "Single freshness-gated crop-price quote for embeds (Price Wire, Stage 27). No PII; answers available:false honestly when the feed is stub, stale or flagged off.",
-        "auth": "none",
-        "response": "{ 200 }"
-      },
       {
         "method": "GET",
         "path": "/api/v1/embed/opportunities",
