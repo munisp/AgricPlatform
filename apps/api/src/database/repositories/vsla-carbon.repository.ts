@@ -105,6 +105,12 @@ export interface VslaContributionRecord {
   /** UNIQUE — transport retries with the same key replay, never double-post. */
   idempotencyKey: string;
   ledgerEntryId: string;
+  /**
+   * Canonical payload fingerprint (Stage 27 WP-G11): same key + same
+   * payload replays this record; same key + a different payload is a 409
+   * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
+   */
+  payloadHash?: string;
   createdAt: string;
 }
 
