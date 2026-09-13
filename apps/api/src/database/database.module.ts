@@ -1375,7 +1375,8 @@ import {
     },
     {
       provide: RECALL_REPOSITORY,
-      useFactory: (pool: pg.Pool | null) => (pool ? createPgRecallRepository(pool) : createInMemoryRecallRepository()),
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRecallRepository(pool) : createInMemoryRecallRepository(),
       inject: [PG_POOL]
     },
     {
