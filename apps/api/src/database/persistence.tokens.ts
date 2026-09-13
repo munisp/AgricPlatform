@@ -333,3 +333,8 @@ export const CHAPTER_MEMBER_DIRECTORY = Symbol('CHAPTER_MEMBER_DIRECTORY');
 // outstanding balance is read from the finance ledger, never stored here.
 export const COLLATERAL_POSITION_REPOSITORY = Symbol('COLLATERAL_POSITION_REPOSITORY');
 export const LTV_OBSERVATION_REPOSITORY = Symbol('LTV_OBSERVATION_REPOSITORY');
+
+// Stage 27 (innovation 11): Price Wire — crop-price subscriptions + dispatch
+// log (advisory schema, migration 069). No money movement; operational
+// records with basis honesty labelling only.
+export const PRICE_WIRE_REPOSITORY = Symbol('PRICE_WIRE_REPOSITORY');
