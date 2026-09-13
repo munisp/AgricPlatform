@@ -102,6 +102,7 @@ import { createInMemoryDeliveryLogRepository } from './repositories/delivery-log
 import { createInMemoryDocumentRepository } from './repositories/document.repository.js';
 import { createInMemoryEnrolmentRepository } from './repositories/enrolment.repository.js';
 import { createInMemoryEventRsvpRepository } from './repositories/event-rsvp.repository.js';
+import { createInMemoryForumTopicRepository } from './repositories/forum-topic.repository.js';
 import {
   createPgCreditProfileRepository,
   createPgDocumentRepository
