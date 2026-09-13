@@ -454,6 +454,7 @@ describe('UssdService planting-window pulse pull (Stage 27, innovation 4)', () =
   });
 });
 
+
 describe('UssdService price-wire pull (Stage 27, innovation 11)', () => {
   const session = { sessionId: 'sess-wire', phoneNumber: '+234801', text: '' };
 
