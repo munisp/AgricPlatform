@@ -102,7 +102,10 @@ describe('BridgeSyncService — Moodle → learning.courses catalogue sync', () 
     expect((await courses.find({})).filter((course) => course.id === 'moodle-7')).toHaveLength(1);
     expect(after.level).toBe('advanced');
     expect(after.enrolmentCount).toBe(42);
-    expect(after.createdAt ?? before.createdAt).toBe(before.createdAt);
+    // The same record is refreshed in place (not recreated): the second sync
+    // serves the same client title for moodle-7. (Course has no createdAt
+    // field — the pre-existing WP-G20 spec asserted against one in error.)
+    expect(after.title).toBe(before.title);
   });
 });
 

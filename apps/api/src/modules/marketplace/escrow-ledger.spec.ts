@@ -48,6 +48,7 @@ function makeWorld(options?: { withLedger?: boolean }) {
     undefined,
     undefined,
     undefined,
+    undefined,
     ledger
   );
   const reconciliation = new LedgerReconciliationService(ledger!, entries, escrows);

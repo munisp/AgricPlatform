@@ -31,9 +31,10 @@ describe('developer portal endpoint catalogue', () => {
     }
   });
 
-  it('documents the four anonymous embed feeds', () => {
+  it('documents the five anonymous embed feeds', () => {
     const embeds = allEndpoints().filter((endpoint) => endpoint.path.startsWith('/api/v1/embed/'));
     expect(embeds.map((endpoint) => endpoint.path)).toEqual([
+      '/api/v1/embed/price-quote',
       '/api/v1/embed/opportunities',
       '/api/v1/embed/prices',
       '/api/v1/embed/courses',
