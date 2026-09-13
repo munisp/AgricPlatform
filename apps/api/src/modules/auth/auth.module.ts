@@ -12,6 +12,7 @@ import { SessionService } from './session.service.js';
     AuthService,
     // Factory registration (driver doctrine): the service takes its env
     // explicitly, so it must NOT be constructor-injected by Nest metadata.
+    // Enabled-but-unconfigured aborts boot here with ProviderConfigError.
     {
       provide: KeycloakPhoneTokenService,
       useFactory: () => new KeycloakPhoneTokenService(process.env)
