@@ -26,7 +26,10 @@ RUN npm install -g npm@11 && npm ci --workspace=apps/api --include-workspace-roo
 FROM node:26-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json tsconfig.base.json ./
+# package-lock.json must be present here: `npm prune --omit=dev` below
+# re-resolves the tree from scratch without it and aborts with ERESOLVE
+# peer-conflict errors (eslint 9 hoisted vs nested @eslint/js 10 peer).
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
 RUN npm run build --workspace=packages/shared --if-present \
