@@ -412,6 +412,7 @@ describe('UssdService planting-window pulse pull (Stage 27, innovation 4)', () =
         createInMemoryCommodityPriceRepository(PRICES),
         ENABLED_ENV,
         pulse as never,
+        undefined,
         flags as never
       ),
       flags
@@ -450,5 +451,77 @@ describe('UssdService planting-window pulse pull (Stage 27, innovation 4)', () =
     await service.handleCallback({ ...session, text: '' });
     const turn = await service.handleCallback({ ...session, text: '5' });
     expect(turn).toContain('No planting advisory subscription');
+  });
+});
+
+
+describe('UssdService price-wire pull (Stage 27, innovation 11)', () => {
+  const session = { sessionId: 'sess-wire', phoneNumber: '+234801', text: '' };
+
+  function buildWithWire(
+    wire: { wireMenuData: () => Promise<unknown> },
+    flagEnabled: boolean
+  ) {
+    const users = new UsersService(createInMemoryUserRepository());
+    const opportunities = { all: async () => OPPORTUNITIES } as unknown as OpportunitiesService;
+    const learning = {
+      allCourses: async () => COURSES,
+      enrol: vi.fn(async () => ({ id: 'enrol-1' }))
+    } as unknown as LearningService;
+    const flags = { isEnabled: vi.fn(async () => flagEnabled) };
+    return {
+      users,
+      service: new UssdService(
+        users,
+        opportunities,
+        learning,
+        createInMemoryUssdSessionRepository(),
+        createInMemoryCommodityPriceRepository(PRICES),
+        ENABLED_ENV,
+        undefined,
+        wire as never,
+        flags as never
+      ),
+      flags
+    };
+  }
+
+  it('serves the pre-rendered quote over the menu when the flag is on', async () => {
+    const { service, users } = buildWithWire(
+      {
+        wireMenuData: async () => ({
+          commodities: ['maize'],
+          markets: { maize: ['Dawanau'] },
+          quotes: { 'maize¦Dawanau': { available: true, text: 'maize: ₦425/kg at Dawanau (12 Jun 2026)' } }
+        })
+      },
+      true
+    );
+    await users.create({ phone: '+234801', fullName: 'Ada Farmer', roles: ['farmer'], preferredLanguage: 'en' });
+    await service.handleCallback({ ...session, text: '' });
+    await service.handleCallback({ ...session, text: '6' });
+    await service.handleCallback({ ...session, text: '6*1' });
+    const turn = await service.handleCallback({ ...session, text: '6*1*1' });
+    expect(turn).toContain('₦425/kg at Dawanau');
+  });
+
+  it('answers honestly when the flag is off (no wire data gathered)', async () => {
+    const wireMenuData = vi.fn();
+    const { service, users, flags } = buildWithWire({ wireMenuData }, false);
+    await users.create({ phone: '+234801', fullName: 'Ada Farmer', roles: ['farmer'], preferredLanguage: 'en' });
+    await service.handleCallback({ ...session, text: '' });
+    const turn = await service.handleCallback({ ...session, text: '6' });
+    expect(turn).toContain('Price unavailable');
+    expect(flags.isEnabled).toHaveBeenCalled();
+    expect(wireMenuData).not.toHaveBeenCalled();
+  });
+
+  it('answers honestly for unregistered phones (never fabricates a price)', async () => {
+    const wireMenuData = vi.fn();
+    const { service } = buildWithWire({ wireMenuData }, true);
+    await service.handleCallback({ ...session, text: '' });
+    const turn = await service.handleCallback({ ...session, text: '6' });
+    expect(turn).toContain('Price unavailable');
+    expect(wireMenuData).not.toHaveBeenCalled();
   });
 });
