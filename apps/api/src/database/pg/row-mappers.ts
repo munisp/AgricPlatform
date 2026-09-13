@@ -335,17 +335,6 @@ export const forumTopicMapper: RowMapper<ForumTopic> = {
       crop: 'crop',
       reply_count: 'replyCount',
       created_at: 'createdAt'
-  }),
-  toRow: (item) =>
-    present(item, {
-      id: 'id',
-      title: 'title',
-      category: 'category',
-      author_id: 'authorId',
-      state: 'state',
-      crop: 'crop',
-      reply_count: 'replyCount',
-      created_at: 'createdAt'
     })
 };
 
