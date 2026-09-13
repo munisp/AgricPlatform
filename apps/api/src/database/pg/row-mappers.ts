@@ -940,7 +940,7 @@ export const serviceOfferingMapper: RowMapper<ServiceOffering> = {
     title: row.title as string,
     description: row.description as string,
     priceNaira: num(row.price_naira),
-    pricingUnit: row.pricingUnit as ServiceOffering['pricingUnit'],
+    pricingUnit: row.pricing_unit as ServiceOffering['pricingUnit'],
     isActive: row.is_active as boolean,
     createdAt: ts(row.created_at)
   }),
@@ -2322,7 +2322,7 @@ export const offtakeContractMapper: RowMapper<OfftakeContract> = {
   ],
   fromRow: (row) => ({
     id: row.id as string,
-    templateId: row.template_id as string,
+    templateId: (row.template_id as string) ?? undefined,
     farmerUserId: row.farmer_user_id as string,
     buyerUserId: row.buyer_user_id as string,
     species: row.species as string,
