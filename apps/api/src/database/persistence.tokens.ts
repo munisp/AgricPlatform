@@ -363,3 +363,11 @@ export const MERCHANT_PAYMENT_REPOSITORY = Symbol('MERCHANT_PAYMENT_REPOSITORY')
 // (migration 078) with business-hours SLAs, CAS claim, honest answer
 // delivery and supervisor quality sampling.
 export const ESCALATION_CASE_REPOSITORY = Symbol('ESCALATION_CASE_REPOSITORY');
+
+// Wave HARVEST-FORWARD (additive, Stage 27 Innovation 18): milestone-
+// tracked offtake agreements (marketplace schema, migration 077). Distinct
+// from the livestock-trade OFFTAKE_CONTRACT_REPOSITORY (buyer price offers
+// on certified animal listings). Money movement stays in the finance ledger
+// and rides the existing order/invoice/escrow rails; these tables hold
+// contract, milestone and delivery operational records only.
+export const HARVEST_FORWARD_CONTRACT_REPOSITORY = Symbol('HARVEST_FORWARD_CONTRACT_REPOSITORY');

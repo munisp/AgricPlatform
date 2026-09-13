@@ -90,8 +90,12 @@ import { SweepersModule } from './modules/sweepers/sweepers.module.js';
 
 // Stage 27 Innovation 13 (additive): hash-chained dispute evidence locker.
 import { EvidenceModule } from './modules/evidence/evidence.module.js';
+
 // Stage 27 innovation #20 (additive): Lender Lens — standardized lender portfolio scorecards.
 import { LenderLensModule } from './modules/analytics/lender-lens.module.js';
+
+// Wave HARVEST-FORWARD (additive): milestone-tracked offtake agreements (Stage 27 Inn 18).
+import { OfftakeModule } from './modules/marketplace/offtake.module.js';
 
 @Module({
   imports: [
@@ -203,8 +207,12 @@ import { LenderLensModule } from './modules/analytics/lender-lens.module.js';
 
     // Stage 27 Innovation 13 evidence locker (flag `evidence-locker`, default OFF) — appended to minimise merge conflicts.
     EvidenceModule,
+
     // Stage 27 innovation #20 Lender Lens — standardized lender portfolio scorecards — appended to minimise merge conflicts.
-    LenderLensModule
+    LenderLensModule,
+
+    // Wave HARVEST-FORWARD milestone-tracked offtake agreements — appended to minimise merge conflicts.
+    OfftakeModule
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
