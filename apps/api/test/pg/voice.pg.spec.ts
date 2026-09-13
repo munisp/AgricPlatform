@@ -60,8 +60,13 @@ describePg('voice schema (027_voice.sql) + pg repositories', () => {
     const tables = await pool!.query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'voice' ORDER BY table_name"
     );
+    // CI's db-contract job pre-applies ALL migrations: 064_voice_intents
+    // (intent_sessions) and 078_agronomist_console (escalation_cases) also
+    // create voice-schema tables beyond this spec's own migration.
     expect(tables.rows.map((row) => row.table_name)).toEqual([
       'agent_cases',
+      'escalation_cases',
+      'intent_sessions',
       'voice_sessions',
       'voice_turns'
     ]);

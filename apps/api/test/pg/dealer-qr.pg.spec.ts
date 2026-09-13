@@ -237,8 +237,8 @@ describePg('pg dealer qr pay (live)', () => {
       "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-dqr-farmer','+2348001000002','Farmer QR Live') ON CONFLICT (id) DO NOTHING"
     );
     await pool.query(
-      "INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, commission_account_code, daily_limit_kobo) " +
-        "VALUES ('agent-dqr-live','user-dqr-dealer','QR Live Org','ACTIVE','agent:agent-dqr-live:float','agent:agent-dqr-live:commission_payable',25000000) ON CONFLICT (id) DO NOTHING"
+      "INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, commission_account_code, daily_limit_kobo, low_float_threshold_kobo) " +
+        "VALUES ('agent-dqr-live','user-dqr-dealer','QR Live Org','ACTIVE','agent:agent-dqr-live:float','agent:agent-dqr-live:commission_payable',25000000,1000000) ON CONFLICT (id) DO NOTHING"
     );
     const qrId = `qr-live-${Date.now()}`;
     await pool.query(
