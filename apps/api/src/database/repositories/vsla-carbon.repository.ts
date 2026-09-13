@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import type { LedgerPostingTx } from './ledger.repository.js';
 
 /**
  * VSLA + carbon MRV persistence ports (wave VSLACARBON). Rows map to the
@@ -161,6 +162,21 @@ export interface VslaShareOutPlanCriteria {
   memberId?: string;
 }
 
+/**
+ * Plan-completion marker (WP-G1, stage-27 V2 audit): written in the SAME
+ * transaction as the full set of plan rows, so a resume can distinguish a
+ * COMPLETE persisted plan (marker present) from a partial one (crash
+ * mid-insert — rows without a marker are never trusted and are rebuilt).
+ */
+export interface VslaShareOutPlanMetaRecord {
+  cycleId: string;
+  /** Number of member plan rows the completed plan holds. */
+  rowCount: number;
+  /** Pre-payout distributable pool snapshot the plan was computed from. */
+  totalShareKobo: number;
+  createdAt: string;
+}
+
 export interface VslaLoanRecord {
   id: string;
   groupId: string;
@@ -176,6 +192,13 @@ export interface VslaLoanRecord {
   issuedAt: string;
   repaidAt?: string;
   ledgerEntryId: string;
+  /**
+   * Client idempotency key (WP-G1, stage-27 V2 audit): UNIQUE when present —
+   * a transport retry with the same key replays the original loan instead of
+   * double-disbursing the pool, and the same key with a different payload is
+   * a 409. Optional only for pre-054 legacy rows.
+   */
+  idempotencyKey?: string;
   createdAt: string;
 }
 
@@ -318,11 +341,38 @@ export interface VslaShareOutPlanRepository {
   /** Throws ConflictException when a plan row already exists for (cycleId, memberId). */
   create(record: VslaShareOutPlanRecord): Promise<VslaShareOutPlanRecord>;
   find(criteria: VslaShareOutPlanCriteria): Promise<VslaShareOutPlanRecord[]>;
+  /** The plan-completion marker for a cycle, when the plan is complete. */
+  findMeta(cycleId: string): Promise<VslaShareOutPlanMetaRecord | undefined>;
+  /**
+   * Atomic plan write (WP-G1, stage-27 V2 audit): deletes any partial rows
+   * and inserts the FULL plan plus its completion marker as one unit (pg:
+   * one transaction gated by an `ON CONFLICT DO NOTHING` marker insert).
+   * Returns false when a complete plan already exists — the caller re-reads
+   * and pays from the stored plan. Partial plans are never trusted.
+   */
+  replacePlan(
+    cycleId: string,
+    rows: VslaShareOutPlanRecord[],
+    meta: VslaShareOutPlanMetaRecord
+  ): Promise<boolean>;
+  /**
+   * Backfills the completion marker over a LEGACY complete plan (pre-054
+   * rows proven complete by already-recorded payouts). Marker-keyed, so
+   * concurrent closers converge. Never call over a partial plan.
+   */
+  markPlanComplete(cycleId: string, rowCount: number, totalShareKobo: number): Promise<void>;
 }
 
 export interface VslaLoanRepository {
-  create(record: VslaLoanRecord): Promise<VslaLoanRecord>;
+  /**
+   * Throws ConflictException when the idempotency key already exists. Pass
+   * the `withLoanTransaction` tx (WP-G1) so the insert commits/rolls back
+   * WITH the disbursement posting.
+   */
+  create(record: VslaLoanRecord, tx?: LedgerPostingTx): Promise<VslaLoanRecord>;
   findById(id: string): Promise<VslaLoanRecord | undefined>;
+  /** Replay lookup by the client idempotency key (WP-G1). */
+  findByIdempotencyKey(key: string): Promise<VslaLoanRecord | undefined>;
   find(criteria: VslaLoanCriteria): Promise<VslaLoanRecord[]>;
   updateExpected(
     id: string,
@@ -330,25 +380,46 @@ export interface VslaLoanRepository {
     expected: Partial<VslaLoanRecord>
   ): Promise<VslaLoanRecord>;
   /**
+   * Caller-owned unit of work for the loan money paths (WP-G1, stage-27 V2
+   * audit): the pg implementation wraps the callback in one database
+   * transaction (the repayment claim UPDATE, the disbursement/repayment
+   * ledger posting and the operational row insert commit or roll back
+   * TOGETHER — no phantom claim window); the in-memory implementation
+   * chains a per-scope promise mutex (each awaited step is already atomic)
+   * and passes `undefined` as the tx handle.
+   */
+  withLoanTransaction<T>(scopeKey: string, fn: (tx?: LedgerPostingTx) => Promise<T>): Promise<T>;
+  /**
    * Claim-first repayment reservation (stage-24 audit A1-4/A4-5): atomically
    * adds amountKobo to repaid_kobo ONLY when the loan is still ACTIVE and the
    * running total stays <= total_due_kobo (pg: a single guarded
    * UPDATE … RETURNING that serializes on the loan row). Returns the updated
    * row, or undefined when the guard rejects — the caller must surface a 409
-   * BEFORE any money movement when undefined comes back.
+   * BEFORE any money movement when undefined comes back. Pass the
+   * `withLoanTransaction` tx so the claim commits WITH the repayment
+   * posting and row (WP-G1).
    */
-  claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined>;
+  claimRepayment(
+    id: string,
+    amountKobo: number,
+    tx?: LedgerPostingTx
+  ): Promise<VslaLoanRecord | undefined>;
   /**
    * Compensating release for a claim whose ledger posting (or row insert)
    * failed. Guarded (repaid_kobo >= amountKobo) so a rollback can never drive
-   * the aggregate negative.
+   * the aggregate negative. Also the reconciler's release for phantom claims
+   * (WP-G1: claims not backed by any committed repayment posting).
    */
   rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void>;
 }
 
 export interface VslaLoanRepaymentRepository {
-  /** Throws ConflictException when idempotencyKey already exists. */
-  create(record: VslaLoanRepaymentRecord): Promise<VslaLoanRepaymentRecord>;
+  /**
+   * Throws ConflictException when idempotencyKey already exists. Pass the
+   * `withLoanTransaction` tx (WP-G1) so the row commits WITH the claim and
+   * the ledger posting.
+   */
+  create(record: VslaLoanRepaymentRecord, tx?: LedgerPostingTx): Promise<VslaLoanRepaymentRecord>;
   findByIdempotencyKey(key: string): Promise<VslaLoanRepaymentRecord | undefined>;
   findByLoan(loanId: string): Promise<VslaLoanRepaymentRecord[]>;
 }
@@ -601,6 +672,7 @@ export class InMemoryVslaShareOutRepository implements VslaShareOutRepository {
 
 export class InMemoryVslaShareOutPlanRepository implements VslaShareOutPlanRepository {
   private readonly items = new Map<string, VslaShareOutPlanRecord>();
+  private readonly meta = new Map<string, VslaShareOutPlanMetaRecord>();
 
   async create(record: VslaShareOutPlanRecord): Promise<VslaShareOutPlanRecord> {
     // Mirror the pg UNIQUE constraint on (cycle_id, member_id).
@@ -622,12 +694,64 @@ export class InMemoryVslaShareOutPlanRepository implements VslaShareOutPlanRepos
       )
       .map((item) => structuredClone(item));
   }
+
+  async findMeta(cycleId: string): Promise<VslaShareOutPlanMetaRecord | undefined> {
+    const record = this.meta.get(cycleId);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async replacePlan(
+    cycleId: string,
+    rows: VslaShareOutPlanRecord[],
+    meta: VslaShareOutPlanMetaRecord
+  ): Promise<boolean> {
+    // The check-delete-insert-mark body deliberately contains NO await so
+    // concurrent closers serialise in one synchronous tick, exactly like
+    // the pg marker-gated transaction (ON CONFLICT DO NOTHING on the meta
+    // row elects a single plan writer).
+    if (this.meta.has(cycleId)) {
+      return false;
+    }
+    for (const existing of [...this.items.values()]) {
+      if (existing.cycleId === cycleId) {
+        this.items.delete(existing.id); // partial rows are never trusted
+      }
+    }
+    for (const row of rows) {
+      this.items.set(row.id, structuredClone(row));
+    }
+    this.meta.set(cycleId, structuredClone(meta));
+    return true;
+  }
+
+  async markPlanComplete(cycleId: string, rowCount: number, totalShareKobo: number): Promise<void> {
+    if (this.meta.has(cycleId)) {
+      return; // marker-keyed: only the first writer's marker stands
+    }
+    this.meta.set(cycleId, {
+      cycleId,
+      rowCount,
+      totalShareKobo,
+      createdAt: new Date().toISOString()
+    });
+  }
 }
 
 export class InMemoryVslaLoanRepository implements VslaLoanRepository {
   private readonly items = new Map<string, VslaLoanRecord>();
+  private readonly txLocks = new Map<string, Promise<void>>();
 
-  async create(record: VslaLoanRecord): Promise<VslaLoanRecord> {
+  async create(record: VslaLoanRecord, tx?: LedgerPostingTx): Promise<VslaLoanRecord> {
+    void tx; // no caller transaction in memory (see withLoanTransaction)
+    // Mirror the pg partial UNIQUE index on idempotency_key (054): a twin
+    // disbursement under the same client key cannot persist a second loan.
+    if (record.idempotencyKey !== undefined) {
+      for (const existing of this.items.values()) {
+        if (existing.idempotencyKey === record.idempotencyKey) {
+          throw new ConflictException('A record with these unique values already exists');
+        }
+      }
+    }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
   }
@@ -635,6 +759,32 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
   async findById(id: string): Promise<VslaLoanRecord | undefined> {
     const record = this.items.get(id);
     return record ? structuredClone(record) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<VslaLoanRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.idempotencyKey === key);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async withLoanTransaction<T>(
+    scopeKey: string,
+    fn: (tx?: LedgerPostingTx) => Promise<T>
+  ): Promise<T> {
+    // Per-scope promise-chain mutex: mirrors the pg caller-owned transaction
+    // so the claim + posting + row steps of concurrent money operations on
+    // the same scope serialise in tests exactly as in production. No tx
+    // handle exists in memory (each awaited step is already atomic); the
+    // callback receives `undefined` and compensates failures itself.
+    const previous = this.txLocks.get(scopeKey) ?? Promise.resolve();
+    const run = previous.then(() => fn());
+    this.txLocks.set(
+      scopeKey,
+      run.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return run;
   }
 
   async find(criteria: VslaLoanCriteria): Promise<VslaLoanRecord[]> {
@@ -668,7 +818,12 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
     return structuredClone(updated);
   }
 
-  async claimRepayment(id: string, amountKobo: number): Promise<VslaLoanRecord | undefined> {
+  async claimRepayment(
+    id: string,
+    amountKobo: number,
+    tx?: LedgerPostingTx
+  ): Promise<VslaLoanRecord | undefined> {
+    void tx; // no caller transaction in memory (see withLoanTransaction)
     // Mirrors the pg guarded UPDATE … RETURNING: the read-check-write runs
     // synchronously, so concurrent claimants serialize exactly like the loan
     // row lock does under Postgres.
@@ -708,7 +863,11 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
 export class InMemoryVslaLoanRepaymentRepository implements VslaLoanRepaymentRepository {
   private readonly items = new Map<string, VslaLoanRepaymentRecord>();
 
-  async create(record: VslaLoanRepaymentRecord): Promise<VslaLoanRepaymentRecord> {
+  async create(
+    record: VslaLoanRepaymentRecord,
+    tx?: LedgerPostingTx
+  ): Promise<VslaLoanRepaymentRecord> {
+    void tx; // no caller transaction in memory (see withLoanTransaction)
     for (const existing of this.items.values()) {
       if (existing.idempotencyKey === record.idempotencyKey) {
         throw new ConflictException('A record with these unique values already exists');
