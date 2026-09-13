@@ -1624,7 +1624,9 @@ export const lenderMapper: RowMapper<Lender> = {
     'max_ticket_kobo',
     'min_score',
     'criteria',
-    'is_active'
+    'is_active',
+    'source',
+    'verified'
   ],
   fromRow: (row) => ({
     id: row.id as string,
@@ -1634,7 +1636,9 @@ export const lenderMapper: RowMapper<Lender> = {
     maxTicketKobo: num(row.max_ticket_kobo),
     minScore: num(row.min_score),
     criteria: (row.criteria as string[]) ?? [],
-    isActive: row.is_active as boolean
+    isActive: row.is_active as boolean,
+    source: row.source as string,
+    verified: row.verified as boolean
   }),
   toRow: (item) =>
     present(item, {
@@ -1645,7 +1649,9 @@ export const lenderMapper: RowMapper<Lender> = {
       max_ticket_kobo: 'maxTicketKobo',
       min_score: 'minScore',
       criteria: 'criteria',
-      is_active: 'isActive'
+      is_active: 'isActive',
+      source: 'source',
+      verified: 'verified'
     })
 };
 export const loanApplicationMapper: RowMapper<LoanApplication> = {
