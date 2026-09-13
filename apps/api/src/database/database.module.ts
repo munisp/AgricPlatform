@@ -3,6 +3,8 @@ import type pg from 'pg';
 import { PgPoolProvider } from './pg/pg-pool.provider.js';
 import {
   ADVISORY_REPOSITORY,
+  // Stage 27 (innovation 11): Price Wire persistence (additive).
+  PRICE_WIRE_REPOSITORY,
   ANNOUNCEMENT_REPOSITORY,
   APPLICATION_REPOSITORY,
   AUDIT_REPOSITORY,
@@ -69,6 +71,7 @@ import {
   IMPORT_BATCH_REPOSITORY,
   IMPORT_RECORD_REPOSITORY,
   INBOUND_EVENT_REPOSITORY,
+  BRIDGE_SYNC_STATE_REPOSITORY,
   RECOMMENDATION_FEEDBACK_REPOSITORY,
   ANALYTICS_MART_REPOSITORY,
   WEBHOOK_DEDUPE_STORE,
@@ -76,6 +79,9 @@ import {
 } from './persistence.tokens.js';
 import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
 import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
+// Stage 27 (innovation 11): Price Wire persistence (additive).
+import { createInMemoryPriceWireRepository } from './repositories/price-wire.repository.js';
+import { createPgPriceWireRepository } from './repositories/price-wire.pg-repository.js';
 import { createInMemoryAnnouncementRepository } from './repositories/announcement.repository.js';
 import { createInMemoryApplicationRepository } from './repositories/application.repository.js';
 import { createInMemoryAuditRepository } from './repositories/audit.repository.js';
@@ -96,7 +102,6 @@ import { createInMemoryDeliveryLogRepository } from './repositories/delivery-log
 import { createInMemoryDocumentRepository } from './repositories/document.repository.js';
 import { createInMemoryEnrolmentRepository } from './repositories/enrolment.repository.js';
 import { createInMemoryEventRsvpRepository } from './repositories/event-rsvp.repository.js';
-import { createInMemoryForumTopicRepository } from './repositories/forum-topic.repository.js';
 import {
   createPgCreditProfileRepository,
   createPgDocumentRepository
@@ -283,6 +288,9 @@ import {
   createPgWebhookDedupeStore
 } from './repositories/phase3.pg-repository.js';
 import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
+// WP-G20: bridge sync-state (Moodle/Discourse/Directus scheduled sync).
+import { createInMemoryBridgeSyncStateRepository } from './repositories/bridge-sync-state.repository.js';
+import { createPgBridgeSyncStateRepository } from './repositories/bridge-sync-state.pg-repository.js';
 // USSD channel + lightweight-channel depth wave (P5b) repositories.
 import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
 import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
@@ -560,12 +568,17 @@ import {
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
   GEO_CREDIT_SHADOW_REPOSITORY,
+  SEASONAL_SCHEDULE_REPOSITORY,
+  COOP_SCORE_REPOSITORY,
   EQUIPMENT_LISTING_REPOSITORY,
   EQUIPMENT_BOOKING_REPOSITORY,
   PARAMETRIC_PRODUCT_REPOSITORY,
   PARAMETRIC_POLICY_REPOSITORY,
   PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
   PARAMETRIC_PAYOUT_REPOSITORY,
+  // Stage 27 (Insurance-in-the-Bag, additive).
+  VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+  VOUCHER_COVER_REPOSITORY,
   // Wave VSLACARBON (additive).
   VSLA_GROUP_REPOSITORY,
   VSLA_MEMBER_REPOSITORY,
@@ -626,12 +639,20 @@ import {
 } from './repositories/traceability.pg-repository.js';
 import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
 import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// SeasonSync (innovation wave 27): pinned seasonal repayment schedules.
+import { createInMemorySeasonalScheduleRepository } from './repositories/seasonal-schedule.repository.js';
+import { createPgSeasonalScheduleRepository } from './repositories/seasonal-schedule.pg-repository.js';
+import { createInMemoryCoopScoreRepository } from './repositories/coop-score.repository.js';
+import { createPgCoopScoreRepository } from './repositories/coop-score.pg-repository.js';
 // Wave AGENTBANK: agent banking persistence (additive).
 import {
   AGENT_BANKING_AGENT_REPOSITORY,
   AGENT_FLOAT_TOPUP_REPOSITORY,
   AGENT_TRANSACTION_REPOSITORY,
-  AGENT_VOUCHER_REPOSITORY
+  AGENT_VOUCHER_REPOSITORY,
+  FLOAT_FORECAST_REPOSITORY,
+  REBALANCE_ALERT_REPOSITORY,
+  REBALANCE_RUN_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryAgentBankingAgentRepository,
@@ -645,18 +666,34 @@ import {
   createPgAgentTransactionRepository,
   createPgAgentVoucherRepository
 } from './repositories/agent-banking.pg-repository.js';
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): agent float forecasts
+// + rebalancing alerts (migration 073).
+import {
+  createInMemoryFloatForecastRepository,
+  createInMemoryRebalanceAlertRepository,
+  createInMemoryRebalanceRunRepository
+} from './repositories/float-forecast.repository.js';
+import {
+  createPgFloatForecastRepository,
+  createPgRebalanceAlertRepository,
+  createPgRebalanceRunRepository
+} from './repositories/float-forecast.pg-repository.js';
 // Wave-INSURANCE (additive): parametric insurance rail repositories.
 import {
   createInMemoryParametricProductRepository,
   createInMemoryParametricPolicyRepository,
   createInMemoryParametricTriggerEventRepository,
-  createInMemoryParametricPayoutRepository
+  createInMemoryParametricPayoutRepository,
+  createInMemoryVoucherProgrammeRiderRepository,
+  createInMemoryVoucherCoverRepository
 } from './repositories/insurance.repository.js';
 import {
   createPgParametricProductRepository,
   createPgParametricPolicyRepository,
   createPgParametricTriggerEventRepository,
-  createPgParametricPayoutRepository
+  createPgParametricPayoutRepository,
+  createPgVoucherProgrammeRiderRepository,
+  createPgVoucherCoverRepository
 } from './repositories/insurance.pg-repository.js';
 // Wave VSLACARBON (additive): VSLA groups + carbon MRV repositories.
 import {
@@ -721,8 +758,12 @@ import {
   WAREHOUSE_DEPOSIT_REPOSITORY,
   WAREHOUSE_RECEIPT_REPOSITORY,
   WAREHOUSE_PLEDGE_REPOSITORY,
-  WAREHOUSE_TRANSFER_REPOSITORY
+  WAREHOUSE_TRANSFER_REPOSITORY,
+  // Stage 27 (innovation 4): Planting-Window Pulse persistence (additive).
+  ADVISORY_PULSE_REPOSITORY
 } from './persistence.tokens.js';
+import { createInMemoryAdvisoryPulseRepository } from './repositories/advisory-pulse.repository.js';
+import { createPgAdvisoryPulseRepository } from './repositories/advisory-pulse.pg-repository.js';
 import {
   createInMemoryCertifiedWarehouseRepository,
   createInMemoryWarehouseDepositRepository,
@@ -737,6 +778,51 @@ import {
   createPgWarehousePledgeRepository,
   createPgWarehouseTransferRepository
 } from './repositories/warehouse.pg-repository.js';
+// Innovation 10 (Stage 27): Chapter Map persistence (additive).
+import {
+  CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+  CHAPTER_MEMBER_DIRECTORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryChapterMapSnapshotRepository,
+  createInMemoryChapterMemberDirectory
+} from './repositories/chapter-map.repository.js';
+import {
+  createPgChapterMapSnapshotRepository,
+  createPgChapterMemberDirectory
+} from './repositories/chapter-map.pg-repository.js';
+
+// Stage 27 innovation "Float Sentinel" (additive): fraud/liquidity anomaly
+// engine persistence (fraud schema, migration 059).
+import { FRAUD_SENTINEL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryFraudSentinelRepository } from './repositories/fraud.repository.js';
+import { createPgFraudSentinelRepository } from './repositories/fraud.pg-repository.js';
+// Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential persistence.
+import {
+  CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+  CREDIT_PASSPORT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditPassportCredentialRepository,
+  createInMemoryCreditPassportDisclosureRepository
+} from './repositories/credit-passport.repository.js';
+import {
+  createPgCreditPassportCredentialRepository,
+  createPgCreditPassportDisclosureRepository
+} from './repositories/credit-passport.pg-repository.js';
+// Stage 27 / Innovation 8: Receipt LTV Guardian persistence (additive).
+import {
+  COLLATERAL_POSITION_REPOSITORY,
+  LTV_OBSERVATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCollateralPositionRepository,
+  createInMemoryLtvObservationRepository
+} from './repositories/warehouse-ltv.repository.js';
+import {
+  createPgCollateralPositionRepository,
+  createPgLtvObservationRepository
+} from './repositories/warehouse-ltv.pg-repository.js';
 // Wave DDS-STUDIO (additive, innovation 17): DDS package persistence.
 import { DDS_PACKAGE_REPOSITORY } from './persistence.tokens.js';
 import { createInMemoryDdsPackageRepository } from './repositories/dds-package.repository.js';
@@ -860,6 +946,20 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: ADVISORY_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAdvisoryRepository(pool) : createInMemoryAdvisoryRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 4): Planting-Window Pulse repositories.
+    {
+      provide: ADVISORY_PULSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAdvisoryPulseRepository(pool) : createInMemoryAdvisoryPulseRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 11): Price Wire repositories.
+    {
+      provide: PRICE_WIRE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceWireRepository(pool) : createInMemoryPriceWireRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1155,6 +1255,13 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: INBOUND_EVENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
+      inject: [PG_POOL]
+    },
+    // WP-G20: bridge sync-state bookkeeping (integrations.bridge_sync_state).
+    {
+      provide: BRIDGE_SYNC_STATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBridgeSyncStateRepository(pool) : createInMemoryBridgeSyncStateRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1662,6 +1769,20 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
       inject: [PG_POOL]
     },
+    // SeasonSync (innovation wave 27, additive): pinned seasonal schedules.
+    {
+      provide: SEASONAL_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSeasonalScheduleRepository(pool) : createInMemorySeasonalScheduleRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage-27 Innovation 14 (additive): cooperative scores (append-only).
+    {
+      provide: COOP_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCoopScoreRepository(pool) : createInMemoryCoopScoreRepository(),
+      inject: [PG_POOL]
+    },
     // Wave AGENTBANK (additive): agent banking (float, top-ups, vouchers, tx log).
     {
       provide: AGENT_BANKING_AGENT_REPOSITORY,
@@ -1685,6 +1806,26 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: AGENT_TRANSACTION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 Innovation 15 (FLOAT FORECASTER, additive): float forecasts +
+    // rebalancing alert queue (migration 073).
+    {
+      provide: FLOAT_FORECAST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFloatForecastRepository(pool) : createInMemoryFloatForecastRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_ALERT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceAlertRepository(pool) : createInMemoryRebalanceAlertRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_RUN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceRunRepository(pool) : createInMemoryRebalanceRunRepository(),
       inject: [PG_POOL]
     },
     // Wave MECHANIZATION (additive): equipment hire marketplace.
@@ -1725,6 +1866,19 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: PARAMETRIC_PAYOUT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (Insurance-in-the-Bag, additive): voucher-bundled cover.
+    {
+      provide: VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherProgrammeRiderRepository(pool) : createInMemoryVoucherProgrammeRiderRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOUCHER_COVER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherCoverRepository(pool) : createInMemoryVoucherCoverRepository(),
       inject: [PG_POOL]
     },
     // Wave VSLACARBON (additive): VSLA groups + carbon MRV.
@@ -1875,6 +2029,56 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
       inject: [PG_POOL]
     },
+    // Stage 27 Float Sentinel (additive): fraud.sentinel rules/alerts/cases.
+    {
+      provide: FRAUD_SENTINEL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFraudSentinelRepository(pool) : createInMemoryFraudSentinelRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential.
+    {
+      provide: CREDIT_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportCredentialRepository(pool)
+          : createInMemoryCreditPassportCredentialRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportDisclosureRepository(pool)
+          : createInMemoryCreditPassportDisclosureRepository(),
+      inject: [PG_POOL]
+    },
+    // Innovation 10 (Stage 27): Chapter Map providers (additive).
+    {
+      provide: CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMapSnapshotRepository(pool) : createInMemoryChapterMapSnapshotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CHAPTER_MEMBER_DIRECTORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMemberDirectory(pool) : createInMemoryChapterMemberDirectory(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    {
+      provide: COLLATERAL_POSITION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCollateralPositionRepository(pool) : createInMemoryCollateralPositionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LTV_OBSERVATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLtvObservationRepository(pool) : createInMemoryLtvObservationRepository(),
+      inject: [PG_POOL]
+    },
     // Wave DDS-STUDIO (additive): DDS package repository (guarded status CAS).
     {
       provide: DDS_PACKAGE_REPOSITORY,
@@ -1902,6 +2106,8 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     EVENT_RSVP_REPOSITORY,
     ANNOUNCEMENT_REPOSITORY,
     ADVISORY_REPOSITORY,
+    // Stage 27 (innovation 11): Price Wire.
+    PRICE_WIRE_REPOSITORY,
     LISTING_REPOSITORY,
     ORDER_REPOSITORY,
     REVIEW_REPOSITORY,
@@ -1951,6 +2157,7 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
+    BRIDGE_SYNC_STATE_REPOSITORY,
     WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
     PIN_PROFILE_REPOSITORY,
@@ -2028,16 +2235,24 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     VOICE_TURN_REPOSITORY,
     AGENT_CASE_REPOSITORY,
     GEO_CREDIT_SHADOW_REPOSITORY,
+    SEASONAL_SCHEDULE_REPOSITORY,
+  COOP_SCORE_REPOSITORY,
     AGENT_BANKING_AGENT_REPOSITORY,
     AGENT_FLOAT_TOPUP_REPOSITORY,
     AGENT_VOUCHER_REPOSITORY,
     AGENT_TRANSACTION_REPOSITORY,
+    FLOAT_FORECAST_REPOSITORY,
+    REBALANCE_ALERT_REPOSITORY,
+    REBALANCE_RUN_REPOSITORY,
     EQUIPMENT_LISTING_REPOSITORY,
     EQUIPMENT_BOOKING_REPOSITORY,
     PARAMETRIC_PRODUCT_REPOSITORY,
     PARAMETRIC_POLICY_REPOSITORY,
     PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
     PARAMETRIC_PAYOUT_REPOSITORY,
+    // Stage 27 (Insurance-in-the-Bag, additive).
+    VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+    VOUCHER_COVER_REPOSITORY,
     // Wave VSLACARBON (additive).
     VSLA_GROUP_REPOSITORY,
     VSLA_MEMBER_REPOSITORY,
@@ -2064,6 +2279,24 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     WAREHOUSE_RECEIPT_REPOSITORY,
     WAREHOUSE_PLEDGE_REPOSITORY,
     WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 Float Sentinel (additive).
+    FRAUD_SENTINEL_REPOSITORY,
+
+    // Stage 27 (innovation 4): Planting-Window Pulse.
+    ADVISORY_PULSE_REPOSITORY,
+
+    // Stage 27 INNOVATION 7 Credit Passport (additive).
+    CREDIT_PASSPORT_REPOSITORY,
+    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+
+    // Innovation 10 (Stage 27): Chapter Map (additive).
+    CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+    CHAPTER_MEMBER_DIRECTORY,
+
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    COLLATERAL_POSITION_REPOSITORY,
+    LTV_OBSERVATION_REPOSITORY,
+
     // Wave DDS-STUDIO (additive).
     DDS_PACKAGE_REPOSITORY
   ]
