@@ -12,6 +12,10 @@ import {
 } from '@nestjs/common';
 import type { LedgerJournalEntry } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import {
+  assertSameIdempotencyPayload,
+  hashIdempotencyPayload
+} from '../../common/idempotency/payload-hash.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   AGENT_BANKING_AGENT_REPOSITORY,
@@ -370,8 +374,12 @@ export class AgentBankingService {
   }
 
   async requestTopUp(agentId: string, input: TopUpRequestInput, actor: ActorRef): Promise<AgentFloatTopUpRecord> {
+    // Canonical payload fingerprint (WP-G11): the same key with a DIFFERENT
+    // amount/agent is a 409 IDEMPOTENCY_PAYLOAD_MISMATCH, not a silent replay.
+    const payloadHash = hashIdempotencyPayload({ agentId, amountKobo: input.amountKobo });
     const replay = await this.topups.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      assertSameIdempotencyPayload(input.idempotencyKey, replay.payloadHash, payloadHash);
       return replay; // idempotent replay of a transport retry
     }
     const agent = await this.activeAgent(agentId);
@@ -385,6 +393,7 @@ export class AgentBankingService {
         status: 'REQUESTED',
         requestedBy: actor.id,
         idempotencyKey: input.idempotencyKey,
+        payloadHash,
         createdAt: new Date().toISOString()
       });
       await this.events.publish(
@@ -396,9 +405,11 @@ export class AgentBankingService {
     } catch (error) {
       if (error instanceof ConflictException) {
         // Lost a retry race — the original request is authoritative; return
-        // it instead of creating a second settleable row.
+        // it instead of creating a second settleable row. A twin that reused
+        // the key with a different payload fails closed with a 409 (WP-G11).
         const existing = await this.topups.findByIdempotencyKey(input.idempotencyKey);
         if (existing) {
+          assertSameIdempotencyPayload(input.idempotencyKey, existing.payloadHash, payloadHash);
           return existing;
         }
       }
@@ -504,8 +515,20 @@ export class AgentBankingService {
     actor: ActorRef
   ): Promise<AgentTransactionRecord> {
     const actorId = actor.id;
+    // Canonical payload fingerprint (WP-G11): the same key with a DIFFERENT
+    // amount/farmer/type is a 409 IDEMPOTENCY_PAYLOAD_MISMATCH, not a silent
+    // replay. The OTP is deliberately not fingerprinted (it is a presence
+    // proof, not the operation's meaning — and derived from the key in the
+    // stub driver).
+    const payloadHash = hashIdempotencyPayload({
+      agentId,
+      farmerId: input.farmerId,
+      type,
+      amountKobo: input.amountKobo
+    });
     const replay = await this.transactions.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      assertSameIdempotencyPayload(input.idempotencyKey, replay.payloadHash, payloadHash);
       return replay; // idempotent replay of a transport retry
     }
     const agent = await this.activeAgent(agentId);
@@ -520,6 +543,8 @@ export class AgentBankingService {
       }
       throw error; // fail-closed driver errors (e.g. live 503) propagate
     }
+    await this.assertWithinDailyLimit(agent, input.amountKobo);
+
     const walletCode = farmerWalletAccountCode(input.farmerId);
     await this.ledger.ensureAccount({ code: walletCode, type: 'asset', ownerId: input.farmerId });
     const txId = newId('agtx');
@@ -568,6 +593,7 @@ export class AgentBankingService {
         amountKobo: input.amountKobo,
         commissionKobo,
         idempotencyKey: input.idempotencyKey,
+        payloadHash,
         ledgerEntryId: entry.id,
         // Persist the presence-proof basis so a stub-OTP-backed cash movement
         // is always identifiable as such (stub is non-production only).
@@ -583,9 +609,13 @@ export class AgentBankingService {
     } catch (error) {
       if (error instanceof ConflictException) {
         // Lost a retry race after the ledger posting landed — the original
-        // record is authoritative; return it instead of double-posting.
+        // record is authoritative; return it instead of double-posting. A
+        // twin that reused the key with a different payload fails closed
+        // with a 409 (WP-G11); the ledger posting above replayed under the
+        // same derived key, so no extra money moved.
         const existing = await this.transactions.findByIdempotencyKey(input.idempotencyKey);
         if (existing) {
+          assertSameIdempotencyPayload(input.idempotencyKey, existing.payloadHash, payloadHash);
           return existing;
         }
       }
@@ -600,6 +630,18 @@ export class AgentBankingService {
    * cap. The cap is now enforced by the atomic `dailyLimitReservation`
    * upsert inside the ledger posting transaction (see cashTransaction).
    */
+
+  private async assertWithinDailyLimit(agent: AgentRecord, amountKobo: number): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const { from, to } = dayBounds(today);
+    const todays = await this.transactions.find({ agentId: agent.id, from, to });
+    const used = todays.reduce((sum, tx) => sum + tx.amountKobo, 0);
+    if (used + amountKobo > agent.dailyLimitKobo) {
+      throw new BadRequestException(
+        `Agent daily limit exceeded: ${used + amountKobo} kobo would pass the ${agent.dailyLimitKobo} kobo daily limit`
+      );
+    }
+  }
 
   /** Posts the commission accrual entry; returns the accrued kobo. */
   private async accrueCommission(
@@ -696,8 +738,19 @@ export class AgentBankingService {
     if (!input.idempotencyKey?.trim()) {
       throw new BadRequestException('idempotencyKey is required — voucher issuance must be replay-safe');
     }
+    // Canonical payload fingerprint (WP-G11): computed from the RAW input
+    // (expiresAt before defaulting) so a genuine retry fingerprints
+    // identically, while the same key with a different amount/farmer/expiry
+    // is a 409 IDEMPOTENCY_PAYLOAD_MISMATCH, not a silent replay.
+    const payloadHash = hashIdempotencyPayload({
+      agentId,
+      farmerId: input.farmerId,
+      amountKobo: input.amountKobo,
+      expiresAt: input.expiresAt ?? null
+    });
     const replay = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      assertSameIdempotencyPayload(input.idempotencyKey, replay.payloadHash, payloadHash);
       return replay; // idempotent replay of a transport retry
     }
     const agent = await this.activeAgent(agentId);
@@ -725,6 +778,7 @@ export class AgentBankingService {
         signature,
         status: 'ISSUED',
         idempotencyKey: input.idempotencyKey,
+        payloadHash,
         createdAt: new Date().toISOString()
       });
       await this.events.publish(
@@ -736,9 +790,11 @@ export class AgentBankingService {
     } catch (error) {
       if (error instanceof ConflictException) {
         // Lost a retry race — the original voucher is authoritative; return
-        // it instead of issuing a duplicate.
+        // it instead of issuing a duplicate. A twin that reused the key
+        // with a different payload fails closed with a 409 (WP-G11).
         const existing = await this.vouchers.findByIdempotencyKey(input.idempotencyKey);
         if (existing) {
+          assertSameIdempotencyPayload(input.idempotencyKey, existing.payloadHash, payloadHash);
           return existing;
         }
       }
