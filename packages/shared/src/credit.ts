@@ -294,3 +294,63 @@ export interface GeoCreditShadowScore {
   inputFingerprint: string;
   computedAt: string;
 }
+
+/* ------------- cooperative score (stage-27 Innovation 14, flag coop-score)
+
+ * Institution-level credit readiness for the cooperative itself (the actual
+ * counterparty for group loans and offtake), scored deterministically 0-1000
+ * from five weighted factors. Persisted versioned + append-only to
+ * credit.coop_scores (migration 072); the same number and the same
+ * explainability payload are returned to every authorised role.
+ */
+
+export const COOP_SCORE_BANDS = ['A', 'B', 'C', 'D'] as const;
+export type CoopScoreBand = (typeof COOP_SCORE_BANDS)[number];
+
+export const COOP_SCORE_FACTOR_KEYS = [
+  'repaymentTrackRecord',
+  'vslaCycleDiscipline',
+  'governanceActivity',
+  'commercialReliability',
+  'dataCompleteness'
+] as const;
+export type CoopScoreFactorKey = (typeof COOP_SCORE_FACTOR_KEYS)[number];
+
+/**
+ * Per-factor provenance badge:
+ *  - 'measured':    enough real observations to score the factor fully;
+ *  - 'sparse':      some evidence but below the minimum sample — the
+ *                   factor's contribution is BOUNDED (half weight cap), never
+ *                   interpolated or fabricated;
+ *  - 'unavailable': the source module was unreadable (or no data at all) —
+ *                   the factor contributes 0 with this badge, fail-closed.
+ */
+export const COOP_FACTOR_BASES = ['measured', 'sparse', 'unavailable'] as const;
+export type CoopFactorBasis = (typeof COOP_FACTOR_BASES)[number];
+
+/** One factor's contribution to the composite score (explainability row). */
+export interface CoopScoreFactorBreakdown {
+  key: CoopScoreFactorKey;
+  /** Maximum points this factor can contribute (weights sum to 1000). */
+  weight: number;
+  /** Points actually awarded (0..weight; bounded at weight/2 when sparse). */
+  points: number;
+  basis: CoopFactorBasis;
+  /** Named numeric inputs the factor was computed from (auditable basis). */
+  summary: Record<string, number>;
+}
+
+/**
+ * A versioned cooperative score row (credit.coop_scores). `version` increases
+ * monotonically per cooperative; `inputsHash` makes recompute idempotent.
+ */
+export interface CoopScore {
+  cooperativeId: string;
+  version: number;
+  /** 0-1000, the exact sum of factor points. */
+  score: number;
+  band: CoopScoreBand;
+  factors: CoopScoreFactorBreakdown[];
+  inputsHash: string;
+  computedAt: string;
+}

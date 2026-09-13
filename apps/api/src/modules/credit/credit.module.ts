@@ -9,6 +9,7 @@ import { CreditSavingsController } from './savings.controller.js';
 import { CreditSavingsService } from './savings.service.js';
 import { SeasonalScheduleService } from './seasonal-schedule.service.js';
 import { GeoVerificationModule } from './geo-verification/geo-verification.module.js';
+import { CoopScoreModule } from './coop-score.module.js';
 
 /**
  * Wave CREDIT (additive): microfinance suite — best-of-both merge of the
@@ -23,7 +24,8 @@ import { GeoVerificationModule } from './geo-verification/geo-verification.modul
  */
 @Module({
   // Wave GEOCREDIT (additive): shadow-mode geo-verified credit factor.
-  imports: [GeoVerificationModule],
+  // Stage-27 Innovation 14 (additive): institution-level Cooperative Score.
+  imports: [GeoVerificationModule, CoopScoreModule],
   controllers: [
     CreditProductsController,
     CreditApplicationsController,

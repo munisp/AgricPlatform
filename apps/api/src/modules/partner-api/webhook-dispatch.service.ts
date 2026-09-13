@@ -18,7 +18,8 @@ export const PARTNER_EVENT_TYPES = [
   'course.completed',
   'enrolment.created',
   'disbursement.recorded',
-  'programme_enrolment.recorded'
+  'programme_enrolment.recorded',
+  'coop_score.band_changed'
 ] as const;
 
 export type PartnerEventType = (typeof PARTNER_EVENT_TYPES)[number];
@@ -30,7 +31,10 @@ const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
   'learning.certificate.issued': 'course.completed',
   'learning.enrolment.created': 'enrolment.created',
   'partner.disbursement.recorded': 'disbursement.recorded',
-  'partner.enrolment.recorded': 'programme_enrolment.recorded'
+  'partner.enrolment.recorded': 'programme_enrolment.recorded',
+  // Stage-27 Innovation 14 (additive): cooperative-score band transitions
+  // (A/B/C/D) drive lender webhooks.
+  'credit.coop_score.band_changed': 'coop_score.band_changed'
 };
 
 export interface WebhookDelivery {
