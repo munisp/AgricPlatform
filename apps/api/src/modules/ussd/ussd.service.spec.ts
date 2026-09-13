@@ -242,7 +242,6 @@ describe('UssdService.handleCallback', () => {
     expect(list).toContain('1 BOI Youth Agri Grant');
   });
 
-
   it('confirms course enrolment for a registered phone', async () => {
     const enrol = vi.fn(async () => ({ id: 'enrol-9' }));
     const { service, users } = build({ enrol: enrol as unknown as LearningService['enrol'] });
@@ -454,7 +453,6 @@ describe('UssdService planting-window pulse pull (Stage 27, innovation 4)', () =
     expect(turn).toContain('No planting advisory subscription');
   });
 });
-
 
 describe('UssdService price-wire pull (Stage 27, innovation 11)', () => {
   const session = { sessionId: 'sess-wire', phoneNumber: '+234801', text: '' };
