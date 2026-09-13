@@ -20,8 +20,9 @@ export const USSD_MAX_RESPONSE_CHARS = 182;
 
 /**
  * A single newline, expressed as a real line break inside a template
- * literal. Multi-line menu text is built from this constant so the file
- * stays free of escape sequences.
+ * literal. This file intentionally contains no literal backslash sequences
+ * (MCP channel hazard — see PR #71 notes); multi-line menu text uses real
+ * newlines, which are byte-identical in value to escape sequences.
  */
 const NEWLINE = `
 `;
@@ -71,6 +72,17 @@ export interface UssdMenuData {
   opportunities: Array<{ id: string; title: string; type: string; deadline: string }>;
   /** Courses eligible for code-based enrolment. */
   courses: Array<{ id: string; title: string }>;
+  /**
+   * Planting-Window Pulse pull path (Stage 27, innovation 4): the caller's
+   * next advisory, pre-rendered by the advisory module. Absent/available:false
+   * → the menu answers honestly (never a fabricated window).
+   */
+  plantingPulse?: {
+    available: boolean;
+    /** 'no_active_subscription' shows the subscribe hint instead. */
+    reason?: string;
+    text?: string;
+  };
   /**
    * Price Wire pull path (Stage 27, innovation 11): commodities, markets
    * and pre-rendered quotes computed by the advisory module. Absent or an
@@ -129,6 +141,8 @@ type StringKey =
   | 'invalid_confirmation'
   | 'language_menu'
   | 'language_set'
+  | 'pulse_unavailable'
+  | 'pulse_none'
   | 'wire_prompt'
   | 'wire_market_prompt'
   | 'wire_unavailable';
@@ -140,6 +154,7 @@ const STRINGS: Record<'en', Record<StringKey, string>> = {
 2 Market prices
 3 Opportunities
 4 Course enrolment
+5 Planting window
 6 Price check
 0 Language`,
     invalid_choice: 'Invalid choice.',
@@ -175,6 +190,9 @@ const STRINGS: Record<'en', Record<StringKey, string>> = {
     language_menu: `Language:
 1 English`,
     language_set: 'Language is English. Hausa, Yoruba and Igbo are coming soon.',
+    pulse_unavailable: 'Planting advisory is unavailable right now. Please try again later.',
+    pulse_none:
+      'No planting advisory subscription found for this phone. Use the app or ask your field agent to subscribe a plot.',
     wire_prompt: 'Price check — select crop:',
     wire_market_prompt: 'Select market:',
     wire_unavailable: 'Price unavailable right now. Please try again later.'
@@ -353,6 +371,18 @@ ${lines.join(NEWLINE)}`);
         return end(state, t(lang, 'no_courses'));
       }
       return con({ ...state, menu: 'course_code', courseId: undefined }, t(lang, 'ask_course_code'));
+    }
+    case '5': {
+      // Planting-Window Pulse pull: the advisory text arrives pre-rendered
+      // from the advisory module; the engine never fabricates one.
+      const pulse = data.plantingPulse;
+      if (!pulse || !pulse.available || !pulse.text) {
+        return end(
+          state,
+          pulse?.reason === 'no_active_subscription' ? t(lang, 'pulse_none') : t(lang, 'pulse_unavailable')
+        );
+      }
+      return end(initialUssdState(lang), pulse.text);
     }
     case '6': {
       // Price Wire pull: commodities/markets/quotes arrive pre-computed from
