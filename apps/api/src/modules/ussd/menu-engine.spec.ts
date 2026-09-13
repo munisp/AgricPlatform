@@ -251,6 +251,51 @@ describe('USSD menu engine', () => {
   });
 });
 
+describe('USSD planting-window pulse node (Stage 27, innovation 4)', () => {
+  const PULSE_DATA: UssdMenuData = {
+    ...DATA,
+    plantingPulse: {
+      available: true,
+      text: 'AgricPlatform: Plant maize on plot North field between 2 Jun and 16 Jun. Rain onset expected 2 Jun (23mm over 3 days).'
+    }
+  };
+
+  it('main menu advertises option 5', () => {
+    const [turn] = run([''], PULSE_DATA);
+    expect(turn.response).toContain('5 Planting window');
+  });
+
+  it('renders the pre-rendered advisory and ends the session', () => {
+    const [, turn] = run(['', '5'], PULSE_DATA);
+    expect(turn.end).toBe(true);
+    expect(turn.response).toContain('Plant maize on plot North field');
+    expect(turn.response.length).toBeLessThanOrEqual(4 + USSD_MAX_RESPONSE_CHARS);
+  });
+
+  it('answers honestly when the advisory is unavailable (never fabricates)', () => {
+    const [, turn] = run(['', '5'], {
+      ...DATA,
+      plantingPulse: { available: false, reason: 'weather driver is stub/unconfigured' }
+    });
+    expect(turn.end).toBe(true);
+    expect(turn.response).toContain('unavailable');
+  });
+
+  it('points unsubscribed farmers at subscription instead of a window', () => {
+    const [, turn] = run(['', '5'], {
+      ...DATA,
+      plantingPulse: { available: false, reason: 'no_active_subscription' }
+    });
+    expect(turn.response).toContain('No planting advisory subscription');
+  });
+
+  it('answers unavailable when the pulse feature supplies no data (flag off)', () => {
+    const [, turn] = run(['', '5'], DATA);
+    expect(turn.response).toContain('unavailable');
+  });
+});
+
+
 describe('USSD price-wire node (Stage 27, innovation 11)', () => {
   const WIRE_DATA: UssdMenuData = {
     ...DATA,
