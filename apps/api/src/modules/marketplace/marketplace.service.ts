@@ -18,6 +18,10 @@ import type {
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
+import {
+  assertSameIdempotencyPayload,
+  hashIdempotencyPayload
+} from '../../common/idempotency/payload-hash.js';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import {
@@ -242,7 +246,36 @@ export class MarketplaceService {
     return updated;
   }
 
-  async placeOrder(listingId: string, buyerId: string, quantity: number): Promise<Order> {
+  /**
+   * Places an order with atomic stock decrement (the repository locks /
+   * CASes the listing). Idempotency (Stage 27 WP-G11, V2 audit): callers
+   * may pass a client idempotency key — a transport retry with the same
+   * key and the same (listing, buyer, quantity) payload replays the
+   * original order instead of double-booking stock, and the same key with
+   * a DIFFERENT payload fails closed with 409 IDEMPOTENCY_PAYLOAD_MISMATCH
+   * (previously a silent replay through the response cache, or a duplicate
+   * order at the service layer). Concurrent twins converge on ONE order:
+   * the loser's insert loses the idempotency_key UNIQUE race and adopts
+   * the winner's row (its stock decrement rolls back with the transaction).
+   */
+  async placeOrder(
+    listingId: string,
+    buyerId: string,
+    quantity: number,
+    idempotencyKey?: string
+  ): Promise<Order> {
+    // Replay check BEFORE validation: a legit retry must return the original
+    // order even if the listing has since gone inactive or sold out.
+    const payloadHash = idempotencyKey?.trim()
+      ? hashIdempotencyPayload({ listingId, buyerId, quantity })
+      : undefined;
+    if (idempotencyKey?.trim()) {
+      const replay = await this.orders.findOne({ idempotencyKey });
+      if (replay) {
+        assertSameIdempotencyPayload(idempotencyKey, replay.payloadHash, payloadHash ?? '');
+        return replay;
+      }
+    }
     const listing = await this.listings.getById(listingId);
     if (!listing.isActive) {
       throw new BadRequestException('Listing is not active');
@@ -263,9 +296,37 @@ export class MarketplaceService {
       totalNaira,
       status: 'requested',
       escrowRequired: totalNaira >= ESCROW_THRESHOLD_NAIRA,
+      idempotencyKey: idempotencyKey?.trim() || undefined,
+      payloadHash,
       createdAt: new Date().toISOString()
     };
-    const created = await this.orders.placeOrder(order);
+    let created: Order;
+    try {
+      created = await this.orders.placeOrder(order);
+    } catch (error) {
+      if (
+        order.idempotencyKey &&
+        (error instanceof ConflictException || error instanceof BadRequestException)
+      ) {
+        // Twin adoption (WP-G11): a concurrent twin with the same client
+        // key committed first — the loser can surface EITHER the
+        // idempotency_key UNIQUE conflict (23505, pg insert; in-memory
+        // create) or the stock CAS rejection (it read the pre-twin
+        // quantity). When a row under the key exists, the operation
+        // already happened: replay it when the payload matches, 409
+        // IDEMPOTENCY_PAYLOAD_MISMATCH when it does not. The pg placement
+        // transaction rolled back (and the in-memory repository
+        // compensates), so the loser's stock decrement never persisted.
+        // Without a twin row the original error stands (genuine stock
+        // shortage or a vanished row).
+        const twin = await this.orders.findOne({ idempotencyKey: order.idempotencyKey });
+        if (twin) {
+          assertSameIdempotencyPayload(order.idempotencyKey, twin.payloadHash, payloadHash ?? '');
+          return twin;
+        }
+      }
+      throw error;
+    }
     this.metrics?.orderCreated(created.escrowRequired);
     await this.events.publish(
       'marketplace.order.placed',
