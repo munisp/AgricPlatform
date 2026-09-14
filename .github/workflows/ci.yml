@@ -286,13 +286,14 @@ jobs:
             CREDIT_PASSPORT_SECRET=ci-smoke-credit-passport-key-000000 \
             PARTNER_API_DRIVER=live PARTNER_API_SIGNING_SECRET=ci-smoke-partner-api-signing-key \
             OTP_DRIVER=live OTP_PROVIDER_URL=http://127.0.0.1:9/unreachable OTP_PROVIDER_API_KEY=ci-smoke-otp-key \
-            npm run start --workspace=apps/api &
+            npm run start --workspace=apps/api > /tmp/smoke-api.log 2>&1 &
           API_PID=$!
-          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 npm run start --workspace=apps/web &
+          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 npm run start --workspace=apps/web > /tmp/smoke-web.log 2>&1 &
           WEB_PID=$!
           cleanup() { kill "$API_PID" "$WEB_PID" 2>/dev/null || true; }
           trap cleanup EXIT
-          for i in $(seq 1 30); do
+          report() { while IFS= read -r line; do echo "::error::$line"; done < <(tail -c 2000 "$1" | tr '\r' ' '); }
+          for i in $(seq 1 45); do
             curl -fsS http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1 && break
             sleep 2
           done
@@ -301,13 +302,13 @@ jobs:
             sleep 2
           done
           echo "== API /api/v1/health =="
-          curl -fsS http://127.0.0.1:3001/api/v1/health
+          curl -fsS http://127.0.0.1:3001/api/v1/health || { report /tmp/smoke-api.log; exit 7; }
           echo
           echo "== API /api/v1/health/ready =="
-          curl -fsS http://127.0.0.1:3001/api/v1/health/ready
+          curl -fsS http://127.0.0.1:3001/api/v1/health/ready || { report /tmp/smoke-api.log; exit 7; }
           echo
           echo "== Web / =="
-          curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/
+          curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/ || { report /tmp/smoke-web.log; exit 7; }
 
   mobile:
     name: Mobile shell typecheck and tests
