@@ -44,7 +44,7 @@
     "@sentry/nestjs": "^10.69.0",
     "@temporalio/client": "^1.21.1",
     "@temporalio/interceptors-opentelemetry": "1.21.1",
-    "@temporalio/worker": "^1.21.1",
+    "@temporalio/worker": "^1.23.0",
     "@temporalio/workflow": "^1.21.1",
     "@willsoto/nestjs-prometheus": "^6.1.0",
     "class-transformer": "^0.5.1",
