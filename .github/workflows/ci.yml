@@ -286,6 +286,7 @@ jobs:
             CREDIT_PASSPORT_SECRET=ci-smoke-credit-passport-key-000000 \
             PARTNER_API_DRIVER=live PARTNER_API_SIGNING_SECRET=ci-smoke-partner-api-signing-key \
             OTP_DRIVER=live OTP_PROVIDER_URL=http://127.0.0.1:9/unreachable OTP_PROVIDER_API_KEY=ci-smoke-otp-key \
+            NIN_DRIVER=live NIN_PROVIDER_URL=http://127.0.0.1:9/unreachable NIN_PROVIDER_API_KEY=ci-smoke-nin-key \
             npm run start --workspace=apps/api > /tmp/smoke-api.log 2>&1 &
           API_PID=$!
           NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 npm run start --workspace=apps/web > /tmp/smoke-web.log 2>&1 &
