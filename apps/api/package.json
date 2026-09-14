@@ -54,7 +54,7 @@
     "ioredis": "^5.4.2",
     "jose": "^6.2.7",
     "kafkajs": "^2.2.4",
-    "nestjs-pino": "^4.6.1",
+    "nestjs-pino": "^5.1.0",
     "parquetjs-lite": "^0.8.7",
     "pdfkit": "^0.19.1",
     "pg": "^8.13.1",
