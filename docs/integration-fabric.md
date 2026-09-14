@@ -180,6 +180,18 @@ only (`docker compose config` was NOT executed).
   TIGERBEETLE_CLUSTER_ID=0`. Legal sign-off is required before ANY wiring
   into money movement.
 
+**Stage 27 hardening (WP-G13, PR #84, merge `14ed7a84`):** transfer ids are
+now collision-resistant — an omitted id gets a UUIDv7-based u128, and a
+supplied id that looks like a raw `Date.now()` epoch-millis value hard-fails
+(a reused id silently replays the FIRST transfer); `lookupAccountBalances`
+was added for the pg↔TB consistency checker; every operation carries an
+OTel span + duration/error metrics (ledger id and transfer count only —
+never account ids). The legal gate above is unchanged: still default-OFF,
+still not the system of record, still not wired into `LedgerService` write
+paths. The Postgres ledger additionally gained an in-transaction
+balanced-journal assertion (`finance.transfer_is_balanced`) on the single
+posting path (merge-log).
+
 ## 7. Payments interop — Mojaloop (simulator path)
 
 - **What it does:** quote + transfer interop behind one adapter port,

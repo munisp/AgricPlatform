@@ -40,3 +40,12 @@ this wave makes **no changes** to those modules. A later wave can subscribe a
 disbursement adapter to `credit.loan.status_changed` (to=`disbursed`) that
 posts the corresponding double-entry ledger transfer through the existing
 `LedgerService` public API.
+
+## Stage 27 additions (2026-09-14)
+
+The credit surface was extended by the Stage 27 wave (evidence-pack §1; merge-log):
+
+- **SeasonSync seasonal repayment schedules** (inn-01, PR #69): seasonal repayment calendars in this module, migration `055_credit_seasonal_schedules.sql`, pg contract spec `apps/api/test/pg/seasonal-schedule.pg.spec.ts`, flag `seasonal-repayment` (default OFF).
+- **Credit Passport** (inn-07, PR #76): separate `credit-passport` module — verifiable, revocable credit credentials with disclosure sharing; migration `065_credit_passport.sql`; `CREDIT_PASSPORT_SECRET` is a constructor-time requirement when enabled.
+- **Cooperative Score** (inn-14, PR #86) and **Lender Lens scorecards** (inn-20, PR #91 via #98): analytics-side scoring/export surfaces (migrations 072/079), default-OFF flags.
+- **VSLA money-path atomicity** (WP-G1, PR #72): savings/repayment postings folded into caller-owned transactions (migration 060); the funds-integration note above still stands — disbursement itself remains a recorded event, and ledger invariants were hardened (WP-G13, PR #84).

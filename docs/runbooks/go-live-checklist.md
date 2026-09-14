@@ -28,6 +28,21 @@ script signs off legal, compliance, or vendor readiness. Record each gate
       (Prometheus scrape credential), `PARTNER_API_SIGNING_SECRET` (if
       partner API goes live), integration driver credentials for every
       non-stub driver (paystack, termii, …).
+- [ ] Stage 27 boot-required secrets provisioned when their features are
+      enabled: `MSISDN_HASH_SALT`, `AGENT_QR_SECRET`, `CREDIT_PASSPORT_SECRET`,
+      and the live-driver secrets (`PARTNER_API_*`, `NIN_*`) — all HMAC-class
+      secrets at or above the 32-character boot floor
+      (`PRODUCTION_HMAC_SECRET_MIN_LENGTH`, `apps/api/src/config/auth.config.ts`);
+      the API refuses to boot on weak values (merge-log, smoke root-cause).
+- [ ] Keycloak realm-side config for phone-auth (WP-G16/G17): confidential
+      client + `KEYCLOAK_CLIENT_ID`/`KEYCLOAK_CLIENT_SECRET` + supervisor role
+      mapping BEFORE setting `PHONE_AUTH_KEYCLOAK=true`
+      (`apps/api/.env.example` ~lines 143–154; evidence-pack §4.1).
+- [ ] Break-glass flags confirmed UNSET in production:
+      `ALLOW_INMEMORY_PERSISTENCE` and `ALLOW_INMEMORY_CACHE` are local-drill
+      escape hatches only (`apps/api/src/config/persistence.config.ts:19,37`).
+- [ ] Base-image digests pinned in `infra/docker/api.Dockerfile` and
+      `web.Dockerfile` per their header policy (registry-verified digests only).
 - [ ] Secrets rotated from any value ever used in staging/dev.
 - [ ] Access to the secret manager itself is least-privilege and audited
       (`infra/k8s/secrets-provisioning.md`).
@@ -102,3 +117,20 @@ balance endpoint, termii balance, weather feed.
 - [ ] Go/no-go meeting held; decision recorded.
 
 **Owner:** product lead + engineering lead (joint sign-off).
+
+## Stage 27 rollout addendum
+
+- [ ] Rollout flags enabled one feature/environment at a time — every
+      Stage-27 innovation ships default-OFF (`coop-pool-listings`,
+      `dealer-qr-pay`, `float-forecaster`, `float-sentinel`,
+      `geo-sealed-delivery`, `lender-lens`, `offtake-contracts`,
+      `planting-window-pulse`, `price-wire`, `regen-discount`,
+      `seasonal-repayment`, `voice-teller`, `voucher-insurance-rider`,
+      `whr-ltv-guardian`, `evidence-locker`, `dds-studio`); enable only after
+      the target environment's integrations are validated for that feature
+      (evidence-pack §5; readiness-report §7).
+- [ ] Fourth PAT revoked (posted in plaintext during the merge wave — treat
+      as compromised; merge-log).
+- [ ] Dependabot PRs #24/#26/#29/#30 triaged; stray stage27/* branches
+      deleted (evidence-pack §4.6/§4.7).
+- [ ] Smoke job confirmed green post-`23fcc5c3` before closing the sequence.

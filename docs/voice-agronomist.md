@@ -129,6 +129,11 @@ Domain events (EventBus port, stub-friendly): `voice.session.started`,
 - **USSD answers are compressed to one 182-char screen**; the full answer
   and citations remain on the transcript for the agent console.
 
+## Stage 27 additions (2026-09-14)
+
+- **Voice Teller (inn-06, PR #78):** voice-driven teller flows added to this module — `voice-teller.service.ts` + voice-intent repositories, migration `064_voice_intents.sql`, feature flag `voice-teller` (default OFF, fail-closed). `MSISDN_HASH_SALT` is a constructor-time requirement when enabled (merge-log). Live telephony/ASR/TTS remain external gates per "Honest limits" below.
+- **Dealer QR Pay (inn-16, PR #92/#99)** added agent-channel QR payments in `agent-banking` (`AGENT_QR_SECRET`, migration 075) — adjacent to the assisted channel, not part of the voice session flow.
+
 ## Tests
 
 - `apps/api/src/modules/voice/*.spec.ts` — state machine, RAG grounding
@@ -137,7 +142,7 @@ Domain events (EventBus port, stub-friendly): `voice.session.started`,
   service orchestration, auth metadata.
 - `apps/api/src/database/repositories/voice.repository.spec.ts` —
   in-memory repository behaviour (queue order, filters).
-- `apps/api/test/pg/voice.pg.spec.ts` — migration 027 + pg repositories
+- `apps/api/test/pg/voice.pg.spec.ts` — migration 027 + 064 + pg repositories
   (skipped unless `DATABASE_URL` is set, matching the existing pg suites).
 - `apps/web/test/agent-assist.test.tsx` — queue rendering/filters/empty/
   error states, SLA-age labelling, transcript + citation display, suggested
