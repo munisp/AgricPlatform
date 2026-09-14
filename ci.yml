@@ -1,0 +1,386 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: no job in this workflow needs more than read access to the
+# repository contents. Jobs that need extra scopes declare them explicitly.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  install:
+    name: Install and cache dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - name: Install dependencies (reproducible, from lockfile)
+        run: npm ci
+      - name: Verify clean install from lockfile
+        run: npm ls --workspaces --include-workspace-root --depth=0
+
+  build:
+    name: Build shared, API and web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Build packages/shared
+        run: npm run build --workspace=packages/shared --if-present
+      - name: Build API
+        run: npm run build --workspace=apps/api --if-present
+      - name: Build web
+        run: npm run build --workspace=apps/web --if-present
+      - name: Bundle budget gate (initial JS ≤ 250KB gzip-estimated)
+        run: npm run check:bundle
+      - name: Upload build artifacts
+        if: hashFiles('apps/api/dist') != '' || hashFiles('apps/web/.next') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            apps/api/dist
+            apps/web/.next
+          retention-days: 7
+          if-no-files-found: ignore
+
+  test:
+    name: Unit tests and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Run workspace tests
+        run: npm run test --workspaces --if-present
+      - name: Upload coverage
+        if: hashFiles('coverage') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage
+          if-no-files-found: ignore
+          retention-days: 7
+
+  lint:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck --workspaces --if-present
+      - name: Lint
+        run: npm run lint --workspaces --if-present
+
+  ops-lint:
+    name: Ops tooling lint (scripts + observability configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: install
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      # js-yaml (used by the observability validator) comes from the lockfile install.
+      - run: npm ci
+      - name: Syntax-check all ops scripts
+        run: |
+          set -e
+          for f in scripts/*.mjs; do
+            node --check "$f"
+          done
+          echo "node --check passed for all scripts/*.mjs"
+      - name: Validate observability configs (alerts.yml, prometheus.yml, grafana dashboard)
+        run: node scripts/validate-observability.mjs
+
+  security:
+    name: Secret scan and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so gitleaks can diff the PR range
+      # Real gitleaks scan. For organisation-owned private repos,
+      # gitleaks-action requires a GITLEAKS_LICENSE secret (free for personal
+      # accounts); add it in repo settings when the org is provisioned.
+      # Also enable GitHub secret scanning + push protection per
+      # scripts/github-bootstrap.md.
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # gitleaks-action v2 requires an explicit GITHUB_TOKEN to scan PRs
+          # (notably Dependabot PRs, whose default token is not injected).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      # Blocking gate: high/critical findings in production dependencies fail
+      # CI, except advisories explicitly excepted (with justification + expiry)
+      # in scripts/audit-exceptions.json — the VEX-style pattern also used by
+      # .trivyignore. Moderate/low findings are reported without blocking.
+      - name: Dependency audit (blocking, production deps)
+        run: node scripts/npm-audit-gate.mjs
+      - name: Dependency audit (advisory, all deps)
+        run: npm audit --audit-level=moderate || true
+
+  bundle-audit:
+    name: Bundle and artifact audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-${{ github.sha }}
+          path: dist-check
+      - name: Check for secrets and sourcemaps leaked into build output
+        run: |
+          set -e
+          if [ -d dist-check ]; then
+            if grep -rIlE '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|paystack_sk_live|AKIA[0-9A-Z]{16})' dist-check; then
+              echo "::error::Potential secret material found in build output"
+              exit 1
+            fi
+            du -sh dist-check || true
+          else
+            echo "No build output yet (apps not scaffolded); skipping."
+          fi
+
+  container-build:
+    name: Container image build and scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      # Images are built but not pushed here; deploy.yml pushes on main.
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          load: true
+          tags: agric-api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          load: true
+          tags: agric-web:${{ github.sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      # Blocking vulnerability gate on the built images. Unfixed findings are
+      # ignored (no patch available); fixed HIGH/CRITICAL findings fail CI.
+      - name: Trivy scan — API image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: agric-api:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Trivy scan — web image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: agric-web:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  smoke-test:
+    name: Web/API smoke test (built processes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Build all workspaces
+        run: npm run build --workspaces --if-present
+      # Starts the exact production processes (npm run start -> API on 3001,
+      # web standalone server on 3000) and curls both health surfaces.
+      - name: Start production processes and smoke test
+        run: |
+          set -e
+          # Production-mode boot is fail-closed by design (OIDC, DATABASE_URL,
+          # REDIS_URL, signing secrets). The smoke runner is a single ephemeral
+          # process, so it exercises the production boot path with the
+          # documented break-glass flags and throwaway CI-only values. Real
+          # deployments must provide real OIDC/Postgres/Redis/secrets.
+          NODE_ENV=production PORT=3001 \
+            OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform \
+            OIDC_AUDIENCE=ci-smoke-api-audience \
+            ALLOW_INMEMORY_PERSISTENCE=true ALLOW_INMEMORY_CACHE=true \
+            ATTENDANCE_SIGNING_SECRET=ci-smoke-attendance-signing-key-v2 \
+            VET_SIGNING_SECRET=ci-smoke-vet-signing-key-00000000 \
+            AGENT_VOUCHER_SECRET=ci-smoke-agent-voucher-signing-key \
+            NIN_HASH_SALT=ci-smoke-nin-hash-salt-0000000000 \
+            LIVESTOCK_PASSPORT_SECRET=ci-smoke-livestock-passport-key-v2 \
+            MSISDN_HASH_SALT=ci-smoke-msisdn-hash-salt-0000000000000 \
+            AGENT_QR_SECRET=ci-smoke-agent-qr-signing-key-00000000 \
+            CREDIT_PASSPORT_SECRET=ci-smoke-credit-passport-key-000000 \
+            PARTNER_API_DRIVER=live PARTNER_API_SIGNING_SECRET=ci-smoke-partner-api-signing-key \
+            OTP_DRIVER=live OTP_PROVIDER_URL=http://127.0.0.1:9/unreachable OTP_PROVIDER_API_KEY=ci-smoke-otp-key \
+            npm run start --workspace=apps/api > /tmp/smoke-api.log 2>&1 &
+          API_PID=$!
+          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 npm run start --workspace=apps/web > /tmp/smoke-web.log 2>&1 &
+          WEB_PID=$!
+          cleanup() { kill "$API_PID" "$WEB_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          report() { while IFS= read -r line; do echo "::error::$line"; done < <(tail -c 2000 "$1" | tr '\r' ' '); }
+          for i in $(seq 1 45); do
+            curl -fsS http://127.0.0.1:3001/api/v1/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/ >/dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "== API /api/v1/health =="
+          curl -fsS http://127.0.0.1:3001/api/v1/health || { report /tmp/smoke-api.log; exit 7; }
+          echo
+          echo "== API /api/v1/health/ready =="
+          curl -fsS http://127.0.0.1:3001/api/v1/health/ready || { report /tmp/smoke-api.log; exit 7; }
+          echo
+          echo "== Web / =="
+          curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/ || { report /tmp/smoke-web.log; exit 7; }
+
+  mobile:
+    name: Mobile shell typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Typecheck mobile
+        run: npm run typecheck -w apps/mobile
+      - name: Test mobile
+        run: npm run test -w apps/mobile
+
+  db-contract:
+    name: Database migrations and pg contract suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: install
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agricplatform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d agricplatform"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agricplatform
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Pin npm 11 (works around npm 10 "Exit handler never called" crash on runners)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Lint SQL migrations
+        run: npm run lint:sql
+      - name: Apply migrations
+        run: npm run migrate -w @agric-platform/api
+      - name: Run pg repository contract suite
+        run: npm run test -w @agric-platform/api -- test/pg
+
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [install, build, test, lint, security, bundle-audit, container-build, smoke-test, mobile, db-contract, ops-lint]
+    steps:
+      - name: All required checks passed
+        run: echo "CI gate satisfied for ${{ github.sha }}"
