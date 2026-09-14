@@ -1,6 +1,8 @@
 # AgricPlatform — Implemented Architecture
 
-**As implemented:** main @ Stage 10 (PRD v3.3 full build-out, waves P1–P6). 993 automated tests green, 11 SQL migrations, fail-closed provider layer.
+**As implemented:** main @ Stage 27 (PRD v3.3 build-out plus 36 Stage-27 PRs: 22 WP-G gap closures + 20 innovations). Test surface: 286 API unit/integration spec files, 23 live-Postgres contract spec files, 58 web test files; 79 SQL migrations across 45 schemas; fail-closed provider layer (merge-log; evidence-pack §3 — measured on main @ `27106f45`). The diagrams below are labelled with their original Stage-10 counts where those were current; corrected figures are inline.
+
+> Historical note: this document was written at Stage 10 (993 tests / 11 migrations). Stage 27 edits refresh the factual counts and the environment contract; the structural diagrams remain accurate.
 
 This document describes what is **actually implemented in the repository**, not the target-state proposal in the PRD. External systems are shown dashed; adapters are stub-by-default and fail closed in production without credentials.
 
@@ -68,13 +70,13 @@ flowchart TB
 
     subgraph Server["API service (apps/api, NestJS 11 ESM)"]
         GW["Global layer<br/>OIDC/JWKS auth · RBAC guards · throttler<br/>idempotency interceptor (Redis 24h)<br/>pino request-id · Prometheus /metrics"]
-        MODS["28 feature modules<br/>(see module map)"]
-        PORTS["Async repository ports<br/>61 providers: in-memory | pg"]
+        MODS["50 feature module dirs<br/>(apps/api/src/modules)"]
+        PORTS["Async repository ports<br/>~245 provider registrations: in-memory | pg"]
         DRV["Provider driver layer<br/>stub default · fail-closed production"]
     end
 
     subgraph Data
-        PG[(PostgreSQL<br/>11 migrations · 9 schemas)]
+        PG[(PostgreSQL<br/>79 migrations · 45 schemas)]
         RD[(Redis<br/>idempotency · OTP · cache · KV)]
     end
 
@@ -195,7 +197,9 @@ sequenceDiagram
     Note over U,A: Feature-phone path: USSD menu / IVR call flow<br/>-> same services, same data model
 ```
 
-## 6. Persistence overview (11 migrations)
+## 6. Persistence overview (79 migrations)
+
+Migrations 001–011 are listed individually below (the original Stage-10 table). Stage 11–27 added 012–079; the Stage 27 wave alone added 053–079 (27 migrations: webhook scope, agent daily limits, seasonal schedules, coop pool, voucher insurance, advisory pulse, fraud sentinel, VSLA atomicity, sweepers, lender catalogue + bridge sync, voice intents, credit passport, warehouse LTV, escrow delivery geo, chapter map, price subscriptions, regen discount, evidence locker, cooperative score, float forecast, idempotency payload-hash, dealer QR, DDS packages, offtake contracts, agronomist console, lender scorecards — evidence-pack §1/§3). All 79 pass the `lint:sql` gate; 053–079 additionally applied against live Postgres in CI's db-contract job (merge-log).
 
 | Migration | Schema / tables | Domain |
 | --- | --- | --- |
@@ -224,7 +228,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph CI["CI gates (required on main)"]
-        C1[typecheck · lint · 993 tests]
+        C1[typecheck · lint · unit+pg+web suites]
         C2[lint:sql · bundle budget<br/>gitleaks · audit · Trivy]
         C3[k6 p95<500 gate · Lighthouse a11y≥0.95]
     end
@@ -240,4 +244,4 @@ flowchart LR
     P --> BAK & MON
 ```
 
-**Environment contract (fail-closed in production):** `DATABASE_URL`, `REDIS_URL` (no in-memory persistence/cache), Keycloak JWKS, `ATTENDANCE_SIGNING_SECRET`, `PARTNER_API_SIGNING_SECRET`, and any `*_DRIVER=live` flag without its credentials — the process refuses to boot.
+**Environment contract (fail-closed in production):** `DATABASE_URL`, `REDIS_URL` (no in-memory persistence/cache), Keycloak JWKS, `ATTENDANCE_SIGNING_SECRET`, `PARTNER_API_SIGNING_SECRET`, and any `*_DRIVER=live` flag without its credentials — the process refuses to boot. Stage 27 additions: HMAC secrets must meet the 32-char boot floor (`PRODUCTION_HMAC_SECRET_MIN_LENGTH` in `apps/api/src/config/auth.config.ts`); constructor-time resolvers require `MSISDN_HASH_SALT`, `AGENT_QR_SECRET`, `CREDIT_PASSPORT_SECRET` when their features/drivers are enabled (merge-log, smoke root-cause); the break-glass escape hatches `ALLOW_INMEMORY_PERSISTENCE` / `ALLOW_INMEMORY_CACHE` (`apps/api/src/config/persistence.config.ts:19,37`) exist only for local drills and must never be set in production.

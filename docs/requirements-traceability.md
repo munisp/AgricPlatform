@@ -146,3 +146,12 @@ Waves P6a–P6c (merges through bf79a21) closed every remaining engineering-doab
 2. **Sandbox evidence** requires test credentials (e.g., Paystack test keys, Moodle sandbox, Discourse staging). It verifies the adapter contract, not production behaviour, and must be labelled `sandbox` in test reports.
 3. **Live evidence** requires production credentials and/or signed agreements (Termii, 360dialog, Paystack live, NIBSS BVN, FMARD/AFEX/NCX). Items requiring live evidence are classified **External dependency** and cannot be closed by engineering alone.
 4. No module may be reported as "done" for a release gate while any in-scope row above is External dependency and unevidenced; such items must appear on the launch-blocker list in `docs/security-compliance.md`.
+
+## 9. Stage 27 addendum (2026-09-14, merge wave + CI repair)
+
+No PRD v3.3 requirement was rescoped by Stage 27 — the wave delivered platform-hardening gap closures (WP-G register) and 20 innovation features that EXTEND the module map above without invalidating any row. Factual updates:
+
+- **36 PRs merged 36/36** to main (PRs #61–#96 incl. FF-reconstructions #98–#102; merge-log). WP-G items map onto existing rows: money-path/ledger/idempotency hardening (M7/M9), auth vendors incl. Keycloak phone-auth (M1/M18), partner WRITE binding (M17/Appendix G), telemetry (cross-cutting NFR), production guards (M18).
+- **Innovation modules** (all behind default-OFF rollout flags): SeasonSync credit schedules (M9), Coop Pool (M7), Insurance-in-the-Bag (M9/insurance), Planting-Window Pulse (M5), Float Sentinel + Float Forecaster (fraud/agent-banking), Voice Teller (Appendix F IVR), Credit Passport (M9), Receipt LTV Guardian (warehouse), Geo-Sealed Delivery (M7 escrow), Chapter Map (M10), Price Wire (M5/USSD), Regen Discount (insurance), Evidence Locker (M18), Cooperative Score + Lender Lens (M13/M9), Dealer QR Pay (agent banking), DDS Studio (traceability), Harvest Forward offtake (M7), Agronomist SLA Console (M5/E7).
+- **Current evidence surface:** 79 migrations (Stage 27 added 053–079), 286 API unit/integration spec files, 23 live-Postgres contract specs, 58 web test files; CI board 10/11 green on main @ `27106f45` with smoke pending re-run (evidence-pack §3; merge-log).
+- The verification rules in §8 are unchanged and were the governing doctrine for the wave (stub-verifiable code evidence; live-provider items remain External dependency).
