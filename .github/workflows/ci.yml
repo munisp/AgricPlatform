@@ -276,15 +276,19 @@ jobs:
             OIDC_ISSUER=http://127.0.0.1:8180/realms/agric-platform \
             OIDC_AUDIENCE=ci-smoke-api-audience \
             ALLOW_INMEMORY_PERSISTENCE=true ALLOW_INMEMORY_CACHE=true \
-            ATTENDANCE_SIGNING_SECRET=ci-smoke-attendance-signing-key \
-            VET_SIGNING_SECRET=ci-smoke-vet-signing-key \
+            ATTENDANCE_SIGNING_SECRET=ci-smoke-attendance-signing-key-v2 \
+            VET_SIGNING_SECRET=ci-smoke-vet-signing-key-00000000 \
             AGENT_VOUCHER_SECRET=ci-smoke-agent-voucher-signing-key \
-            NIN_HASH_SALT=ci-smoke-nin-hash-salt \
-            LIVESTOCK_PASSPORT_SECRET=ci-smoke-livestock-passport-key \
+            NIN_HASH_SALT=ci-smoke-nin-hash-salt-0000000000 \
+            LIVESTOCK_PASSPORT_SECRET=ci-smoke-livestock-passport-key-v2 \
+            MSISDN_HASH_SALT=ci-smoke-msisdn-hash-salt-0000000000000 \
+            AGENT_QR_SECRET=ci-smoke-agent-qr-signing-key-00000000 \
+            CREDIT_PASSPORT_SECRET=ci-smoke-credit-passport-key-000000 \
+            PARTNER_API_DRIVER=live PARTNER_API_SIGNING_SECRET=ci-smoke-partner-api-signing-key \
             OTP_DRIVER=live OTP_PROVIDER_URL=http://127.0.0.1:9/unreachable OTP_PROVIDER_API_KEY=ci-smoke-otp-key \
             npm run start --workspace=apps/api &
           API_PID=$!
-          NODE_ENV=production PORT=3000 npm run start --workspace=apps/web &
+          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 npm run start --workspace=apps/web &
           WEB_PID=$!
           cleanup() { kill "$API_PID" "$WEB_PID" 2>/dev/null || true; }
           trap cleanup EXIT
