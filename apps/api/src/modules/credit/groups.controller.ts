@@ -9,7 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -18,15 +18,18 @@ import { CreditGroupsService, type CreateCreditGroupInput } from './groups.servi
 
 class CreateGroupDto implements CreateCreditGroupInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   chapterId?: string;
 }
 
 class AddMemberDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 }
 
