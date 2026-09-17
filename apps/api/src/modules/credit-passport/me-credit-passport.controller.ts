@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -17,6 +17,7 @@ import {
 class SharePassportDto implements SharePassportInput {
   /** Partner organisation / client id to disclose the credential to. */
   @IsString()
+  @MaxLength(100)
   partnerId!: string;
 
   @IsOptional()

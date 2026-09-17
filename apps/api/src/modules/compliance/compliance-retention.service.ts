@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import {
@@ -83,7 +83,21 @@ export class ComplianceRetentionService {
     input: { entity: string; retainDays: number; anonymizeNotDelete: boolean }
   ): Promise<RetentionPolicy> {
     this.requireAdmin(actor);
-    const policy: RetentionPolicy = { ...input, updatedAt: new Date().toISOString() };
+    // V-74: never spread caller input into persistence — the body is
+    // interface-typed, so unknown fields would otherwise land verbatim in
+    // the stored policy row (mass-assignment sink). Pick fields explicitly.
+    if (!Number.isSafeInteger(input.retainDays) || input.retainDays < 1) {
+      throw new BadRequestException('retainDays must be a positive integer (days)');
+    }
+    if (typeof input.entity !== 'string' || input.entity.length === 0 || input.entity.length > 200) {
+      throw new BadRequestException('entity must be a non-empty string (max 200 chars)');
+    }
+    const policy: RetentionPolicy = {
+      entity: input.entity,
+      retainDays: input.retainDays,
+      anonymizeNotDelete: input.anonymizeNotDelete === true,
+      updatedAt: new Date().toISOString()
+    };
     const saved = await this.policies.upsert(policy);
     await this.audit.record({
       actorId: actor!.id,
