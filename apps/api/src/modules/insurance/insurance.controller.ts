@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UnauthorizedException,
   UseGuards
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { ListQueryDto } from '../../common/pagination.js';
 import { InsuranceService, type QuoteInput } from './insurance.service.js';
 
 function requireActor(actor: User | null): User {
@@ -103,9 +105,11 @@ export class InsuranceController {
   @Get('trigger-events/all')
   @UseGuards(RolesGuard)
   @Roles('admin')
-  @ApiOperation({ summary: 'All trigger events (admin).' })
-  async allTriggerEvents(@CurrentUser() actor: User | null) {
-    return { data: await this.insurance.listTriggerEvents(requireActor(actor)) };
+  @ApiOperation({ summary: 'All trigger events, paginated (admin).' })
+  async allTriggerEvents(@CurrentUser() actor: User | null, @Query() query: ListQueryDto) {
+    return {
+      data: await this.insurance.listTriggerEvents(requireActor(actor), query.page, query.pageSize)
+    };
   }
 
   @Get('payouts')
@@ -118,9 +122,11 @@ export class InsuranceController {
   @Get('payouts/all')
   @UseGuards(RolesGuard)
   @Roles('admin')
-  @ApiOperation({ summary: 'All payouts (admin).' })
-  async allPayouts(@CurrentUser() actor: User | null) {
-    return { data: await this.insurance.listPayouts(requireActor(actor)) };
+  @ApiOperation({ summary: 'All payouts, paginated (admin).' })
+  async allPayouts(@CurrentUser() actor: User | null, @Query() query: ListQueryDto) {
+    return {
+      data: await this.insurance.listPayouts(requireActor(actor), query.page, query.pageSize)
+    };
   }
 
   @Post('payouts/:id/confirm')
