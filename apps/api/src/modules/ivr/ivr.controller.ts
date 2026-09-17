@@ -11,26 +11,36 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { IsOptional, IsString } from 'class-validator';
-import { assertAtCallbackIp, assertAtCallbackToken } from '../../common/auth/at-callback.utils.js';
+import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  assertAtCallbackFreshness,
+  assertAtCallbackIp,
+  assertAtCallbackToken,
+  resolveAtCallbackToken
+} from '../../common/auth/at-callback.utils.js';
+import { E164_PATTERN } from '../auth/auth.controller.js';
 import { IvrService } from './ivr.service.js';
 
 /** Africa's Talking Voice form-encoded callback payload (application/x-www-form-urlencoded). */
 class IvrCallbackDto {
   @IsString()
+  @MaxLength(128)
   sessionId!: string;
 
-  @IsString()
+  // MSISDN shape (V-66/V-67): caller-number session binding keys on this.
+  @Matches(E164_PATTERN, { message: 'callerNumber must be in E.164 format (e.g. +2348012345678)' })
   callerNumber!: string;
 
   /** Latest DTMF input; absent on the opening ring or a GetDigits timeout. */
   @IsOptional()
   @IsString()
+  @MaxLength(64)
   dtmfDigits?: string;
 
   /** '1' while the call is live, '0' on the final hangup notification. */
   @IsOptional()
   @IsString()
+  @MaxLength(1)
   isActive?: string;
 }
 
@@ -64,6 +74,8 @@ export class IvrController {
     @Body() dto: IvrCallbackDto,
     @Query('token') token?: string,
     @Headers('x-at-callback-token') headerToken?: string,
+    @Headers('x-at-callback-timestamp') timestamp?: string,
+    @Headers('x-at-callback-nonce') nonce?: string,
     @Ip() ip?: string
   ): Promise<string> {
     if (!this.ivr.driverConfig.enabled) {
@@ -71,7 +83,9 @@ export class IvrController {
         'IVR callback is disabled. Set IVR_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME.'
       );
     }
-    assertAtCallbackToken(token ?? headerToken);
+    // V-19: header-only token in production plus per-request freshness.
+    assertAtCallbackToken(resolveAtCallbackToken(token, headerToken));
+    assertAtCallbackFreshness({ timestamp, nonce });
     assertAtCallbackIp(ip);
     return this.ivr.handleCallback({
       sessionId: dto.sessionId,
