@@ -10,7 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
+import { IsISO8601, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import {
   ESCROW_STATUSES,
   INVOICE_STATUSES,
@@ -44,6 +44,7 @@ class HoldEscrowDto {
    */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   paymentReference?: string;
 }
 
@@ -55,10 +56,12 @@ class InvoiceStatusDto {
 class SchedulePickupDto implements SchedulePickupInput {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   carrier?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   trackingReference?: string;
 
   @IsOptional()
@@ -72,6 +75,7 @@ class ShipmentStatusDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   failureReason?: string;
 }
 
