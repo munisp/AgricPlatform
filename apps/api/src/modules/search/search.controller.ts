@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import {
@@ -55,6 +55,7 @@ const RESULT_TYPES: SearchResultType[] = ['course', 'opportunity', 'listing', 'a
 
 class SearchQuery {
   @IsString()
+  @MaxLength(500)
   q!: string;
 
   @IsOptional()
@@ -68,6 +69,7 @@ class SearchQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
@@ -89,9 +91,11 @@ class TrendingQueryDto {
 
 class RelatedQuery {
   @IsString()
+  @MaxLength(100)
   type!: SearchResultType;
 
   @IsString()
+  @MaxLength(100)
   id!: string;
 
   @IsOptional()
