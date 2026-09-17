@@ -1,14 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  ArrayNotEmpty,
-  IsArray,
-  IsBoolean,
-  IsIn,
-  IsObject,
-  IsOptional,
-  IsString
-} from 'class-validator';
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -30,21 +22,25 @@ class AlertQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ruleCode?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   subjectId?: string;
 }
 
 class ResolveAlertDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   resolution?: string;
 }
 
 class DismissAlertDto {
   @IsString()
+  @MaxLength(2000)
   reason!: string;
 }
 
@@ -60,12 +56,15 @@ class ToggleRuleDto {
 
 class CreateCaseDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @ArrayNotEmpty()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   alertIds!: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   assignee?: string;
 }
 
@@ -77,6 +76,7 @@ class CaseQuery {
 
 class ResolveCaseDto {
   @IsString()
+  @MaxLength(500)
   resolution!: string;
 }
 
