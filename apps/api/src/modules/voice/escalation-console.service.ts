@@ -40,6 +40,12 @@ import {
 /** Max answer-delivery attempts before the sweep stops retrying (env-overridable). */
 export const ANSWER_MAX_ATTEMPTS_DEFAULT = 5;
 
+/**
+ * V-71: ceiling for agronomist answers — they are dispatched over the paid
+ * SMS channel, so length is bounded (≈10 GSM segments).
+ */
+export const MAX_ANSWER_TEXT_LENGTH = 1600;
+
 export interface ClaimCaseResult {
   escalationCase: EscalationCaseRecord;
 }
@@ -164,7 +170,7 @@ export class EscalationConsoleService implements OnModuleInit {
       }
       void this.enqueueFromAgentCase(caseId).catch((error: unknown) => {
         this.logger.warn(
-          `console intake failed for agent case ${caseId}: ${(error as Error)?.message ?? error}`
+          `console intake failed for agent case ${agentCaseId}: ${(error as Error)?.message ?? error}`
         );
       });
     });
@@ -313,6 +319,13 @@ export class EscalationConsoleService implements OnModuleInit {
     const answerText = input.answerText?.trim() ?? '';
     if (!answerText) {
       throw new BadRequestException('answerText must not be empty');
+    }
+    // V-71: the answer is dispatched over a PAID SMS channel — an unbounded
+    // answer is a cost-amplification vector (plus storage/log bloat).
+    if (answerText.length > MAX_ANSWER_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `answerText must not exceed ${MAX_ANSWER_TEXT_LENGTH} characters`
+      );
     }
     return this.telemetry.withSpan(
       'voice.escalation.answer',
