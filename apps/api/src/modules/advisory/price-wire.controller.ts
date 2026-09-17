@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -17,9 +17,11 @@ import {
 
 class SubscribePriceDto implements SubscribePriceInput {
   @IsString()
+  @MaxLength(500)
   commodity!: string;
 
   @IsString()
+  @MaxLength(100)
   marketId!: string;
 
   @IsIn(WIRE_CHANNELS)

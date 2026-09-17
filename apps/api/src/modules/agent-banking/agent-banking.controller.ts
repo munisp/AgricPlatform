@@ -16,9 +16,14 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
-import type { User } from '@agric-platform/shared';
-import { assertAtCallbackIp, assertAtCallbackToken } from '../../common/auth/at-callback.utils.js';
+import { IsIn, IsInt, IsISO8601, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { MSISDN_PATTERN, type User } from '@agric-platform/shared';
+import {
+  assertAtCallbackFreshness,
+  assertAtCallbackIp,
+  assertAtCallbackToken,
+  resolveAtCallbackToken
+} from '../../common/auth/at-callback.utils.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -29,25 +34,39 @@ import {
   type AgentTransactionType,
   type AgentVoucherStatus
 } from '../../database/repositories/agent-banking.repository.js';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { AgentBankingService, type ActorRef } from './agent-banking.service.js';
 import { AgentUssdService } from './agent-ussd.service.js';
 
+/**
+ * L-13 business ceilings (replace @Max(Number.MAX_SAFE_INTEGER) pseudo-caps):
+ * farmer-scale agent transactions cap at ₦1m per transaction; float top-ups
+ * and configured daily limits cap at ₦10m. The service-side daily-limit and
+ * budget checks remain the authoritative controls.
+ */
+const MAX_AGENT_TRANSACTION_KOBO = 100_000_000; // ₦1,000,000
+const MAX_AGENT_FLOAT_KOBO = 1_000_000_000; // ₦10,000,000
+
 class RegisterAgentDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   organisation!: string;
 
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(MAX_AGENT_FLOAT_KOBO)
   dailyLimitKobo?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(MAX_AGENT_FLOAT_KOBO)
   lowFloatThresholdKobo?: number;
 }
 
@@ -60,61 +79,69 @@ class UpdateLimitsDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  @Max(MAX_AGENT_FLOAT_KOBO)
   dailyLimitKobo?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(MAX_AGENT_FLOAT_KOBO)
   lowFloatThresholdKobo?: number;
 }
 
 class TopUpRequestDto {
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_AGENT_FLOAT_KOBO)
   amountKobo!: number;
 
   /** Mandatory client idempotency key — retries replay the original request. */
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   idempotencyKey!: string;
 }
 
 class RejectTopUpDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(500)
   reason!: string;
 }
 
 class CashTransactionDto {
   @IsString()
+  @MaxLength(100)
   farmerId!: string;
 
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_AGENT_TRANSACTION_KOBO)
   amountKobo!: number;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(16)
   otp!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   idempotencyKey!: string;
 }
 
 class IssueVoucherDto {
   @IsString()
+  @MaxLength(100)
   farmerId!: string;
 
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_AGENT_TRANSACTION_KOBO)
   amountKobo!: number;
 
   @IsOptional()
-  @IsString()
+  @IsISO8601()
   expiresAt?: string;
 
   /**
@@ -125,6 +152,7 @@ class IssueVoucherDto {
    */
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   idempotencyKey!: string;
 }
 
@@ -132,33 +160,39 @@ class RedeemVoucherDto {
   /** The HMAC signature printed on the voucher (optional on the USSD path). */
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   signature?: string;
 }
 
 class InteropQuoteDto {
   @IsInt()
   @Min(1)
+  @Max(100_000_000) // ₦100m sanity ceiling on a quote (no money moves here)
   amountNaira!: number;
 
-  @IsString()
+  @Matches(MSISDN_PATTERN, { message: 'payerMsisdn must be an E.164-ish MSISDN (7–15 digits)' })
   payerMsisdn!: string;
 
-  @IsString()
+  @Matches(MSISDN_PATTERN, { message: 'payeeMsisdn must be an E.164-ish MSISDN (7–15 digits)' })
   payeeMsisdn!: string;
 
   @IsString()
+  @MaxLength(100)
   reference!: string;
 }
 
 class AgentUssdCallbackDto {
   @IsString()
+  @MaxLength(100)
   sessionId!: string;
 
   @IsString()
+  @MaxLength(20)
   phoneNumber!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   text?: string;
 }
 
@@ -178,7 +212,10 @@ function actorOf(user: User | null): ActorRef {
 @ApiTags('agent-banking')
 @Controller('agent-banking')
 export class AgentBankingController {
-  constructor(private readonly banking: AgentBankingService) {}
+  constructor(
+    private readonly banking: AgentBankingService,
+    private readonly metrics: MetricsService
+  ) {}
 
   // ------------------------------------------------------------ agents
 
@@ -296,6 +333,7 @@ export class AgentBankingController {
 
   // ------------------------------------------------------- cash-in / out
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('agents/:id/cash-in')
   @UseGuards(RolesGuard)
   @Roles('agent', 'admin')
@@ -304,12 +342,23 @@ export class AgentBankingController {
     return { data: await this.banking.cashIn(id, dto, actorOf(actor)) };
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('agents/:id/cash-out')
   @UseGuards(RolesGuard)
   @Roles('agent', 'admin')
   @ApiOperation({ summary: 'Farmer cash-out at the agent (ledger double-entry, OTP proof, idempotent)' })
   async cashOut(@Param('id') id: string, @Body() dto: CashTransactionDto, @CurrentUser() actor: User | null) {
-    return { data: await this.banking.cashOut(id, dto, actorOf(actor)) };
+    const caller = actorOf(actor);
+    // V-78: payout outcome counter (agric_agent_payouts_total{result}) so a
+    // payout stall/failure storm is visible to Prometheus alerts.
+    try {
+      const data = await this.banking.cashOut(id, dto, caller);
+      this.metrics.agentPayout('success');
+      return { data };
+    } catch (error) {
+      this.metrics.agentPayout('failure');
+      throw error;
+    }
   }
 
   @Get('agents/:id/transactions')
@@ -338,6 +387,7 @@ export class AgentBankingController {
 
   // ----------------------------------------------------------- vouchers
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('agents/:id/vouchers')
   @UseGuards(RolesGuard)
   @Roles('agent', 'admin')
@@ -453,13 +503,15 @@ export class AgentUssdController {
   @ApiOperation({
     summary:
       "Africa's Talking agent-banking USSD callback (CON/END plain text, ≤182 chars). " +
-      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY/AT_USERNAME. ' +
+      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME. ' +
       'Requires the AT_CALLBACK_TOKEN secret (?token= or x-at-callback-token) once configured.'
   })
   async callback(
     @Body() dto: AgentUssdCallbackDto,
     @Query('token') token?: string,
     @Headers('x-at-callback-token') headerToken?: string,
+    @Headers('x-at-callback-timestamp') timestamp?: string,
+    @Headers('x-at-callback-nonce') nonce?: string,
     @Ip() ip?: string
   ): Promise<string> {
     if (!this.ussd.driverConfig.enabled) {
@@ -467,7 +519,10 @@ export class AgentUssdController {
         'Agent-banking USSD callback is disabled. Set USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME.'
       );
     }
-    assertAtCallbackToken(token ?? headerToken);
+    // V-19: callback parity with the USSD/IVR channels — header-only token
+    // in production plus per-request freshness (timestamp + nonce).
+    assertAtCallbackToken(resolveAtCallbackToken(token, headerToken));
+    assertAtCallbackFreshness({ timestamp, nonce });
     assertAtCallbackIp(ip);
     return this.ussd.handleCallback({
       sessionId: dto.sessionId,
