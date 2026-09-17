@@ -216,6 +216,11 @@ function requireGroupAdmin(actor: User, group?: VslaGroupRecord): void {
   }
 }
 
+/** Privileged cross-group read roles (V-13): platform oversight only. */
+function isPrivilegedReader(actor: User): boolean {
+  return actor.roles.includes('admin') || actor.roles.includes('regulator');
+}
+
 /**
  * VSLA groups + carbon MRV service (wave VSLACARBON).
  *
@@ -329,6 +334,32 @@ export class VslaCarbonService {
     return group;
   }
 
+  /**
+   * Read-side BOLA guard (V-13): a group's financial/carbon records may be
+   * read by an ACTIVE member of the group, a platform admin or a regulator —
+   * mirroring the membership filter listGroups already applies. Everyone
+   * else (including chapter leads of OTHER chapters and ex-members) gets a
+   * 403; an unknown group still 404s first.
+   */
+  private async assertGroupReader(actor: User, groupId: string): Promise<VslaGroupRecord> {
+    const group = await this.getGroup(groupId);
+    if (isPrivilegedReader(actor)) {
+      return group;
+    }
+    const membership = await this.members.findByGroupAndUser(groupId, actor.id);
+    if (!membership || membership.status !== 'ACTIVE') {
+      throw new ForbiddenException(
+        'Only an active group member, a regulator or an admin may read VSLA group records'
+      );
+    }
+    return group;
+  }
+
+  /** Group detail for an authenticated caller, membership-scoped (V-13). */
+  async readGroup(actor: User, id: string): Promise<VslaGroupRecord> {
+    return this.assertGroupReader(actor, id);
+  }
+
   async addMember(actor: User, groupId: string, input: AddMemberInput): Promise<VslaMemberRecord> {
     const group = await this.getGroup(groupId);
     requireGroupAdmin(actor, group);
@@ -353,8 +384,8 @@ export class VslaCarbonService {
     return member;
   }
 
-  async listMembers(groupId: string): Promise<VslaMemberRecord[]> {
-    await this.getGroup(groupId);
+  async listMembers(actor: User, groupId: string): Promise<VslaMemberRecord[]> {
+    await this.assertGroupReader(actor, groupId);
     return this.members.find({ groupId });
   }
 
@@ -381,8 +412,8 @@ export class VslaCarbonService {
     return cycle;
   }
 
-  async listCycles(groupId: string): Promise<VslaCycleRecord[]> {
-    await this.getGroup(groupId);
+  async listCycles(actor: User, groupId: string): Promise<VslaCycleRecord[]> {
+    await this.assertGroupReader(actor, groupId);
     return this.cycles.find({ groupId });
   }
 
@@ -508,8 +539,9 @@ export class VslaCarbonService {
     return undefined;
   }
 
-  async listContributions(cycleId: string): Promise<VslaContributionRecord[]> {
-    await this.getCycle(cycleId);
+  async listContributions(actor: User, cycleId: string): Promise<VslaContributionRecord[]> {
+    const cycle = await this.getCycle(cycleId);
+    await this.assertGroupReader(actor, cycle.groupId);
     return this.contributions.find({ cycleId });
   }
 
@@ -721,8 +753,9 @@ export class VslaCarbonService {
     };
   }
 
-  async getShareOut(cycleId: string): Promise<VslaShareOutRecord[]> {
-    await this.getCycle(cycleId);
+  async getShareOut(actor: User, cycleId: string): Promise<VslaShareOutRecord[]> {
+    const cycle = await this.getCycle(cycleId);
+    await this.assertGroupReader(actor, cycle.groupId);
     return this.shareOuts.find({ cycleId });
   }
 
@@ -871,8 +904,8 @@ export class VslaCarbonService {
     return entry.postings.find((posting) => posting.direction === 'debit')?.amountKobo === totalKobo;
   }
 
-  async listLoans(groupId: string): Promise<VslaLoanRecord[]> {
-    await this.getGroup(groupId);
+  async listLoans(actor: User, groupId: string): Promise<VslaLoanRecord[]> {
+    await this.assertGroupReader(actor, groupId);
     return this.loans.find({ groupId });
   }
 
@@ -908,12 +941,15 @@ export class VslaCarbonService {
     if (member && member.userId !== actor.id && !isGroupAdmin(actor, await this.getGroup(loan.groupId))) {
       throw new ForbiddenException('Only the borrower or a group admin may record repayments');
     }
+    // Canonical payload fingerprint (V-57, WP-G11 doctrine): stored with the
+    // repayment row so the same key with a DIFFERENT amount is a 409 instead
+    // of a silent replay of the original payment.
+    const payloadHash = hashIdempotencyPayload({ loanId, amountKobo: input.amountKobo });
     const replay = await this.repayments.findByIdempotencyKey(input.idempotencyKey);
     if (replay) {
+      assertSameIdempotencyPayload(replay.idempotencyKey, replay.payloadHash, payloadHash);
       return { loan: await this.getLoan(loanId), repayment: replay };
     }
-    const outstanding = loan.totalDueKobo - loan.repaidKobo;
-    const amountKobo = Math.min(input.amountKobo, outstanding);
     const ledgerKey = `vsla-loan-repayment:${input.idempotencyKey}`;
 
     // Crashed-saga / same-key-twin resume (pre-fold legacy): if the ledger
@@ -923,13 +959,36 @@ export class VslaCarbonService {
     // double-credit the loan for one payment.
     const priorEntry = await this.ledger.findEntryByIdempotencyKey(ledgerKey);
     if (priorEntry) {
-      const repayment = await this.materialiseRepaymentRow(loanId, input.idempotencyKey, priorEntry);
+      if (this.entryAmountKobo(priorEntry) !== input.amountKobo) {
+        // Fail closed: the client key already posted a DIFFERENT amount.
+        throw new ConflictException(
+          `Idempotency key '${input.idempotencyKey}' was already used for a different repayment amount`
+        );
+      }
+      const repayment = await this.materialiseRepaymentRow(
+        loanId,
+        input.idempotencyKey,
+        priorEntry,
+        payloadHash
+      );
       return { loan: await this.getLoan(loanId), repayment };
     }
 
     if (loan.status === 'REPAID') {
       throw new ConflictException('Loan is already fully repaid');
     }
+
+    // V-57: never silently clamp an overpayment — the excess kobo would move
+    // without a book entry. Reject so the caller resubmits the exact
+    // outstanding amount (an explicit excess-to-savings leg may be added
+    // later if product wants one).
+    const outstanding = loan.totalDueKobo - loan.repaidKobo;
+    if (input.amountKobo > outstanding) {
+      throw new BadRequestException(
+        `Repayment of ${input.amountKobo} kobo exceeds the outstanding balance of ${outstanding} kobo`
+      );
+    }
+    const amountKobo = input.amountKobo;
 
     let claimed = false;
     let postedDurable = false;
@@ -996,6 +1055,7 @@ export class VslaCarbonService {
             amountKobo: this.entryAmountKobo(posted.entry),
             idempotencyKey: input.idempotencyKey,
             ledgerEntryId: posted.entry.id,
+            payloadHash,
             createdAt: new Date().toISOString()
           },
           tx
@@ -1018,6 +1078,7 @@ export class VslaCarbonService {
         // for a retry of the same logical payment.
         const twin = await this.repayments.findByIdempotencyKey(input.idempotencyKey);
         if (twin) {
+          assertSameIdempotencyPayload(twin.idempotencyKey, twin.payloadHash, payloadHash);
           return { loan: await this.getLoan(loanId), repayment: twin };
         }
       }
@@ -1042,7 +1103,8 @@ export class VslaCarbonService {
   private async materialiseRepaymentRow(
     loanId: string,
     idempotencyKey: string,
-    entry: LedgerJournalEntry
+    entry: LedgerJournalEntry,
+    payloadHash?: string
   ): Promise<VslaLoanRepaymentRecord> {
     try {
       return await this.repayments.create({
@@ -1052,6 +1114,7 @@ export class VslaCarbonService {
         amountKobo: this.entryAmountKobo(entry),
         idempotencyKey,
         ledgerEntryId: entry.id,
+        payloadHash,
         createdAt: new Date().toISOString()
       });
     } catch (error) {
@@ -1149,8 +1212,9 @@ export class VslaCarbonService {
     return entry.postings.find((posting) => posting.direction === 'debit')?.amountKobo ?? 0;
   }
 
-  async listRepayments(loanId: string): Promise<VslaLoanRepaymentRecord[]> {
-    await this.getLoan(loanId);
+  async listRepayments(actor: User, loanId: string): Promise<VslaLoanRepaymentRecord[]> {
+    const loan = await this.getLoan(loanId);
+    await this.assertGroupReader(actor, loan.groupId);
     return this.repayments.findByLoan(loanId);
   }
 
@@ -1200,8 +1264,20 @@ export class VslaCarbonService {
     return record;
   }
 
-  async listPlots(groupId?: string): Promise<VslaCarbonPlotRecord[]> {
-    return this.plots.find(groupId ? { groupId } : {});
+  /**
+   * Plot listing (V-13): privileged readers (admin/regulator) see all plots
+   * (optionally group-filtered); everyone else sees ONLY their own plots, and
+   * a group filter additionally requires active membership of that group.
+   */
+  async listPlots(actor: User, groupId?: string): Promise<VslaCarbonPlotRecord[]> {
+    if (isPrivilegedReader(actor)) {
+      return this.plots.find(groupId ? { groupId } : {});
+    }
+    if (groupId) {
+      await this.assertGroupReader(actor, groupId);
+      return this.plots.find({ groupId, ownerUserId: actor.id });
+    }
+    return this.plots.find({ ownerUserId: actor.id });
   }
 
   async getPlot(id: string): Promise<VslaCarbonPlotRecord> {
@@ -1209,6 +1285,13 @@ export class VslaCarbonService {
     if (!plot) {
       throw new NotFoundException(`Carbon plot '${id}' not found`);
     }
+    return plot;
+  }
+
+  /** Plot detail for an authenticated caller, membership-scoped (V-13). */
+  async readPlot(actor: User, id: string): Promise<VslaCarbonPlotRecord> {
+    const plot = await this.getPlot(id);
+    await this.assertGroupReader(actor, plot.groupId);
     return plot;
   }
 
@@ -1302,8 +1385,9 @@ export class VslaCarbonService {
     return record;
   }
 
-  async listEvidence(plotId: string): Promise<CarbonEvidenceRecord[]> {
-    await this.getPlot(plotId);
+  async listEvidence(actor: User, plotId: string): Promise<CarbonEvidenceRecord[]> {
+    const plot = await this.getPlot(plotId);
+    await this.assertGroupReader(actor, plot.groupId);
     return this.evidence.find({ plotId });
   }
 
@@ -1365,8 +1449,9 @@ export class VslaCarbonService {
     return record;
   }
 
-  async listEstimates(plotId: string): Promise<CarbonEstimateRecord[]> {
-    await this.getPlot(plotId);
+  async listEstimates(actor: User, plotId: string): Promise<CarbonEstimateRecord[]> {
+    const plot = await this.getPlot(plotId);
+    await this.assertGroupReader(actor, plot.groupId);
     return this.estimates.find({ plotId });
   }
 
