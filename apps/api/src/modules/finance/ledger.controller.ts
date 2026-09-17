@@ -12,16 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  ArrayMinSize,
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Matches,
-  Min,
-  ValidateNested
-} from 'class-validator';
+import { ArrayMinSize, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, ValidateNested } from 'class-validator';
 import {
   LEDGER_ACCOUNT_TYPES,
   LEDGER_DIRECTIONS,
@@ -42,6 +33,7 @@ import { TbConsistencyChecker } from './tb-consistency.checker.js';
 
 class CreateLedgerAccountDto {
   @IsString()
+  @MaxLength(100)
   @Matches(/^[a-z0-9:_-]+$/i)
   code!: string;
 
@@ -50,11 +42,13 @@ class CreateLedgerAccountDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerId?: string;
 }
 
 class PostingDto {
   @IsString()
+  @MaxLength(100)
   accountCode!: string;
 
   @IsIn(LEDGER_DIRECTIONS)
@@ -67,18 +61,22 @@ class PostingDto {
 
 class PostEntryDto implements PostEntryInput {
   @IsString()
+  @MaxLength(100)
   idempotencyKey!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   referenceType?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   referenceId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @ValidateNested({ each: true })
