@@ -57,6 +57,24 @@ describe('PartnerAuthService', () => {
     );
   });
 
+  it('rejects tokens of a deactivated client immediately on verify (L-01)', async () => {
+    const clients = createInMemoryPartnerClientRepository();
+    const local = new PartnerAuthService(clients, createInMemoryApiKeyRepository());
+    const { client, clientSecret } = await local.registerClient({
+      name: 'Offboarded',
+      scopes: ['impact:read'],
+      partnerId: 'p-off'
+    });
+    const issued = await local.issueToken(client.clientId, clientSecret);
+    // Token is valid while the client is active…
+    await expect(local.verifyToken(issued.accessToken)).resolves.toMatchObject({
+      clientId: client.clientId
+    });
+    // …but suspension cuts access at once, not after the JWT lifetime.
+    await clients.update(client.id, { status: 'suspended' });
+    await expect(local.verifyToken(issued.accessToken)).rejects.toThrow(/deactivated/);
+  });
+
   it('rejects tampered tokens on verify', async () => {
     const { client, clientSecret } = await service.registerClient({
       name: 'Y',
