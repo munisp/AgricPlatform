@@ -9,19 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsArray,
-  IsIn,
-  IsISO8601,
-  IsInt,
-  IsNumber,
-  IsObject,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-  ValidateNested
-} from 'class-validator';
+import { IsArray, IsISO8601, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import type {
   AvailabilityWindow,
@@ -82,10 +70,12 @@ class CreateListingDto implements Omit<CreateListingInput, 'ownerUserId' | 'rate
   type!: EquipmentType;
 
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -119,6 +109,7 @@ class CreateListingDto implements Omit<CreateListingInput, 'ownerUserId' | 'rate
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   operatorLicenseRef?: string;
 }
 
@@ -139,6 +130,7 @@ class BrowseListingsQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   h3Cell?: string;
 
   @IsOptional()
@@ -163,6 +155,7 @@ class BrowseListingsQuery {
 class CreateBookingDto implements Omit<CreateBookingInput, 'farmerId'> {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   plotId?: string;
 
   @IsNumber()
@@ -188,6 +181,7 @@ class CreateBookingDto implements Omit<CreateBookingInput, 'farmerId'> {
 class ReasonDto {
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   reason?: string;
 }
 
@@ -204,6 +198,7 @@ class RateBookingDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   comment?: string;
 }
 
