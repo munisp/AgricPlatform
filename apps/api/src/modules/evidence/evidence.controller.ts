@@ -10,6 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { IsInt, IsISO8601, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import type { EvidenceCaseType, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -22,6 +23,54 @@ import {
   type ConfirmItemInput,
   type InitiateUploadInput
 } from './evidence.service.js';
+
+/**
+ * V-74: DTO classes (not interfaces) so the global ValidationPipe actually
+ * validates/strips these money-adjacent bodies. The per-case-type size
+ * class is enforced in the service (V-73); the DTO carries the platform-
+ * wide sanity ceiling (largest class).
+ */
+const EVIDENCE_DTO_MAX_SIZE_BYTES = 25 * 1024 * 1024;
+
+class InitiateUploadDto implements InitiateUploadInput {
+  @IsString()
+  @MaxLength(100)
+  mime!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(EVIDENCE_DTO_MAX_SIZE_BYTES)
+  sizeBytes!: number;
+
+  @Matches(/^[0-9a-f]{64}$/, { message: 'sha256 must be 64 lowercase hex chars' })
+  sha256!: string;
+
+  @IsOptional()
+  @IsISO8601()
+  capturedAt?: string;
+}
+
+class ConfirmItemDto implements ConfirmItemInput {
+  @IsString()
+  @MaxLength(500)
+  objectKey!: string;
+
+  @Matches(/^[0-9a-f]{64}$/, { message: 'sha256 must be 64 lowercase hex chars' })
+  sha256!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(EVIDENCE_DTO_MAX_SIZE_BYTES)
+  sizeBytes!: number;
+
+  @IsString()
+  @MaxLength(100)
+  mime!: string;
+
+  @IsOptional()
+  @IsISO8601()
+  capturedAt?: string;
+}
 
 function requireActor(actor: User | null): User {
   if (!actor) {
@@ -73,7 +122,7 @@ export class EvidenceController {
   async initiateUpload(
     @Param('caseType') caseType: string,
     @Param('caseId') caseId: string,
-    @Body() body: InitiateUploadInput,
+    @Body() body: InitiateUploadDto,
     @CurrentUser() actor: User | null
   ) {
     return {
@@ -96,7 +145,7 @@ export class EvidenceController {
   async confirmItem(
     @Param('caseType') caseType: string,
     @Param('caseId') caseId: string,
-    @Body() body: ConfirmItemInput,
+    @Body() body: ConfirmItemDto,
     @CurrentUser() actor: User | null
   ) {
     return {
