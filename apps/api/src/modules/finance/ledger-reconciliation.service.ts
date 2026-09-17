@@ -208,7 +208,7 @@ export class LedgerReconciliationService {
   ): Promise<boolean> {
     const key =
       leg === 'hold'
-        ? escrowHoldLedgerKey(record.id)
+        ? escrowHoldLedgerKey(record.orderId) // hold legs are order-keyed (V-49)
         : escrowMoneyOutLedgerKey(leg, record.id);
     const entry = await this.ledger.findEntryByIdempotencyKey(key);
     if (!entry) {
