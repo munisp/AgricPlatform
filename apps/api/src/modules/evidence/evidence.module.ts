@@ -50,7 +50,9 @@ import {
       inject: [TelemetryService]
     }
   ],
-  // Exported for the privacy module's NDPA deletion sweep.
-  exports: [EvidenceService]
+  // EvidenceService is exported for the privacy module's NDPA deletion
+  // sweep; EVIDENCE_STORAGE_DRIVER for the health module's readiness probe
+  // (L-20) — the probe reads the SAME driver instance the uploads use.
+  exports: [EvidenceService, EVIDENCE_STORAGE_DRIVER]
 })
 export class EvidenceModule {}
