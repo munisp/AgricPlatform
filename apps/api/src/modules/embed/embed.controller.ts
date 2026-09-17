@@ -28,10 +28,14 @@ export class EmbedController {
   @ApiOperation({ summary: 'Public opportunity directory for embeds (no PII)' })
   async opportunityDirectory(@Query('limit') limit?: string) {
     const cap = Math.min(Number(limit) || 20, 50);
-    const all = await this.opportunities.all();
-    const open = all
-      .filter((opportunity) => opportunity.deadline >= new Date().toISOString().slice(0, 10))
-      .slice(0, cap)
+    // V-72: deadline filter + cap are applied in SQL (searchPage), not by
+    // loading the whole table and slicing in memory.
+    const page = await this.opportunities.searchPage(
+      { deadlineFrom: new Date().toISOString().slice(0, 10) },
+      1,
+      cap
+    );
+    const open = page.data
       .map((opportunity) => ({
         id: opportunity.id,
         title: opportunity.title,
@@ -48,9 +52,9 @@ export class EmbedController {
   @ApiOperation({ summary: 'Latest commodity price observations (ticker feed)' })
   async priceTicker(@Query('limit') limit?: string) {
     const cap = Math.min(Number(limit) || 30, 100);
-    const latest = (await this.prices.all())
-      .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
-      .slice(0, cap)
+    // V-72: the pg repository orders by observed_at DESC and applies the
+    // LIMIT in SQL (searchPage); no full-table load + in-memory slice.
+    const latest = (await this.prices.searchPage({}, 1, cap)).data
       .map((price) => ({
         commodity: price.commodity,
         market: price.market,
@@ -80,7 +84,8 @@ export class EmbedController {
   @ApiOperation({ summary: 'Course catalogue for embeds (no PII)' })
   async courseCatalogue(@Query('limit') limit?: string) {
     const cap = Math.min(Number(limit) || 20, 50);
-    const courses = (await this.learning.allCourses()).slice(0, cap).map((course) => ({
+    // V-72: SQL-side LIMIT via searchPage instead of allCourses()+slice.
+    const courses = (await this.learning.listCourses({ page: 1, pageSize: cap })).data.map((course) => ({
       id: course.id,
       title: course.title,
       category: course.category,
