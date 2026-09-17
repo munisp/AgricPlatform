@@ -6,7 +6,6 @@ import type {
   OpportunityApplication
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
-import { paginate } from '../../common/pagination.js';
 import {
   APPLICATION_REPOSITORY,
   OPPORTUNITY_REPOSITORY
@@ -42,13 +41,31 @@ export class OpportunitiesService {
   async list(
     filter: OpportunityCriteria & { page?: number; pageSize?: number }
   ): Promise<ApiListResponse<Opportunity>> {
-    const items = await this.opportunities.find({
-      state: filter.state,
-      valueChain: filter.valueChain,
-      type: filter.type,
-      active: filter.active
-    });
-    return paginate(items, filter.page, filter.pageSize);
+    // V-72: push LIMIT/OFFSET + COUNT into SQL instead of loading the whole
+    // table and slicing in memory.
+    return this.opportunities.searchPage(
+      {
+        state: filter.state,
+        valueChain: filter.valueChain,
+        type: filter.type,
+        active: filter.active,
+        deadlineFrom: filter.deadlineFrom
+      },
+      filter.page,
+      filter.pageSize
+    );
+  }
+
+  /**
+   * Bounded page for public feed consumers (embed widget): the cap is
+   * applied in SQL on the pg driver, not after a full-table load.
+   */
+  async searchPage(
+    criteria: OpportunityCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<Opportunity>> {
+    return this.opportunities.searchPage(criteria, page, pageSize);
   }
 
   async all(): Promise<Opportunity[]> {
