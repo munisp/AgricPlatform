@@ -8,15 +8,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  ArrayMinSize,
-  IsInt,
-  IsObject,
-  IsOptional,
-  IsString,
-  Min,
-  ValidateNested
-} from 'class-validator';
+import { ArrayMinSize, IsInt, IsObject, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -47,6 +39,7 @@ class MilestonePlanDto {
 
   /** ISO calendar date (yyyy-mm-dd) inside the contract window. */
   @IsString()
+  @MaxLength(500)
   dueDate!: string;
 
   @IsInt()
@@ -56,12 +49,15 @@ class MilestonePlanDto {
 
 class CreateOfftakeContractDto implements CreateOfftakeContractInput {
   @IsString()
+  @MaxLength(100)
   cooperativeId!: string;
 
   @IsString()
+  @MaxLength(100)
   buyerOrgId!: string;
 
   @IsString()
+  @MaxLength(500)
   commodity!: string;
 
   @IsInt()
@@ -77,9 +73,11 @@ class CreateOfftakeContractDto implements CreateOfftakeContractInput {
   priceBand!: PriceBandDto;
 
   @IsString()
+  @MaxLength(500)
   windowStart!: string;
 
   @IsString()
+  @MaxLength(500)
   windowEnd!: string;
 
   @ValidateNested({ each: true })
@@ -89,6 +87,7 @@ class CreateOfftakeContractDto implements CreateOfftakeContractInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   idempotencyKey?: string;
 }
 
@@ -99,6 +98,7 @@ class RecordDeliveryDto implements RecordDeliveryInput {
 
   /** Traceability lot id — mandatory delivery evidence. */
   @IsString()
+  @MaxLength(100)
   lotId!: string;
 
   @IsInt()
@@ -111,10 +111,12 @@ class RecordDeliveryDto implements RecordDeliveryInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   idempotencyKey?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   depositReference?: string;
 }
 
@@ -185,14 +187,29 @@ export class OfftakeController {
   async sweep(@CurrentUser() actor: User | null) {
     return { data: await this.offtake.sweep(actor as User) };
   }
+
+  @Post('settlement-sweep')
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'V-51 durable settlement retry: re-drives the offtake-settle journal for every released escrow that is missing it (idempotent — identical journal, never duplicate legs)'
+  })
+  async settlementSweep(@CurrentUser() actor: User | null) {
+    return { data: await this.offtake.settlementSweep(actor as User) };
+  }
 }
 
 /**
  * Credit-side read (Innovation 18): a signed forward is underwriting
- * collateral for SeasonSync/loan decisions — read-only, lender/admin only,
- * behind the same `offtake-contracts` flag. Kept in the marketplace module
- * so the credit suite needs no new imports; the route lives under
+ * collateral for SeasonSync/loan decisions — read-only, behind the same
+ * `offtake-contracts` flag. Kept in the marketplace module so the credit
+ * suite needs no new imports; the route lives under
  * /credit/offtake-collateral per the spec.
+ *
+ * V-61: restricted to the contract parties + admin + regulator (the
+ * service re-checks party scoping). Lender reads need a contract↔lender
+ * linkage that does not exist yet — deferred to the V-31 design item, so
+ * lenders are 403 until then.
  */
 @ApiTags('credit')
 @Controller('credit/offtake-collateral')
@@ -202,11 +219,12 @@ export class OfftakeCollateralController {
   constructor(private readonly offtake: OfftakeService) {}
 
   @Get(':contractId')
-  @Roles('lender', 'admin')
+  @Roles('chapter_lead', 'buyer', 'admin', 'regulator')
   @ApiOperation({
-    summary: 'Read-only offtake collateral view for underwriting (delivery/escrow progress)'
+    summary:
+      'Read-only offtake collateral view (delivery/escrow progress) — contract parties, admin and regulator only (V-61; lender reads deferred to V-31)'
   })
-  async collateral(@Param('contractId') contractId: string) {
-    return { data: await this.offtake.collateralView(contractId) };
+  async collateral(@Param('contractId') contractId: string, @CurrentUser() actor: User | null) {
+    return { data: await this.offtake.collateralView(actor as User, contractId) };
   }
 }
