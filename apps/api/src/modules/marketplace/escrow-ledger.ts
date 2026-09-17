@@ -17,9 +17,13 @@ import type { LedgerPosting } from '@agric-platform/shared';
  *     DR marketplace:escrow:holds_liability
  *     CR marketplace:escrow:provider_float
  *
- * Every leg is idempotency-keyed per escrow (`escrow-ledger:hold:<id>`,
+ * Every leg is idempotency-keyed (`escrow-ledger:hold:<orderId>`,
  * `escrow-ledger:released:<id>`, `escrow-ledger:refunded:<id>`), so retries,
- * replays and the reconciliation repair sweep can never double-post.
+ * replays and the reconciliation repair sweep can never double-post. The
+ * HOLD leg key is deliberately ORDER-derived (V-49): one order escrows once,
+ * so even if a driver bug ever produced two escrow records for one order,
+ * the second hold leg would replay against the same key instead of
+ * double-posting the liability.
  *
  * Invariant the reconciliation job (finance LedgerReconciliationService)
  * proves: Σ amount_kobo of escrows in open states (held, releasing,
@@ -45,8 +49,8 @@ export type EscrowLedgerLeg = keyof typeof ESCROW_LEDGER_REFERENCE_TYPES;
 /** Escrow states whose funds are still the platform's liability. */
 export const ESCROW_OPEN_STATUSES = ['held', 'releasing', 'refunding', 'disputed'] as const;
 
-export function escrowHoldLedgerKey(escrowId: string): string {
-  return `escrow-ledger:hold:${escrowId}`;
+export function escrowHoldLedgerKey(orderId: string): string {
+  return `escrow-ledger:hold:${orderId}`;
 }
 
 export function escrowMoneyOutLedgerKey(
@@ -74,7 +78,7 @@ export function buildEscrowSettlementPostings(amountKobo: number): LedgerPosting
 
 /** Full posting descriptor for one escrow leg (service + reconciler share it). */
 export function escrowLegPostingInput(
-  record: { id: string; amountKobo: number },
+  record: { id: string; orderId: string; amountKobo: number },
   leg: EscrowLedgerLeg
 ): {
   idempotencyKey: string;
@@ -85,7 +89,7 @@ export function escrowLegPostingInput(
 } {
   return {
     idempotencyKey:
-      leg === 'hold' ? escrowHoldLedgerKey(record.id) : escrowMoneyOutLedgerKey(leg, record.id),
+      leg === 'hold' ? escrowHoldLedgerKey(record.orderId) : escrowMoneyOutLedgerKey(leg, record.id),
     referenceType: ESCROW_LEDGER_REFERENCE_TYPES[leg],
     referenceId: record.id,
     description:
