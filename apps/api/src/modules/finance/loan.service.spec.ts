@@ -231,7 +231,7 @@ describe('LoanService', () => {
   });
 
   it('rejects repayment on loans that are not repaying', async () => {
-    const { service } = makeService();
+    const { service, ledger } = makeService();
     const loan = await approvedLoan(service);
     await expect(service.markInstallmentPaid(loan.id, 1, applicant.id)).rejects.toThrowError(
       /not repaying/
@@ -344,5 +344,79 @@ describe('LoanService', () => {
     // Deterministic ordering by match score (highest first).
     expect(matches[0].lender.minScore).toBe(40);
     expect(matches[2].lender.minScore).toBe(75);
+  });
+});
+
+describe('LoanService V-23 term ceiling + L-12 date contract', () => {
+  it('rejects termMonths above the business ceiling at application (V-23)', async () => {
+    const { service } = makeService();
+    await expect(
+      service.apply({
+        applicantId: applicant.id,
+        lenderId: 'lender-nyfn-coop',
+        amountKobo: 5_000_000,
+        termMonths: 1_000_000_000,
+        annualRateBps: 0
+      })
+    ).rejects.toThrowError(/must not exceed 120/);
+    await expect(
+      service.apply({
+        applicantId: applicant.id,
+        lenderId: 'lender-nyfn-coop',
+        amountKobo: 5_000_000,
+        termMonths: 121,
+        annualRateBps: 0
+      })
+    ).rejects.toThrowError(/must not exceed 120/);
+    // The ceiling itself is legitimate.
+    const loan = await service.apply({
+      applicantId: applicant.id,
+      lenderId: 'lender-nyfn-coop',
+      amountKobo: 5_000_000,
+      termMonths: 120,
+      annualRateBps: 0
+    });
+    expect(loan.termMonths).toBe(120);
+  });
+
+  it('rejects a datetime-shaped firstDueDate with 400 BEFORE any ledger posting (L-12)', async () => {
+    const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
+    const loan = await approvedLoan(service);
+    // Passes @IsISO8601 but is not the date-only shape the schedule lib needs.
+    await expect(
+      service.disburse(loan.id, admin.id, '2026-09-01T10:00:00.000Z')
+    ).rejects.toThrowError(BadRequestException);
+    await expect(
+      service.disburse(loan.id, admin.id, '2026-09-01T10:00:00.000Z')
+    ).rejects.toThrowError(/YYYY-MM-DD/);
+    // Nothing posted, loan untouched, disbursement still possible.
+    expect(
+      await ledger.listEntries({ referenceType: 'loan_application', referenceId: loan.id })
+    ).toHaveLength(0);
+    expect((await service.getLoan(loan.id)).status).toBe('approved');
+    const disbursed = await service.disburse(loan.id, admin.id, '2026-09-01');
+    expect(disbursed.status).toBe('repaying');
+  });
+
+  it('maps amortisation-lib errors to BadRequestException at the service boundary (L-12)', async () => {
+    const { service, ledger } = makeService();
+    await fundPlatformCash(ledger, 12_000_000);
+    // 100%/month interest over a 120-month term: the amortisation payment
+    // exactly equals the first interest accrual, so the shared lib throws
+    // (amortisation underflow) — the service must surface a 400, never 500.
+    const loan = await service.apply({
+      applicantId: applicant.id,
+      lenderId: 'lender-nyfn-coop',
+      amountKobo: 12_000_000,
+      termMonths: 120,
+      annualRateBps: 120_000
+    });
+    await service.transition(loan.id, 'submitted', applicant);
+    await service.transition(loan.id, 'under_review', admin);
+    await service.transition(loan.id, 'approved', admin);
+    await expect(service.disburse(loan.id, admin.id, '2026-09-01')).rejects.toThrowError(
+      BadRequestException
+    );
   });
 });
