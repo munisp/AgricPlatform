@@ -59,16 +59,17 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
 
   async create(record: SubsidyProgrammeRecord): Promise<SubsidyProgrammeRecord> {
     await this.pool.query(
-      'INSERT INTO input_vouchers.programmes (id, name, sponsor, description, status, ' +
+      'INSERT INTO input_vouchers.programmes (id, name, sponsor, description, status, funder_id, ' +
         'per_farmer_cap_kobo, budget_kobo, eligible_states, eligible_crops, ' +
         'liability_account_code, created_by, created_at, updated_at) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
       [
         record.id,
         record.name,
         record.sponsor,
         record.description ?? null,
         record.status,
+        record.funderId ?? null,
         record.perFarmerCapKobo,
         record.budgetKobo,
         JSON.stringify(record.eligibleStates),
@@ -173,6 +174,7 @@ export class PgSubsidyProgrammeRepository implements SubsidyProgrammeRepository 
       sponsor: row.sponsor as string,
       description: (row.description as string) ?? undefined,
       status: row.status as SubsidyProgrammeRecord['status'],
+      funderId: (row.funder_id as string | null) ?? undefined,
       perFarmerCapKobo: Number(row.per_farmer_cap_kobo),
       budgetKobo: Number(row.budget_kobo),
       eligibleStates: toStringArray(row.eligible_states),

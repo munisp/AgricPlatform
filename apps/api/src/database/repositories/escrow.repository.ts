@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import type { EscrowRecord, EscrowStatus } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
@@ -41,6 +42,21 @@ export class InMemoryEscrowRepository
 {
   constructor(seed: readonly EscrowRecord[] = []) {
     super(seed, escrowMatcher);
+  }
+
+  /**
+   * V-49: mirror the pg `order_id text NOT NULL UNIQUE` constraint on
+   * marketplace.escrow_records (003_commerce_finance.sql:16). One order
+   * escrows once — a second record for the same order is a conflict on BOTH
+   * drivers. Synchronous check-and-set so concurrent holds serialise.
+   */
+  override async create(record: EscrowRecord): Promise<EscrowRecord> {
+    for (const existing of this.items.values()) {
+      if (existing.orderId === record.orderId) {
+        throw new ConflictException(`Order '${record.orderId}' already has an escrow record`);
+      }
+    }
+    return super.create(record);
   }
 
   /** Single-process equivalent of the pg FOR UPDATE SKIP LOCKED batch. */

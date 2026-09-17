@@ -125,6 +125,19 @@ export class PgAuditRepository implements AuditRepository {
     );
     return result.rows.map((row) => auditMapper.fromRow(row));
   }
+
+  /**
+   * L-17: bounded page for chunked chain verification — one round-trip per
+   * batch instead of materializing the whole append-only log in memory.
+   */
+  async listPage(offset: number, limit: number): Promise<AuditEvent[]> {
+    const result = await this.pool.query(
+      `SELECT ${auditMapper.columns.join(', ')} FROM admin.audit_events
+       ORDER BY created_at, id LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    return result.rows.map((row) => auditMapper.fromRow(row));
+  }
 }
 
 /** Append-only domain event outbox over events.outbox. */
@@ -184,6 +197,21 @@ export class PgOutboxRepository implements OutboxRepository {
       id,
       deadLetteredAt
     ]);
+  }
+
+  /**
+   * V-79 redrive: clears dead_lettered_at and the attempt counter in one
+   * statement, guarded on the row actually being dead-lettered — a row
+   * that is merely pending (or missing) is never touched.
+   */
+  async resetDeadLetter(id: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE events.outbox
+         SET dead_lettered_at = NULL, attempts = 0
+       WHERE id = $1 AND dead_lettered_at IS NOT NULL`,
+      [id]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 }
 
