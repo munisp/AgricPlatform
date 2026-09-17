@@ -53,8 +53,11 @@ export interface CheckoutResult {
  * buyer). Returns [totalNaira, settledDiscountKobo].
  */
 export function settleWholeNaira(totalKobo: number, discountKobo: number): [number, number] {
-  const totalNaira = Math.ceil(totalKobo / 100);
-  return [totalNaira, discountKobo + (totalNaira * 100 - totalKobo)];
+  // Round DOWN: the buyer never pays more than the evaluated total, and the
+  // kobo remainder is added to the recorded discount so the order extension
+  // invariant (subtotalKobo - discountKobo === totalNaira * 100) always foots.
+  const totalNaira = Math.floor(totalKobo / 100);
+  return [totalNaira, discountKobo + (totalKobo - totalNaira * 100)];
 }
 
 /**
