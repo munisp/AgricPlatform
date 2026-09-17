@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { MentorRequest, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -16,18 +16,22 @@ import {
 class ListTopicsQuery extends ListQueryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   category?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   q?: string;
 }
 
@@ -37,36 +41,45 @@ class ListTopicsQuery extends ListQueryDto {
  */
 class CreateTopicDto implements Omit<CreateTopicInput, 'authorId'> {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsString()
+  @MaxLength(500)
   category!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 }
 
 class FlagDto {
   @IsString()
+  @MaxLength(2000)
   reason!: string;
 }
 
 class CreateMentorRequestDto implements CreateMentorRequestInput {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsString()
+  @MaxLength(100)
   crop!: string;
 
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(500)
   challenge!: string;
 }
 

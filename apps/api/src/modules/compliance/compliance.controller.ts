@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -10,18 +10,22 @@ import { ComplianceService } from './compliance.service.js';
 
 class RecordConsentDto {
   @IsString()
+  @MaxLength(100)
   purpose!: string;
 
   @IsString()
+  @MaxLength(50)
   policyVersion!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   source?: string;
 }
 
 class RejectDsrDto {
   @IsString()
+  @MaxLength(2000)
   note!: string;
 }
 
@@ -34,10 +38,12 @@ class RetentionSweepDto {
 
 class UpsertRetentionPolicyDto {
   @IsString()
+  @MaxLength(200)
   entity!: string;
 
   @IsInt()
   @Min(1)
+  @Max(36_500)
   retainDays!: number;
 
   @IsBoolean()
