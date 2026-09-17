@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import type { User } from '@agric-platform/shared';
 import {
   CHAPTER_REPOSITORY,
   CHAPTER_MAP_SNAPSHOT_REPOSITORY,
@@ -105,6 +106,22 @@ export class ChapterMapService {
    * snapshots are returned with stale=true and their real computedAt —
    * never presented as live.
    */
+  /**
+   * Chapter-lead resource scoping (V-14): the chapter map may be read by the
+   * chapter's OWN lead or an admin — the role guard alone previously let ANY
+   * chapter lead read EVERY chapter's map. Anonymous 401, wrong-chapter 403,
+   * unknown chapter 404.
+   */
+  async assertMapReader(actor: User | null, chapterId: string): Promise<void> {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    const chapter = await this.chapters.getById(chapterId); // 404s for unknown chapters
+    if (!actor.roles.includes('admin') && chapter.leadUserId !== actor.id) {
+      throw new ForbiddenException('Only the lead of this chapter or an admin may view its map');
+    }
+  }
+
   async getMap(chapterId: string, metric?: ChapterMapMetric): Promise<ChapterMapView> {
     await this.chapters.getById(chapterId); // 404s for unknown chapters
     const rows = await this.snapshots.findByChapter(chapterId);
