@@ -66,10 +66,41 @@ function makeStack(variantSeed = [VARIANT]) {
 }
 
 describe('settleWholeNaira', () => {
-  it('absorbs sub-naira remainders into the discount', () => {
-    expect(settleWholeNaira(100_010, 0)).toEqual([1001, 90]);
+  it('absorbs sub-naira remainders into the discount (buyer pays <= evaluated total)', () => {
+    expect(settleWholeNaira(100_010, 0)).toEqual([1000, 10]);
     expect(settleWholeNaira(100_000, 5_000)).toEqual([1000, 5_000]);
-    expect(settleWholeNaira(99_999, 1)).toEqual([1000, 2]);
+    expect(settleWholeNaira(99_999, 1)).toEqual([999, 100]);
+    expect(settleWholeNaira(9_250, 750)).toEqual([92, 800]);
+  });
+
+  it('property: never overcharges and always foots subtotal - discount === total', () => {
+    // Property test over kobo remainders: for every evaluated total and
+    // discount, totalNaira * 100 <= totalKobo and the extension invariant
+    // (subtotalKobo - settledDiscountKobo === totalNaira * 100) holds.
+    // Every kobo remainder 0..99 across a spread of magnitudes, plus
+    // deterministic pseudo-random samples (LCG) up to ~2^31 kobo.
+    const samples: number[] = [];
+    for (let base = 0; base <= 100_000; base += 100) {
+      for (let remainder = 0; remainder < 100; remainder += 1) {
+        samples.push(base + remainder);
+      }
+    }
+    let state = 42;
+    for (let i = 0; i < 5_000; i += 1) {
+      state = (state * 1_103_515_245 + 12_345) % 2 ** 31;
+      samples.push(state);
+    }
+    const violations: string[] = [];
+    for (const totalKobo of samples) {
+      const discountKobo = (totalKobo * 37) % 500;
+      const [totalNaira, settledDiscountKobo] = settleWholeNaira(totalKobo, discountKobo);
+      const subtotalKobo = totalKobo + discountKobo;
+      if (totalNaira * 100 > totalKobo) violations.push(`overcharge at ${totalKobo}`);
+      if (totalKobo - totalNaira * 100 >= 100) violations.push(`remainder >= 100 at ${totalKobo}`);
+      if (subtotalKobo - settledDiscountKobo !== totalNaira * 100) violations.push(`invariant broken at ${totalKobo}`);
+      if (settledDiscountKobo < discountKobo) violations.push(`discount shrank at ${totalKobo}`);
+    }
+    expect(violations).toEqual([]);
   });
 });
 
