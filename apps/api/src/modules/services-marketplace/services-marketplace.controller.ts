@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsIn, IsISO8601, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsISO8601, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { BookingStatus, SupplierCategory, User } from '@agric-platform/shared';
 import { BOOKING_STATUSES, PRICING_UNITS, SUPPLIER_CATEGORIES, SUPPLIER_VERIFICATION_STATUSES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -22,6 +22,7 @@ class ListSuppliersQuery extends ListQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
@@ -31,9 +32,11 @@ class ListSuppliersQuery extends ListQueryDto {
 
 class CreateSupplierDto implements CreateSupplierInput {
   @IsString()
+  @MaxLength(100)
   ownerUserId!: string;
 
   @IsString()
+  @MaxLength(200)
   businessName!: string;
 
   @IsArray()
@@ -42,12 +45,16 @@ class CreateSupplierDto implements CreateSupplierInput {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   statesCovered?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   lgasCovered?: string[];
 }
 
@@ -61,10 +68,12 @@ class CreateOfferingDto implements Omit<CreateOfferingInput, 'supplierId'> {
   category!: SupplierCategory;
 
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsNumber()
@@ -76,6 +85,7 @@ class CreateOfferingDto implements Omit<CreateOfferingInput, 'supplierId'> {
 
 class CreateBookingDto implements Omit<CreateBookingInput, 'offeringId'> {
   @IsString()
+  @MaxLength(100)
   customerId!: string;
 
   @IsOptional()
@@ -91,6 +101,7 @@ class CreateBookingDto implements Omit<CreateBookingInput, 'offeringId'> {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
@@ -112,6 +123,7 @@ class SetBookingStatusDto {
 
 class CreateReviewDto {
   @IsString()
+  @MaxLength(100)
   authorId!: string;
 
   @IsInt()
@@ -121,6 +133,7 @@ class CreateReviewDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   comment?: string;
 }
 
