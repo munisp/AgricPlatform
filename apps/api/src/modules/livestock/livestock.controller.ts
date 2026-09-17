@@ -10,16 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  ArrayNotEmpty,
-  IsArray,
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsOptional,
-  IsString,
-  Min
-} from 'class-validator';
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsISO8601, IsIn, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   ANIMAL_SEXES,
@@ -42,6 +33,7 @@ import { LivestockService } from './livestock.service.js';
 
 class EnrolDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 }
 
@@ -50,6 +42,7 @@ class RegisterAnimalDto implements RegisterAnimalInput {
   species!: RegisterAnimalInput['species'];
 
   @IsString()
+  @MaxLength(500)
   breed!: string;
 
   @IsIn([...ANIMAL_SEXES])
@@ -61,10 +54,12 @@ class RegisterAnimalDto implements RegisterAnimalInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   tagId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   eid?: string;
 
   /** Nigerian state name (e.g. 'Kaduna'); the ID embeds the two-letter code. */
@@ -73,18 +68,22 @@ class RegisterAnimalDto implements RegisterAnimalInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lga?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   sireId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   damId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
@@ -99,20 +98,24 @@ class ListAnimalsQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 }
 
 class UpdateAnimalDto implements UpdateAnimalInput {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   breed?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   eid?: string;
 
   @IsOptional()
@@ -122,6 +125,7 @@ class UpdateAnimalDto implements UpdateAnimalInput {
 
 class TransferAnimalDto implements TransferAnimalInput {
   @IsString()
+  @MaxLength(100)
   toUserId!: string;
 
   @IsIn([...OWNERSHIP_TRANSFER_TYPES])
@@ -145,32 +149,40 @@ class CreateLotDto implements CreateLotInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lga?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   formationRule?: string;
 }
 
 class SetLotAnimalsDto {
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   add?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   remove?: string[];
 }
 
 class PastoralistProfileDto implements PastoralistProfileInput {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   grazingZoneId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   migrationPattern?: string;
 
   @IsArray()
