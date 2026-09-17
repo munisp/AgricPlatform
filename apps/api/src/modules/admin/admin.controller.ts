@@ -11,18 +11,27 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayNotEmpty, IsBoolean, IsIn } from 'class-validator';
+import { ArrayNotEmpty, ArrayMaxSize, IsBoolean, IsIn, IsOptional } from 'class-validator';
 import { USER_ROLES, type UserRole } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { ListQueryDto } from '../../common/pagination.js';
 import type { User } from '@agric-platform/shared';
 import { AdminService, type AccountStatus } from './admin.service.js';
 
 class UpdateRolesDto {
   @ArrayNotEmpty()
+  @ArrayMaxSize(USER_ROLES.length)
   @IsIn(USER_ROLES, { each: true })
   roles!: UserRole[];
+}
+
+/** Admin user-directory query: validated role filter + real pagination (L-15/V-72). */
+class AdminUsersQueryDto extends ListQueryDto {
+  @IsOptional()
+  @IsIn(USER_ROLES)
+  role?: UserRole;
 }
 
 class UpdateStatusDto {
@@ -43,9 +52,9 @@ export class AdminController {
   constructor(private readonly admin: AdminService) {}
 
   @Get('users')
-  @ApiOperation({ summary: 'List users with account status overlay' })
-  async users(@Query('role') role?: UserRole) {
-    return { data: await this.admin.listUsers(role) };
+  @ApiOperation({ summary: 'List users with account status overlay (paginated)' })
+  async users(@Query() query: AdminUsersQueryDto) {
+    return { data: await this.admin.listUsers(query.role, query.page, query.pageSize) };
   }
 
   @Patch('users/:id/roles')
@@ -182,6 +191,16 @@ export class AdminController {
   @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
   async outboxDeadLetters() {
     return { data: await this.admin.outboxDeadLetters() };
+  }
+
+  @Post('outbox/dead-letters/:id/redrive')
+  @ApiOperation({
+    summary:
+      'Redrive a dead-lettered outbox row (admin only, audited): clears dead_lettered_at and ' +
+      'the attempt counter so the next sweep re-delivers it. 404 when the row is not dead-lettered.'
+  })
+  async redriveOutboxDeadLetter(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.admin.redriveOutboxDeadLetter(actor?.id ?? 'admin', id) };
   }
 
   @Post('sweeps/escrow-expiry')

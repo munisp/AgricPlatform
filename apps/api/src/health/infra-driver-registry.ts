@@ -153,3 +153,29 @@ export function orchestratorProbe(orchestrator: WorkflowOrchestrator): InfraDriv
 export function authzProbe(authz: AuthorizationCheck): InfraDriverProbe {
   return { port: 'authz', driver: authz };
 }
+
+/**
+ * Probe adapter for the evidence-storage port (stub | s3) — L-20. The
+ * driver's healthCheck() reports the uniform {configured, healthy, detail}
+ * shape; no circuit breaker, so lastErrorClass/lastSuccessAt stay null and
+ * only explicit failure evidence degrades the row (registry doctrine).
+ */
+export function evidenceStorageProbe(storage: {
+  readonly name: string;
+  healthCheck(): Promise<{ configured: boolean; healthy: boolean; detail: string }>;
+}): InfraDriverProbe {
+  return {
+    port: 'evidence-storage',
+    driver: {
+      name: storage.name,
+      status: async () => {
+        const status = await storage.healthCheck();
+        return {
+          ...status,
+          lastErrorClass: status.healthy ? null : ('network' as const),
+          lastSuccessAt: null
+        };
+      }
+    }
+  };
+}

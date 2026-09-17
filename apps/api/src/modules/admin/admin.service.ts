@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
-import type { AuditAnchor, PlatformMetric, User, UserRole } from '@agric-platform/shared';
+import type { ApiListResponse, AuditAnchor, PlatformMetric, User, UserRole } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditAnchorService } from '../../core/audit-anchor.service.js';
 import { AuditService, type AuditVerification } from '../../core/audit.service.js';
@@ -85,11 +85,23 @@ export class AdminService {
     @Optional() private readonly voucherStuckSweeper?: VoucherStuckSweeperService
   ) {}
 
-  async listUsers(role?: UserRole): Promise<AdminUserView[]> {
-    const page = await this.users.list({ role, page: 1, pageSize: 100 });
-    return Promise.all(
-      page.data.map(async (user) => ({ user, accountStatus: await this.users.statusFor(user.id) }))
+  /**
+   * Admin user directory — real pagination (V-72/L-14): the previous
+   * hard-coded page 1 / 100 silently truncated the directory at 100 users.
+   */
+  async listUsers(
+    role?: UserRole,
+    page = 1,
+    pageSize = 100
+  ): Promise<ApiListResponse<AdminUserView>> {
+    const result = await this.users.list({ role, page, pageSize });
+    const data = await Promise.all(
+      result.data.map(async (user) => ({
+        user,
+        accountStatus: await this.users.statusFor(user.id)
+      }))
     );
+    return { data, total: result.total, page: result.page, pageSize: result.pageSize };
   }
 
   async setRoles(userId: string, roles: UserRole[], actorId: string): Promise<AdminUserView> {
@@ -327,6 +339,23 @@ export class AdminService {
   /** Wave P: dead-lettered outbox rows awaiting operator action. */
   async outboxDeadLetters(): Promise<OutboxRecord[]> {
     return this.outboxSweeper.deadLetters();
+  }
+
+  /**
+   * V-79: resurrect a dead-lettered outbox row (clears dead_lettered_at +
+   * attempts; the next sweep re-delivers it). Audited, admin-only via the
+   * controller.
+   */
+  async redriveOutboxDeadLetter(actorId: string, id: string): Promise<OutboxRecord> {
+    const record = await this.outboxSweeper.redriveDeadLetter(id);
+    await this.audit.record({
+      actorId,
+      action: 'admin.outbox_dead_letter_redriven',
+      entityType: 'outbox',
+      entityId: id,
+      metadata: { eventName: record.event.name }
+    });
+    return record;
   }
 
   async eventOutbox(): Promise<DomainEvent[]> {
