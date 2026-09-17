@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable
@@ -15,8 +16,32 @@ import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { DISBURSEMENT_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { DisbursementRepository } from '../../database/repositories/livestock-trade.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 import { UsersService } from '../users/users.service.js';
 import { assertKobo, assertRole, requireActor } from './trade.utils.js';
+
+/**
+ * V-56 disbursement ledger leg (escrow-ledger.ts pattern). Until this wave a
+ * release moved donor money with NO double-entry journal — invisible to the
+ * trial balance. Pooled accounts (no per-beneficiary proliferation):
+ *
+ *   schedule: commitment only, no journal (no funds have moved);
+ *   release:  DR livestock:disbursement:programme_spend (expense — donor
+ *             programme funds consumed)
+ *             CR livestock:disbursement:donor_float    (asset — funds paid
+ *             out of the platform-held donor float)
+ *   confirm:  beneficiary acknowledgement, no journal.
+ *
+ * The leg is idempotency-keyed per disbursement, so the release CAS replay
+ * path and any consumer re-drive can never double-post.
+ */
+export const DISBURSEMENT_DONOR_FLOAT_ACCOUNT = 'livestock:disbursement:donor_float';
+export const DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT = 'livestock:disbursement:programme_spend';
+export const DISBURSEMENT_RELEASE_REFERENCE_TYPE = 'livestock_disbursement_release';
+
+export function disbursementReleaseLedgerKey(disbursementId: string): string {
+  return `livestock-disbursement:released:${disbursementId}`;
+}
 
 export interface ScheduleDisbursementInput {
   programmeId: string;
@@ -40,7 +65,8 @@ export class DisbursementsService {
     private readonly audit: AuditService,
     private readonly events: DomainEventsService,
     @Inject(DISBURSEMENT_REPOSITORY)
-    private readonly disbursements: DisbursementRepository
+    private readonly disbursements: DisbursementRepository,
+    private readonly ledger: LedgerService
   ) {}
 
   async schedule(actor: User | null, input: ScheduleDisbursementInput): Promise<DonorDisbursement> {
@@ -78,8 +104,54 @@ export class DisbursementsService {
     return created;
   }
 
+  /**
+   * Posts the release ledger leg (V-56). Idempotent per disbursement: the
+   * CAS replay path re-drives it so a crash between the status claim and the
+   * original posting still converges the books (escrow terminal-replay
+   * pattern), and a double-drive can never post twice.
+   */
+  private async postReleaseLedgerLeg(
+    disbursement: DonorDisbursement,
+    actorId: string
+  ): Promise<void> {
+    await this.ledger.ensureAccount({
+      code: DISBURSEMENT_DONOR_FLOAT_ACCOUNT,
+      type: 'asset'
+    });
+    await this.ledger.ensureAccount({
+      code: DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT,
+      type: 'expense'
+    });
+    await this.ledger.postEntry(
+      {
+        idempotencyKey: disbursementReleaseLedgerKey(disbursement.id),
+        referenceType: DISBURSEMENT_RELEASE_REFERENCE_TYPE,
+        referenceId: disbursement.id,
+        description:
+          `Livestock donor disbursement ${disbursement.id} released ` +
+          `(${disbursement.amountKobo} kobo, milestone '${disbursement.milestone}', ` +
+          `programme '${disbursement.programmeId}')`,
+        postings: [
+          {
+            accountCode: DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT,
+            direction: 'debit',
+            amountKobo: disbursement.amountKobo
+          },
+          {
+            accountCode: DISBURSEMENT_DONOR_FLOAT_ACCOUNT,
+            direction: 'credit',
+            amountKobo: disbursement.amountKobo
+          }
+        ]
+      },
+      actorId
+    );
+  }
+
   /** scheduled → released. Idempotent: an already released disbursement is
-   * returned unchanged (no double payment, no duplicate event). */
+   * returned unchanged (no double payment, no duplicate event). The status
+   * claim is a guarded CAS (V-56): two concurrent releases serialise on
+   * {status:'scheduled'} and exactly one publishes the event / pays out. */
   async release(actor: User | null, id: string): Promise<DonorDisbursement> {
     const caller = requireActor(actor);
     const disbursement = await this.disbursements.getById(id);
@@ -87,6 +159,9 @@ export class DisbursementsService {
       throw new ForbiddenException('Only the scheduling donor (or admin) can release funds');
     }
     if (disbursement.status === 'released') {
+      // Idempotent replay; re-drive the ledger leg in case a prior attempt
+      // crashed between the CAS claim and the posting.
+      await this.postReleaseLedgerLeg(disbursement, caller.id);
       return disbursement;
     }
     if (disbursement.status !== 'scheduled') {
@@ -95,11 +170,30 @@ export class DisbursementsService {
       );
     }
     const now = new Date().toISOString();
-    const updated = await this.disbursements.update(id, {
-      status: 'released',
-      releasedAt: now,
-      updatedAt: now
-    });
+    let updated: DonorDisbursement;
+    try {
+      updated = await this.disbursements.updateExpected(
+        id,
+        {
+          status: 'released',
+          releasedAt: now,
+          updatedAt: now
+        },
+        { status: 'scheduled' }
+      );
+    } catch (error) {
+      // Adopt-on-conflict: a concurrent release claimed the row first —
+      // converge on the winner's state instead of double-paying.
+      if (error instanceof ConflictException) {
+        const winner = await this.disbursements.getById(id);
+        if (winner.status === 'released') {
+          await this.postReleaseLedgerLeg(winner, caller.id);
+          return winner;
+        }
+      }
+      throw error;
+    }
+    await this.postReleaseLedgerLeg(updated, caller.id);
     await this.audit.record({
       actorId: caller.id,
       action: 'livestock_trade.disbursement_released',
