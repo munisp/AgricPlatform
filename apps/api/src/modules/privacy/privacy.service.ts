@@ -2,9 +2,11 @@ import { Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs
 import type { ConsentRecord } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import {
+  AUTH_SESSION_REPOSITORY,
   CONSENT_REPOSITORY,
   DELETION_REQUEST_REPOSITORY
 } from '../../database/persistence.tokens.js';
+import type { AuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import type { ConsentRepository } from '../../database/repositories/consent.repository.js';
 import type { DeletionRequestRepository } from '../../database/repositories/deletion-request.repository.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -79,6 +81,9 @@ export class PrivacyService {
     @Inject(CONSENT_REPOSITORY) private readonly consents: ConsentRepository,
     @Inject(DELETION_REQUEST_REPOSITORY)
     private readonly deletionRequests: DeletionRequestRepository,
+    // V-24: erasure must revoke the subject's auth sessions (mirrors the
+    // compliance.service.ts approve() doctrine).
+    @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository,
     // Stage 27 Innovation 13 (optional, additive): NDPA deletion also
     // expunges dispute-evidence blobs the user uploaded, leaving hash
     // tombstones so evidence chains stay verifiable. Optional so the
@@ -212,6 +217,15 @@ export class PrivacyService {
       throw new NotFoundException(`Deletion request '${requestId}' not found`);
     }
     await this.users.anonymize(request.userId);
+    // V-24: erasure must also kill the subject's sessions — an anonymised
+    // user holding live refresh tokens would keep using the account (same
+    // doctrine as compliance.service.ts approve()).
+    await this.sessions.revokeAllForUser(request.userId, new Date().toISOString());
+    // One-time remediation (V-24): the legacy path completed erasures
+    // WITHOUT revoking sessions, so previously-anonymised users may still
+    // hold live refresh-token families. Idempotent sweep, re-run on every
+    // confirmation — a no-op once the backlog is drained.
+    await this.revokeSessionsForAnonymizedUsers(actorId);
     // Stage 27 Innovation 13: expunge the user's dispute-evidence blobs
     // (object deleted, hash tombstone retained). Failures are logged, never
     // swallowed; the sweep result is auditable via evidence.item.expunged
@@ -247,6 +261,47 @@ export class PrivacyService {
 
   async deletionRequest(id: string): Promise<DeletionRequest> {
     return this.deletionRequests.getById(id);
+  }
+
+  /**
+   * One-time remediation (V-24): revokes auth sessions for every previously
+   * anonymised user (phone tombstoned to `deleted:<id>` by
+   * UsersService.anonymize). Idempotent — revokeAllForUser skips
+   * already-revoked sessions — and paged so it cannot truncate on large
+   * user bases. Wired into the deletion-confirmation flow (rather than a
+   * bootstrap check) so anonymisations performed by ANY path
+   * (privacy/admin/compliance) between deployments are covered, and so the
+   * sweep is exercised in tests through the public service surface. Audited
+   * per run.
+   */
+  async revokeSessionsForAnonymizedUsers(
+    actorId: string
+  ): Promise<{ usersScanned: number; sessionsRevoked: number }> {
+    const revokedAt = new Date().toISOString();
+    let usersScanned = 0;
+    let sessionsRevoked = 0;
+    let page = 1;
+    const pageSize = 500;
+    for (;;) {
+      const batch = await this.users.list({ page, pageSize });
+      const anonymized = batch.data.filter((user) => user.phone.startsWith('deleted:'));
+      for (const user of anonymized) {
+        usersScanned += 1;
+        sessionsRevoked += await this.sessions.revokeAllForUser(user.id, revokedAt);
+      }
+      if (batch.data.length < pageSize) {
+        break;
+      }
+      page += 1;
+    }
+    await this.audit.record({
+      actorId,
+      action: 'privacy.anonymized_sessions_revoked',
+      entityType: 'user',
+      entityId: actorId,
+      metadata: { usersScanned, sessionsRevoked }
+    });
+    return { usersScanned, sessionsRevoked };
   }
 
   processingRegister(): ProcessingRegisterEntry[] {
