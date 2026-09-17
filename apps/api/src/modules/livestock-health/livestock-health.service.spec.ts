@@ -490,6 +490,66 @@ describe('LivestockHealthService', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
+    const confirmedFlag = (overrides: Record<string, unknown> = {}) => ({
+      id: 'flag-conf-1',
+      disease: 'Foot-and-mouth disease',
+      state: 'Kaduna',
+      suspectedSpecies: 'cattle' as const,
+      reporterUserId: farmer.id,
+      status: 'confirmed' as const,
+      confirmedBy: regulator.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...overrides
+    });
+
+    it('V-12: rejects a permit out of a confirmed-outbreak state with 409 + audit', async () => {
+      await diseaseFlags.create(confirmedFlag());
+      await expect(service.issuePermit(vet, permitInput())).rejects.toBeInstanceOf(
+        ConflictException
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'livestock_health.permit_quarantine_blocked',
+          entityType: 'disease_flag',
+          entityId: 'flag-conf-1'
+        })
+      );
+      // No permit was persisted and no issuance event fired.
+      expect(await permits.all()).toHaveLength(0);
+      expect(await eventNames()).not.toContain('livestock.permit.issued');
+    });
+
+    it('V-12: reported (unconfirmed) flags do not block permits', async () => {
+      await diseaseFlags.create(confirmedFlag({ id: 'flag-rep-1', status: 'reported' }));
+      await expect(service.issuePermit(vet, permitInput())).resolves.toBeDefined();
+    });
+
+    it('V-12: a flag in another state does not block the permit', async () => {
+      await diseaseFlags.create(confirmedFlag({ id: 'flag-lg-1', state: 'Lagos' }));
+      await expect(service.issuePermit(vet, permitInput())).resolves.toBeDefined();
+    });
+
+    it('V-12: a species-mismatched flag does not block the permit', async () => {
+      await diseaseFlags.create(confirmedFlag({ id: 'flag-poultry-1', suspectedSpecies: 'poultry' }));
+      await expect(service.issuePermit(vet, permitInput())).resolves.toBeDefined();
+      // …but an unrestricted (all-species) flag does.
+      await diseaseFlags.create(
+        confirmedFlag({ id: 'flag-all-1', suspectedSpecies: undefined })
+      );
+      await expect(service.issuePermit(vet, permitInput())).rejects.toBeInstanceOf(
+        ConflictException
+      );
+    });
+
+    it('V-12: a confirmed flag outside the quarantine window no longer blocks', async () => {
+      const longAgo = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
+      await diseaseFlags.create(
+        confirmedFlag({ id: 'flag-old-1', createdAt: longAgo, updatedAt: longAgo })
+      );
+      await expect(service.issuePermit(vet, permitInput())).resolves.toBeDefined();
+    });
+
     it('verifies a valid permit by id and by permit number', async () => {
       const permit = await service.issuePermit(vet, permitInput());
       const byId = await service.verifyPermit(farmer, permit.id);
