@@ -460,7 +460,22 @@ export class EscrowService {
       heldAt: heldAt.toISOString(),
       heldUntil: new Date(heldAt.getTime() + ESCROW_HOLD_TTL_MS).toISOString()
     };
-    const created = await this.escrows.create(record);
+    let created: EscrowRecord;
+    try {
+      created = await this.escrows.create(record);
+    } catch (error) {
+      // Adopt-on-conflict (V-49): a concurrent hold already claimed this
+      // order (pg UNIQUE(order_id) / in-memory mirror) — converge on the
+      // winner's record exactly like the replay branch above.
+      if (error instanceof ConflictException) {
+        const winner = await this.escrowForOrder(orderId);
+        if (winner) {
+          await this.ensureEscrowLedgerLegs(winner, actorId);
+          return winner;
+        }
+      }
+      throw error;
+    }
     // WP-G13: the hold is a double-entry liability (DR provider float, CR
     // holds liability). Posted right after the record persists; on failure
     // the request fails honestly and a retry replays through the
