@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -526,6 +526,72 @@ describe('LivestockService', () => {
       );
       const emitted = await outbox.list();
       expect(emitted.some((event) => event.name === 'livestock.animal.transferred')).toBe(true);
+    });
+
+    it('V-12: blocks transfers while the animal state is under a confirmed quarantine', async () => {
+      const { createDiseaseTransferGuard } = await import(
+        '../livestock-health/disease-quarantine.js'
+      );
+      const diseaseFlags = {
+        find: vi.fn().mockResolvedValue([
+          {
+            id: 'flag-1',
+            disease: 'Foot-and-mouth disease',
+            state: 'Kaduna',
+            suspectedSpecies: 'cattle',
+            reporterUserId: 'farmer-9',
+            status: 'confirmed',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ]),
+      };
+      const guarded = new LivestockService(
+        users as never,
+        privacy as never,
+        audit as never,
+        new DomainEventsService(outbox),
+        animals,
+        lots,
+        transfers,
+        profiles,
+        undefined,
+        createDiseaseTransferGuard(diseaseFlags as never, animals) as never,
+      );
+      const animal = await guarded.registerAnimal(farmer, baseAnimalInput);
+      await expect(
+        guarded.transferAnimal(farmer, animal.id, {
+          toUserId: otherFarmer.id,
+          transferType: 'sale',
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      // The animal did not move.
+      expect((await guarded.listMyAnimals(farmer, {}))[0]?.id).toBe(animal.id);
+    });
+
+    it('V-12: clean-state regression — no confirmed flag means transfers proceed', async () => {
+      const { createDiseaseTransferGuard } = await import(
+        '../livestock-health/disease-quarantine.js'
+      );
+      const diseaseFlags = { find: vi.fn().mockResolvedValue([]) };
+      const guarded = new LivestockService(
+        users as never,
+        privacy as never,
+        audit as never,
+        new DomainEventsService(outbox),
+        animals,
+        lots,
+        transfers,
+        profiles,
+        undefined,
+        createDiseaseTransferGuard(diseaseFlags as never, animals) as never,
+      );
+      const animal = await guarded.registerAnimal(farmer, baseAnimalInput);
+      await guarded.transferAnimal(farmer, animal.id, {
+        toUserId: otherFarmer.id,
+        transferType: 'sale',
+      });
+      expect((await guarded.listMyAnimals(otherFarmer, {}))[0]?.id).toBe(animal.id);
     });
 
     it('denies another farmer reading the transfer history', async () => {
