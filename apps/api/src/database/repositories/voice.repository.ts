@@ -31,9 +31,24 @@ export interface VoiceSessionRecord {
   channel: VoiceChannel;
   state: VoiceSessionState;
   phone: string;
-  /** Optional, UNVERIFIED national-ID reference dictated by the farmer. */
+  /**
+   * LEGACY ONLY (pre-080): plaintext UNVERIFIED national-ID reference. New
+   * sessions never populate it (V-17) — see ninRefHash.
+   */
   ninRef?: string;
+  /**
+   * Salted HMAC-SHA256 of the dictated NIN reference (V-17, NDPA 2023): the
+   * raw value is never persisted. Follows the input-vouchers nin-crypto
+   * doctrine; no lookup-by-NIN caller exists, so no plaintext is kept.
+   */
+  ninRefHash?: string;
   farmerUserId?: string;
+  /**
+   * Authenticated creator of the session (V-17). Unidentified sessions (no
+   * farmerUserId) are owner-or-agent only; pre-080 rows without an owner are
+   * agent-only (fail closed).
+   */
+  createdByUserId?: string;
   /** Captured locale (en/ha/yo/ig); responses stay en-only this wave. */
   locale: string;
   crop?: string;

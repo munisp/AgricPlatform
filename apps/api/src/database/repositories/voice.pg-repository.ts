@@ -24,16 +24,18 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
   async create(record: VoiceSessionRecord): Promise<VoiceSessionRecord> {
     await this.pool.query(
       'INSERT INTO voice.voice_sessions ' +
-        '(id, channel, state, phone, nin_ref, farmer_user_id, locale, crop, symptom_category, ' +
-        'menu_state, active_case_id, created_at, updated_at) ' +
-        'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)',
+        '(id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
+        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at) ' +
+        'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)',
       [
         record.id,
         record.channel,
         record.state,
         record.phone,
         record.ninRef ?? null,
+        record.ninRefHash ?? null,
         record.farmerUserId ?? null,
+        record.createdByUserId ?? null,
         record.locale,
         record.crop ?? null,
         record.symptomCategory ?? null,
@@ -48,8 +50,9 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
 
   async findById(id: string): Promise<VoiceSessionRecord | undefined> {
     const result = await this.pool.query(
-      'SELECT id, channel, state, phone, nin_ref, farmer_user_id, locale, crop, symptom_category, ' +
-        'menu_state, active_case_id, created_at, updated_at FROM voice.voice_sessions WHERE id = $1',
+      'SELECT id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
+        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at ' +
+        'FROM voice.voice_sessions WHERE id = $1',
       [id]
     );
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
@@ -73,15 +76,17 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
     };
     await this.pool.query(
       'UPDATE voice.voice_sessions SET channel = $2, state = $3, phone = $4, nin_ref = $5, ' +
-        'farmer_user_id = $6, locale = $7, crop = $8, symptom_category = $9, menu_state = $10, ' +
-        'active_case_id = $11, updated_at = $12 WHERE id = $1',
+        'nin_ref_hash = $6, farmer_user_id = $7, created_by_user_id = $8, locale = $9, crop = $10, ' +
+        'symptom_category = $11, menu_state = $12, active_case_id = $13, updated_at = $14 WHERE id = $1',
       [
         updated.id,
         updated.channel,
         updated.state,
         updated.phone,
         updated.ninRef ?? null,
+        updated.ninRefHash ?? null,
         updated.farmerUserId ?? null,
+        updated.createdByUserId ?? null,
         updated.locale,
         updated.crop ?? null,
         updated.symptomCategory ?? null,
@@ -110,8 +115,9 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
     }
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     const result = await this.pool.query(
-      'SELECT id, channel, state, phone, nin_ref, farmer_user_id, locale, crop, symptom_category, ' +
-        `menu_state, active_case_id, created_at, updated_at FROM voice.voice_sessions${where} ` +
+      'SELECT id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
+        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at ' +
+        `FROM voice.voice_sessions${where} ` +
         'ORDER BY created_at ASC, id ASC',
       params
     );
@@ -125,7 +131,9 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
       state: row.state as VoiceSessionRecord['state'],
       phone: row.phone as string,
       ninRef: (row.nin_ref as string | null) ?? undefined,
+      ninRefHash: (row.nin_ref_hash as string | null) ?? undefined,
       farmerUserId: (row.farmer_user_id as string | null) ?? undefined,
+      createdByUserId: (row.created_by_user_id as string | null) ?? undefined,
       locale: row.locale as string,
       crop: (row.crop as string | null) ?? undefined,
       symptomCategory: (row.symptom_category as string | null) ?? undefined,
