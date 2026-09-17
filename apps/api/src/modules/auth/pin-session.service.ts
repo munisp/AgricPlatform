@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  NotFoundException,
   UnauthorizedException
 } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
@@ -19,6 +20,12 @@ export const PIN_MAX_PROFILES_PER_DEVICE = 5;
 /** Wrong-PIN attempts before the 15-minute lockout (mirrors OTP policy). */
 export const PIN_MAX_ATTEMPTS = 5;
 export const PIN_LOCKOUT_MS = 15 * 60 * 1000;
+/**
+ * Minimum device-token length accepted on the listing path (V-60): short,
+ * client-chosen tokens are guessable, which made profile listing a
+ * who-is-on-this-device enumeration oracle.
+ */
+export const PIN_MIN_DEVICE_TOKEN_LENGTH = 16;
 
 // Character class (not a digit escape) keeps this source file free of literal backslashes.
 const PIN_PATTERN = /^[0-9]{4}$/;
@@ -99,8 +106,25 @@ export class PinSessionService {
     };
   }
 
-  /** Lists the profiles on a device (no hashes). */
-  async listProfiles(deviceToken: string): Promise<Array<{ userId: string; createdAt: string }>> {
+  /**
+   * Lists the profiles on a device (no hashes). Caller-bound (V-60): only a
+   * caller who is themselves pinned on this device — or an admin — may list.
+   * Weak (short, guessable) tokens and devices the caller is not pinned on
+   * answer 404 alike, so the endpoint gives no token-existence signal.
+   */
+  async listProfiles(
+    deviceToken: string,
+    actor: User
+  ): Promise<Array<{ userId: string; createdAt: string }>> {
+    if (deviceToken.length < PIN_MIN_DEVICE_TOKEN_LENGTH) {
+      throw new NotFoundException('Unknown device');
+    }
+    if (!actor.roles.includes('admin')) {
+      const pinned = await this.profiles.find(deviceToken, actor.id);
+      if (!pinned) {
+        throw new NotFoundException('Unknown device');
+      }
+    }
     return (await this.profiles.listForDevice(deviceToken)).map((profile) => ({
       userId: profile.userId,
       createdAt: profile.createdAt

@@ -56,9 +56,15 @@ export class PinSessionsController {
   @Get('pin-profiles/:deviceToken')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'List the profiles pinned to a shared device (no hashes)' })
-  async listProfiles(@Param('deviceToken') deviceToken: string) {
-    return { data: await this.pins.listProfiles(deviceToken) };
+  @ApiOperation({
+    summary:
+      'List the profiles pinned to a shared device (no hashes). Caller must be pinned on the device or an admin (V-60).'
+  })
+  async listProfiles(@Param('deviceToken') deviceToken: string, @CurrentUser() user: User | null) {
+    if (!user) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    return { data: await this.pins.listProfiles(deviceToken, user) };
   }
 
   @Post('pin-sessions/switch')
