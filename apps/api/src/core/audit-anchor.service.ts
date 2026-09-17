@@ -134,7 +134,7 @@ export class AuditAnchorService implements OnModuleInit, OnModuleDestroy {
     });
     const sink = this.resolveSink();
     if (sink) {
-      sink.append(anchor);
+      await sink.append(anchor);
     }
     return anchor;
   }

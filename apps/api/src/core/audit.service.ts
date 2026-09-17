@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { AuditEvent } from '@agric-platform/shared';
 import { newId } from '../common/async-repository.js';
 import { AUDIT_REPOSITORY } from '../database/persistence.tokens.js';
@@ -58,8 +58,14 @@ export interface AuditVerification {
  * DB-write attacker can delete anchors too; AUDIT_ANCHOR_SINK ships anchors
  * off-box, and a fully external anchor is an ops follow-up.
  */
+/** L-17: chain verification walks the log in bounded pages of this size. */
+export const AUDIT_VERIFY_BATCH_SIZE = 500;
+
 @Injectable()
 export class AuditService {
+  private readonly logger = new Logger(AuditService.name);
+  private verifyTimer?: ReturnType<typeof setInterval>;
+
   constructor(
     @Inject(AUDIT_REPOSITORY) private readonly audits: AuditRepository
   ) {}
@@ -96,33 +102,96 @@ export class AuditService {
    * is still verified, and the first broken link is reported.
    */
   async verify(range?: { fromId?: string; toId?: string }): Promise<AuditVerification> {
-    const all = await this.audits.list();
-    const start = range?.fromId ? all.findIndex((event) => event.id === range.fromId) : 0;
-    if (start < 0) {
-      return { valid: false, brokenAt: range?.fromId, checked: 0 };
+    // L-17: chunked walk (bounded pages) instead of materializing the whole
+    // append-only log — a full-table list() here was itself the audit-log
+    // DoS vector once the table grows.
+    const started = !range?.fromId;
+    let expected: string | null = started ? GENESIS_HASH : null;
+    let begun = started;
+    let checked = 0;
+    let offset = 0;
+    for (;;) {
+      const batch = await this.audits.listPage(offset, AUDIT_VERIFY_BATCH_SIZE);
+      if (batch.length === 0) {
+        break;
+      }
+      for (const event of batch) {
+        if (!begun) {
+          if (range?.toId && event.id === range.toId) {
+            // toId precedes fromId: empty range (matches the legacy
+            // slice-based semantics — nothing to check).
+            return { valid: true, checked: 0 };
+          }
+          if (event.id !== range?.fromId) {
+            continue;
+          }
+          begun = true;
+          // Ranged walks trust the slice head's link to prior history.
+          expected = event.prevHash ?? GENESIS_HASH;
+        }
+        if (!event.hash || !event.prevHash) {
+          return { valid: false, brokenAt: event.id, checked };
+        }
+        if (event.prevHash !== expected) {
+          return { valid: false, brokenAt: event.id, checked };
+        }
+        const { hash, ...unsigned } = event;
+        if (hashAuditEvent(unsigned, event.prevHash) !== event.hash) {
+          return { valid: false, brokenAt: event.id, checked };
+        }
+        expected = event.hash;
+        checked += 1;
+        if (range?.toId && event.id === range.toId) {
+          return { valid: true, checked };
+        }
+      }
+      offset += batch.length;
+      if (batch.length < AUDIT_VERIFY_BATCH_SIZE) {
+        break;
+      }
     }
-    const end = range?.toId ? all.findIndex((event) => event.id === range.toId) : all.length - 1;
-    if (range?.toId && end < 0) {
+    if (!begun && range?.fromId) {
+      return { valid: false, brokenAt: range.fromId, checked: 0 };
+    }
+    if (range?.toId) {
       return { valid: false, brokenAt: range.toId, checked: 0 };
     }
-    const slice = all.slice(start, end + 1);
-    // Full-chain walks anchor at genesis; ranged walks trust the slice head's link.
-    let expected = start === 0 ? GENESIS_HASH : (slice[0]?.prevHash ?? GENESIS_HASH);
-    let checked = 0;
-    for (const event of slice) {
-      if (!event.hash || !event.prevHash) {
-        return { valid: false, brokenAt: event.id, checked };
-      }
-      if (event.prevHash !== expected) {
-        return { valid: false, brokenAt: event.id, checked };
-      }
-      const { hash, ...unsigned } = event;
-      if (hashAuditEvent(unsigned, event.prevHash) !== event.hash) {
-        return { valid: false, brokenAt: event.id, checked };
-      }
-      expected = event.hash;
-      checked += 1;
-    }
     return { valid: true, checked };
+  }
+
+  /**
+   * L-17 scheduled verify hook: when AUDIT_CHAIN_VERIFY_INTERVAL_MS is set
+   * (>0), re-walk the chain on that cadence and log loudly on tamper
+   * evidence. Disabled by default (the admin endpoint remains the on-demand
+   * path); a broken chain logs at error level for alerting.
+   */
+  onModuleInit(): void {
+    const intervalMs = Number(process.env.AUDIT_CHAIN_VERIFY_INTERVAL_MS ?? 0);
+    if (Number.isFinite(intervalMs) && intervalMs > 0) {
+      this.verifyTimer = setInterval(() => {
+        void this.verify()
+          .then((result) => {
+            if (!result.valid) {
+              this.logger.error(
+                `audit chain verification FAILED at event ${result.brokenAt ?? 'unknown'} after ${result.checked} events — investigate tampering immediately`
+              );
+            } else {
+              this.logger.log(`audit chain verified (${result.checked} events)`);
+            }
+          })
+          .catch((error: unknown) => {
+            this.logger.error(
+              `audit chain verification errored: ${error instanceof Error ? error.message : String(error)}`
+            );
+          });
+      }, intervalMs);
+      this.verifyTimer.unref?.();
+    }
+  }
+
+  onModuleDestroy(): void {
+    if (this.verifyTimer) {
+      clearInterval(this.verifyTimer);
+    }
   }
 }

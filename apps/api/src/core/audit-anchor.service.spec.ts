@@ -13,7 +13,8 @@ import {
   AnchorSinkConfigError,
   createAnchorSink,
   FailingAnchorSink,
-  FileAnchorSink
+  FileAnchorSink,
+  HttpAnchorSink
 } from './audit-anchor-sink.js';
 import { AuditAnchorService } from './audit-anchor.service.js';
 import { AuditService } from './audit.service.js';
@@ -267,15 +268,52 @@ describe('audit anchor sink (AUDIT_ANCHOR_SINK)', () => {
     }
   });
 
-  it('createAnchorSink: unset disables, file: selects the JSONL sink, unknown schemes fail lazily', () => {
+  it('createAnchorSink: unset disables, file:/http(s): select their sinks, unknown schemes fail lazily', () => {
     expect(createAnchorSink({})).toBeNull();
     expect(createAnchorSink({ AUDIT_ANCHOR_SINK: 'file:/tmp/x.jsonl' })).toBeInstanceOf(
       FileAnchorSink
     );
+    // L-18: http(s) is now a SUPPORTED scheme (remote sink).
     expect(createAnchorSink({ AUDIT_ANCHOR_SINK: 'https://log.example' })).toBeInstanceOf(
+      HttpAnchorSink
+    );
+    expect(createAnchorSink({ AUDIT_ANCHOR_SINK: 'http://log.example:8080/x' })).toBeInstanceOf(
+      HttpAnchorSink
+    );
+    expect(createAnchorSink({ AUDIT_ANCHOR_SINK: 'gopher://log.example' })).toBeInstanceOf(
       FailingAnchorSink
     );
     expect(createAnchorSink({ AUDIT_ANCHOR_SINK: 'file:' })).toBeInstanceOf(FailingAnchorSink);
+  });
+
+  it('HttpAnchorSink POSTs the anchor as one JSON document and fails loudly on non-2xx', async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const originalFetch = globalThis.fetch;
+    const { audit, events, anchors } = build();
+    const service = new AuditAnchorService(events, anchors, {
+      AUDIT_ANCHOR_SINK: 'https://log.example/anchors'
+    });
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    try {
+      await audit.record(input('a', 'e-1'));
+      const anchor = await service.createAnchor();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe('https://log.example/anchors');
+      expect(calls[0].body).toMatchObject({ id: anchor.id, anchorHash: anchor.anchorHash });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    // Non-2xx fails loudly (the off-box evidence copy is missing).
+    globalThis.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+    try {
+      await expect(service.createAnchor()).rejects.toThrow(/HTTP 500/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('appends each anchor as one JSON line to the file sink', async () => {
