@@ -10,7 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { CREDIT_LOAN_STATUSES, type CreditLoanStatus, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -31,6 +31,7 @@ import {
 
 class ApplyDto implements ApplyForLoanInput {
   @IsString()
+  @MaxLength(100)
   productId!: string;
 
   @IsInt()
@@ -39,19 +40,23 @@ class ApplyDto implements ApplyForLoanInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   purpose?: string;
 }
 
 class ApplyGroupDto extends ApplyDto implements ApplyForGroupLoanInput {
   @IsString()
+  @MaxLength(100)
   groupId!: string;
 }
 
 class AddCollateralDto implements AddCollateralInput {
   @IsString()
+  @MaxLength(500)
   kind!: string;
 
   @IsString()
+  @MaxLength(2000)
   description!: string;
 
   @IsInt()
@@ -61,28 +66,34 @@ class AddCollateralDto implements AddCollateralInput {
 
 class InviteGuarantorDto {
   @IsString()
+  @MaxLength(100)
   guarantorUserId!: string;
 }
 
 class PreviewSeasonalScheduleDto implements PreviewSeasonalScheduleInput {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   plotId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   plantingDate?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   harvestWindowStart?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   harvestWindowEnd?: string;
 
   @IsOptional()
@@ -99,6 +110,7 @@ class PreviewSeasonalScheduleDto implements PreviewSeasonalScheduleInput {
 
 class AcceptSeasonalScheduleDto {
   @IsString()
+  @MaxLength(100)
   scheduleId!: string;
 }
 
@@ -109,10 +121,12 @@ class ListLoansQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   applicantUserId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   groupId?: string;
 }
 
