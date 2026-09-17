@@ -1,4 +1,4 @@
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { AdvisoryItem, Enrolment, Profile } from '@agric-platform/shared';
 import { createInMemoryCommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
@@ -239,6 +239,33 @@ describe('resolveIvrDriver (fail-closed)', () => {
         process.env.AT_CALLBACK_TOKEN = saved;
       }
     }
+  });
+});
+
+describe('IvrService caller-number binding (V-67)', () => {
+  it('rejects a mid-call callerNumber change with 409', async () => {
+    const { service } = build();
+    const call = { sessionId: 's-bind', callerNumber: '+234860' };
+    await service.handleCallback(call);
+    await service.handleCallback({ ...call, dtmfDigits: '2' });
+    // Same session, different caller: a token holder cannot steer the call.
+    const steering = await service
+      .handleCallback({ ...call, callerNumber: '+234861', dtmfDigits: '1' })
+      .catch((error) => error);
+    expect(steering).toBeInstanceOf(ConflictException);
+    expect(steering.getStatus?.()).toBe(409);
+    // The bound caller continues unaffected.
+    const onward = await service.handleCallback({ ...call, dtmfDigits: '1' });
+    expect(onward).toContain('<Response>');
+  });
+
+  it('binds a fresh session to whoever opens it', async () => {
+    const { service } = build();
+    const first = await service.handleCallback({ sessionId: 's-bind2', callerNumber: '+234862' });
+    expect(first).toContain('<Response>');
+    // A different session id for the same phone is an independent call.
+    const second = await service.handleCallback({ sessionId: 's-bind3', callerNumber: '+234862' });
+    expect(second).toContain('<Response>');
   });
 });
 
