@@ -1,6 +1,6 @@
 /**
- * Record-level offline sync store (Wave SYNCCLIENT) — client side of the
- * sync protocol v1 contract in docs/sync-protocol.md.
+ * Record-level offline sync store (Wave SYNCCLIENT + FP-4) — client side of
+ * the sync protocol v2 contract in docs/sync-protocol.md.
  *
  * Entity-agnostic: any entity key registered server-side can be pulled into
  * the local cache, and any local mutation can be outboxed for push. The v1
@@ -9,17 +9,20 @@
  * entities arriving with later waves.
  *
  * Semantics (per the contract):
- * - Pull pages since a per-entity cursor, applies records + tombstones in
- *   version order, and advances the cursor monotonically (never regresses,
- *   even across empty pages).
+ * - Pull pages since a per-entity change_seq cursor (v2), applies records +
+ *   tombstones in change order, and advances the cursor monotonically
+ *   (never regresses, even across empty pages). A 409 sync_resync_required
+ *   (legacy v1 cursor) resets the cursor and restarts as a full sync.
  * - Tombstones (`deleted: true`) purge the local payload but KEEP the
  *   version so future `baseVersion` bookkeeping stays correct.
  * - Local mutations go to a persistent FIFO outbox with a stable
- *   clientMutationId (deduped on enqueue — retries are free, §5).
+ *   clientMutationId (deduped on enqueue — retries are free, §5). Sequential
+ *   offline edits to one record coalesce into a single rebased entry (V-65).
  * - Push replays the outbox in batches of ≤200 items. Per item:
  *   `applied` → confirm locally with the new version; `conflict` →
- *   SERVER-WINS (v1): adopt serverVersion + serverPayload, drop the local
- *   change and append a conflict-log entry; permanent `error` codes
+ *   SERVER-WINS: adopt serverVersion + serverPayload, drop the local
+ *   change and append a conflict-log entry (conflict payloads older than
+ *   the cached version are ignored — V-65); permanent `error` codes
  *   (unknown_entity / read_only_entity / forbidden / mutation_id_reused)
  *   drop the mutation; transient codes (apply_failed / replay_unavailable)
  *   stay queued for the next attempt.
@@ -67,7 +70,10 @@ export interface SyncPushResultItem {
 
 export interface SyncPullItem {
   entityId: string;
+  /** Per-record version — push baseVersion bookkeeping only, NOT a cursor. */
   version: number;
+  /** Global monotonic change sequence (v2); present on protocol v2 pages. */
+  changeSeq?: number;
   deleted: boolean;
   payload: unknown;
 }
@@ -75,8 +81,11 @@ export interface SyncPullItem {
 export interface SyncPullPage {
   entity: string;
   items: SyncPullItem[];
+  /** change_seq cursor (v2): pass back as `since` with `v: 2`. */
   cursor: number;
   hasMore: boolean;
+  /** Protocol version that minted this page's cursor. */
+  protocol?: number;
 }
 
 export interface SyncStatusEntry {
@@ -91,7 +100,7 @@ export interface SyncStatusEntry {
  */
 export interface SyncTransport {
   push(items: SyncPushRequestItem[]): Promise<{ results: SyncPushResultItem[] }>;
-  pull(params: { entity: string; since: number; limit: number }): Promise<SyncPullPage>;
+  pull(params: { entity: string; since: number; limit: number; v: number }): Promise<SyncPullPage>;
   status(): Promise<SyncStatusEntry[]>;
 }
 
@@ -223,6 +232,12 @@ export interface SyncStoreOptions {
 /* ------------------------------ constants ------------------------------- */
 
 export const SYNC_STORAGE_KEY = 'agric.sync-store.v1';
+/**
+ * Sync protocol version this client speaks (docs/sync-protocol.md). Sent as
+ * `v` on every pull: the server rejects non-zero v1 cursors with a 409
+ * `sync_resync_required`, which this store answers with a full resync.
+ */
+export const SYNC_PROTOCOL_VERSION = 2;
 /** Protocol §11: push batches carry 1–200 items. */
 export const PUSH_BATCH_SIZE = 200;
 /** Protocol §11: per-item payload ceiling is 64 KiB of JSON. */
@@ -282,6 +297,18 @@ export function utf8ByteLength(value: string): number {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The server's v2 legacy-cursor rejection (docs/sync-protocol.md §6): a 409
+ * whose message carries the resync_required code. Duck-typed over both API
+ * error shapes (mobile ApiError.status, web ApiError.statusCode) and stubs.
+ */
+export function isResyncRequired(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const status =
+    (error as { status?: unknown }).status ?? (error as { statusCode?: unknown }).statusCode;
+  return status === 409 && /resync_required/.test(errorMessage(error));
 }
 
 /* ------------------------------- factory -------------------------------- */
@@ -363,7 +390,21 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
     let applied = 0;
     for (;;) {
       const since = state.cursors[entity] ?? 0;
-      const page = await transport.pull({ entity, since, limit: pullLimit });
+      let page: SyncPullPage;
+      try {
+        page = await transport.pull({ entity, since, limit: pullLimit, v: SYNC_PROTOCOL_VERSION });
+      } catch (error) {
+        if (isResyncRequired(error) && since > 0) {
+          // v2 migration guard: the stored cursor belongs to the retired
+          // per-record-version domain. Reset and restart as a FULL sync —
+          // the only correct recovery, and the reason the server fails
+          // loudly instead of silently skipping records.
+          state.cursors[entity] = 0;
+          await persist();
+          continue;
+        }
+        throw error;
+      }
       if (page.items.length === 0 && page.hasMore) {
         // Empty page claiming more rows would loop forever — fail loudly.
         throw new Error(`Sync protocol violation: empty pull page with hasMore for ${entity}`);
@@ -411,6 +452,36 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
     if (existing) return existing;
 
     const confirmed = state.records[recordKey(input.entity, input.entityId)];
+
+    // Coalesce (V-65): a second offline edit to the SAME record folds into
+    // the pending outbox entry instead of queueing behind it with the same
+    // stale baseVersion (where it would conflict and be discarded). The
+    // merged entry keeps the ORIGINAL baseVersion — both edits ride one CAS
+    // — and takes the new clientMutationId, so if the previous mutation was
+    // secretly applied server-side the fresh id still CAS-fails into a
+    // proper conflict instead of silently replaying a ledgered 'applied'.
+    const pendingIndex = state.outbox.findIndex(
+      (candidate) => candidate.entity === input.entity && candidate.entityId === input.entityId
+    );
+    if (pendingIndex >= 0) {
+      const pending = state.outbox[pendingIndex];
+      const merged: OutboxEntry = {
+        ...pending,
+        clientMutationId,
+        op: input.op,
+        // Upserts are full replacements, so the latest payload IS the merge.
+        payload: input.op === 'upsert' ? input.payload : undefined,
+        enqueuedAt: now().toISOString()
+      };
+      state = {
+        ...state,
+        outbox: state.outbox.map((candidate, index) => (index === pendingIndex ? merged : candidate))
+      };
+      await persist();
+      notify();
+      return merged;
+    }
+
     const entry: OutboxEntry = {
       entity: input.entity,
       entityId: input.entityId,
@@ -437,16 +508,22 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
   }
 
   function handleConflict(entry: OutboxEntry, result: SyncPushResultItem): void {
-    // Server-wins v1 (§4): adopt the server state verbatim, drop the local
-    // change, and keep an audit trail for the UI.
+    // Server-wins (§4): adopt the server state, drop the local change, and
+    // keep an audit trail for the UI.
     const serverVersion = result.serverVersion ?? entry.baseVersion;
-    state.records[recordKey(entry.entity, entry.entityId)] = {
-      entity: entry.entity,
-      entityId: entry.entityId,
-      version: serverVersion,
-      deleted: result.serverPayload == null,
-      payload: result.serverPayload ?? null
-    };
+    // Stale-conflict guard (V-65): a replayed/late conflict outcome whose
+    // serverVersion lags the cached version must NOT regress the cache —
+    // the local copy is already newer than the state this conflict describes.
+    const cached = state.records[recordKey(entry.entity, entry.entityId)];
+    if (!cached || serverVersion >= cached.version) {
+      state.records[recordKey(entry.entity, entry.entityId)] = {
+        entity: entry.entity,
+        entityId: entry.entityId,
+        version: serverVersion,
+        deleted: result.serverPayload == null,
+        payload: result.serverPayload ?? null
+      };
+    }
     state.conflictLog = [
       ...state.conflictLog,
       {
