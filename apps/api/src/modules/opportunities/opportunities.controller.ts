@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsISO8601, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import {
   APPLICATION_STATUSES,
   type ApplicationStatus,
@@ -37,10 +37,12 @@ const OPPORTUNITY_STAFF: UserRole[] = ['admin', 'partner'];
 class ListOpportunitiesQuery extends ListQueryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   valueChain?: string;
 
   @IsOptional()
@@ -55,27 +57,35 @@ class ListOpportunitiesQuery extends ListQueryDto {
 
 class CreateOpportunityDto implements CreateOpportunityInput {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsIn(OPPORTUNITY_TYPES)
   type!: Opportunity['type'];
 
   @IsString()
+  @MaxLength(2000)
   description!: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   states?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   valueChains?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   eligibility?: string[];
 
   @IsISO8601()
@@ -83,15 +93,18 @@ class CreateOpportunityDto implements CreateOpportunityInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   partnerId?: string;
 }
 
 class ApplyDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
