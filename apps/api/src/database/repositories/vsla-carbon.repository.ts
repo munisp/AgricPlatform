@@ -215,6 +215,12 @@ export interface VslaLoanRepaymentRecord {
   amountKobo: number;
   idempotencyKey: string;
   ledgerEntryId: string;
+  /**
+   * Canonical payload fingerprint (V-57, WP-G11 doctrine): same key +
+   * different amount 409s instead of silently replaying. Optional so
+   * pre-081 rows replay as legacy records.
+   */
+  payloadHash?: string;
   createdAt: string;
 }
 

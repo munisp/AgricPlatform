@@ -9,6 +9,7 @@ import type {
   WarehouseReceiptStatus,
   WarehouseReceiptTransfer
 } from '@agric-platform/shared';
+import { ConflictException } from '@nestjs/common';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
 
@@ -81,6 +82,26 @@ export class InMemoryWarehouseDepositRepository
   constructor(seed: readonly WarehouseDeposit[] = []) {
     super(seed, warehouseDepositMatcher);
   }
+
+  /**
+   * V-21: mirror the pg partial unique index
+   * `warehouse_deposits_open_lot_uq ON warehouse.deposits (lot_id)
+   * WHERE status <> 'withdrawn'` (migration 080). Synchronous check-and-set:
+   * the scan and the insert happen in one tick, so concurrent claims for the
+   * same lot serialise exactly like the guarded INSERT (second claim → 409).
+   */
+  override async create(deposit: WarehouseDeposit): Promise<WarehouseDeposit> {
+    if (deposit.lotId !== undefined && deposit.status !== 'withdrawn') {
+      for (const existing of this.items.values()) {
+        if (existing.lotId === deposit.lotId && existing.status !== 'withdrawn') {
+          throw new ConflictException(
+            `Commodity lot '${deposit.lotId}' already has an open warehouse deposit`
+          );
+        }
+      }
+    }
+    return super.create(deposit);
+  }
 }
 
 export function createInMemoryWarehouseDepositRepository(): InMemoryWarehouseDepositRepository {
@@ -119,6 +140,23 @@ export class InMemoryWarehouseReceiptRepository
 {
   constructor(seed: readonly WarehouseReceipt[] = []) {
     super(seed, warehouseReceiptMatcher);
+  }
+
+  /**
+   * Mirror the pg UNIQUE index `warehouse_receipts_deposit_idx ON
+   * warehouse.receipts (deposit_id)` (034_warehouse.sql): one receipt per
+   * deposit. Synchronous check-and-set so concurrent issuance serialises
+   * (second claim → 409 → service adopts the winner's receipt).
+   */
+  override async create(receipt: WarehouseReceipt): Promise<WarehouseReceipt> {
+    for (const existing of this.items.values()) {
+      if (existing.depositId === receipt.depositId) {
+        throw new ConflictException(
+          `Deposit '${receipt.depositId}' already has a warehouse receipt`
+        );
+      }
+    }
+    return super.create(receipt);
   }
 }
 
