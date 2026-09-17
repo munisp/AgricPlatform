@@ -270,19 +270,52 @@ describe('UssdService.handleCallback', () => {
     expect(done).toBe('END Register first (menu option 1) to enrol in a course.');
   });
 
-  it('resets an expired session back to the opening menu', async () => {
+  it('expires a session explicitly instead of restarting mid-flow (V-66)', async () => {
     const { service, sessions } = build();
     const session = { sessionId: 's-8', phoneNumber: '+234808' };
     await service.handleCallback({ ...session, text: '' });
     await service.handleCallback({ ...session, text: '1' });
     const stored = await sessions.findById('s-8');
     expect(stored?.currentMenu).toBe('register_name');
-    // Force expiry, then continue the cumulative text — the engine restarts.
+    // Force expiry, then continue the cumulative text — the flow must NOT
+    // silently restart from the last segment; the user gets an explicit END.
     await sessions.save({ ...stored!, expiresAt: new Date(Date.now() - 1000).toISOString() });
     const after = await service.handleCallback({ ...session, text: '1*Amina Bello' });
-    // Fresh session: last segment 'Amina Bello' is not a main-menu choice.
-    expect(after).toContain('Invalid choice.');
-    expect(after).toContain('1 Register');
+    expect(after).toMatch(/^END /);
+    expect(after).toContain('expired');
+    // A genuine fresh dial (empty text) still opens the main menu.
+    const fresh = await service.handleCallback({ ...session, text: '' });
+    expect(fresh).toContain('1 Register');
+  });
+
+  it('rejects out-of-order cumulative text with a re-sync END (V-66)', async () => {
+    const { service } = build();
+    const session = { sessionId: 's-oo', phoneNumber: '+234811' };
+    await service.handleCallback({ ...session, text: '' });
+    // T3 (two segments) arriving before T2 (one segment) is rejected: the
+    // history cannot extend the opening dial by more than one segment.
+    const reordered = await service.handleCallback({ ...session, text: '1*Amina Bello' });
+    expect(reordered).toMatch(/^END /);
+    expect(reordered).toContain('out of sync');
+    // In-order turns still work: T2 then T3 extends by exactly one segment.
+    const t2 = await service.handleCallback({ ...session, text: '1' });
+    expect(t2).toMatch(/^CON /);
+    const t3 = await service.handleCallback({ ...session, text: '1*Amina Bello' });
+    expect(t3).toMatch(/^CON |^END /);
+    expect(t3).not.toContain('out of sync');
+  });
+
+  it('rejects a rewritten cumulative history while keeping session state (V-66)', async () => {
+    const { service, sessions } = build();
+    const session = { sessionId: 's-rw', phoneNumber: '+234812' };
+    await service.handleCallback({ ...session, text: '' });
+    await service.handleCallback({ ...session, text: '1' });
+    // Same segment count but a different prefix — not an extension.
+    const rewritten = await service.handleCallback({ ...session, text: '2*evil' });
+    expect(rewritten).toContain('out of sync');
+    // State was not advanced by the rejected turn.
+    const stored = await sessions.findById('s-rw');
+    expect(stored?.currentMenu).toBe('register_name');
   });
 
   it('sweeps expired sessions', async () => {
@@ -385,6 +418,127 @@ describe('UssdController callback token gate (audit C2-3)', () => {
         controller.callback({ sessionId: 's-g4', phoneNumber: '+234823', text: '' }, TOKEN)
       ).rejects.toBeInstanceOf(NotFoundException);
     });
+  });
+});
+
+describe('UssdController production hardening (V-19)', () => {
+  const STRONG = 'prod-callback-token-with-32-chars-min';
+
+  async function inProd<T>(fn: () => Promise<T>): Promise<T> {
+    const saved = { ...process.env };
+    process.env.NODE_ENV = 'production';
+    process.env.AT_CALLBACK_TOKEN = STRONG;
+    try {
+      return await fn();
+    } finally {
+      process.env = saved;
+    }
+  }
+
+  function buildProd() {
+    return build({
+      env: { ...ENABLED_ENV, AT_CALLBACK_TOKEN: STRONG } as unknown as NodeJS.ProcessEnv
+    });
+  }
+
+  it('rejects the query-string token in production (header-only)', async () => {
+    const { service } = buildProd();
+    const controller = new UssdController(service);
+    await inProd(async () => {
+      await expect(
+        controller.callback(
+          { sessionId: 's-p1', phoneNumber: '+234830', text: '' },
+          STRONG,
+          undefined,
+          String(Date.now()),
+          'nonce-p1-unique'
+        )
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
+
+  it('requires a fresh timestamp and a unique nonce; a verbatim replay 401s', async () => {
+    const { service } = buildProd();
+    const controller = new UssdController(service);
+    await inProd(async () => {
+      const ts = String(Date.now());
+      const ok = await controller.callback(
+        { sessionId: 's-p2', phoneNumber: '+234831', text: '' },
+        undefined,
+        STRONG,
+        ts,
+        'nonce-p2-unique'
+      );
+      expect(ok).toContain('CON Welcome');
+      // A captured callback replayed verbatim (same nonce) is refused.
+      await expect(
+        controller.callback(
+          { sessionId: 's-p2', phoneNumber: '+234831', text: '' },
+          undefined,
+          STRONG,
+          ts,
+          'nonce-p2-unique'
+        )
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      // Missing timestamp/nonce is refused.
+      await expect(
+        controller.callback(
+          { sessionId: 's-p3', phoneNumber: '+234832', text: '' },
+          undefined,
+          STRONG
+        )
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      // A stale timestamp outside the window is refused.
+      await expect(
+        controller.callback(
+          { sessionId: 's-p4', phoneNumber: '+234833', text: '' },
+          undefined,
+          STRONG,
+          String(Date.now() - 60 * 60 * 1000),
+          'nonce-p4-unique'
+        )
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
+});
+
+describe('UssdService registration rate limit (V-19, production profile)', () => {
+  it('caps per-phone registration effects and keeps non-production unlimited', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const { service } = build({
+        env: {
+          ...ENABLED_ENV,
+          AT_CALLBACK_TOKEN: 'prod-callback-token-with-32-chars-min'
+        } as unknown as NodeJS.ProcessEnv
+      });
+      const phone = '+234840';
+      const runTraversal = async (sessionId: string) => {
+        const session = { sessionId, phoneNumber: phone };
+        await service.handleCallback({ ...session, text: '' });
+        await service.handleCallback({ ...session, text: '1' });
+        await service.handleCallback({ ...session, text: '1*Test Name' });
+        await service.handleCallback({ ...session, text: '1*Test Name*Kano' });
+        return service.handleCallback({ ...session, text: '1*Test Name*Kano*1' });
+      };
+      // Five registration effects fit the window (first registers, the rest
+      // hit the already-registered conflict — all consume budget).
+      for (let i = 0; i < 5; i += 1) {
+        const result = await runTraversal(`s-rl-${i}`);
+        expect(result).not.toContain('Too many registration attempts');
+      }
+      const limited = await runTraversal('s-rl-6');
+      expect(limited).toBe('END Too many registration attempts for this number. Please try again later.');
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
+    // Non-production: no cap.
+    const { service } = build();
+    const session = { sessionId: 's-rl-open', phoneNumber: '+234841' };
+    await service.handleCallback({ ...session, text: '' });
+    const open = await service.handleCallback({ ...session, text: '1' });
+    expect(open).toMatch(/^CON /);
   });
 });
 
