@@ -9,15 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Min
-} from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   EXPORT_DOCUMENT_TYPES,
@@ -49,6 +41,7 @@ class CreateListingDto implements CreateCertifiedListingInput {
   subjectType!: CreateCertifiedListingInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 
   @IsOptional()
@@ -59,17 +52,20 @@ class CreateListingDto implements CreateCertifiedListingInput {
 
 class RevokeListingDto {
   @IsString()
+  @MaxLength(2000)
   @IsNotEmpty()
   reason!: string;
 }
 
 class CreateTemplateDto implements CreateOfftakeTemplateInput {
   @IsString()
+  @MaxLength(200)
   @IsNotEmpty()
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsIn([...LIVESTOCK_SPECIES])
@@ -91,17 +87,20 @@ class CreateTemplateDto implements CreateOfftakeTemplateInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   defaultQualityGrade?: string;
 }
 
 class UpdateTemplateDto implements UpdateOfftakeTemplateInput {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   @IsNotEmpty()
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -121,6 +120,7 @@ class UpdateTemplateDto implements UpdateOfftakeTemplateInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   defaultQualityGrade?: string;
 }
 
@@ -132,9 +132,11 @@ class ListTemplatesQuery {
 
 class InstantiateContractDto implements InstantiateContractInput {
   @IsString()
+  @MaxLength(100)
   farmerUserId!: string;
 
   @IsString()
+  @MaxLength(100)
   buyerUserId!: string;
 
   @IsOptional()
@@ -153,6 +155,7 @@ class InstantiateContractDto implements InstantiateContractInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   qualityGrade?: string;
 }
 
@@ -169,18 +172,22 @@ class GenerateExportDocumentDto implements GenerateExportDocumentInput {
   subjectType!: GenerateExportDocumentInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   destinationCountry?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   hsCode?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   sanitaryCertificateRef?: string;
 }
 
@@ -189,6 +196,7 @@ class ListExportDocumentsQuery {
   subjectType!: GenerateExportDocumentInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 }
 
