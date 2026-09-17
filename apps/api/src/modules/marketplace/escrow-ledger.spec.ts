@@ -65,7 +65,7 @@ describe('EscrowService ledger legs (WP-G13)', () => {
     const { service, ledger } = makeWorld();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id as string);
 
-    const leg = await ledger!.findEntryByIdempotencyKey(escrowHoldLedgerKey(record.id));
+    const leg = await ledger!.findEntryByIdempotencyKey(escrowHoldLedgerKey(record.orderId));
     expect(leg).toBeDefined();
     expect(leg?.referenceType).toBe('marketplace_escrow_hold');
     expect(leg?.referenceId).toBe(record.id);
@@ -76,6 +76,25 @@ describe('EscrowService ledger legs (WP-G13)', () => {
     // The invariant: open holds Σ === liability outstanding === float balance.
     expect(await liabilityOutstanding(ledger!)).toBe(37_000_000);
     expect((await ledger!.balance(ESCROW_PROVIDER_FLOAT_ACCOUNT)).balanceKobo).toBe(37_000_000);
+  });
+
+  it('V-49: concurrent holds for one order — single record, single order-keyed hold leg', async () => {
+    const { service, escrows, entries, ledger } = makeWorld();
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => service.holdForOrder('order-buyer-cassava', buyer.id as string))
+    );
+    // Every caller converges on the SAME escrow record (winner adopted).
+    expect(new Set(results.map((record) => record.id)).size).toBe(1);
+    const records = await escrows.all();
+    expect(records).toHaveLength(1);
+    // Exactly one hold journal, keyed on the ORDER (not the record id).
+    const leg = await ledger!.findEntryByIdempotencyKey(
+      escrowHoldLedgerKey('order-buyer-cassava')
+    );
+    expect(leg).toBeDefined();
+    expect((await entries.find({})).filter((e) => e.idempotencyKey.startsWith('escrow-ledger:hold:'))).toHaveLength(1);
+    expect(await liabilityOutstanding(ledger!)).toBe(37_000_000);
+    void records;
   });
 
   it('hold replays never double-post the leg', async () => {
@@ -212,7 +231,7 @@ describe('Escrow reconciliation (WP-G13)', () => {
     const entries = createInMemoryLedgerEntryRepository();
     const ledger = new LedgerService(events, createInMemoryLedgerAccountRepository(), entries);
     const reconciliation = new LedgerReconciliationService(ledger, entries, legacy.escrows);
-    await postCorruptHoldLeg(ledger, record.id, 100);
+    await postCorruptHoldLeg(ledger, record.orderId, 100);
     const report = await reconciliation.reconcileEscrow({ repair: true });
     expect(report.balanced).toBe(false);
     const mismatch = report.drift.find(
@@ -222,7 +241,7 @@ describe('Escrow reconciliation (WP-G13)', () => {
     expect(mismatch?.repaired).toBe(false);
     // The corrupt entry was NOT replaced.
     expect(
-      (await ledger.findEntryByIdempotencyKey(escrowHoldLedgerKey(record.id)))?.postings[0]
+      (await ledger.findEntryByIdempotencyKey(escrowHoldLedgerKey(record.orderId)))?.postings[0]
         .amountKobo
     ).toBe(100);
   });
@@ -261,16 +280,16 @@ describe('Escrow reconciliation (WP-G13)', () => {
 /** Posts a hold leg under the canonical key with a corrupted amount. */
 async function postCorruptHoldLeg(
   ledger: LedgerService,
-  escrowId: string,
+  orderId: string,
   amountKobo: number
 ): Promise<void> {
   await ledger.ensureAccount({ code: ESCROW_PROVIDER_FLOAT_ACCOUNT, type: 'asset' });
   await ledger.ensureAccount({ code: ESCROW_HOLDS_LIABILITY_ACCOUNT, type: 'liability' });
   await ledger.postEntry(
     {
-      idempotencyKey: escrowHoldLedgerKey(escrowId),
+      idempotencyKey: escrowHoldLedgerKey(orderId),
       referenceType: 'marketplace_escrow_hold',
-      referenceId: escrowId,
+      referenceId: orderId,
       description: 'corrupt canonical leg',
       postings: [
         { accountCode: ESCROW_PROVIDER_FLOAT_ACCOUNT, direction: 'debit', amountKobo },
