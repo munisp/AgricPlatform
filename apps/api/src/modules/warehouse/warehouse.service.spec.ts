@@ -19,6 +19,7 @@ import {
   createInMemoryWarehouseReceiptRepository,
   createInMemoryWarehouseTransferRepository
 } from '../../database/repositories/warehouse.repository.js';
+import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { ProviderRequestError } from '../integrations/drivers/http.js';
 import { H3Service } from '../geo/h3.service.js';
 import { StubCertificationFeed, type WarehouseCertificationFeed } from './certification.driver.js';
@@ -61,20 +62,26 @@ function makeService(options: {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
   const lots = createInMemoryCommodityLotRepository();
   const warehouses = createInMemoryCertifiedWarehouseRepository();
+  const deposits = createInMemoryWarehouseDepositRepository();
+  const receipts = createInMemoryWarehouseReceiptRepository();
+  const pledges = createInMemoryWarehousePledgeRepository();
+  const transfers = createInMemoryWarehouseTransferRepository();
+  const users = createInMemoryUserRepository();
   const service = new WarehouseService(
     events,
     new H3Service(),
     warehouses,
-    createInMemoryWarehouseDepositRepository(),
-    createInMemoryWarehouseReceiptRepository(),
-    createInMemoryWarehousePledgeRepository(),
-    createInMemoryWarehouseTransferRepository(),
+    deposits,
+    receipts,
+    pledges,
+    transfers,
     lots,
     options.certificationFeed ?? new StubCertificationFeed(),
     options.collateralRegistry ?? new StubCollateralRegistry(),
+    users,
     options.audit
   );
-  return { service, events, lots, warehouses };
+  return { service, events, lots, warehouses, deposits, receipts, pledges, transfers, users };
 }
 
 /** Certified-feed fixture whose outcome the test controls. */
@@ -288,6 +295,45 @@ describe('deposits and grading', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('V-21: concurrent deposits for the same lot — exactly one wins (repository claim)', async () => {
+    const { service, lots } = makeService({ certificationFeed: fixedFeed('certified') });
+    await lots.create(LOT);
+    const warehouse = await certifiedWarehouse(service);
+    const results = await Promise.allSettled(
+      Array.from({ length: 4 }, () =>
+        service.createDeposit({ warehouseId: warehouse.id, crop: 'maize', lotId: LOT.id }, farmer.id)
+      )
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(3);
+    for (const result of rejected) {
+      expect((result as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    }
+    const open = (await service.listDepositsForFarmer(farmer.id)).filter((d) => d.lotId === LOT.id);
+    expect(open).toHaveLength(1);
+  });
+
+  it('V-21: a lot can be re-deposited after the prior deposit is withdrawn', async () => {
+    const { service, lots } = makeService({ certificationFeed: fixedFeed('certified') });
+    await lots.create(LOT);
+    const warehouse = await certifiedWarehouse(service);
+    const first = await service.createDeposit(
+      { warehouseId: warehouse.id, crop: 'maize', lotId: LOT.id },
+      farmer.id
+    );
+    // Withdrawn deposits release the lot claim (partial index WHERE status <> 'withdrawn').
+    await service.gradeDeposit(first.id, { grade: 'A', moisturePercent: 10, bagCount: 10, weightKg: 500 }, admin);
+    const receipt = await service.issueReceipt(first.id, admin);
+    await service.redeemReceipt(receipt.id, farmer);
+    const second = await service.createDeposit(
+      { warehouseId: warehouse.id, crop: 'maize', lotId: LOT.id },
+      farmer.id
+    );
+    expect(second.status).toBe('received');
+  });
+
   it('grades a received deposit with the full grading record', async () => {
     const { service } = makeService({ certificationFeed: fixedFeed('certified') });
     const warehouse = await certifiedWarehouse(service);
@@ -373,6 +419,26 @@ describe('receipt issuance and signature', () => {
     const second = await issuedReceipt(service);
     expect(second.receiptNumber).not.toBe(first.receiptNumber);
   });
+
+  it('V-21: concurrent issueReceipt — exactly one receipt, losers adopt it', async () => {
+    const { service, receipts } = makeService({ certificationFeed: fixedFeed('certified') });
+    const warehouse = await certifiedWarehouse(service);
+    const deposit = await service.createDeposit({ warehouseId: warehouse.id, crop: 'maize' }, farmer.id);
+    await service.gradeDeposit(
+      deposit.id,
+      { grade: 'A', moisturePercent: 12.5, bagCount: 40, weightKg: 2000 },
+      admin
+    );
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => service.issueReceipt(deposit.id, admin))
+    );
+    const ids = new Set(results.map((receipt) => receipt.id));
+    expect(ids.size).toBe(1); // every caller converges on the SAME receipt
+    expect((await receipts.all()).filter((r) => r.depositId === deposit.id)).toHaveLength(1);
+    const updated = await service.getDeposit(deposit.id);
+    expect(updated.status).toBe('issued');
+    expect(updated.receiptId).toBe(results[0].id);
+  });
 });
 
 describe('pledge / lien', () => {
@@ -398,6 +464,89 @@ describe('pledge / lien', () => {
     await expect(
       service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender2)
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('replays the same lender pledge idempotently', async () => {
+    const { service } = makeService({ certificationFeed: fixedFeed('certified') });
+    const receipt = await issuedReceipt(service);
+    const first = await service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender);
+    const replay = await service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender);
+    expect(replay.pledge.id).toBe(first.pledge.id);
+    expect(replay.receipt.status).toBe('pledged');
+  });
+
+  it('V-22: concurrent pledges — one winner, loser leaves NO orphan registry lien', async () => {
+    let registrations = 0;
+    const counting: CollateralRegistry = {
+      name: 'stub',
+      register: (input) => {
+        registrations += 1;
+        return new StubCollateralRegistry().register(input);
+      },
+      release: () => Promise.resolve()
+    };
+    const { service } = makeService({
+      certificationFeed: fixedFeed('certified'),
+      collateralRegistry: counting
+    });
+    const receipt = await issuedReceipt(service);
+    const results = await Promise.allSettled([
+      service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender),
+      service.pledgeReceipt(receipt.id, { principalKobo: 200 }, lender2)
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    // The loser never reached the external registry: exactly one lien exists.
+    expect(registrations).toBe(1);
+    expect(await service.listPledgesForReceipt(receipt.id)).toHaveLength(1);
+  });
+
+  it('V-22: pledge-row failure after registration compensates — registry released, receipt active', async () => {
+    const released: string[] = [];
+    const registry: CollateralRegistry = {
+      name: 'stub',
+      register: (input) => new StubCollateralRegistry().register(input),
+      release: (reference) => {
+        released.push(reference);
+        return Promise.resolve();
+      }
+    };
+    const { service, pledges } = makeService({
+      certificationFeed: fixedFeed('certified'),
+      collateralRegistry: registry
+    });
+    const receipt = await issuedReceipt(service);
+    // Fault injection: the pledge row write fails AFTER the CAS claim and
+    // the external registration have both succeeded.
+    const failing = vi.spyOn(pledges, 'create').mockRejectedValueOnce(new Error('db write lost'));
+    await expect(
+      service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender)
+    ).rejects.toThrowError('db write lost');
+    failing.mockRestore();
+    expect((await service.getReceipt(receipt.id)).status).toBe('active');
+    expect(released).toHaveLength(1); // orphan lien compensated
+    expect(await service.listPledgesForReceipt(receipt.id)).toHaveLength(0);
+    // The receipt is not bricked: a fresh pledge succeeds after compensation.
+    const retry = await service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender);
+    expect(retry.receipt.status).toBe('pledged');
+    expect(retry.pledge.status).toBe('active');
+  });
+
+  it('V-22: orphaned claim (crash between CAS and pledge row) rolls back and is retryable', async () => {
+    const { service, receipts } = makeService({ certificationFeed: fixedFeed('certified') });
+    const receipt = await issuedReceipt(service);
+    // Simulate the crash window: receipt claimed 'pledged' with no pledge row.
+    await receipts.update(receipt.id, { status: 'pledged' });
+    await expect(
+      service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender)
+    ).rejects.toBeInstanceOf(ConflictException);
+    // The orphan was rolled back — the receipt is usable again.
+    expect((await service.getReceipt(receipt.id)).status).toBe('active');
+    const retry = await service.pledgeReceipt(receipt.id, { principalKobo: 100 }, lender);
+    expect(retry.pledge.status).toBe('active');
   });
 
   it('validates the principal', async () => {
@@ -603,6 +752,57 @@ describe('transfer and redeem', () => {
     await expect(service.transferReceipt(receipt.id, farmer2.id, farmer)).rejects.toBeInstanceOf(
       BadRequestException
     );
+  });
+
+  it('V-38: transfer to a nonexistent recipient is rejected 400', async () => {
+    const { service } = makeService({ certificationFeed: fixedFeed('certified') });
+    const receipt = await issuedReceipt(service);
+    await expect(
+      service.transferReceipt(receipt.id, 'user-does-not-exist', farmer)
+    ).rejects.toBeInstanceOf(BadRequestException);
+    // The receipt did not move.
+    expect((await service.getReceipt(receipt.id)).ownerId).toBe(farmer.id);
+    expect(await service.listTransfersForReceipt(receipt.id)).toHaveLength(0);
+  });
+
+  it('V-38: transfer to a suspended recipient is rejected 409', async () => {
+    const { service, users } = makeService({ certificationFeed: fixedFeed('certified') });
+    const receipt = await issuedReceipt(service);
+    await users.setStatus(farmer2.id, 'suspended');
+    await expect(service.transferReceipt(receipt.id, farmer2.id, farmer)).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    expect((await service.getReceipt(receipt.id)).ownerId).toBe(farmer.id);
+    // A reactivated recipient can receive.
+    await users.setStatus(farmer2.id, 'active');
+    const moved = await service.transferReceipt(receipt.id, farmer2.id, farmer);
+    expect(moved.ownerId).toBe(farmer2.id);
+  });
+
+  it('V-54: crash between receipt CAS and deposit update converges on retry', async () => {
+    const { service, receipts, deposits } = makeService({
+      certificationFeed: fixedFeed('certified')
+    });
+    const receipt = await issuedReceipt(service);
+    // Simulate the crash: receipt is terminal 'redeemed' but the deposit is
+    // still open ('issued') — the exact two-write window state.
+    await receipts.update(receipt.id, { status: 'redeemed' });
+    const replay = await service.redeemReceipt(receipt.id, farmer);
+    expect(replay.status).toBe('redeemed');
+    expect((await deposits.getById(receipt.depositId)).status).toBe('withdrawn');
+  });
+
+  it('V-54: a concurrent redeem pair converges — one receipt, one withdrawn deposit', async () => {
+    const { service, deposits } = makeService({ certificationFeed: fixedFeed('certified') });
+    const receipt = await issuedReceipt(service);
+    const results = await Promise.all([
+      service.redeemReceipt(receipt.id, farmer),
+      service.redeemReceipt(receipt.id, farmer)
+    ]);
+    for (const result of results) {
+      expect(result.status).toBe('redeemed');
+    }
+    expect((await deposits.getById(receipt.depositId)).status).toBe('withdrawn');
   });
 });
 
