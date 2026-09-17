@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsBoolean, IsIn, IsISO8601, IsInt, IsOptional, IsString, IsUrl, Min } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -232,8 +232,19 @@ export class KnowledgeController {
   @Get('webinars/:id/registrations')
   @UseGuards(RolesGuard)
   @Roles('admin', 'partner')
-  @ApiOperation({ summary: 'List webinar registrations (partners and admins)' })
-  async listRegistrations(@Param('id') id: string) {
+  @ApiOperation({ summary: 'List webinar registrations (the hosting partner and admins)' })
+  async listRegistrations(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    // V-61: the roster (registrant userIds) is owner-bound — a partner sees
+    // only webinars it hosts; admins keep oversight.
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    if (!actor.roles.includes('admin')) {
+      const webinar = await this.knowledge.getWebinar(id);
+      if (webinar.hostUserId !== actor.id) {
+        throw new ForbiddenException('Only the hosting partner or an admin may list registrations');
+      }
+    }
     return { data: await this.knowledge.listRegistrations(id) };
   }
 }
