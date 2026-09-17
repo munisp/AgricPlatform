@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { NotificationChannel, NotificationMessage, NotificationPreference } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { MAX_PAGE_SIZE } from '../../common/pagination.js';
 import {
   DELIVERY_LOG_REPOSITORY,
   NOTIFICATION_PREFERENCE_REPOSITORY,
@@ -45,7 +46,15 @@ export class NotificationsService {
     userId?: string;
     status?: NotificationMessage['status'];
   }): Promise<NotificationMessage[]> {
-    return this.messages.find({ userId: filter.userId, status: filter.status });
+    // V-72: a user's all-time notification history is unbounded — cap the
+    // read at one max-size page (SQL LIMIT on the pg driver) so the
+    // endpoint stays O(page), not O(table). The array contract is kept.
+    const page = await this.messages.searchPage(
+      { userId: filter.userId, status: filter.status },
+      1,
+      MAX_PAGE_SIZE
+    );
+    return page.data;
   }
 
   async unreadCount(userId: string): Promise<number> {
