@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { IntegrationsModule } from '../integrations/integrations.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { KeycloakPhoneTokenService } from './keycloak-phone-token.service.js';
@@ -7,6 +8,9 @@ import { PinSessionsController } from './pin-sessions.controller.js';
 import { SessionService } from './session.service.js';
 
 @Module({
+  // IntegrationsModule supplies the live SMS driver for OTP delivery (V-16).
+  // It imports no feature module that depends on AuthModule, so no cycle.
+  imports: [IntegrationsModule],
   controllers: [AuthController, PinSessionsController],
   providers: [
     AuthService,

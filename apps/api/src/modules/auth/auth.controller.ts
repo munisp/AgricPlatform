@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Headers, Ip, Post, UnauthorizedException, UseGuards, BadRequestException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { ArrayNotEmpty, IsIn, IsOptional, IsString, Length } from 'class-validator';
+import { ArrayNotEmpty, IsIn, IsOptional, IsString, Length, Matches } from 'class-validator';
 import { LANGUAGE_CODES, SELF_REGISTRATION_ROLES, USER_ROLES, type LanguageCode, type User, type UserRole } from '@agric-platform/shared';
 import { devHeaderAuthAllowed } from '../../common/auth/auth.config.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -11,8 +11,16 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { AuthService } from './auth.service.js';
 import { SessionService } from './session.service.js';
 
-class RequestOtpDto {
-  @IsString()
+/**
+ * Loose E.164 shape (V-62): leading '+', non-zero country-code digit, 8-15
+ * digits total. The per-phone resend caps key on this value, so it must be
+ * canonical — a local-format number would fragment the counter across
+ * spellings of the same line.
+ */
+export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+
+export class RequestOtpDto {
+  @Matches(E164_PATTERN, { message: 'phone must be in E.164 format (e.g. +2348012345678)' })
   phone!: string;
 }
 
