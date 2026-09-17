@@ -103,7 +103,7 @@ function makeService(ndvi: NdviProvider = stubNdvi) {
 async function makeGroupWithCycle(service: VslaCarbonService) {
   const group = await service.createGroup(lead, { name: 'Kano Women Savings' });
   const member2 = await service.addMember(lead, group.id, { userId: farmer.id });
-  const leadMember = (await service.listMembers(group.id)).find((m) => m.userId === lead.id);
+  const leadMember = (await service.listMembers(admin, group.id)).find((m) => m.userId === lead.id);
   const cycle = await service.openCycle(lead, group.id, '2026 Cycle 1');
   return { group, cycle, leadMember: leadMember!, member2 };
 }
@@ -142,7 +142,7 @@ describe('VSLA group registry + RBAC', () => {
     await expect(
       ledger.getAccountByCode(groupInterestIncomeAccountCode(group.id))
     ).resolves.toMatchObject({ type: 'revenue' });
-    const members = await service.listMembers(group.id);
+    const members = await service.listMembers(admin, group.id);
     expect(members).toHaveLength(1);
     expect(members[0]).toMatchObject({ userId: lead.id, role: 'lead' });
   });
@@ -178,7 +178,7 @@ describe('VSLA group registry + RBAC', () => {
     const first = await service.addMember(lead, group.id, { userId: farmer.id });
     const second = await service.addMember(lead, group.id, { userId: farmer.id });
     expect(second.id).toBe(first.id);
-    expect(await service.listMembers(group.id)).toHaveLength(2);
+    expect(await service.listMembers(admin, group.id)).toHaveLength(2);
   });
 });
 
@@ -227,7 +227,7 @@ describe('savings cycles + ledger-backed contributions', () => {
       idempotencyKey: 'dup'
     });
     expect(replay.id).toBe(first.id);
-    expect(await service.listContributions(cycle.id)).toHaveLength(1);
+    expect(await service.listContributions(admin, cycle.id)).toHaveLength(1);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(50_000);
   });
 
@@ -275,7 +275,7 @@ describe('internal loans with simple interest', () => {
   it('issues a loan with a balanced interest posting (receivable = total due)', async () => {
     const { service, ledger } = makeService();
     const { group, cycle, member2 } = await makeGroupWithCycle(service);
-    await contributeBoth(service, cycle.id, (await service.listMembers(group.id)).find((m) => m.userId === lead.id)!.id, member2.id);
+    await contributeBoth(service, cycle.id, (await service.listMembers(admin, group.id)).find((m) => m.userId === lead.id)!.id, member2.id);
     const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
@@ -343,8 +343,13 @@ describe('internal loans with simple interest', () => {
     });
     expect(first.loan.repaidKobo).toBe(50_000);
     expect(first.loan.status).toBe('ACTIVE');
+    // V-57: overpay is REJECTED (400), never silently clamped — and nothing moves.
+    await expect(
+      service.repayLoan(farmer, loan.id, { amountKobo: 999_999, idempotencyKey: 'r2' })
+    ).rejects.toThrow(BadRequestException);
+    expect((await service.getLoan(loan.id)).repaidKobo).toBe(50_000);
     const second = await service.repayLoan(farmer, loan.id, {
-      amountKobo: 999_999, // overpay clamps to outstanding
+      amountKobo: 60_000, // exact outstanding
       idempotencyKey: 'r2'
     });
     expect(second.repayment.amountKobo).toBe(60_000);
@@ -373,7 +378,7 @@ describe('internal loans with simple interest', () => {
       idempotencyKey: 'rr'
     });
     expect(replay.repayment.id).toBe(first.repayment.id);
-    expect(await service.listRepayments(loan.id)).toHaveLength(1);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(1);
     await expect(
       service.repayLoan(farmer, loan.id, { amountKobo: 1, idempotencyKey: 'rr2' })
     ).rejects.toThrow(ConflictException);
@@ -420,7 +425,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     expect(a.status).toBe('fulfilled');
     expect(b.status).toBe('fulfilled');
     const final = await service.getLoan(loan.id);
-    const repayments = await service.listRepayments(loan.id);
+    const repayments = await service.listRepayments(admin, loan.id);
     const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
     expect(repayments).toHaveLength(2);
     expect(repayments.reduce((sum, row) => sum + row.amountKobo, 0)).toBe(80_000);
@@ -439,7 +444,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     const loser = a.status === 'rejected' ? a : (b as PromiseRejectedResult);
     expect(loser.reason).toBeInstanceOf(ConflictException);
     const final = await service.getLoan(loan.id);
-    const repayments = await service.listRepayments(loan.id);
+    const repayments = await service.listRepayments(admin, loan.id);
     const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
     // Exactly ONE payment committed anywhere — the loser's kobo never reached
     // the ledger, so nothing is trapped against the receivable guard.
@@ -465,7 +470,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     expect(a.status).toBe('fulfilled');
     expect(b.status).toBe('fulfilled');
     const final = await service.getLoan(loan.id);
-    const repayments = await service.listRepayments(loan.id);
+    const repayments = await service.listRepayments(admin, loan.id);
     const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
     expect(repayments).toHaveLength(1);
     expect(final.repaidKobo).toBe(40_000);
@@ -485,7 +490,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     ).rejects.toThrow('ledger down');
     // The claim was rolled back: no money moved and the aggregate is clean.
     expect((await service.getLoan(loan.id)).repaidKobo).toBe(0);
-    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(0);
     // A same-key retry after recovery succeeds cleanly (no trapped claim).
     sabotaged = false;
     const retried = await service.repayLoan(farmer, loan.id, {
@@ -493,7 +498,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
       idempotencyKey: 'repay-x'
     });
     expect(retried.loan.repaidKobo).toBe(40_000);
-    expect(await service.listRepayments(loan.id)).toHaveLength(1);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(1);
   });
 
   it('resume after a crash between posting and row insert adopts the entry (no double claim)', async () => {
@@ -508,7 +513,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
     ).rejects.toThrow('db down');
     // The claim stays standing (it matches the committed entry); the row is missing.
     expect((await service.getLoan(loan.id)).repaidKobo).toBe(40_000);
-    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(0);
     // Retry with the same key: resumes through the prior-entry path — no
     // second claim, no second posting, just the missing row.
     sabotaged = false;
@@ -517,7 +522,7 @@ describe('stage-24 audit regression: concurrent repayments converge (A1-4 / A4-5
       idempotencyKey: 'repay-crash'
     });
     expect(resumed.loan.repaidKobo).toBe(40_000);
-    const rows = await service.listRepayments(loan.id);
+    const rows = await service.listRepayments(admin, loan.id);
     expect(rows).toHaveLength(1);
     expect(rows[0].amountKobo).toBe(40_000);
     const receivable = await ledger.balance(groupLoansReceivableAccountCode(group.id));
@@ -599,7 +604,7 @@ describe('deterministic share-out at cycle close', () => {
       first.payouts.map((p) => [p.memberId, p.shareKobo])
     );
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
-    expect(await service.getShareOut(cycle.id)).toHaveLength(2);
+    expect(await service.getShareOut(admin, cycle.id)).toHaveLength(2);
   });
 
   it('requires a group admin to close a cycle', async () => {
@@ -627,7 +632,7 @@ describe('stage-24 audit regression: closeCycle crash-resume pays the persisted 
     await expect(service.closeCycle(lead, cycle.id)).rejects.toThrow('process crash');
 
     // Mid-crash state: the plan is persisted, one payout posted, no rows.
-    expect(await service.getShareOut(cycle.id)).toHaveLength(0);
+    expect(await service.getShareOut(admin, cycle.id)).toHaveLength(0);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(100_000);
 
     // Resume: shares come from the PERSISTED plan, not the reduced pool.
@@ -644,7 +649,7 @@ describe('stage-24 audit regression: closeCycle crash-resume pays the persisted 
     // Conservation holds and nothing is stranded in the pool.
     expect(resumed.payouts.reduce((sum, p) => sum + p.shareKobo, 0)).toBe(200_000);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
-    expect(await service.getShareOut(cycle.id)).toHaveLength(2);
+    expect(await service.getShareOut(admin, cycle.id)).toHaveLength(2);
 
     // A further close is a clean replay of the same report.
     const replay = await service.closeCycle(lead, cycle.id);
@@ -674,7 +679,7 @@ describe('stage-24 audit regression: closeCycle crash-resume pays the persisted 
       }
     }
     await service.closeCycle(lead, cycle.id);
-    const rows = await service.getShareOut(cycle.id);
+    const rows = await service.getShareOut(admin, cycle.id);
     expect(rows).toHaveLength(2); // exactly one payout row per member
     expect(rows.reduce((sum, row) => sum + row.shareKobo, 0)).toBe(400_000);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
@@ -748,7 +753,7 @@ describe('carbon MRV plots + seasonal evidence', () => {
       idempotencyKey: 'e1'
     });
     expect(replay.id).toBe(first.id);
-    expect(await service.listEvidence(plot.id)).toHaveLength(1);
+    expect(await service.listEvidence(admin, plot.id)).toHaveLength(1);
     await expect(
       service.submitEvidence(farmer, plot.id, {
         season: 'not-a-season',
@@ -802,7 +807,7 @@ describe('carbon MRV plots + seasonal evidence', () => {
         })
       ).rejects.toThrow(ServiceUnavailableException);
       // Fail closed: NO evidence row was written.
-      expect(await service.listEvidence(plot.id)).toHaveLength(0);
+      expect(await service.listEvidence(admin, plot.id)).toHaveLength(0);
 
       // The endpoint stays functional in production without the stub
       // linkage (real farmer-supplied inputs persist fine).
@@ -812,7 +817,7 @@ describe('carbon MRV plots + seasonal evidence', () => {
         idempotencyKey: 'ndvi-prod-plain'
       });
       expect(evidence.ndviBasis).toBeUndefined();
-      expect(await service.listEvidence(plot.id)).toHaveLength(1);
+      expect(await service.listEvidence(admin, plot.id)).toHaveLength(1);
     } finally {
       if (previousEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousEnv;
@@ -843,7 +848,7 @@ describe('carbon MRV plots + seasonal evidence', () => {
         linkNdvi: true
       })
     ).rejects.toThrow(ServiceUnavailableException);
-    expect(await service.listEvidence(plot.id)).toHaveLength(0);
+    expect(await service.listEvidence(admin, plot.id)).toHaveLength(0);
   });
 });
 
@@ -891,7 +896,7 @@ describe('carbon ESTIMATEs + donor/MRV reporting', () => {
     const first = await service.estimatePlot(enumerator, plot.id, '2026-dry');
     const replay = await service.estimatePlot(enumerator, plot.id, '2026-dry');
     expect(replay.id).toBe(first.id);
-    expect(await service.listEstimates(plot.id)).toHaveLength(1);
+    expect(await service.listEstimates(admin, plot.id)).toHaveLength(1);
   });
 
   it('defaults survival to 100% when no evidence exists (still an estimate)', async () => {
@@ -988,7 +993,7 @@ describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
         idempotencyKey: ''
       })
     ).rejects.toThrow(BadRequestException);
-    expect(await service.listLoans(group.id)).toHaveLength(0);
+    expect(await service.listLoans(admin, group.id)).toHaveLength(0);
   });
 
   it('concurrent duplicate issueLoan with the same key disburses EXACTLY once', async () => {
@@ -1009,7 +1014,7 @@ describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
     const second = (b as PromiseFulfilledResult<Awaited<ReturnType<typeof service.issueLoan>>>).value;
     // Both callers converge on the SAME loan — no double disbursement.
     expect(second.id).toBe(first.id);
-    expect(await service.listLoans(group.id)).toHaveLength(1);
+    expect(await service.listLoans(admin, group.id)).toHaveLength(1);
     // Exactly ONE balanced disbursement posting: pool debited once.
     const entries = await ledger.listEntries({ referenceType: 'vsla_loan' });
     expect(entries).toHaveLength(1);
@@ -1031,7 +1036,7 @@ describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
     const replay = await service.issueLoan(lead, group.id, { ...input });
     expect(replay.id).toBe(first.id);
     expect(replay.ledgerEntryId).toBe(first.ledgerEntryId);
-    expect(await service.listLoans(group.id)).toHaveLength(1);
+    expect(await service.listLoans(admin, group.id)).toHaveLength(1);
     expect(await ledger.listEntries({ referenceType: 'vsla_loan' })).toHaveLength(1);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(350_000);
   });
@@ -1053,7 +1058,7 @@ describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
       })
     ).rejects.toThrow(ConflictException);
     // The conflicting retry moved no money and created no loan.
-    expect(await service.listLoans(group.id)).toHaveLength(1);
+    expect(await service.listLoans(admin, group.id)).toHaveLength(1);
     expect(await ledger.listEntries({ referenceType: 'vsla_loan' })).toHaveLength(1);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(300_000);
   });
@@ -1096,7 +1101,7 @@ describe('WP-G1: issueLoan idempotency (double-disbursement fix)', () => {
       idempotencyKey: 'loan-underfunded'
     };
     await expect(service.issueLoan(lead, group.id, input)).rejects.toThrow(BadRequestException);
-    expect(await service.listLoans(group.id)).toHaveLength(0);
+    expect(await service.listLoans(admin, group.id)).toHaveLength(0);
     // Fund the pool, then the SAME key retries cleanly into a real loan.
     await service.contribute(lead, cycle.id, {
       memberId: leadMember.id,
@@ -1171,12 +1176,12 @@ describe('WP-G1: phantom repayment claim — reconciler + atomic fold', () => {
       service.repayLoan(farmer, loan.id, { amountKobo: 40_000, idempotencyKey: 'repay-crash-2' })
     ).rejects.toThrow('process crash');
     sabotaged = false;
-    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(0);
     expect((await service.getLoan(loan.id)).repaidKobo).toBe(40_000);
 
     const corrections = await service.reconcileRepaymentClaims();
     expect(corrections).toEqual([{ loanId: loan.id, materialisedRows: 1, releasedKobo: 0 }]);
-    const rows = await service.listRepayments(loan.id);
+    const rows = await service.listRepayments(admin, loan.id);
     expect(rows).toHaveLength(1);
     expect(rows[0].amountKobo).toBe(40_000);
     // Claim, row and ledger agree — nothing was released (the money DID move).
@@ -1197,14 +1202,14 @@ describe('WP-G1: phantom repayment claim — reconciler + atomic fold', () => {
     ).rejects.toThrow('ledger down');
     // The unit rolled back cleanly: the loan is untouched and fully retryable.
     expect((await service.getLoan(loan.id)).repaidKobo).toBe(0);
-    expect(await service.listRepayments(loan.id)).toHaveLength(0);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(0);
     sabotaged = false;
     const retried = await service.repayLoan(farmer, loan.id, {
       amountKobo: 60_000,
       idempotencyKey: 'repay-fold-fail'
     });
     expect(retried.loan.repaidKobo).toBe(60_000);
-    expect(await service.listRepayments(loan.id)).toHaveLength(1);
+    expect(await service.listRepayments(admin, loan.id)).toHaveLength(1);
     // A healthy loan shows up as NO correction in the reconciler.
     expect(await service.reconcileRepaymentClaims()).toEqual([]);
   });
@@ -1323,7 +1328,7 @@ describe('WP-G1: share-out plan completion marker (partial-plan fix)', () => {
     // One marker, two plan rows, two payout rows, pool fully distributed.
     expect(await shareOutPlan.findMeta(cycle.id)).toMatchObject({ rowCount: 2 });
     expect(await shareOutPlan.find({ cycleId: cycle.id })).toHaveLength(2);
-    expect(await service.getShareOut(cycle.id)).toHaveLength(2);
+    expect(await service.getShareOut(admin, cycle.id)).toHaveLength(2);
     expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(0);
   });
 });
