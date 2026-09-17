@@ -15,8 +15,14 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsISO8601, IsOptional, IsString, Min } from 'class-validator';
-import { LOAN_STATUSES, type LoanStatus, type User } from '@agric-platform/shared';
+import { Throttle } from '@nestjs/throttler';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import {
+  LOAN_STATUSES,
+  MAX_LOAN_TERM_MONTHS,
+  type LoanStatus,
+  type User
+} from '@agric-platform/shared';
 import {
   AUTHORIZATION_CHECK,
   type AuthorizationCheck
@@ -30,25 +36,37 @@ import { LoanService, type CreateLoanApplicationInput } from './loan.service.js'
 
 class CreateLoanApplicationDto implements CreateLoanApplicationInput {
   @IsString()
+  @MaxLength(100)
   applicantId!: string;
 
   @IsString()
+  @MaxLength(100)
   lenderId!: string;
 
+  /** Business ceiling: ₦1bn (100_000_000_000 kobo); lender ticket range still applies. */
   @IsInt()
   @Min(1)
+  @Max(100_000_000_000)
   amountKobo!: number;
 
+  /**
+   * Business ceiling on the term (V-23): without it an applicant can store
+   * termMonths = 1e9 which later detonates a BigInt exponentiation DoS when
+   * an admin disburses.
+   */
   @IsInt()
   @Min(1)
+  @Max(MAX_LOAN_TERM_MONTHS)
   termMonths!: number;
 
   @IsInt()
   @Min(0)
+  @Max(100_000)
   annualRateBps!: number;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   purpose?: string;
 }
 
@@ -58,19 +76,26 @@ class LoanStatusDto {
 }
 
 class DisburseDto {
+  /**
+   * Date-only ISO (YYYY-MM-DD). @IsISO8601 also accepts full datetimes,
+   * which the amortisation lib then rejects with a plain Error → 500
+   * (L-12); tighten at the boundary instead.
+   */
   @IsOptional()
-  @IsISO8601()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'firstDueDate must be an ISO date (YYYY-MM-DD)' })
   firstDueDate?: string;
 }
 
 class PayInstallmentDto {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   paymentReference?: string;
 }
 
 class DeclarePaymentDto {
   @IsString()
+  @MaxLength(100)
   paymentReference!: string;
 }
 
@@ -162,6 +187,7 @@ export class LoanController {
     return { data: await this.loans.transition(id, dto.status, requireActor(actor)) };
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post(':id/disburse')
   @UseGuards(RolesGuard)
   @Roles('admin')
@@ -190,6 +216,7 @@ export class LoanController {
    * for the lender). Borrowers use declare-payment instead — a borrower can
    * no longer write off their own debt unilaterally.
    */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post(':id/installments/:sequence/pay')
   @UseGuards(RolesGuard)
   @Roles('admin')
