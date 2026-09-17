@@ -10,7 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -19,6 +19,7 @@ import { CreditService, type CreateCreditProductInput } from './credit.service.j
 
 class CreateProductDto implements CreateCreditProductInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsInt()
@@ -49,6 +50,7 @@ class CreateProductDto implements CreateCreditProductInput {
 class UpdateProductDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
