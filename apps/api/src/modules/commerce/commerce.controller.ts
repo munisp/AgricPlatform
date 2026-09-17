@@ -11,16 +11,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsBoolean,
-  IsIn,
-  IsInt,
-  IsObject,
-  IsOptional,
-  IsString,
-  Max,
-  Min
-} from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import {
   RETURN_STATUSES,
   SALES_CHANNELS,
@@ -55,9 +46,11 @@ function requireActor(actor: User | null): User {
 
 class CreateVariantDto implements CreateVariantInput {
   @IsString()
+  @MaxLength(500)
   sku!: string;
 
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsOptional()
@@ -76,6 +69,7 @@ class CreateVariantDto implements CreateVariantInput {
 class UpdateVariantDto implements UpdateVariantInput {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
@@ -99,13 +93,16 @@ class UpdateVariantDto implements UpdateVariantInput {
 
 class CheckoutDto {
   @IsString()
+  @MaxLength(100)
   listingId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   variantId?: string;
 
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsInt()
@@ -114,6 +111,7 @@ class CheckoutDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   promotionCode?: string;
 
   @IsOptional()
@@ -123,20 +121,24 @@ class CheckoutDto {
 
 class CreateBuyerGroupDto implements CreateBuyerGroupInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 }
 
 class UpdateBuyerGroupDto implements UpdateBuyerGroupInput {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -146,27 +148,33 @@ class UpdateBuyerGroupDto implements UpdateBuyerGroupInput {
 
 class MembershipDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 }
 
 class CreatePriceListDto implements CreatePriceListInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   buyerGroupId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   startsAt?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   endsAt?: string;
 
   @IsOptional()
@@ -177,10 +185,12 @@ class CreatePriceListDto implements CreatePriceListInput {
 class UpdatePriceListDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -203,6 +213,7 @@ class UpdatePriceListDto {
 
 class PriceListEntryDto {
   @IsString()
+  @MaxLength(100)
   variantId!: string;
 
   @IsInt()
@@ -213,9 +224,11 @@ class PriceListEntryDto {
 class CreatePromotionDto implements CreatePromotionInput {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   code?: string;
 
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsIn(['percentage', 'fixed'])
@@ -236,10 +249,12 @@ class CreatePromotionDto implements CreatePromotionInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   listingId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   buyerGroupId?: string;
 
   @IsOptional()
@@ -249,16 +264,19 @@ class CreatePromotionDto implements CreatePromotionInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   startsAt?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   endsAt?: string;
 }
 
 class UpdatePromotionDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
@@ -291,13 +309,16 @@ class UpdatePromotionDto {
 
 class EvaluatePromotionDto {
   @IsString()
+  @MaxLength(100)
   listingId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   variantId?: string;
 
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsInt()
@@ -306,6 +327,7 @@ class EvaluatePromotionDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   promotionCode?: string;
 }
 
@@ -317,9 +339,11 @@ class EditOrderDto {
 
 class CreateReturnDto {
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsString()
+  @MaxLength(2000)
   reason!: string;
 
   @IsOptional()
@@ -334,13 +358,16 @@ class ReturnTransitionDto {
 
 class CreateDraftOrderDto implements CreateDraftOrderInput {
   @IsString()
+  @MaxLength(100)
   listingId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   variantId?: string;
 
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsInt()
@@ -350,9 +377,11 @@ class CreateDraftOrderDto implements CreateDraftOrderInput {
 
 class CreateProductReviewDto {
   @IsString()
+  @MaxLength(100)
   orderId!: string;
 
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsInt()
@@ -362,6 +391,7 @@ class CreateProductReviewDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   comment?: string;
 }
 
