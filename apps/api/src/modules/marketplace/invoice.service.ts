@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -137,7 +138,23 @@ export class InvoiceService {
       issuedAt: new Date().toISOString(),
       createdAt: new Date().toISOString()
     };
-    const created = await this.invoices.create(invoice);
+    let created: Invoice;
+    try {
+      // V-52: the create is the claim — pg enforces one non-cancelled
+      // invoice per order via invoices_open_order_uq (migration 080); the
+      // in-memory driver mirrors it in InMemoryInvoiceRepository.create.
+      created = await this.invoices.create(invoice);
+    } catch (error) {
+      // Adopt-on-conflict: a concurrent issuance already claimed this order
+      // — converge on the winner's invoice exactly like the replay branch.
+      if (error instanceof ConflictException) {
+        const winner = await this.invoiceForOrder(orderId);
+        if (winner && winner.status !== 'cancelled') {
+          return winner;
+        }
+      }
+      throw error;
+    }
     await this.audit?.record({
       actorId,
       action: 'marketplace.invoice.issued',
