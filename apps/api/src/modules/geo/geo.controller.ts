@@ -8,17 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-  ValidateIf
-} from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { GEO_BOUNDARY_KINDS, H3_RESOLUTIONS } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -63,11 +53,13 @@ class CreateBoundaryDto implements CreateGeoBoundaryInput {
   kind!: CreateGeoBoundaryInput['kind'];
 
   @IsString()
+  @MaxLength(200)
   @IsNotEmpty()
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   parentId?: string;
 
   /** Raw GeoJSON Polygon/MultiPolygon geometry; structurally validated. */
@@ -85,6 +77,7 @@ class ContainsDto implements GeoContainsInput {
   /** Stored boundary to test against (xor geojson). */
   @ValidateIf((dto: ContainsDto) => dto.geojson === undefined)
   @IsString()
+  @MaxLength(100)
   boundaryId?: string;
 
   /** Inline GeoJSON Polygon/MultiPolygon geometry (xor boundaryId). */
