@@ -1,13 +1,7 @@
 import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsArray,
-  IsNumber,
-  IsOptional,
-  IsString,
-  ValidateNested
-} from 'class-validator';
+import { ArrayMaxSize, IsArray, IsNumber, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import type { LocationRef, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -17,13 +11,16 @@ import { ProfilesService, type UpsertProfileInput } from './profiles.service.js'
 
 class LocationDto implements LocationRef {
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ward?: string;
 
   @IsOptional()
@@ -43,16 +40,21 @@ class UpsertProfileDto implements UpsertProfileInput {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   farmingInterests?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   valueChains?: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   bio?: string;
 
   @IsOptional()
