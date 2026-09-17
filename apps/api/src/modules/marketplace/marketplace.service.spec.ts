@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryListingRepository } from '../../database/repositories/listing.repository.js';
@@ -193,6 +193,30 @@ describe('MarketplaceService commerce hooks', () => {
     const held = await escrow.escrowForOrder(order.id);
     expect(held?.status).toBe('held');
     expect(held?.amountKobo).toBe(order.totalNaira * 100);
+  });
+
+  it('V-53: a confirm-hook crash is recovered — retrying the confirm re-drives the invoice', async () => {
+    const { marketplace, invoices, orders } = makeWiredService();
+    const order = await marketplace.placeOrder('listing-maize-kano', 'user-buyer', 1);
+    // Fault injection: the invoice hook throws AFTER the confirm CAS commits.
+    const failing = vi
+      .spyOn(invoices, 'issueForOrder')
+      .mockRejectedValueOnce(new Error('invoice store lost mid-hook'));
+    await expect(
+      marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller)
+    ).rejects.toThrowError('invoice store lost mid-hook');
+    failing.mockRestore();
+    // The order confirmed but no invoice exists — the deterministic stranding.
+    expect((await orders.getById(order.id)).status).toBe('confirmed');
+    expect(await invoices.invoiceForOrder(order.id)).toBeUndefined();
+    // Retry the confirm: the replay branch re-drives the idempotent hook.
+    const replayed = await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
+    expect(replayed.status).toBe('confirmed');
+    const invoice = await invoices.invoiceForOrder(order.id);
+    expect(invoice?.status).toBe('issued');
+    // A second retry is a pure no-op (idempotent issue returns the same invoice).
+    await marketplace.setOrderStatus(order.id, 'confirmed', maizeSeller);
+    expect((await invoices.invoiceForOrder(order.id))?.id).toBe(invoice?.id);
   });
 
   it('releases escrow and marks the invoice paid on completion', async () => {
