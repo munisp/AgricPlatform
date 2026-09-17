@@ -125,6 +125,7 @@ export const COLD_CHAIN_LOG_REPOSITORY = Symbol('COLD_CHAIN_LOG_REPOSITORY');
 // Optional transfer guard port consulted by LivestockService.transferAnimal
 // (lien-backed implementation; see livestock-trade module).
 export const LIVESTOCK_TRANSFER_GUARD = Symbol('LIVESTOCK_TRANSFER_GUARD');
+export const LIVESTOCK_DISEASE_GUARD = Symbol('LIVESTOCK_DISEASE_GUARD');
 // External provider adapters (fail-closed stubs without configuration).
 export const LIVESTOCK_INSURANCE_PROVIDER = Symbol('LIVESTOCK_INSURANCE_PROVIDER');
 export const COLD_CHAIN_PROVIDER = Symbol('COLD_CHAIN_PROVIDER');

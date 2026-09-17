@@ -66,6 +66,12 @@ export function mapPgError(error: unknown): never {
   if (code === '23503') {
     throw new BadRequestException('Referenced record does not exist');
   }
+  // V-70: malformed client input reaching the driver (e.g. `not-a-uuid` in a
+  // uuid-PK lookup, out-of-range numeric, malformed timestamp) is a client
+  // contract violation, not a server fault — answer 400, never 500.
+  if (code === '22P02' || code === '22003' || code === '22007') {
+    throw new BadRequestException('Invalid identifier or value format');
+  }
   throw error;
 }
 
@@ -110,36 +116,52 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
   }
 
   async all(): Promise<T[]> {
-    const result = await this.pool.query(
-      `SELECT ${this.selectList()} FROM ${this.table} ORDER BY ${this.options.orderBy ?? 'id'}`
-    );
-    return result.rows.map((row) => this.mapper.fromRow(row));
+    try {
+      const result = await this.pool.query(
+        `SELECT ${this.selectList()} FROM ${this.table} ORDER BY ${this.options.orderBy ?? 'id'}`
+      );
+      return result.rows.map((row) => this.mapper.fromRow(row));
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   async find(criteria: TCriteria): Promise<T[]> {
     const { where, params } = this.where(criteria);
-    const result = await this.pool.query(
-      `SELECT ${this.selectList()} FROM ${this.table}${where} ORDER BY ${this.options.orderBy ?? 'id'}`,
-      params
-    );
-    return result.rows.map((row) => this.mapper.fromRow(row));
+    try {
+      const result = await this.pool.query(
+        `SELECT ${this.selectList()} FROM ${this.table}${where} ORDER BY ${this.options.orderBy ?? 'id'}`,
+        params
+      );
+      return result.rows.map((row) => this.mapper.fromRow(row));
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   async findOne(criteria: TCriteria): Promise<T | undefined> {
     const { where, params } = this.where(criteria);
-    const result = await this.pool.query(
-      `SELECT ${this.selectList()} FROM ${this.table}${where} LIMIT 1`,
-      params
-    );
-    return result.rows[0] ? this.mapper.fromRow(result.rows[0]) : undefined;
+    try {
+      const result = await this.pool.query(
+        `SELECT ${this.selectList()} FROM ${this.table}${where} LIMIT 1`,
+        params
+      );
+      return result.rows[0] ? this.mapper.fromRow(result.rows[0]) : undefined;
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   async findById(id: string): Promise<T | undefined> {
-    const result = await this.pool.query(
-      `SELECT ${this.selectList()} FROM ${this.table} WHERE id = $1`,
-      [id]
-    );
-    return result.rows[0] ? this.mapper.fromRow(result.rows[0]) : undefined;
+    try {
+      const result = await this.pool.query(
+        `SELECT ${this.selectList()} FROM ${this.table} WHERE id = $1`,
+        [id]
+      );
+      return result.rows[0] ? this.mapper.fromRow(result.rows[0]) : undefined;
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   async getById(id: string): Promise<T> {
@@ -174,14 +196,18 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
     }
     const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
     const values = columns.map((column) => row[column]);
-    const result = await this.pool.query(
-      `UPDATE ${this.table} SET ${assignments} WHERE id = $1 RETURNING ${this.selectList()}`,
-      [id, ...values]
-    );
-    if (!result.rows[0]) {
-      throw new NotFoundException(`Resource with id '${id}' not found`);
+    try {
+      const result = await this.pool.query(
+        `UPDATE ${this.table} SET ${assignments} WHERE id = $1 RETURNING ${this.selectList()}`,
+        [id, ...values]
+      );
+      if (!result.rows[0]) {
+        throw new NotFoundException(`Resource with id '${id}' not found`);
+      }
+      return this.mapper.fromRow(result.rows[0]);
+    } catch (error) {
+      mapPgError(error);
     }
-    return this.mapper.fromRow(result.rows[0]);
   }
 
   /**
@@ -221,7 +247,12 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
       ` RETURNING ${this.selectList()}`;
     const params = [id, ...values, ...expectedColumns.map((column) => expectedRow[column])];
     const execute = async (queryable: Pick<pg.Pool, 'query'>): Promise<T | undefined> => {
-      const result = await queryable.query(sql, params);
+      let result: pg.QueryResult;
+      try {
+        result = await queryable.query(sql, params);
+      } catch (error) {
+        mapPgError(error);
+      }
       if (!result.rows[0]) {
         return undefined;
       }
@@ -251,17 +282,25 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
   }
 
   async remove(id: string): Promise<boolean> {
-    const result = await this.pool.query(`DELETE FROM ${this.table} WHERE id = $1`, [id]);
-    return (result.rowCount ?? 0) > 0;
+    try {
+      const result = await this.pool.query(`DELETE FROM ${this.table} WHERE id = $1`, [id]);
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   async count(criteria?: TCriteria): Promise<number> {
     const clause = criteria !== undefined ? this.where(criteria) : { where: '', params: [] };
-    const result = await this.pool.query(
-      `SELECT count(*)::int AS n FROM ${this.table}${clause.where}`,
-      clause.params
-    );
-    return result.rows[0].n as number;
+    try {
+      const result = await this.pool.query(
+        `SELECT count(*)::int AS n FROM ${this.table}${clause.where}`,
+        clause.params
+      );
+      return result.rows[0].n as number;
+    } catch (error) {
+      mapPgError(error);
+    }
   }
 
   /** Pagination pushed into SQL: LIMIT/OFFSET plus a COUNT(*) total. */
@@ -274,14 +313,20 @@ export abstract class PgRepositoryBase<T extends { id: string }, TCriteria> {
     const safeSize = Math.min(100, Math.max(1, pageSize));
     const { where, params } = this.where(criteria);
     const offset = (safePage - 1) * safeSize;
-    const [data, total] = await Promise.all([
-      this.pool.query(
-        `SELECT ${this.selectList()} FROM ${this.table}${where}
-         ORDER BY ${this.options.orderBy ?? 'id'} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, safeSize, offset]
-      ),
-      this.pool.query(`SELECT count(*)::int AS n FROM ${this.table}${where}`, params)
-    ]);
+    let data: pg.QueryResult;
+    let total: pg.QueryResult;
+    try {
+      [data, total] = await Promise.all([
+        this.pool.query(
+          `SELECT ${this.selectList()} FROM ${this.table}${where}
+           ORDER BY ${this.options.orderBy ?? 'id'} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, safeSize, offset]
+        ),
+        this.pool.query(`SELECT count(*)::int AS n FROM ${this.table}${where}`, params)
+      ]);
+    } catch (error) {
+      mapPgError(error);
+    }
     return pageSlice(
       total.rows[0].n as number,
       data.rows.map((row) => this.mapper.fromRow(row)),

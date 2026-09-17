@@ -22,6 +22,12 @@ export interface AuditRepository {
   /** Raw trusted insert of a fully-hashed event (tests/tooling only). */
   record(event: AuditEvent): Promise<AuditEvent>;
   list(criteria?: AuditCriteria): Promise<AuditEvent[]>;
+  /**
+   * Offset-bounded page in chain order (created_at, id) — L-17 chunked
+   * verification. Safe on an append-only table: existing rows never move,
+   * so consecutive pages walk the chain without duplication.
+   */
+  listPage(offset: number, limit: number): Promise<AuditEvent[]>;
 }
 
 export class InMemoryAuditRepository implements AuditRepository {
@@ -52,6 +58,10 @@ export class InMemoryAuditRepository implements AuditRepository {
         (!criteria?.actorId || event.actorId === criteria.actorId) &&
         (!criteria?.entityType || event.entityType === criteria.entityType)
     );
+  }
+
+  async listPage(offset: number, limit: number): Promise<AuditEvent[]> {
+    return this.events.slice(offset, offset + limit);
   }
 }
 

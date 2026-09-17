@@ -15,6 +15,18 @@
  *     probing identity.users instead would mis-record a database whose 001
  *     run died mid-file (identity.users commits in 001's FIRST block).
  *
+ * Non-transactional files (V-76): a migration whose FIRST line is exactly
+ * `-- no-transaction` is applied statement-by-statement WITHOUT an
+ * enclosing transaction. This exists for DDL that cannot run inside a
+ * transaction block (CREATE INDEX CONCURRENTLY) or should not hold one
+ * long lock (NOT VALID + VALIDATE CONSTRAINT split). Marker files are
+ * restricted to flat DDL: no dollar-quoted bodies and no explicit
+ * BEGIN/COMMIT/ROLLBACK (the runner refuses them loudly). Because partial
+ * application is possible, every statement in a marker file must be
+ * idempotent (IF NOT EXISTS / IF EXISTS); the file is recorded only after
+ * ALL statements succeed, so a re-run resumes safely. There is NO down
+ * path for any migration (recorded policy, see docs/runbooks/ops.md).
+ *
  * Usage: DATABASE_URL=postgres://… npm run migrate -w @agric-platform/api
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -58,7 +70,12 @@ const LATEST_ARTIFACT_PROBES: Record<string, string> = {
        WHERE table_schema = 'warehouse'
          AND table_name = 'warehouses'
          AND column_name = 'certification_basis'
-     ) AS present`
+     ) AS present`,
+  // L-21 hardening: track the latest migration a Compose-bootstrapped
+  // database would have applied out-of-band, so the baseline records ALL
+  // of them instead of re-applying 041+ (benign today — everything is
+  // idempotent — but a fragile invariant for future non-idempotent DDL).
+  '082_hot_path_indexes.sql': `SELECT to_regclass('marketplace.order_events_order_id_idx') AS present`
 };
 
 export interface BaselineInput {
@@ -93,6 +110,47 @@ export function latestProbedFile(files: string[]): string | null {
     Object.prototype.hasOwnProperty.call(LATEST_ARTIFACT_PROBES, file)
   );
   return probed.length > 0 ? probed[probed.length - 1] : null;
+}
+
+/**
+ * First-line marker opting a migration file out of the per-file
+ * transaction (V-76). Required for CREATE INDEX CONCURRENTLY and other
+ * DDL that cannot run inside a transaction block.
+ */
+export const NON_TRANSACTIONAL_MARKER = '-- no-transaction';
+
+/** True when the file's first line is the non-transactional marker. */
+export function isNonTransactionalMigration(sql: string): boolean {
+  const newlineAt = sql.indexOf('\n');
+  const firstLine = (newlineAt === -1 ? sql : sql.slice(0, newlineAt)).trim().toLowerCase();
+  return firstLine === NON_TRANSACTIONAL_MARKER;
+}
+
+/**
+ * Splits a marker file into individual statements. Conservative by
+ * contract: marker files may contain ONLY flat DDL — no dollar-quoted
+ * function bodies (semicolons inside $$ would be split incorrectly) and no
+ * explicit transaction control (defeats the marker's purpose). Violations
+ * fail loudly here instead of corrupting a production run.
+ */
+export function splitNonTransactionalStatements(sql: string, file: string): string[] {
+  if (sql.includes('$$')) {
+    throw new Error(
+      `${file}: non-transactional migrations must not contain dollar-quoted bodies — split the work into a transactional file`
+    );
+  }
+  if (/^\s*(BEGIN|COMMIT|ROLLBACK)\b/im.test(sql)) {
+    throw new Error(
+      `${file}: non-transactional migrations must not contain BEGIN/COMMIT/ROLLBACK — the runner applies each statement individually`
+    );
+  }
+  return sql
+    .split(';')
+    .map((statement) => statement.trim())
+    // Keep statements that carry real SQL (strip leading comment lines for
+    // the emptiness check; pg would accept comment-only queries, but
+    // skipping them keeps the apply log honest).
+    .filter((statement) => statement.replace(/--[^\n]*/g, '').trim().length > 0);
 }
 
 async function main(): Promise<void> {
@@ -154,8 +212,19 @@ async function main(): Promise<void> {
         continue;
       }
       const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
-      console.log(`migrate: applying ${file} …`);
-      await pool.query(sql);
+      if (isNonTransactionalMigration(sql)) {
+        const statements = splitNonTransactionalStatements(sql, file);
+        console.log(
+          `migrate: applying ${file} … (non-transactional, ${statements.length} statement(s))`
+        );
+        for (const [index, statement] of statements.entries()) {
+          await pool.query(statement);
+          console.log(`migrate: ${file} statement ${index + 1}/${statements.length} applied`);
+        }
+      } else {
+        console.log(`migrate: applying ${file} …`);
+        await pool.query(sql);
+      }
       await pool.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file]);
       console.log(`migrate: applied ${file}`);
     }

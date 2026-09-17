@@ -1,6 +1,7 @@
 import type { ApiListResponse } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
+import { paginate } from '../../common/pagination.js';
 
 /**
  * Normalised commodity price observation (wave P1 market-data feeds).
@@ -63,6 +64,22 @@ export class InMemoryCommodityPriceRepository
 {
   constructor(seed: readonly CommodityPrice[] = []) {
     super(seed, commodityPriceMatcher);
+  }
+
+  /**
+   * Driver parity with the pg implementation: the ticker feed relies on
+   * observed_at DESC ordering (pg orderBy), so the in-memory page must
+   * sort the same way before slicing.
+   */
+  async searchPage(
+    criteria: CommodityPriceCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<CommodityPrice>> {
+    const sorted = (await this.find(criteria)).sort((a, b) =>
+      b.observedAt.localeCompare(a.observedAt)
+    );
+    return paginate(sorted, page, pageSize);
   }
 
   async upsertMany(items: CommodityPrice[]): Promise<number> {
