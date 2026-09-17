@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  ForbiddenException,
   Get,
   Param,
   Post,
@@ -141,6 +140,7 @@ export class ChaptersController {
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Create a chapter event (chapter leads and admins)' })
   async createEvent(@Param('id') id: string, @Body() dto: CreateEventDto, @CurrentUser() actor: User | null) {
+    await this.chapters.assertChapterLeadOrAdmin(actor, id);
     return { data: await this.chapters.createEvent(id, dto, actor?.id ?? 'anonymous') };
   }
 
@@ -159,6 +159,7 @@ export class ChaptersController {
     @Body() dto: CreateAnnouncementDto,
     @CurrentUser() actor: User | null
   ) {
+    await this.chapters.assertChapterLeadOrAdmin(actor, id);
     assertSelfOrAdmin(actor, dto.authorId);
     return { data: await this.chapters.createAnnouncement(id, dto) };
   }
@@ -169,7 +170,9 @@ export class ChaptersController {
   @ApiOperation({
     summary: 'Event attendance roster (RSVP list with member names; chapter leads and admins)'
   })
-  async eventRoster(@Param('id') id: string) {
+  async eventRoster(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const event = await this.chapters.getEvent(id);
+    await this.chapters.assertChapterLeadOrAdmin(actor, event.chapterId);
     return { data: await this.chapters.eventRoster(id) };
   }
 
@@ -192,7 +195,9 @@ export class ChaptersController {
   @UseGuards(RolesGuard)
   @Roles('admin', 'chapter_lead')
   @ApiOperation({ summary: 'Record event attendance (checked in by a chapter lead or admin)' })
-  async attendance(@Param('id') id: string, @Body() dto: EventUserDto) {
+  async attendance(@Param('id') id: string, @Body() dto: EventUserDto, @CurrentUser() actor: User | null) {
+    const event = await this.chapters.getEvent(id);
+    await this.chapters.assertChapterLeadOrAdmin(actor, event.chapterId);
     return { data: await this.chapters.recordAttendance(id, dto.userId) };
   }
 
@@ -203,7 +208,9 @@ export class ChaptersController {
     summary:
       'Signed QR attendance code for an event (rotating 15-minute window; chapter leads and admins)'
   })
-  async attendanceCode(@Param('id') id: string) {
+  async attendanceCode(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const event = await this.chapters.getEvent(id);
+    await this.chapters.assertChapterLeadOrAdmin(actor, event.chapterId);
     return { data: await this.chapters.issueAttendanceCode(id) };
   }
 
@@ -223,12 +230,10 @@ export class ChaptersController {
       throw new UnauthorizedException('Authentication required to scan attendance');
     }
     const memberId = dto.memberId ?? actor.id;
-    if (
-      memberId !== actor.id &&
-      !actor.roles.includes('admin') &&
-      !actor.roles.includes('chapter_lead')
-    ) {
-      throw new ForbiddenException('Only chapter leads and admins can check in another member');
+    if (memberId !== actor.id && !actor.roles.includes('admin')) {
+      // V-14: checking in another member requires leading THIS event's chapter.
+      const event = await this.chapters.getEvent(id);
+      await this.chapters.assertChapterLeadOrAdmin(actor, event.chapterId);
     }
     return { data: await this.chapters.scanAttendance(id, dto.code, memberId, actor.id) };
   }

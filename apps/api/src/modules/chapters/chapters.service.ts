@@ -1,11 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   UnauthorizedException
 } from '@nestjs/common';
-import type { ApiListResponse, Chapter, ChapterEvent } from '@agric-platform/shared';
+import type { ApiListResponse, Chapter, ChapterEvent, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { resolveAttendanceSecret } from '../../config/attendance.config.js';
 import {
@@ -144,6 +145,32 @@ export class ChaptersService {
 
   async getEvent(id: string): Promise<ChapterEvent> {
     return this.eventsRepo.getById(id);
+  }
+
+  /**
+   * Chapter-lead resource scoping (V-14): chapter-scoped lead operations
+   * (roster reads, attendance writes, QR-code minting, announcements, event
+   * creation, chapter map) may only be performed by the chapter's OWN lead
+   * (leadUserId === actor.id) or an admin. The role guard alone previously
+   * let ANY chapter lead operate EVERY chapter. Anonymous callers get a 401,
+   * other roles/wrong-chapter leads a 403.
+   */
+  async assertChapterLeadOrAdmin(actor: User | null, chapterId: string): Promise<void> {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    if (actor.roles.includes('admin')) {
+      return;
+    }
+    if (actor.roles.includes('chapter_lead')) {
+      const chapter = await this.chapters.getById(chapterId);
+      if (chapter.leadUserId === actor.id) {
+        return;
+      }
+    }
+    throw new ForbiddenException(
+      'Only the lead of this chapter or an admin may perform this action'
+    );
   }
 
   /**
