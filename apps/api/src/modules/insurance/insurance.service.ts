@@ -9,6 +9,7 @@ import {
   ServiceUnavailableException
 } from '@nestjs/common';
 import type {
+  ApiListResponse,
   ParametricPayout,
   ParametricPolicy,
   ParametricProduct,
@@ -457,14 +458,27 @@ export class InsuranceService {
     return this.payouts.find({ farmerUserId: actor.id });
   }
 
-  listTriggerEvents(actor: User): Promise<ParametricTriggerEvent[]> {
+  /**
+   * Admin directory of trigger events — paginated (V-72): the unbounded
+   * all() scan serialized whole tables into one response.
+   */
+  listTriggerEvents(
+    actor: User,
+    page = 1,
+    pageSize = 20
+  ): Promise<ApiListResponse<ParametricTriggerEvent>> {
     requireAdmin(actor);
-    return this.triggerEvents.all();
+    return this.triggerEvents.searchPage({}, page, pageSize);
   }
 
-  listPayouts(actor: User): Promise<ParametricPayout[]> {
+  /** Admin payout ledger — paginated (V-72). */
+  listPayouts(
+    actor: User,
+    page = 1,
+    pageSize = 20
+  ): Promise<ApiListResponse<ParametricPayout>> {
     requireAdmin(actor);
-    return this.payouts.all();
+    return this.payouts.searchPage({}, page, pageSize);
   }
 
   /**
