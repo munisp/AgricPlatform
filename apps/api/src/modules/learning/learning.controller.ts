@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { LANGUAGE_CODES, type Course, type LanguageCode, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -13,6 +13,7 @@ import { LearningService, type CreateCourseInput } from './learning.service.js';
 class ListCoursesQuery extends ListQueryDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   category?: string;
 
   @IsOptional()
@@ -25,14 +26,17 @@ class ListCoursesQuery extends ListQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   q?: string;
 }
 
 class CreateCourseDto implements CreateCourseInput {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsString()
+  @MaxLength(500)
   category!: string;
 
   @IsIn(['beginner', 'intermediate', 'advanced'])
@@ -52,6 +56,7 @@ class CreateCourseDto implements CreateCourseInput {
 
 class EnrolDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 }
 
