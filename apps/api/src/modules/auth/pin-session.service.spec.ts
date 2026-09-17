@@ -1,4 +1,4 @@
-import { HttpException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { HttpException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import type { MetricsService } from '../../common/metrics/metrics.service.js';
@@ -222,9 +222,34 @@ describe('PinSessionService', () => {
     const b = await makeUser(users, '+234926', 'List B');
     await service.addProfile(a.id, DEVICE, '1234');
     await service.addProfile(b.id, DEVICE, '1234');
-    const list = await service.listProfiles(DEVICE);
+    const list = await service.listProfiles(DEVICE, a);
     expect(list.map((profile) => profile.userId).sort()).toEqual([a.id, b.id].sort());
     expect(JSON.stringify(list)).not.toContain('pinHash');
+  });
+
+  it('refuses profile listing to a caller not pinned on the device (V-60)', async () => {
+    const { service, users } = build();
+    const a = await makeUser(users, '+234927', 'Pinned');
+    const outsider = await makeUser(users, '+234928', 'Outsider');
+    await service.addProfile(a.id, DEVICE, '1234');
+    await expect(service.listProfiles(DEVICE, outsider)).rejects.toThrowError(NotFoundException);
+    // 404, not 403: no token-existence signal.
+    const error = await service.listProfiles(DEVICE, outsider).catch((e) => e);
+    expect(error.getStatus?.()).toBe(404);
+    // The pinned caller still lists.
+    await expect(service.listProfiles(DEVICE, a)).resolves.toHaveLength(1);
+  });
+
+  it('refuses profile listing on weak (short) device tokens, even for admins (V-60)', async () => {
+    const { service, users } = build();
+    const admin = await users.create({
+      phone: '+234929',
+      fullName: 'Admin',
+      roles: ['admin'],
+      preferredLanguage: 'en'
+    });
+    await expect(service.listProfiles('kiosk-1', admin)).rejects.toThrowError(NotFoundException);
+    await expect(service.listProfiles('device-token-aaaa', admin)).resolves.toEqual([]);
   });
 });
 
