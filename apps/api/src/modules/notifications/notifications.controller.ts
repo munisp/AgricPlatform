@@ -2,7 +2,7 @@ import { Body, Controller, ForbiddenException, Get, Param, Post, Put, Query, Use
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Type } from 'class-transformer';
-import { ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsString, ValidateNested } from 'class-validator';
+import { ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsString, MaxLength, ValidateNested } from 'class-validator';
 import {
   NOTIFICATION_CHANNELS,
   type NotificationChannel,
@@ -19,15 +19,18 @@ import { NotificationsService, type SendNotificationInput } from './notification
 
 class SendNotificationDto implements SendNotificationInput {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsIn(NOTIFICATION_CHANNELS)
   channel!: NotificationChannel;
 
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsString()
+  @MaxLength(2000)
   body!: string;
 }
 
