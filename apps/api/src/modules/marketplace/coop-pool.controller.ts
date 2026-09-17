@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsNumber, IsOptional, IsString, Min, ValidateNested } from 'class-validator';
+import { IsInt, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -24,25 +24,31 @@ import {
 
 class PoolLocationDto {
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ward?: string;
 }
 
 class CreatePoolDto implements CreatePoolInput {
   @IsString()
+  @MaxLength(100)
   cooperativeId!: string;
 
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 
   @IsNumber()
@@ -60,6 +66,7 @@ class CreatePoolDto implements CreatePoolInput {
 
 class PledgeDto implements PledgeInput {
   @IsString()
+  @MaxLength(100)
   memberUserId!: string;
 
   @IsInt()
@@ -67,6 +74,7 @@ class PledgeDto implements PledgeInput {
   qtyKg!: number;
 
   @IsString()
+  @MaxLength(500)
   qualityGrade!: string;
 }
 
