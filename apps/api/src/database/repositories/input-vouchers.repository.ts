@@ -40,6 +40,13 @@ export interface SubsidyProgrammeRecord {
   sponsor: string;
   description?: string;
   status: ProgrammeStatus;
+  /**
+   * Donor user funding this programme (V-61): donor reads of funding state,
+   * voucher lists and reconciliation are scoped to programmes they fund.
+   * NULL on pre-082 programmes — those are admin/regulator-only for donors
+   * (fail closed).
+   */
+  funderId?: string;
   perFarmerCapKobo: number;
   budgetKobo: number;
   /** Empty array = all states eligible. */

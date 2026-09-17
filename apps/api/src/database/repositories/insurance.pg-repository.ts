@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { ConflictException } from '@nestjs/common';
 import type {
+  ApiListResponse,
   ParametricPayout,
   ParametricPayoutStatus,
   ParametricPolicy,
@@ -8,6 +9,7 @@ import type {
   ParametricProduct,
   ParametricTriggerEvent
 } from '@agric-platform/shared';
+import { pageSlice } from '../../common/pagination.js';
 import { composeWhere, eq, mapPgError, ts, type WhereClause } from '../pg/pg-repository.base.js';
 import type {
   ParametricPayoutCriteria,
@@ -372,6 +374,33 @@ export class PgParametricTriggerEventRepository implements ParametricTriggerEven
     );
     return result.rows.map(triggerEventFromRow);
   }
+
+  /** Bounded admin listing: LIMIT/OFFSET + COUNT in SQL (V-72). */
+  async searchPage(
+    criteria: ParametricTriggerEventCriteria,
+    page = 1,
+    pageSize = 20
+  ): Promise<ApiListResponse<ParametricTriggerEvent>> {
+    const safePage = Math.max(1, page);
+    const safeSize = Math.min(100, Math.max(1, pageSize));
+    const where = composeWhere(
+      eq('policy_id', criteria.policyId),
+      eq('farmer_user_id', criteria.farmerUserId),
+      eq('evidence_fingerprint', criteria.evidenceFingerprint)
+    );
+    const [data, total] = await Promise.all([
+      this.pool.query<TriggerEventRow>(
+        `SELECT * FROM insurance.trigger_events ${where.where}
+         ORDER BY created_at DESC, id LIMIT $${where.params.length + 1} OFFSET $${where.params.length + 2}`,
+        [...where.params, safeSize, (safePage - 1) * safeSize]
+      ),
+      this.pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM insurance.trigger_events ${where.where}`,
+        where.params
+      )
+    ]);
+    return pageSlice(total.rows[0].n, data.rows.map(triggerEventFromRow), safePage, safeSize);
+  }
 }
 
 export function createPgParametricTriggerEventRepository(
@@ -494,6 +523,34 @@ export class PgParametricPayoutRepository implements ParametricPayoutRepository 
       'SELECT * FROM insurance.payouts ORDER BY proposed_at DESC, id'
     );
     return result.rows.map(payoutFromRow);
+  }
+
+  /** Bounded admin listing: LIMIT/OFFSET + COUNT in SQL (V-72). */
+  async searchPage(
+    criteria: ParametricPayoutCriteria,
+    page = 1,
+    pageSize = 20
+  ): Promise<ApiListResponse<ParametricPayout>> {
+    const safePage = Math.max(1, page);
+    const safeSize = Math.min(100, Math.max(1, pageSize));
+    const where = composeWhere(
+      eq('policy_id', criteria.policyId),
+      eq('farmer_user_id', criteria.farmerUserId),
+      eq('status', criteria.status),
+      eq('trigger_event_id', criteria.triggerEventId)
+    );
+    const [data, total] = await Promise.all([
+      this.pool.query<PayoutRow>(
+        `SELECT * FROM insurance.payouts ${where.where}
+         ORDER BY proposed_at DESC, id LIMIT $${where.params.length + 1} OFFSET $${where.params.length + 2}`,
+        [...where.params, safeSize, (safePage - 1) * safeSize]
+      ),
+      this.pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM insurance.payouts ${where.where}`,
+        where.params
+      )
+    ]);
+    return pageSlice(total.rows[0].n, data.rows.map(payoutFromRow), safePage, safeSize);
   }
 }
 
