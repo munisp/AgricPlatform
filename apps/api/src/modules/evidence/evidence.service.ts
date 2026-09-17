@@ -43,6 +43,26 @@ export const EVIDENCE_CASE_TYPES: readonly EvidenceCaseType[] = [
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+/**
+ * V-73 upload ceilings — size class per case type. Evidence blobs are
+ * photos/scans of trade, meeting and field-loss documents; anything larger
+ * is a storage-cost abuse vector (the API never buffers bytes, but the
+ * bucket bill is real).
+ */
+export const EVIDENCE_MAX_SIZE_BYTES: Readonly<Record<EvidenceCaseType, number>> = {
+  escrow: 25 * 1024 * 1024,
+  vsla: 10 * 1024 * 1024,
+  insurance: 25 * 1024 * 1024,
+  pool: 10 * 1024 * 1024
+};
+
+/**
+ * V-73 MIME allowlist: evidence renders only as downloaded attachments.
+ * Arbitrary types (HTML/SVG) hosted from the evidence bucket would be a
+ * stored-content/XSS risk if ever viewed inline.
+ */
+export const EVIDENCE_ALLOWED_MIME = /^(image\/(jpeg|png|webp)|application\/pdf)$/;
+
 export interface InitiateUploadInput {
   mime: string;
   sizeBytes: number;
@@ -150,7 +170,7 @@ export class EvidenceService {
     input: InitiateUploadInput
   ): Promise<InitiateUploadResult> {
     await this.requireCaseParty(actor, caseType, caseId);
-    this.validateBlobDeclaration(input);
+    this.validateBlobDeclaration(caseType, input);
     await this.requireCaseNotSealed(caseType, caseId);
     const itemId = newId('evi');
     const objectKey = this.objectKeyFor(caseType, caseId, itemId);
@@ -171,7 +191,7 @@ export class EvidenceService {
     input: ConfirmItemInput
   ): Promise<EvidenceItem> {
     await this.requireCaseParty(actor, caseType, caseId);
-    this.validateBlobDeclaration(input);
+    this.validateBlobDeclaration(caseType, input);
     const itemId = this.itemIdFromObjectKey(caseType, caseId, input.objectKey);
 
     // Idempotent confirm replay: a recorded object returns its row when the
@@ -509,17 +529,28 @@ export class EvidenceService {
     }
   }
 
-  private validateBlobDeclaration(input: {
-    mime: string;
-    sizeBytes: number;
-    sha256: string;
-    capturedAt?: string;
-  }): void {
-    if (!input.mime || !input.mime.includes('/')) {
-      throw new BadRequestException('mime must be a media type like image/jpeg');
+  private validateBlobDeclaration(
+    caseType: EvidenceCaseType,
+    input: {
+      mime: string;
+      sizeBytes: number;
+      sha256: string;
+      capturedAt?: string;
+    }
+  ): void {
+    if (!input.mime || !EVIDENCE_ALLOWED_MIME.test(input.mime)) {
+      throw new BadRequestException(
+        'mime must be an allowed evidence media type (image/jpeg, image/png, image/webp, application/pdf)'
+      );
     }
     if (!Number.isInteger(input.sizeBytes) || input.sizeBytes <= 0) {
       throw new BadRequestException('sizeBytes must be a positive integer');
+    }
+    const maxBytes = EVIDENCE_MAX_SIZE_BYTES[caseType];
+    if (input.sizeBytes > maxBytes) {
+      throw new BadRequestException(
+        `sizeBytes exceeds the ${maxBytes}-byte ceiling for '${caseType}' evidence`
+      );
     }
     if (!SHA256_HEX.test(input.sha256)) {
       throw new BadRequestException('sha256 must be 64 lowercase hex chars');

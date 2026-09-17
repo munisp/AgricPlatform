@@ -47,6 +47,10 @@ class FakeEvidenceStorage implements EvidenceStorageDriver {
     this.blobs.set(objectKey, { sizeBytes, sha256 });
   }
 
+  healthCheck(): Promise<{ configured: boolean; healthy: boolean; detail: string }> {
+    return Promise.resolve({ configured: true, healthy: true, detail: 'fake storage' });
+  }
+
   stat(objectKey: string): Promise<EvidenceObjectStat | null> {
     return Promise.resolve(this.blobs.get(objectKey) ?? null);
   }
