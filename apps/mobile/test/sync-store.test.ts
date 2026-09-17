@@ -16,8 +16,8 @@ function page(entity: string, items: SyncPullPage['items'], cursor: number, hasM
   return { entity, items, cursor, hasMore };
 }
 
-function pullTransport(pages: SyncPullPage[]): SyncTransport & { calls: Array<{ entity: string; since: number; limit: number }> } {
-  const calls: Array<{ entity: string; since: number; limit: number }> = [];
+function pullTransport(pages: SyncPullPage[]): SyncTransport & { calls: Array<{ entity: string; since: number; limit: number; v: number }> } {
+  const calls: Array<{ entity: string; since: number; limit: number; v: number }> = [];
   let index = 0;
   return {
     calls,
@@ -403,5 +403,149 @@ describe('sync store — syncNow', () => {
     expect(listener).toHaveBeenCalled();
     expect(store.getStatus().pending).toBe(1);
     unsubscribe();
+  });
+});
+
+/* --------------------- v2 protocol specs (FP-4) -------------------------- */
+
+describe('sync store — v2 pull protocol', () => {
+  it('declares v=2 on every pull request', async () => {
+    const transport = pullTransport([page('notification', [], 0)]);
+    const store = makeStore(transport);
+    await store.pullEntity('notification');
+    expect(transport.calls.map((call) => call.v)).toEqual([2]);
+  });
+
+  it('answers 409 sync_resync_required by resetting the cursor and doing a full resync', async () => {
+    const resyncError = Object.assign(new Error('resync_required: legacy cursor'), {
+      status: 409
+    });
+    const calls: number[] = [];
+    let thrown = false;
+    const transport: SyncTransport = {
+      pull: async (params) => {
+        calls.push(params.since);
+        if (!thrown && params.since > 0) {
+          thrown = true;
+          throw resyncError;
+        }
+        return page('notification', [{ entityId: 'n-1', version: 1, deleted: false, payload: {} }], 11);
+      },
+      push: async () => ({ results: [] }),
+      status: async () => []
+    };
+    const store = makeStore(transport);
+    // A pre-v2 persisted cursor.
+    await store.pullEntity('notification').catch(() => undefined); // cursor 11
+    thrown = false;
+    const summary = await store.pullEntity('notification');
+    // First attempt used the stored cursor (11), then the store reset to 0
+    // and re-pulled as a FULL sync — no silent divergence.
+    // [initial full pull since=0] then [stale 11 → 409] then [reset to 0].
+    expect(calls).toEqual([0, 11, 0]);
+    expect(summary.applied).toBe(1);
+    expect(store.getCursor('notification')).toBe(11);
+  });
+
+  it('does not swallow non-resync transport errors', async () => {
+    const transport: SyncTransport = {
+      pull: async () => {
+        throw Object.assign(new Error('boom'), { status: 500 });
+      },
+      push: async () => ({ results: [] }),
+      status: async () => []
+    };
+    const store = makeStore(transport);
+    await expect(store.pullEntity('notification')).rejects.toThrow('boom');
+  });
+});
+
+describe('sync store — outbox coalescing (V-65)', () => {
+  it('folds two offline edits to one record into a single rebased entry', async () => {
+    const store = makeStore(pullTransport([]));
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'A' } });
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'B' } });
+
+    const outbox = store.getOutbox();
+    expect(outbox).toHaveLength(1);
+    // Latest payload (full replacement), original baseVersion, fresh mutation id.
+    expect(outbox[0]).toMatchObject({ baseVersion: 0, op: 'upsert', payload: { name: 'B' } });
+    expect(outbox[0].clientMutationId).toBe('mut-2');
+  });
+
+  it('coalesced edits push once and both survive server-side', async () => {
+    const pushed: SyncPushRequestItem[] = [];
+    const transport: SyncTransport = {
+      pull: async () => page('farm_plot', [], 0),
+      push: async (items) => {
+        pushed.push(...items);
+        return {
+          results: items.map((item) => ({
+            entity: item.entity,
+            entityId: item.entityId,
+            clientMutationId: item.clientMutationId,
+            status: 'applied' as const,
+            newVersion: item.baseVersion + 1
+          }))
+        };
+      },
+      status: async () => []
+    };
+    const store = makeStore(transport);
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'A' } });
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'B' } });
+    const summary = await store.pushPending();
+    expect(summary).toMatchObject({ applied: 1, conflicts: 0, dropped: 0, retried: 0, remaining: 0 });
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ entityId: 'p-1', baseVersion: 0, payload: { name: 'B' } });
+    expect(store.getOutbox()).toHaveLength(0);
+  });
+
+  it('create-then-delete offline collapses to a single delete at the original baseVersion', async () => {
+    const store = makeStore(pullTransport([]));
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'A' } });
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'delete' });
+    const outbox = store.getOutbox();
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({ op: 'delete', baseVersion: 0 });
+  });
+
+  it('edits to DIFFERENT records never coalesce (FIFO preserved)', async () => {
+    const store = makeStore(pullTransport([]));
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'A' } });
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-2', op: 'upsert', payload: { name: 'B' } });
+    expect(store.getOutbox()).toHaveLength(2);
+  });
+});
+
+describe('sync store — stale conflict guard (V-65)', () => {
+  it('a conflict payload older than the cached version cannot regress the cache', async () => {
+    const transport: SyncTransport = {
+      pull: async () =>
+        page('farm_plot', [{ entityId: 'p-1', version: 10, deleted: false, payload: { name: 'fresh' } }], 99),
+      push: async (items) => ({
+        results: items.map((item) => ({
+          entity: item.entity,
+          entityId: item.entityId,
+          clientMutationId: item.clientMutationId,
+          // Stale ledgered/replayed conflict: serverVersion 5 < cached 10.
+          status: 'conflict' as const,
+          serverVersion: 5,
+          serverPayload: { name: 'stale' }
+        }))
+      }),
+      status: async () => []
+    };
+    const store = makeStore(transport);
+    await store.pullEntity('farm_plot'); // cache at v10
+    await store.enqueue({ entity: 'farm_plot', entityId: 'p-1', op: 'upsert', payload: { name: 'local' } });
+    const summary = await store.pushPending();
+    expect(summary.conflicts).toBe(1);
+    // Outbox entry resolved, but the v10 cache was NOT regressed to v5.
+    expect(store.getOutbox()).toHaveLength(0);
+    expect(store.getRecords('farm_plot').find((r) => r.entityId === 'p-1')).toMatchObject({
+      version: 10,
+      payload: { name: 'fresh' }
+    });
   });
 });
