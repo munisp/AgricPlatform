@@ -162,6 +162,17 @@ export const seedUsers: User[] = [
     lastActiveAt: NOW
   },
   {
+    id: 'user-lead-kano',
+    phone: '+2348010000013',
+    fullName: 'Kano Chapter Lead',
+    roles: ['chapter_lead'],
+    preferredLanguage: 'en',
+    kycTier: 'tier_2',
+    isVerified: true,
+    createdAt: '2025-12-01T09:00:00.000Z',
+    lastActiveAt: NOW
+  },
+  {
     id: 'user-partner',
     phone: '+2348010000007',
     email: 'programmes@agripartner.org',

@@ -11,6 +11,11 @@ import {
 } from '../common/orchestration/workflow-orchestrator.driver.js';
 import { EVENT_BUS, type EventBus } from '../core/events/event-bus.driver.js';
 import { PG_POOL, REDIS_CLIENT } from '../database/persistence.tokens.js';
+import { EvidenceModule } from '../modules/evidence/evidence.module.js';
+import {
+  EVIDENCE_STORAGE_DRIVER,
+  type EvidenceStorageDriver
+} from '../modules/evidence/evidence.storage.js';
 import { IntegrationsModule } from '../modules/integrations/integrations.module.js';
 import {
   DEPENDENCY_INDICATORS,
@@ -24,6 +29,7 @@ import { ModuleHealthService } from './module-health.service.js';
 import {
   authzProbe,
   eventBusProbe,
+  evidenceStorageProbe,
   INFRA_DRIVER_PROBES,
   orchestratorProbe,
   type InfraDriverProbe
@@ -44,7 +50,7 @@ import {
  * degraded-not-down semantics.
  */
 @Module({
-  imports: [IntegrationsModule],
+  imports: [IntegrationsModule, EvidenceModule],
   controllers: [HealthController],
   providers: [
     ModuleHealthService,
@@ -65,17 +71,21 @@ import {
       useFactory: (
         eventBus: EventBus | undefined,
         orchestrator: WorkflowOrchestrator | undefined,
-        authz: AuthorizationCheck | undefined
+        authz: AuthorizationCheck | undefined,
+        evidenceStorage: EvidenceStorageDriver | undefined
       ): InfraDriverProbe[] =>
         [
           eventBus ? eventBusProbe(eventBus) : undefined,
           orchestrator ? orchestratorProbe(orchestrator) : undefined,
-          authz ? authzProbe(authz) : undefined
+          authz ? authzProbe(authz) : undefined,
+          // L-20: evidence storage readiness (stub reports 'disabled').
+          evidenceStorage ? evidenceStorageProbe(evidenceStorage) : undefined
         ].filter((probe): probe is InfraDriverProbe => probe !== undefined),
       inject: [
         { token: EVENT_BUS, optional: true },
         { token: WORKFLOW_ORCHESTRATOR, optional: true },
-        { token: AUTHORIZATION_CHECK, optional: true }
+        { token: AUTHORIZATION_CHECK, optional: true },
+        { token: EVIDENCE_STORAGE_DRIVER, optional: true }
       ]
     }
   ]
