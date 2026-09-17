@@ -148,10 +148,19 @@ describe('AgricPlatform API (e2e)', () => {
       { 'x-user-id': 'user-farmer-2' }
     );
     expect(selfCheckIn.status).toBe(403);
-    const attendance = await post(
+    // V-14: a chapter lead is scoped to their OWN chapter — the Kaduna lead
+    // cannot record attendance at a Kano (chapter-kano) event.
+    const foreignLead = await post(
       '/events/event-kano-meeting/attendance',
       { userId: 'user-farmer-2' },
       { 'x-user-id': 'user-lead-kaduna' }
+    );
+    expect(foreignLead.status).toBe(403);
+    // The Kano chapter's own lead (seed chapter leadUserId) can.
+    const attendance = await post(
+      '/events/event-kano-meeting/attendance',
+      { userId: 'user-farmer-2' },
+      { 'x-user-id': 'user-lead-kano' }
     );
     expect(attendance.status).toBe(201);
     const event = await (await fetch(`${base}/events/event-kano-meeting`)).json();
