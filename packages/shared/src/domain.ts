@@ -831,3 +831,14 @@ export interface AgentProductivity {
 
 /** Consent purpose recorded when an enumerator captures data on behalf of a farmer. */
 export const FIELD_DATA_CAPTURE_CONSENT_PURPOSE = 'field-data-capture';
+
+/**
+ * E.164-ish MSISDN boundary pattern: optional leading '+', 7–15 digits.
+ * Matches the repo norm in modules/voice/msisdn-crypto.ts (normalizeMsisdn)
+ * so provider callbacks (which send MSISDNs without '+') and client-facing
+ * DTOs accept the same shape.
+ */
+export const MSISDN_PATTERN = /^\+?[0-9]{7,15}$/;
+
+/** Nigerian National Identification Number: exactly 11 digits. */
+export const NIN_PATTERN = /^[0-9]{11}$/;

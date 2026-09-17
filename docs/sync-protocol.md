@@ -1,15 +1,34 @@
-# Sync Protocol v1 — Record-Level Offline Sync (Server Contract)
+# Sync Protocol v2 — Record-Level Offline Sync (Server Contract)
 
-**Status:** v1, implemented by Wave SYNCSRV; first writable entity
-(`farm_plot`) shipped by Wave W-SYNCWRITE. This document is the contract the
-client-sync wave builds against (mobile/web offline stores). Server code:
-`apps/api/src/modules/sync/`; schema: `infra/postgres/024_sync.sql`.
+**Status:** v2, implemented by Wave SYNCSRV + FP-4 (change-set cursors,
+claim-guarded push apply, tombstone ownership hardening). The first writable
+entity (`farm_plot`) shipped in Wave W-SYNCWRITE. This document is the
+contract the client-sync wave builds against (mobile/web offline stores).
+Server code: `apps/api/src/modules/sync/`; schema: `infra/postgres/
+024_sync.sql` + `infra/postgres/080_sync_change_seq.sql`.
 
 The design ports the proven semantics from `munisp/farmer-data-collection`
 (`server/sync-router.ts` idempotent push/pull, `mobile/.../conflict-resolver.ts`
 version-vector conflict detection) onto the platform's NestJS repository
-pattern. v1 is deliberately **server-wins**: the server is the authority; the
-protocol never silently overwrites server state.
+pattern. The protocol is deliberately **server-wins**: the server is the
+authority; the protocol never silently overwrites server state.
+
+**What changed in v2 (FP-4):**
+
+1. **Pull cursors operate on a GLOBAL monotonic `change_seq`**, not on the
+   per-record `version`. v1 compared `version > since`, so a cursor minted
+   by a frequently-edited record permanently skipped every record whose
+   per-record version lagged behind — silent, irreversible divergence across
+   devices. v2 stamps every ledger write with the next value of a global
+   sequence (migration 080 backfills existing rows in write order).
+2. **Legacy-cursor guard:** pulls carrying a non-zero `since` MUST declare
+   `v=2`. Anything else is answered **409 `sync_resync_required`** so
+   pre-v2 devices fail loudly and resync instead of silently diverging (§6).
+3. **Claim-guarded push apply:** the version-row CAS is held *around* the
+   entity write (not after it), so a losing concurrent push never touches
+   the source row (§9).
+4. **Conflicts are recomputed, not ledgered** (§5), and conflict handling is
+   hardened against entityId takeover via tombstones (§3).
 
 ---
 
@@ -52,9 +71,10 @@ production entity:
     harvests and expenses go with the plot) and leave a tombstone version
     row scoped to the original owner.
   - Writes through the REST endpoints (`FarmsService.createPlot` /
-    `updatePlot` / `removePlot`) also bump `sync.entity_versions`, so
-    server-side writes are sync-visible on the next pull.
-  - Field-agent on-behalf capture is NOT routed through sync in v1: the
+    `updatePlot` / `removePlot`) also advance `sync.entity_versions` under
+    the same claim guard (§9), so server-side writes are sync-visible on
+    the next pull and can never become sync-invisible silently.
+  - Field-agent on-behalf capture is NOT routed through sync in v2: the
     field-agents module has no plot-capture write path to reuse, so
     `farm_plot` push/pull is scoped to the owning farmer (admins may push,
     per §3). If agent capture is added later it must come with its existing
@@ -69,12 +89,15 @@ production entity:
   `SyncEntityRegistry` and registers a `SyncableEntityDescriptor`
   (`name`, `ownerField`, `writable`, `getOwnerId`, `getPayloads`, and for
   writable entities `apply(actor, item)` which MUST advance
-  `sync.entity_versions` via `EntityVersionRepository.bumpExpected`).
-  No sync-module changes are required — `farm_plot` is the reference
-  implementation (`apps/api/src/modules/farms/farms-sync.ts`). Writes
-  through the entity's service must call
-  `SyncVersioningService.recordChange(...)` so server-side writes become
-  sync-visible.
+  `sync.entity_versions` via `EntityVersionRepository.applyGuarded` — the
+  v2 claim guard, §9). No sync-module changes are required — `farm_plot` is
+  the reference implementation (`apps/api/src/modules/farms/farms-sync.ts`).
+  Writes through the entity's service must advance the ledger atomically
+  with the entity write (claim-guarded, as `FarmsService` does) so
+  server-side writes become sync-visible; `SyncVersioningService.recordChange`
+  remains only as the legacy non-fatal hook for modules not yet on the
+  guard, and its failures are counted by
+  `agric_sync_version_bump_failures_total` (alertable, never silent).
 
 ## 3. Scoping Rules
 
@@ -86,6 +109,13 @@ production entity:
 - Push: the caller must be the record's owner or an admin. For an upsert of a
   record that does not exist yet, the caller becomes its owner. Violations
   return per-item `error: "forbidden"` and nothing is applied.
+- **Tombstone ownership (v2):** when the live source row is gone, ownership
+  resolves from the version ledger's `owner_id`. A create-style push over a
+  **foreign tombstone** is `forbidden` — no entityId takeover — and it is
+  rejected *before* the version CAS is evaluated, so the response carries no
+  `serverVersion`/`serverPayload` oracle a caller could use to guess the
+  tombstone's version. The original owner (or an admin) may re-create over
+  their own tombstone through the normal CAS (§4).
 
 ## 4. Push — `POST /api/v1/sync/push`
 
@@ -111,7 +141,7 @@ Request:
 | `entity`           | Registered entity key, 1–64 chars.                                     |
 | `entityId`         | Client-stable text id, 1–128 chars.                                    |
 | `clientMutationId` | Unique per (user, mutation), 1–128 chars. Drives idempotency (§5).     |
-| `baseVersion`      | Server version the change is based on. `0` = "this is a new record".   |
+| `baseVersion`      | **Per-record** server version the change is based on. `0` = new record. This is the CAS counter only — never a pull cursor (§6). |
 | `op`               | `"upsert"` (create/replace) or `"delete"` (tombstone).                 |
 | `payload`          | Required for `upsert`, omitted for `delete`. ≤ 64 KiB JSON per item.   |
 
@@ -139,15 +169,17 @@ Response (always 200 for a well-formed batch — outcomes are per item):
 Per-item `status`:
 
 - **`applied`** — the mutation was applied; `newVersion` is the record's new
-  server version. An audit record and a `sync.mutation.applied` domain event
-  are emitted per applied item.
+  per-record server version. An audit record and a `sync.mutation.applied`
+  domain event are emitted per applied item.
 - **`conflict`** — `baseVersion` did not equal the current server version.
-  The server state is untouched (never a silent overwrite). `serverVersion`
+  The server state is untouched (never a silent overwrite; under the v2
+  claim guard a *raced* push also surfaces as `conflict`, not a retryable
+  `apply_failed`, because its payload provably never landed). `serverVersion`
   and the current `serverPayload` are returned so the client can rebase.
-  **Server-wins resolution for v1:** the client discards or rebases its local
+  **Server-wins resolution:** the client discards or rebases its local
   change onto the server payload, then may re-push with the fresh
   `baseVersion`. (The farmer-data-collection resolver's merge/local-wins
-  strategies are client-side concerns and out of scope for server v1.)
+  strategies are client-side concerns and out of scope for the server.)
 - **`error`** — not applied. Machine-readable `error` codes:
   `unknown_entity`, `read_only_entity`, `forbidden`, `mutation_id_reused`,
   `apply_failed`, `replay_unavailable`.
@@ -164,21 +196,33 @@ Items are independent: one conflict/error never blocks siblings.
   nothing is applied twice. Clients MUST keep `clientMutationId` stable across
   retries of the same logical mutation and MUST generate a fresh one for each
   new logical mutation.
-- Only deterministic data outcomes (`applied`, `conflict`) are ledgered.
-  Transient `error` results are recomputed on retry so a later attempt can
-  succeed.
+- **Only `applied` outcomes are ledgered (v2).** A ledgered conflict would
+  replay its stale `serverPayload` verbatim forever, regressing client caches
+  that have since pulled a fresher version; conflicts are therefore
+  **recomputed on retry** against current server state (a client that pushes
+  a truly stale `baseVersion` deterministically gets a conflict back, so
+  correctness is preserved without freezing payloads). Transient `error`
+  results are likewise recomputed so a later attempt can succeed.
 - Reusing a `clientMutationId` for a *different* mutation (different entity,
   entityId or op) is a client bug: the item fails with
   `error: "mutation_id_reused"`.
+- **Retention (v2):** the ledger is pruned by the
+  `SyncMutationRetentionService` sweeper (default: rows older than 90 days,
+  batched, idempotent; `SWEEPERS_ENABLED=true` arms the in-process timer,
+  or an external scheduler may invoke `sweep()`). Replays older than the
+  retention window are realistically gone, so pruning cannot break dedup.
 
-## 6. Pull — `GET /api/v1/sync/pull?entity=X&since=N&limit=M`
+## 6. Pull — `GET /api/v1/sync/pull?entity=X&since=N&limit=M&v=2`
 
 Query parameters:
 
 - `entity` (required): registered entity key; unknown keys → 400.
-- `since` (optional, default `0`): the cursor from the previous pull; `0`
-  performs a full initial sync. Must be a non-negative integer → else 400.
+- `since` (optional, default `0`): the **change_seq cursor** from the
+  previous pull; `0` performs a full initial sync. Must be a non-negative
+  integer → else 400.
 - `limit` (optional, default `200`, max `500`): page size, clamped silently.
+- `v` (required whenever `since > 0`): the protocol version the cursor
+  belongs to — **2**. See the legacy-cursor guard below.
 
 Response:
 
@@ -187,34 +231,55 @@ Response:
   "data": {
     "entity": "marketplace_listing",
     "items": [
-      { "entityId": "listing-1", "version": 7, "deleted": false, "payload": { "...": "..." } },
-      { "entityId": "listing-2", "version": 8, "deleted": true,  "payload": null }
+      { "entityId": "listing-1", "version": 7, "changeSeq": 41, "deleted": false, "payload": { "...": "..." } },
+      { "entityId": "listing-2", "version": 8, "changeSeq": 42, "deleted": true,  "payload": null }
     ],
-    "cursor": 8,
-    "hasMore": true
+    "cursor": 42,
+    "hasMore": true,
+    "protocol": 2
   }
 }
 ```
 
 Semantics:
 
-- Items are the caller-owned records with `version > since`, **ordered by
-  version ascending**.
-- `cursor` is the maximum version returned (or `since` on an empty page) and
-  is **monotonic per (caller, entity)**: it never regresses, even across
-  empty pages or out-of-order requests. Pass it back as `since` on the next
-  pull.
+- Items are the caller-owned records with `change_seq > since`, **ordered by
+  `change_seq` ascending**. Each item also carries its per-record `version`
+  (needed for push `baseVersion` bookkeeping — and for nothing else).
+- `cursor` is the maximum `change_seq` on the page (or `since` on an empty
+  page) and is **monotonic per (caller, entity)**: it never regresses, even
+  across empty pages or out-of-order requests. Pass it back as `since` (with
+  `v=2`) on the next pull.
 - `hasMore` is true when additional visible rows exist beyond this page;
   keep pulling until `hasMore` is false.
 - The server also stores the latest handed-out cursor in `sync.sync_cursors`
-  (monotonic `GREATEST`), surfaced via `/sync/status`. This is a
-  diagnostic/recovery aid — the client-supplied `since` remains authoritative
-  for what is returned.
+  (monotonic `GREATEST`, stamped `protocol = 2`), surfaced via
+  `/sync/status`. This is a diagnostic/recovery aid — the client-supplied
+  `since` remains authoritative for what is returned. Pre-v2 cursor rows
+  (`protocol = 1`) are stale and read as `0`.
+
+### Legacy-cursor guard (the v1 → v2 migration rule)
+
+v1 cursors counted **per-record versions**; v2 cursors count the global
+`change_seq`. The two integer domains are unrelated, so accepting a v1
+cursor as a v2 `since` would silently skip records forever. Therefore:
+
+- A pull with `since > 0` and `v` missing or `< 2` is rejected with
+  **409** and body `{ "statusCode": 409, "error": "sync_resync_required",
+  "message": "resync_required: ..." }`.
+- A pull with `since = 0` (full sync) is always accepted, with or without
+  `v` — that *is* the recovery path.
+- **Client recovery (mandatory):** on 409 `sync_resync_required`, the client
+  resets its local cursor for that entity to `0` and re-pulls from scratch.
+  The reference mobile/web stores do exactly this, once, before surfacing
+  any further error. Legacy (v1) clients that cannot resync fail loudly on
+  every pull — by design; the alternative was silent divergence.
 
 ## 7. Tombstones
 
 - Deletes travel as `{ deleted: true, payload: null }` items. Clients MUST
-  purge the local record and keep the version for `baseVersion` bookkeeping.
+  purge the local record and keep the per-record version for `baseVersion`
+  bookkeeping.
 - Tombstones are scoped like any row (`owner_id` captured at bump time), so a
   deleted record still reaches its owner's pull.
 - If a live version row's source record is missing (out-of-band hard delete),
@@ -227,29 +292,63 @@ Semantics:
 { "data": [ { "entity": "notification", "serverMaxVersion": 42, "cursor": 40 } ] }
 ```
 
-One entry per registered entity, scoped to the caller: `serverMaxVersion` is
-the highest version visible in the caller's scope (0 when nothing visible),
-`cursor` the server-recorded pull cursor. Clients use this to cheaply detect
-"am I behind?" (`serverMaxVersion > cursor`) before pulling.
+One entry per registered entity, scoped to the caller. **v2 field-name
+note:** `serverMaxVersion` keeps its v1 wire name but now carries the
+highest **change_seq** visible in the caller's scope (0 when nothing
+visible) — it is comparable against v2 pull cursors only. `cursor` is the
+server-recorded v2 pull cursor (stale v1 records are not surfaced). Clients
+use this to cheaply detect "am I behind?" (`serverMaxVersion > cursor`)
+before pulling.
 
 ## 9. Versioning Model
 
-- Versions are **per-record monotonic integers** starting at 1, kept in
-  `sync.entity_versions` (`(entity, entity_id)` PK). Every sync-visible write
-  bumps exactly once.
+Two counters, two jobs (this replaces the v1 single-counter model and
+resolves the old §6-vs-§9 contradiction):
+
+- **`version`** — **per-record** monotonic integer starting at 1, kept in
+  `sync.entity_versions` (`(entity, entity_id)` PK). It exists for exactly
+  one purpose: the push **compare-and-set** on `baseVersion` (§4). It is
+  never used to order pulls.
+- **`change_seq`** — **global** monotonic sequence
+  (`sync.entity_versions_change_seq_seq`, migration 080) stamped on every
+  ledger write. Pulls order and filter on it; the pull cursor is a
+  `change_seq` value. Existing rows were backfilled in write order
+  (`updated_at, entity, entity_id`) during the migration.
+
+Rules:
+
 - Bumps are performed by **application code, not DB triggers** —
-  `pgsql-ast-parser` (the migration linter) cannot parse `CREATE TRIGGER`, so
-  `024_sync.sql` deliberately ships no trigger; entity services call
-  `SyncVersioningService.recordChange` after their primary write (additive,
-  non-fatal). See the design note in the migration.
-- Push concurrency control is a compare-and-set on the version
-  (`bumpExpected`): the bump only lands when the current version equals the
-  item's `baseVersion`. Two concurrent pushes for the same record cannot both
-  win; the loser gets `conflict`.
-- Server-side write paths currently bumping: `MarketplaceService`
+  `pgsql-ast-parser` (the migration linter) cannot parse `CREATE TRIGGER`,
+  so `024_sync.sql` deliberately ships no trigger. See the design note in
+  the migration.
+- **Claim-guarded apply (v2, CAS discipline):** a writable entity's
+  `apply()` MUST claim the version row atomically *around* the entity write
+  via `EntityVersionRepository.applyGuarded`:
+  1. The claiming statement (`INSERT … ON CONFLICT DO NOTHING` for creates,
+     `UPDATE … WHERE version = :baseVersion` otherwise) runs in a
+     transaction; on pg its row lock is held until COMMIT, so a concurrent
+     claimant for the same record **blocks, then fails its CAS** — the
+     loser NEVER runs its entity write, and its payload never touches the
+     source row.
+  2. Only the claimant performs the entity write. If the write throws, the
+     claim rolls back, so the ledger never advances without the write.
+  3. A lost claim surfaces as a per-item `conflict` (with the fresh
+     `serverVersion`/`serverPayload`), never a retryable `apply_failed` and
+     never a silent overwrite.
+  The in-memory driver implements the same semantics (claim first, restore
+  on failure); the pg driver holds the transaction across the write.
+  `FarmsService` REST write paths (`createPlot`/`updatePlot`/`removePlot`)
+  use the identical guard — a REST write that loses the claim gets **409
+  Conflict** instead of silently overwriting a record a sync push just
+  moved, and a failed REST write rolls its ledger claim back with it.
+- The plain `bumpExpected` CAS remains available for code paths that do not
+  perform an entity write; new writable sync entities MUST use
+  `applyGuarded`.
+- Server-side write paths advancing the ledger: `MarketplaceService`
   (create/update listing), `NotificationsService` (send, markRead),
-  `FarmsService` (create/update/remove plot — plus the sync push apply path
-  itself, which CAS-bumps via `bumpExpected`).
+  `FarmsService` (create/update/remove plot — claim-guarded — plus the sync
+  push apply path itself). Legacy `recordChange` hook failures are
+  observable via the `agric_sync_version_bump_failures_total` metric.
 
 ## 10. Client Retry Guidance
 
@@ -259,14 +358,30 @@ the highest version visible in the caller's scope (0 when nothing visible),
 - 401: refresh the token; do not retry the batch until re-authenticated.
   (The existing mobile/web transport queues already park on 401.)
 - 400: the batch is malformed — do not retry unchanged; fix the payload.
+- **409 `sync_resync_required` (pull):** reset the entity cursor to `0` and
+  re-pull from scratch (§6). Do not retry with the old cursor.
+- 409 Conflict (REST plot write): the record was modified concurrently —
+  re-read and retry the edit; do not force the write.
 - Per-item `conflict`: apply server-wins (take `serverPayload`, rebase or
   drop the local change); optionally re-push with the corrected
-  `baseVersion` under a **new** `clientMutationId`.
+  `baseVersion` under a **new** `clientMutationId`. Clients MUST NOT apply a
+  conflict payload whose `serverVersion` is older than the locally cached
+  version (stale/replayed outcome — the reference stores ignore it).
 - Per-item `error`: `forbidden`/`read_only_entity`/`unknown_entity`/
   `mutation_id_reused` are permanent — drop the mutation and surface
   diagnostics; `apply_failed`/`replay_unavailable` may be retried later.
+- Offline outbox (client-side, reference stores): sequential offline edits
+  to one record **coalesce** into a single pending entry rebased on the
+  original `baseVersion` (latest payload wins — upserts are full
+  replacements); the merged entry gets a fresh `clientMutationId` so a
+  secretly-applied earlier mutation still surfaces as a proper conflict.
 - Pull loops: page with `limit` ≤ 500 until `hasMore` is false; persist the
   cursor locally so app restarts resume incrementally.
+- Offline mutation queue (mobile): queued requests carry per-kind TTLs —
+  expired entries are dropped un-replayed and surfaced in the flush result
+  (a month-old mutation must not apply month-old prices as current truth);
+  entries sharing an explicit `chainKey` stop-on-error together, so a
+  dependent mutation never replays after its parent failed.
 
 ## 11. Size Limits (summary)
 
