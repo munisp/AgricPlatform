@@ -1,6 +1,5 @@
 import {
   Controller,
-  ForbiddenException,
   Get,
   Param,
   UnauthorizedException,
@@ -37,16 +36,14 @@ export class CreditPortfolioController {
   @Get('score/:userId')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Deterministic score preview (own, or admin|lender)' })
+  @ApiOperation({
+    summary:
+      'Deterministic score preview (own, admin, or a lender with an active application linkage to the user)'
+  })
   async scorePreview(@Param('userId') userId: string, @CurrentUser() actor: User | null) {
     const user = requireActor(actor);
-    if (
-      user.id !== userId &&
-      !user.roles.includes('admin') &&
-      !user.roles.includes('lender')
-    ) {
-      throw new ForbiddenException('You may only preview your own score');
-    }
+    // V-61: lender reads are bound to an application linkage, not the role alone.
+    await this.credit.assertScoreReadAccess(user, userId);
     return { data: await this.credit.assessApplicant(userId) };
   }
 }
