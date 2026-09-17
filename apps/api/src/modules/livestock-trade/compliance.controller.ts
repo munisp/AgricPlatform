@@ -6,7 +6,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsISO8601, IsOptional, IsString } from 'class-validator';
+import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -16,6 +16,7 @@ import { ComplianceService } from './compliance.service.js';
 class ComplianceExportQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
