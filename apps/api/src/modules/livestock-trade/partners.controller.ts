@@ -9,17 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsISO8601,
-  IsIn,
-  IsInt,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min
-} from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { NIGERIAN_STATES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -32,6 +22,7 @@ import { ColdChainService } from './cold-chain.service.js';
 
 class CreateAggregationPointDto implements CreateAggregationPointInput {
   @IsString()
+  @MaxLength(200)
   @IsNotEmpty()
   name!: string;
 
@@ -39,6 +30,7 @@ class CreateAggregationPointDto implements CreateAggregationPointInput {
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   @IsNotEmpty()
   lga!: string;
 
@@ -51,6 +43,7 @@ class CreateAggregationPointDto implements CreateAggregationPointInput {
 class ListPointsQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 }
 
