@@ -69,6 +69,26 @@ describe('InvoiceService', () => {
     expect(second.invoiceNumber).toBe('INV-user-adamu-000002');
   });
 
+  it('V-52: concurrent issueForOrder — one invoice per order, losers adopt it', async () => {
+    const { service, invoices } = makeService();
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => service.issueForOrder('order-buyer-cassava', seller.id))
+    );
+    expect(new Set(results.map((invoice) => invoice.id)).size).toBe(1);
+    expect(await invoices.all()).toHaveLength(1);
+  });
+
+  it('V-52: a cancelled invoice releases the order claim and re-issue adopts a fresh one', async () => {
+    const { service, invoices } = makeService();
+    const first = await service.issueForOrder('order-buyer-cassava', seller.id);
+    await service.transition(first.id, 'cancelled', seller);
+    // The cancelled row no longer blocks (partial index WHERE status <> 'cancelled').
+    const second = await service.issueForOrder('order-buyer-cassava', seller.id);
+    expect(second.id).not.toBe(first.id);
+    expect(second.status).toBe('issued');
+    expect(await invoices.all()).toHaveLength(2);
+  });
+
   it('walks issued → paid with actor scoping and idempotent replay', async () => {
     const { service } = makeService();
     const invoice = await service.issueForOrder('order-buyer-cassava', seller.id);
