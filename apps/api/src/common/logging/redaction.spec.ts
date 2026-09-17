@@ -65,6 +65,9 @@ describe('redaction policy', () => {
       'req.body.devCode',
       'req.body.token',
       'req.body.phone',
+      // L-19: PIN and NIN bodies must never reach the logs.
+      'req.body.pin',
+      'req.body.nin',
       'res.body.token',
       'res.body.devCode',
       'res.body.user.phone'

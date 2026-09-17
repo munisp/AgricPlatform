@@ -111,7 +111,19 @@ export class IdempotencyInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    const scopedKey = `${request.method}:${request.originalUrl}:${key}`;
+    // Principal scoping (V-15): the cache domain is per-caller, so the same
+    // Idempotency-Key used by two different users can neither replay the
+    // other user's response nor act as a key-existence oracle / pre-claim
+    // DoS. Unauthenticated routes fall back to the client IP. The query
+    // string is normalised out of the URL (dim05-scenario-3): retrying with
+    // a different tracking parameter must not lose replay protection.
+    const user = (request as Request & { user?: { id?: unknown } }).user;
+    const principal =
+      typeof user?.id === 'string' && user.id.length > 0
+        ? `user:${user.id}`
+        : `ip:${request.ip ?? 'unknown'}`;
+    const path = request.originalUrl.split('?')[0];
+    const scopedKey = `${request.method}:${path}:${principal}:${key}`;
     const requestHash = hashRequestBody(request.body);
     // Serialize concurrent twins (WP-G11): the twin waits for the first
     // request's response to be cached before its own cache lookup, so it

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { diag, DiagConsoleLogger, DiagLogLevel } from '@opentelemetry/api';
+import { context, diag, DiagConsoleLogger, DiagLogLevel, metrics, trace } from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import type { Instrumentation } from '@opentelemetry/instrumentation';
@@ -206,5 +206,16 @@ export async function shutdownTelemetry(): Promise<void> {
     await sdk.shutdown();
   } catch (error) {
     warn(`shutdown failed: ${(error as Error).message}`);
+  } finally {
+    // Unregister the global API handles the SDK installed — even when
+    // shutdown() itself failed (e.g. an unreachable collector): a
+    // registered-but-dead provider is WORSE than none, because
+    // @opentelemetry/api refuses duplicate registration, so a later
+    // in-process consumer installing its own providers (e.g. the next spec
+    // file in a shared test worker) would silently keep the dead ones.
+    // No-ops on process exit.
+    trace.disable();
+    metrics.disable();
+    context.disable();
   }
 }

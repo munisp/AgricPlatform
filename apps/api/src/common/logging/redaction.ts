@@ -18,6 +18,10 @@ export const REDACT_PATHS = [
   'req.body.devCode',
   'req.body.token',
   'req.body.phone',
+  // L-19: PIN-swap and NIN-bearing bodies are credentials/PII too
+  // (defense in depth — pin-sessions.controller.ts, NIN enrolment paths).
+  'req.body.pin',
+  'req.body.nin',
   'res.body.token',
   'res.body.devCode',
   'res.body.user.phone'

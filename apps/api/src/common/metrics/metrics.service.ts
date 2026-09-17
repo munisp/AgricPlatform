@@ -5,6 +5,7 @@ type HttpLabel = 'method' | 'route' | 'status';
 
 export type OtpVerificationResult = 'success' | 'invalid' | 'locked';
 export type PaymentMetricEvent = 'initiated' | 'confirmed' | 'webhook_received' | 'webhook_duplicate';
+export type MoneyFlowResult = 'success' | 'failure';
 
 function getOrCreateCounter<T extends string>(name: string, help: string, labelNames: T[] = []): Counter<T> {
   return (
@@ -72,10 +73,32 @@ export class MetricsService {
     'Idempotency-key replays served from the cache'
   );
 
+  private readonly voucherRedemptions = getOrCreateCounter(
+    'agric_voucher_redemptions_total',
+    'Input-voucher redemption outcomes (success|failure)',
+    ['result']
+  );
+
+  private readonly agentPayouts = getOrCreateCounter(
+    'agric_agent_payouts_total',
+    'Agent-banking cash-out payout outcomes (success|failure)',
+    ['result']
+  );
+
   private readonly errors5xx = getOrCreateCounter(
     'agric_errors_5xx_total',
     '5xx responses returned by the API exception filter'
   );
+
+  private readonly syncVersionBumpFailures = getOrCreateCounter(
+    'agric_sync_version_bump_failures_total',
+    'sync.entity_versions bumps that failed after a REST entity write (sync-invisible writes)',
+    ['entity']
+  );
+
+  recordSyncVersionBumpFailure(entity: string): void {
+    this.syncVersionBumpFailures.inc({ entity });
+  }
 
   recordHttpRequest(method: string, route: string, status: number, durationSeconds: number): void {
     const labels = { method, route, status: String(status) };
@@ -101,6 +124,16 @@ export class MetricsService {
 
   idempotentReplay(): void {
     this.idempotentReplays.inc();
+  }
+
+  /** V-78: voucher lifecycle visibility for Prometheus alerts. */
+  voucherRedemption(result: MoneyFlowResult): void {
+    this.voucherRedemptions.inc({ result });
+  }
+
+  /** V-78: agent-banking payout (cash-out) visibility for Prometheus alerts. */
+  agentPayout(result: MoneyFlowResult): void {
+    this.agentPayouts.inc({ result });
   }
 
   error5xx(): void {
