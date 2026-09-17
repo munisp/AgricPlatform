@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../../common/auth/ownership.js';
@@ -31,10 +31,12 @@ class LinkAccountDto {
   system!: 'farmos' | 'litefarm';
 
   @IsString()
+  @MaxLength(100)
   externalId!: string;
 
   /** ISO-8601 timestamp of the farmer's explicit sharing consent. */
   @IsString()
+  @MaxLength(500)
   consentAt!: string;
 }
 
@@ -45,9 +47,11 @@ class VerifyPushDto {
 
 class CreateBatchDto {
   @IsString()
+  @MaxLength(500)
   sourceSystem!: string;
 
   @IsString()
+  @MaxLength(500)
   donorSource!: string;
 
   @IsArray()
@@ -56,12 +60,14 @@ class CreateBatchDto {
 
 class PullImportDto {
   @IsString()
+  @MaxLength(500)
   donorSource!: string;
 }
 
 class TriggerSyncDto {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   userId?: string;
 }
 
