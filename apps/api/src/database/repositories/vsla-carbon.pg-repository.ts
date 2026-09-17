@@ -847,13 +847,14 @@ export class PgVslaLoanRepaymentRepository implements VslaLoanRepaymentRepositor
     try {
       await (tx ?? this.pool).query(
         'INSERT INTO vsla_carbon.vsla_loan_repayments (id, loan_id, amount_kobo, idempotency_key, ' +
-          'ledger_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6)',
+          'ledger_entry_id, payload_hash, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
         [
           record.id,
           record.loanId,
           record.amountKobo,
           record.idempotencyKey,
           record.ledgerEntryId,
+          record.payloadHash ?? null,
           record.createdAt
         ]
       );
@@ -886,6 +887,7 @@ export class PgVslaLoanRepaymentRepository implements VslaLoanRepaymentRepositor
       amountKobo: Number(row.amount_kobo),
       idempotencyKey: row.idempotency_key as string,
       ledgerEntryId: row.ledger_entry_id as string,
+      payloadHash: (row.payload_hash as string | null) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
