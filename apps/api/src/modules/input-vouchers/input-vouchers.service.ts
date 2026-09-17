@@ -114,6 +114,8 @@ export interface CreateProgrammeInput {
   name: string;
   sponsor: string;
   description?: string;
+  /** Donor user funding the programme (V-61) — scopes donor reads to it. */
+  funderId?: string;
   perFarmerCapKobo: number;
   budgetKobo: number;
   /** Empty/omitted = all states eligible. */
@@ -327,6 +329,7 @@ export class InputVouchersService {
       sponsor: input.sponsor.trim(),
       description: input.description?.trim() || undefined,
       status: 'DRAFT',
+      funderId: input.funderId?.trim() || undefined,
       perFarmerCapKobo: input.perFarmerCapKobo,
       budgetKobo: input.budgetKobo,
       eligibleStates: (input.eligibleStates ?? []).map((state) => state.trim()).filter(Boolean),
@@ -357,6 +360,23 @@ export class InputVouchersService {
       throw new NotFoundException(`Programme '${id}' not found`);
     }
     return programme;
+  }
+
+  /**
+   * Donor read scoping (V-61): a donor may read a programme's funding state,
+   * voucher list or reconciliation ONLY when they fund it
+   * (programme.funderId === actor.id); admins and regulators keep
+   * programme-wide oversight. Programmes without a recorded funder (pre-082)
+   * are admin/regulator-only for donors (fail closed).
+   */
+  async assertProgrammeReadScope(actor: ActorRef, programmeId: string): Promise<void> {
+    if (!actor.roles.includes('donor')) {
+      return; // admin/regulator reads are programme-wide by design
+    }
+    const programme = await this.getProgramme(programmeId);
+    if (programme.funderId !== actor.id) {
+      throw new ForbiddenException('Donors may only read programmes they fund');
+    }
   }
 
   async listProgrammes(status?: ProgrammeStatus): Promise<SubsidyProgrammeRecord[]> {
