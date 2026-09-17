@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException
 } from '@nestjs/common';
+import { createHmac } from 'node:crypto';
 import type { User } from '@agric-platform/shared';
 import { LANGUAGE_CODES, type LanguageCode } from '@agric-platform/shared';
 import type { Redis } from 'ioredis';
@@ -32,6 +33,7 @@ import {
   type VoiceTurnRecord,
   type VoiceTurnRepository
 } from '../../database/repositories/voice.repository.js';
+import { resolveNinHashSalt } from '../input-vouchers/nin-crypto.js';
 import { UsersService } from '../users/users.service.js';
 import { AgronomyRagService } from './agronomy-rag.service.js';
 import {
@@ -113,6 +115,19 @@ function requireUser(actor: User | null): User {
 
 function isAgent(actor: User): boolean {
   return actor.roles.includes('agronomist') || actor.roles.includes('admin');
+}
+
+/**
+ * Salted HMAC-SHA256 over the dictated NIN reference (V-17, NDPA 2023) — the
+ * only persisted form. Mirrors the input-vouchers nin-crypto doctrine; the
+ * voice ninRef is free-form dictation (not a validated 11-digit NIN), so no
+ * format normalisation is applied. The salt resolution fails closed in
+ * production when NIN_HASH_SALT is missing/weak.
+ */
+function hashVoiceNinRef(ninRef: string): string {
+  return createHmac('sha256', resolveNinHashSalt())
+    .update(`voice-ninref:v1:${ninRef}`)
+    .digest('hex');
 }
 
 /**
@@ -215,8 +230,12 @@ export class VoiceService {
       channel: input.channel,
       state: 'intake',
       phone: input.phone.trim(),
-      ...(input.ninRef ? { ninRef: input.ninRef.trim() } : {}),
+      // V-17: only the salted hash is persisted — never the raw dictated NIN.
+      ...(input.ninRef ? { ninRefHash: hashVoiceNinRef(input.ninRef.trim()) } : {}),
       ...(known ? { farmerUserId: known.id } : {}),
+      // V-17: bind the session to its creator so an UNIDENTIFIED session is
+      // not world-accessible to every authenticated user.
+      createdByUserId: caller.id,
       locale,
       menuState: input.channel === 'ussd' ? { ...initialAgronomyUssdState() } : {},
       createdAt: now,
@@ -270,6 +289,13 @@ export class VoiceService {
     }
     if (session.farmerUserId && session.farmerUserId !== actor.id) {
       throw new ForbiddenException('This voice session belongs to another farmer');
+    }
+    // V-17: an UNIDENTIFIED session (phone not in the farmer directory) is
+    // bound to its creator — previously ANY authenticated user could read the
+    // transcript and append turns. Pre-080 rows carry no owner and are
+    // agent-only (fail closed).
+    if (!session.farmerUserId && session.createdByUserId !== actor.id) {
+      throw new ForbiddenException('This voice session belongs to another user');
     }
   }
 

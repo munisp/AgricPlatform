@@ -5,7 +5,7 @@ import {
   NotFoundException,
   UnprocessableEntityException
 } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Profile, User } from '@agric-platform/shared';
 import { computeVatKobo } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -401,6 +401,99 @@ describe('OfftakeService delivery saga', () => {
     );
   });
 
+  it('V-50: two concurrent deliveries for the same milestone — one wins the reservation, the loser orphans nothing', async () => {
+    const ctx = makeService();
+    await ctx.lots.create(makeLot('lot-1'));
+    const { contract } = await activeContract(ctx);
+    // Milestone 1 has exactly 2_000 kg; two full-quantity deliveries race.
+    const [first, second] = await Promise.allSettled([
+      ctx.service.recordDelivery(coop, contract.id, deliveryInput({ qtyKg: 2_000 })),
+      ctx.service.recordDelivery(
+        coop,
+        contract.id,
+        deliveryInput({ qtyKg: 2_000, idempotencyKey: 'del-key-twin', depositReference: 'dep-ref-twin' })
+      )
+    ]);
+    const outcomes = [first, second].map((result) => result.status);
+    expect(outcomes.sort()).toEqual(['fulfilled', 'rejected']);
+    const loser = [first, second].find((result) => result.status === 'rejected');
+    expect((loser as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    // The loser 409'd at the reservation CAS, BEFORE the payment rails:
+    // exactly one offtake order, one held escrow and one delivery exist.
+    const offtakeOrders = (await ctx.orders.all()).filter((order) =>
+      order.id.startsWith('order-offdel-')
+    );
+    expect(offtakeOrders).toHaveLength(1);
+    expect((await ctx.escrows.all()).filter((record) => record.status === 'held')).toHaveLength(1);
+    expect(await ctx.contracts.listDeliveries(contract.id)).toHaveLength(1);
+    const milestone = await ctx.contracts.milestoneBySeq(contract.id, 1);
+    expect(milestone?.deliveredQtyKg).toBe(2_000);
+    expect(milestone?.status).toBe('met');
+  });
+
+  it('V-50 fault injection: permanent commit failure compensates — order cancelled, escrow refunded, no orphan', async () => {
+    const ctx = makeService();
+    ctx.service.onModuleInit(); // settlement listener must not settle a refunded escrow
+    await ctx.lots.create(makeLot('lot-1'));
+    const { contract } = await activeContract(ctx);
+    // Fault injection: the milestone finalize throws AFTER the rails
+    // (listing/order/invoice/deposit-verified escrow hold) committed.
+    const originalUpdate = ctx.contracts.updateMilestoneExpected.bind(ctx.contracts);
+    vi.spyOn(ctx.contracts, 'updateMilestoneExpected').mockImplementation(
+      async (id, patch, expected) => {
+        if ('linkedLotId' in patch) {
+          throw new Error('injected permanent commit failure');
+        }
+        return originalUpdate(id, patch, expected);
+      }
+    );
+    await expect(
+      ctx.service.recordDelivery(coop, contract.id, deliveryInput())
+    ).rejects.toThrow('injected permanent commit failure');
+    // Compensating unwind ran automatically:
+    const [order] = (await ctx.orders.all()).filter((candidate) =>
+      candidate.id.startsWith('order-offdel-')
+    );
+    expect(order.status).toBe('cancelled'); // no paid orphan order
+    const [escrowRecord] = await ctx.escrows.all();
+    expect(escrowRecord.status).toBe('refunded'); // buyer funds returned
+    const [invoice] = await ctx.invoiceRepo.all();
+    expect(invoice.status).toBe('cancelled');
+    // The delivery claim row was removed — an honest retry never replays an orphan.
+    expect(await ctx.contracts.listDeliveries(contract.id)).toHaveLength(0);
+    // The milestone reservation rolled back.
+    const milestone = await ctx.contracts.milestoneBySeq(contract.id, 1);
+    expect(milestone?.deliveredQtyKg).toBe(0);
+    expect(milestone?.status).toBe('pending');
+    // The escrow-hold journal was reversed: both accounts net to zero.
+    const buyerEscrow = await ctx.ledger.balance(buyerEscrowAccountCode(buyer.id));
+    expect(buyerEscrow.debitsKobo).toBe(50_000_000);
+    expect(buyerEscrow.creditsKobo).toBe(50_000_000);
+    expect(buyerEscrow.balanceKobo).toBe(0);
+    const liability = await ctx.ledger.balance(contractEscrowLiabilityAccountCode(contract.id));
+    expect(liability.balanceKobo).toBe(0);
+    await flushListeners();
+    // The settlement sweep never settles a refunded (compensated) escrow.
+    const sweep = await ctx.service.settlementSweep(admin);
+    expect(sweep.redriven).toBe(0);
+    expect(
+      await ctx.ledger.findEntryByIdempotencyKey(`offtake-settle:${escrowRecord.id}`)
+    ).toBeUndefined();
+    // The same key is terminal (fail closed, no ambiguous reuse)...
+    vi.restoreAllMocks();
+    await expect(
+      ctx.service.recordDelivery(coop, contract.id, deliveryInput())
+    ).rejects.toThrow(/compensated/);
+    // ...but a fresh idempotency key drives a clean new saga to success.
+    const retry = await ctx.service.recordDelivery(
+      coop,
+      contract.id,
+      deliveryInput({ idempotencyKey: 'del-key-retry', depositReference: 'dep-ref-retry' })
+    );
+    expect(retry.replay).toBe(false);
+    expect((await ctx.contracts.milestoneBySeq(contract.id, 1))?.deliveredQtyKg).toBe(1_000);
+  });
+
   it('settles on escrow release: DR contract liability, CR cooperative receivable (exactly once)', async () => {
     const ctx = makeService();
     ctx.service.onModuleInit(); // subscribe the settlement consumer
@@ -419,6 +512,63 @@ describe('OfftakeService delivery saga', () => {
     await ctx.escrow.transition(escrow!.id, 'released', buyer);
     await flushListeners();
     expect((await ctx.ledger.balance(coopReceivableAccountCode(coop.id))).creditsKobo).toBe(50_000_000);
+  });
+
+  it('V-51: a dropped settlement listener is re-driven by the sweep to the identical journal', async () => {
+    const ctx = makeService();
+    ctx.service.onModuleInit(); // subscribe the settlement consumer
+    await ctx.lots.create(makeLot('lot-1'));
+    const { contract } = await activeContract(ctx);
+    const result = await ctx.service.recordDelivery(coop, contract.id, deliveryInput());
+    const escrow = await ctx.escrow.escrowForOrder(result.order.id);
+    // Fault injection: the settlement posting fails inside the listener;
+    // the fire-and-forget catch swallows it and the event is consumed.
+    const originalPost = ctx.ledger.postEntry.bind(ctx.ledger);
+    let failSettlement = true;
+    vi.spyOn(ctx.ledger, 'postEntry').mockImplementation(async (input, actorId) => {
+      if (failSettlement && input.idempotencyKey.startsWith('offtake-settle:')) {
+        throw new Error('injected ledger hiccup');
+      }
+      return originalPost(input, actorId);
+    });
+    await ctx.escrow.transition(escrow!.id, 'released', buyer);
+    await flushListeners();
+    // The settlement journal was dropped — only the sweep can recover it.
+    expect(
+      await ctx.ledger.findEntryByIdempotencyKey(`offtake-settle:${escrow!.id}`)
+    ).toBeUndefined();
+    failSettlement = false;
+    // Non-admins may not run the sweep.
+    await expect(ctx.service.settlementSweep(coop)).rejects.toThrow(ForbiddenException);
+    // The sweep finds the released escrow without a journal and re-drives.
+    const first = await ctx.service.settlementSweep(admin);
+    expect(first.redriven).toBe(1);
+    const entry = await ctx.ledger.findEntryByIdempotencyKey(`offtake-settle:${escrow!.id}`);
+    expect(entry?.referenceId).toBe(escrow!.id);
+    expect(entry?.postings).toEqual([
+      {
+        accountCode: contractEscrowLiabilityAccountCode(contract.id),
+        direction: 'debit',
+        amountKobo: 50_000_000
+      },
+      {
+        accountCode: coopReceivableAccountCode(coop.id),
+        direction: 'credit',
+        amountKobo: 50_000_000
+      }
+    ]);
+    // A repeated sweep converges — identical journal, no duplicate legs.
+    const second = await ctx.service.settlementSweep(admin);
+    expect(second.redriven).toBe(0);
+    const legs = (await ctx.ledger.listEntries({ referenceId: escrow!.id })).filter((candidate) =>
+      candidate.idempotencyKey.startsWith('offtake-settle:')
+    );
+    expect(legs).toHaveLength(1);
+    expect((await ctx.ledger.balance(coopReceivableAccountCode(coop.id))).creditsKobo).toBe(
+      50_000_000
+    );
+    const liability = await ctx.ledger.balance(contractEscrowLiabilityAccountCode(contract.id));
+    expect(liability.balanceKobo).toBe(0);
   });
 });
 
@@ -468,13 +618,44 @@ describe('OfftakeService views, sweep and collateral', () => {
     await ctx.lots.create(makeLot('lot-1'));
     const { contract } = await activeContract(ctx);
     await ctx.service.recordDelivery(coop, contract.id, deliveryInput());
-    const collateral = await ctx.service.collateralView(contract.id);
+    const collateral = await ctx.service.collateralView(admin, contract.id);
     expect(collateral.totals.qtyKg).toBe(5_000);
     expect(collateral.totals.deliveredQtyKg).toBe(1_000);
     expect(collateral.totals.deliveredAmountKobo).toBe(50_000_000);
     expect(collateral.totals.milestoneCount).toBe(2);
     expect(collateral.totals.milestonesMet).toBe(0);
-    await expect(ctx.service.collateralView('offtake-missing')).rejects.toThrow(NotFoundException);
-    void lender;
+    await expect(ctx.service.collateralView(admin, 'offtake-missing')).rejects.toThrow(
+      NotFoundException
+    );
+  });
+
+  it('V-61: collateral view is scoped to contract parties + admin/regulator; everyone else 403', async () => {
+    const ctx = makeService();
+    const { contract } = await activeContract(ctx);
+    // Contract parties read their own collateral.
+    await expect(ctx.service.collateralView(coop, contract.id)).resolves.toMatchObject({
+      contract: { id: contract.id }
+    });
+    await expect(ctx.service.collateralView(buyer, contract.id)).resolves.toMatchObject({
+      contract: { id: contract.id }
+    });
+    // Admin and regulator read any contract.
+    const regulator = { id: 'user-regulator', roles: ['regulator'] } as User;
+    await expect(ctx.service.collateralView(admin, contract.id)).resolves.toBeTruthy();
+    await expect(ctx.service.collateralView(regulator, contract.id)).resolves.toBeTruthy();
+    // Lender (deferred to V-31), donor, and unrelated users are refused.
+    const donor = { id: 'user-donor', roles: ['donor'] } as User;
+    await expect(ctx.service.collateralView(lender, contract.id)).rejects.toThrow(
+      ForbiddenException
+    );
+    await expect(ctx.service.collateralView(donor, contract.id)).rejects.toThrow(
+      ForbiddenException
+    );
+    await expect(ctx.service.collateralView(outsider, contract.id)).rejects.toThrow(
+      ForbiddenException
+    );
+    await expect(ctx.service.collateralView(null, contract.id)).rejects.toThrow(
+      'Authentication required'
+    );
   });
 });
