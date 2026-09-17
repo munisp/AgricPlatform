@@ -531,6 +531,25 @@ export class AgentBankingService {
       assertSameIdempotencyPayload(input.idempotencyKey, replay.payloadHash, payloadHash);
       return replay; // idempotent replay of a transport retry
     }
+    // V-55 crashed-saga resume (ledger-key fallback materialisation, same
+    // doctrine as vsla-carbon.service.ts): if the ledger entry for this
+    // client key already exists, an earlier attempt passed the OTP gate and
+    // posted the money but died before writing the transaction row. Rebuild
+    // the row from the AUTHORITATIVE entry — crucially WITHOUT re-verifying
+    // the (possibly single-use) OTP — instead of stranding the operation.
+    const priorEntry = await this.ledger.findEntryByIdempotencyKey(
+      `agent-tx:${input.idempotencyKey}`
+    );
+    if (priorEntry) {
+      return this.materialiseCrashedCashTransaction(
+        type,
+        agentId,
+        input,
+        payloadHash,
+        priorEntry,
+        actor
+      );
+    }
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
     assertPositiveKobo(input.amountKobo);
@@ -613,6 +632,87 @@ export class AgentBankingService {
         // twin that reused the key with a different payload fails closed
         // with a 409 (WP-G11); the ledger posting above replayed under the
         // same derived key, so no extra money moved.
+        const existing = await this.transactions.findByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          assertSameIdempotencyPayload(input.idempotencyKey, existing.payloadHash, payloadHash);
+          return existing;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * V-55: rebuild the transaction row for a cash operation whose ledger
+   * posting already committed (crash between postEntry and row create, or a
+   * same-key retry of one). The ledger entry is the source of truth: every
+   * request field is cross-checked against it (type via referenceType,
+   * amount via posting amount, farmer via wallet account code, agent via
+   * float account code) — a same-key twin carrying a DIFFERENT payload fails
+   * closed with 409 IDEMPOTENCY_PAYLOAD_MISMATCH instead of falsifying the
+   * operational record. No OTP re-verification: presence was proven by the
+   * original attempt before it posted.
+   */
+  private async materialiseCrashedCashTransaction(
+    type: 'cash_in' | 'cash_out',
+    agentId: string,
+    input: CashTransactionInput,
+    payloadHash: string,
+    entry: LedgerJournalEntry,
+    actor: ActorRef
+  ): Promise<AgentTransactionRecord> {
+    const expectedReferenceType =
+      type === 'cash_in' ? 'agent_banking_cash_in' : 'agent_banking_cash_out';
+    const postedAmountKobo = entry.postings[0]?.amountKobo;
+    const walletCode = farmerWalletAccountCode(input.farmerId);
+    const agent = await this.activeAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    const touchesWallet = entry.postings.some((posting) => posting.accountCode === walletCode);
+    const touchesFloat = entry.postings.some(
+      (posting) => posting.accountCode === agent.floatAccountCode
+    );
+    if (
+      entry.referenceType !== expectedReferenceType ||
+      postedAmountKobo !== input.amountKobo ||
+      !touchesWallet ||
+      !touchesFloat
+    ) {
+      throw new ConflictException(
+        `IDEMPOTENCY_PAYLOAD_MISMATCH: idempotency key '${input.idempotencyKey}' was already used with a different payload`
+      );
+    }
+    // Re-run the idempotent commission accrual so the row carries the same
+    // commission value the original attempt posted (replay-safe by key).
+    const commissionKobo = await this.accrueCommission(
+      agent,
+      type,
+      input.amountKobo,
+      input.idempotencyKey,
+      entry.referenceId ?? newId('agtx'),
+      actor.id
+    );
+    try {
+      const record = await this.transactions.create({
+        id: entry.referenceId ?? newId('agtx'),
+        agentId: agent.id,
+        farmerId: input.farmerId,
+        type,
+        amountKobo: input.amountKobo,
+        commissionKobo,
+        idempotencyKey: input.idempotencyKey,
+        payloadHash,
+        ledgerEntryId: entry.id,
+        otpBasis: this.otp.name,
+        createdAt: new Date().toISOString()
+      });
+      await this.events.publish(
+        'agentbank.transaction.posted',
+        { transactionId: record.id, agentId: agent.id, farmerId: input.farmerId, type, amountKobo: input.amountKobo },
+        actor.id
+      );
+      return record;
+    } catch (error) {
+      if (error instanceof ConflictException) {
         const existing = await this.transactions.findByIdempotencyKey(input.idempotencyKey);
         if (existing) {
           assertSameIdempotencyPayload(input.idempotencyKey, existing.payloadHash, payloadHash);

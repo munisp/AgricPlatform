@@ -10,7 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -21,6 +21,7 @@ import { DEALER_QR_PAY_FLAG, DealerQrService, type ActorRef } from './dealer-qr.
 
 class IssueQrDto {
   @IsString()
+  @MaxLength(200)
   @IsNotEmpty()
   label!: string;
 }
@@ -33,35 +34,42 @@ class PayDto {
 
   /** Payer's wallet alias/MSISDN presented to the switch (never persisted plaintext). */
   @IsString()
+  @MaxLength(500)
   @IsNotEmpty()
   payerAlias!: string;
 
   /** Optional agent_banking offline voucher applied as co-pay tender. */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   voucherId?: string;
 
   /** Mandatory client idempotency key — retries replay the original payment. */
   @IsString()
+  @MaxLength(100)
   @IsNotEmpty()
   idempotencyKey!: string;
 }
 
 class MojaloopWebhookDto {
   @IsString()
+  @MaxLength(100)
   @IsNotEmpty()
   transferId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   transferState?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   fulfilment?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   completedTimestamp?: string;
 }
 
