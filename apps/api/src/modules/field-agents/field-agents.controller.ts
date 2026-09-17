@@ -10,15 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import {
-  IsArray,
-  IsInt,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Min,
-  ValidateNested
-} from 'class-validator';
+import { ArrayMaxSize, IsArray, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
 import {
   AGENT_ASSIGNMENT_STATUSES,
   type AgentAssignmentStatus,
@@ -32,27 +24,34 @@ import { FieldAgentsService } from './field-agents.service.js';
 
 class CreateAssignmentDto {
   @IsString()
+  @MaxLength(100)
   agentUserId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   farmerUserId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   chapterId?: string;
 
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ward?: string;
 
   @IsString()
+  @MaxLength(2000)
   purpose!: string;
 
   @IsOptional()
@@ -62,6 +61,7 @@ class CreateAssignmentDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   dueAt?: string;
 }
 
@@ -75,13 +75,16 @@ class ProgressDto {
 
 class CaptureLocationDto implements LocationRef {
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ward?: string;
 
   @IsOptional()
@@ -96,10 +99,12 @@ class CaptureLocationDto implements LocationRef {
 class CaptureProfileDto {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   farmerUserId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   farmerPhone?: string;
 
   @IsOptional()
@@ -109,16 +114,21 @@ class CaptureProfileDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   farmingInterests?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   valueChains?: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   bio?: string;
 
   @IsOptional()
@@ -131,6 +141,7 @@ class CaptureProfileDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   policyVersion?: string;
 }
 
