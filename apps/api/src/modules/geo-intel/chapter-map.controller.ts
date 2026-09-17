@@ -41,7 +41,12 @@ export class ChapterMapController {
       'Chapter map: per-cell H3 res-7 aggregates (members, plots, voucher redemptions, ' +
       'mechanization coverage, pending escrow). k-anonymised; stale snapshots are badged, never live.'
   })
-  async getMap(@Param('id') id: string, @Query() query: ChapterMapQueryDto) {
+  async getMap(
+    @Param('id') id: string,
+    @Query() query: ChapterMapQueryDto,
+    @CurrentUser() actor: User | null
+  ) {
+    await this.chapterMap.assertMapReader(actor, id);
     return { data: await this.chapterMap.getMap(id, query.metric) };
   }
 
