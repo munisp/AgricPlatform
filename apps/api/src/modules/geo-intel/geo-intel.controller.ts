@@ -14,6 +14,12 @@ function parseCoordinate(raw: string | undefined, name: 'lat' | 'long'): number 
   if (!Number.isFinite(value)) {
     throw new BadRequestException(`${name} must be a number`);
   }
+  // L-15: range-check before forwarding to the flood-ml sidecar — lat=99999
+  // is a client contract violation, not a valid coordinate.
+  const [min, max] = name === 'lat' ? [-90, 90] : [-180, 180];
+  if (value < min || value > max) {
+    throw new BadRequestException(`${name} must be between ${min} and ${max}`);
+  }
   return value;
 }
 
