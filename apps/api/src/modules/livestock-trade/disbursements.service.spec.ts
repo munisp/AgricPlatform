@@ -3,7 +3,17 @@ import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { createInMemoryDisbursementRepository } from '../../database/repositories/livestock-trade.repository.js';
-import { DisbursementsService } from './disbursements.service.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from '../../database/repositories/ledger.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
+import {
+  DISBURSEMENT_DONOR_FLOAT_ACCOUNT,
+  DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT,
+  DisbursementsService,
+  disbursementReleaseLedgerKey
+} from './disbursements.service.js';
 
 const asUser = (id: string, roles: string[]): User => ({ id, roles }) as unknown as User;
 
@@ -17,6 +27,7 @@ describe('DisbursementsService', () => {
   let users: { getById: ReturnType<typeof vi.fn> };
   let audit: { record: ReturnType<typeof vi.fn> };
   let outbox: ReturnType<typeof createInMemoryOutboxRepository>;
+  let ledger: LedgerService;
   let service: DisbursementsService;
 
   const input = {
@@ -31,11 +42,18 @@ describe('DisbursementsService', () => {
     users = { getById: vi.fn().mockImplementation(async (id: string) => ({ id, roles: [] })) };
     audit = { record: vi.fn().mockResolvedValue(undefined) };
     outbox = createInMemoryOutboxRepository();
+    const events = new DomainEventsService(outbox);
+    ledger = new LedgerService(
+      events,
+      createInMemoryLedgerAccountRepository(),
+      createInMemoryLedgerEntryRepository()
+    );
     service = new DisbursementsService(
       users as never,
       audit as never,
-      new DomainEventsService(outbox),
-      disbursements
+      events,
+      disbursements,
+      ledger
     );
   });
 
@@ -71,6 +89,42 @@ describe('DisbursementsService', () => {
     expect(
       events.filter((event) => event.name === 'livestock_trade.disbursement.released')
     ).toHaveLength(1);
+  });
+
+  it('V-56: two concurrent releases — one wins the CAS, exactly one event and one ledger leg', async () => {
+    const scheduled = await service.schedule(donor, input);
+    const [first, second] = await Promise.all([
+      service.release(donor, scheduled.id),
+      service.release(admin, scheduled.id)
+    ]);
+    expect(first.status).toBe('released');
+    expect(second.status).toBe('released');
+    // Exactly one release event was published (the loser adopted the winner).
+    const events = await outbox.list();
+    const releaseEvents = events.filter(
+      (event) => event.name === 'livestock_trade.disbursement.released'
+    );
+    expect(releaseEvents).toHaveLength(1);
+    // The ledger leg posted exactly once and balances.
+    const legs = await ledger.listEntries({ referenceId: scheduled.id });
+    expect(legs).toHaveLength(1);
+    expect(legs[0].idempotencyKey).toBe(disbursementReleaseLedgerKey(scheduled.id));
+    const spend = await ledger.balance(DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT);
+    const float = await ledger.balance(DISBURSEMENT_DONOR_FLOAT_ACCOUNT);
+    expect(spend.debitsKobo).toBe(input.amountKobo);
+    expect(float.creditsKobo).toBe(input.amountKobo);
+  });
+
+  it('V-56: a release replay re-drives the ledger leg idempotently (no double-post)', async () => {
+    const scheduled = await service.schedule(donor, input);
+    await service.release(donor, scheduled.id);
+    await service.release(donor, scheduled.id);
+    await service.release(admin, scheduled.id);
+    const legs = await ledger.listEntries({ referenceId: scheduled.id });
+    expect(legs).toHaveLength(1);
+    expect((await ledger.balance(DISBURSEMENT_PROGRAMME_SPEND_ACCOUNT)).debitsKobo).toBe(
+      input.amountKobo
+    );
   });
 
   it('restricts release to the scheduling donor or admin', async () => {
