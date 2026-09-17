@@ -8,16 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Max,
-  Min
-} from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   DISEASE_FLAG_STATUSES,
@@ -42,18 +33,22 @@ import { LivestockHealthService } from './livestock-health.service.js';
 
 class RecordHealthDto implements RecordHealthInput {
   @IsString()
+  @MaxLength(100)
   animalId!: string;
 
   @IsIn([...HEALTH_RECORD_TYPES])
   recordType!: RecordHealthInput['recordType'];
 
   @IsString()
+  @MaxLength(500)
   product!: string;
 
   @IsString()
+  @MaxLength(500)
   batchNumber!: string;
 
   @IsString()
+  @MaxLength(500)
   dose!: string;
 
   @IsISO8601()
@@ -65,22 +60,26 @@ class RecordHealthDto implements RecordHealthInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
 class ReverseHealthDto {
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
 class StartMovementDto implements StartMovementInput {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   animalId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lotId?: string;
 
   @IsIn([...NIGERIAN_STATES])
@@ -88,6 +87,7 @@ class StartMovementDto implements StartMovementInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   fromLga?: string;
 
   @IsIn([...NIGERIAN_STATES])
@@ -95,6 +95,7 @@ class StartMovementDto implements StartMovementInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   toLga?: string;
 
   @IsOptional()
@@ -109,6 +110,7 @@ class StartMovementDto implements StartMovementInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   permitId?: string;
 }
 
@@ -121,10 +123,12 @@ class ArrivalDto {
 class IssuePermitDto implements IssuePermitInput {
   @IsOptional()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   animalIds?: string[];
 
   @IsOptional()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   lotIds?: string[];
 
   @IsIn([...NIGERIAN_STATES])
@@ -142,6 +146,7 @@ class IssuePermitDto implements IssuePermitInput {
 
 class RevokePermitDto {
   @IsString()
+  @MaxLength(2000)
   @IsNotEmpty()
   reason!: string;
 }
@@ -149,14 +154,17 @@ class RevokePermitDto {
 class InitiateRecallDto implements InitiateRecallInput {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   animalId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lotId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerUserId?: string;
 
   @IsOptional()
@@ -173,9 +181,11 @@ class InitiateRecallDto implements InitiateRecallInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   batchNumber?: string;
 
   @IsString()
+  @MaxLength(2000)
   @IsNotEmpty()
   reason!: string;
 }
@@ -197,11 +207,13 @@ class ListDueVaccinationsQuery {
   /** Admin/vet/regulator only: restrict to one owner's animals. */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerUserId?: string;
 }
 
 class ReportDiseaseFlagDto implements ReportDiseaseFlagInput {
   @IsString()
+  @MaxLength(500)
   @IsNotEmpty()
   disease!: string;
 
@@ -210,6 +222,7 @@ class ReportDiseaseFlagDto implements ReportDiseaseFlagInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lga?: string;
 
   @IsOptional()
@@ -219,6 +232,7 @@ class ReportDiseaseFlagDto implements ReportDiseaseFlagInput {
 
 class RetractDiseaseFlagDto {
   @IsString()
+  @MaxLength(2000)
   @IsNotEmpty()
   reason!: string;
 }
@@ -230,6 +244,7 @@ class ListDiseaseFlagsQuery {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 }
 
