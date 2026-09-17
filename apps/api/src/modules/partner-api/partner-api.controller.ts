@@ -12,16 +12,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsArray,
-  IsIn,
-  IsNumber,
-  IsOptional,
-  IsPositive,
-  IsString,
-  IsUrl,
-  MinLength
-} from 'class-validator';
+import { IsArray, IsIn, IsNumber, IsOptional, IsPositive, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
 import type { Request } from 'express';
 import { PartnerApiService } from './partner-api.service.js';
 import {
@@ -57,9 +48,11 @@ class RecordDisbursementDto {
   /** Optional — the token's bound partnerId is authoritative (400 on mismatch). */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   partnerId?: string;
 
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsNumber()
@@ -68,10 +61,12 @@ class RecordDisbursementDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   programmeId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   reference?: string;
 }
 
@@ -79,21 +74,26 @@ class RecordEnrolmentDto {
   /** Optional — the token's bound partnerId is authoritative (400 on mismatch). */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   partnerId?: string;
 
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsString()
+  @MaxLength(100)
   programmeId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   cohortLabel?: string;
 }
 
 class FarmDataPushDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   /** farmOS-compatible asset/log payload (validated for shape only). */
@@ -113,6 +113,7 @@ class CreateWebhookSubscriptionDto {
   targetUrl!: string;
 
   @IsString()
+  @MaxLength(100)
   @MinLength(16)
   secret!: string;
 }
