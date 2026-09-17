@@ -3,6 +3,7 @@ import {
   COLD_CHAIN_PROVIDER,
   LIVESTOCK_INSURANCE_PROVIDER
 } from '../../database/persistence.tokens.js';
+import { FinanceModule } from '../finance/finance.module.js';
 import { PrivacyModule } from '../privacy/privacy.module.js';
 import { AggregationPointsService } from './aggregation-points.service.js';
 import { CertifiedListingsService } from './certified-listings.service.js';
@@ -35,7 +36,9 @@ import { createColdChainProvider, createLivestockInsuranceProvider } from './pro
  *    headers-only placeholders until L1b data sources exist.
  */
 @Module({
-  imports: [PrivacyModule],
+  // FinanceModule provides LedgerService for the V-56 disbursement release
+  // journal (same wiring the marketplace module uses for escrow legs).
+  imports: [PrivacyModule, FinanceModule],
   controllers: [
     LivestockTradeController,
     LivestockFinanceController,
