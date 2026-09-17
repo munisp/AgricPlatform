@@ -9,8 +9,9 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
-import type { User } from '@agric-platform/shared';
+import { Throttle } from '@nestjs/throttler';
+import { ArrayMaxSize, IsArray, IsInt, IsISO8601, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { NIN_PATTERN, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -20,79 +21,105 @@ import {
   type InputVoucherStatus,
   type ProgrammeStatus
 } from '../../database/repositories/input-vouchers.repository.js';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { InputVouchersService, type ActorRef } from './input-vouchers.service.js';
+
+/**
+ * L-13 business ceilings (replace @Max(Number.MAX_SAFE_INTEGER) pseudo-caps):
+ * a single voucher caps at ₦1m; programme budgets/funding cap at ₦1bn. The
+ * service-side budget/float checks remain the authoritative controls.
+ */
+const MAX_VOUCHER_AMOUNT_KOBO = 100_000_000; // ₦1,000,000
+const MAX_PROGRAMME_KOBO = 100_000_000_000; // ₦1,000,000,000
 
 class CreateProgrammeDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   name!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   sponsor!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
+
+  /** Donor user funding the programme (V-61) — scopes that donor's reads to it. */
+  @IsOptional()
+  @IsString()
+  funderId?: string;
 
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_VOUCHER_AMOUNT_KOBO)
   perFarmerCapKobo!: number;
 
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_PROGRAMME_KOBO)
   budgetKobo!: number;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(64)
   @IsString({ each: true })
+  @MaxLength(100, { each: true })
   eligibleStates?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(64)
   @IsString({ each: true })
+  @MaxLength(100, { each: true })
   eligibleCrops?: string[];
 }
 
 class VerifyBeneficiaryDto {
   @IsString()
+  @MaxLength(100)
   farmerId!: string;
 
   /** Plaintext NIN — verified then discarded; only hash + mask persist. */
-  @IsString()
-  @IsNotEmpty()
+  @Matches(NIN_PATTERN, { message: 'nin must be exactly 11 digits' })
   nin!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   fullName!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   primaryCrop?: string;
 }
 
 class AllocateVoucherDto {
   @IsString()
+  @MaxLength(100)
   farmerId!: string;
 
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_VOUCHER_AMOUNT_KOBO)
   amountKobo!: number;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   idempotencyKey!: string;
 
   @IsOptional()
-  @IsString()
+  @IsISO8601()
   expiresAt?: string;
 }
 
@@ -100,6 +127,7 @@ class RedeemVoucherDto {
   /** Agro-dealer invoice reference the redemption settles against. */
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   invoiceRef!: string;
 
   /**
@@ -110,23 +138,26 @@ class RedeemVoucherDto {
    */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   plotId?: string;
 }
 
 class FundProgrammeDto {
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
+  @Max(MAX_PROGRAMME_KOBO)
   amountKobo!: number;
 
   /** Mandatory client idempotency key — top-up retries replay, never double-fund. */
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   idempotencyKey!: string;
 
   /** Optional sponsor/disbursement reference for the audit trail. */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   reference?: string;
 }
 
@@ -148,7 +179,10 @@ function actorOf(user: User | null): ActorRef {
 @ApiTags('input-vouchers')
 @Controller('input-vouchers')
 export class InputVouchersController {
-  constructor(private readonly vouchers: InputVouchersService) {}
+  constructor(
+    private readonly vouchers: InputVouchersService,
+    private readonly metrics: MetricsService
+  ) {}
 
   // ------------------------------------------------------------ programmes
 
@@ -194,6 +228,7 @@ export class InputVouchersController {
 
   // ---------------------------------------------------------- funding float
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('programmes/:id/funding')
   @UseGuards(RolesGuard)
   @Roles('admin')
@@ -211,7 +246,8 @@ export class InputVouchersController {
   @ApiOperation({
     summary: 'Funded-float state: funded / reserved / settled / available kobo (admin/regulator/donor)'
   })
-  async getProgrammeFunding(@Param('id') id: string) {
+  async getProgrammeFunding(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    await this.vouchers.assertProgrammeReadScope(actorOf(actor), id);
     return { data: await this.vouchers.getProgrammeFunding(id) };
   }
 
@@ -242,6 +278,7 @@ export class InputVouchersController {
 
   // --------------------------------------------------------------- vouchers
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('programmes/:id/vouchers')
   @UseGuards(RolesGuard)
   @Roles('admin')
@@ -258,7 +295,12 @@ export class InputVouchersController {
   @UseGuards(RolesGuard)
   @Roles('admin', 'regulator', 'donor')
   @ApiOperation({ summary: 'List programme vouchers, optionally by status (admin/regulator/donor)' })
-  async listProgrammeVouchers(@Param('id') id: string, @Query('status') status?: InputVoucherStatus) {
+  async listProgrammeVouchers(
+    @Param('id') id: string,
+    @CurrentUser() actor: User | null,
+    @Query('status') status?: InputVoucherStatus
+  ) {
+    await this.vouchers.assertProgrammeReadScope(actorOf(actor), id);
     return { data: await this.vouchers.listVouchers({ programmeId: id, status }) };
   }
 
@@ -268,7 +310,8 @@ export class InputVouchersController {
   @ApiOperation({
     summary: 'Settlement reconciliation: totals by programme/state with the ledger tie (exportable JSON)'
   })
-  async reconciliation(@Param('id') id: string) {
+  async reconciliation(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    await this.vouchers.assertProgrammeReadScope(actorOf(actor), id);
     return { data: await this.vouchers.reconciliation(id) };
   }
 
@@ -298,6 +341,7 @@ export class InputVouchersController {
     return { data: await this.vouchers.distributeVoucher(id, actorOf(actor).id) };
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('vouchers/:id/redeem')
   @UseGuards(RolesGuard)
   @Roles('supplier', 'admin')
@@ -308,7 +352,19 @@ export class InputVouchersController {
       'parametric cover binds in the same operation.'
   })
   async redeemVoucher(@Param('id') id: string, @Body() dto: RedeemVoucherDto, @CurrentUser() actor: User | null) {
-    return { data: await this.vouchers.redeemVoucher(id, dto.invoiceRef, actorOf(actor), { plotId: dto.plotId }) };
+    const caller = actorOf(actor);
+    // V-78: redemption outcome counter (agric_voucher_redemptions_total{result})
+    // so a redemption failure storm is visible to Prometheus alerts.
+    try {
+      const data = await this.vouchers.redeemVoucher(id, dto.invoiceRef, caller, {
+        plotId: dto.plotId
+      });
+      this.metrics.voucherRedemption('success');
+      return { data };
+    } catch (error) {
+      this.metrics.voucherRedemption('failure');
+      throw error;
+    }
   }
 
   @Post('vouchers/:id/void')
