@@ -6,7 +6,7 @@ import {
   NotFoundException,
   UnauthorizedException
 } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
@@ -465,6 +465,73 @@ describe('AgentBankingService — cash-in / cash-out', () => {
       total += (await ctx.ledger.balance(account.code)).balanceKobo;
     }
     expect(total).toBe(0);
+  });
+});
+
+describe('AgentBankingService — V-55 crashed cash-saga resume', () => {
+  it('kill after ledger posting: retry completes the row WITHOUT OTP re-verify', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    // Fault injection: the transaction-row write dies after the ledger post.
+    const failing = vi
+      .spyOn(ctx.transactions, 'create')
+      .mockRejectedValueOnce(new Error('row store lost'));
+    await expect(
+      ctx.service.cashIn(
+        agent.id,
+        { farmerId: ctx.farmer.id, amountKobo: 500_000, otp: otp(ctx.farmer.id, 'ci-crash-1'), idempotencyKey: 'ci-crash-1' },
+        agentActor(ctx.agentUser)
+      )
+    ).rejects.toThrowError('row store lost');
+    failing.mockRestore();
+    // Money moved, no operational row — the exact V-55 stranding.
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(500_000);
+    expect(await ctx.service.listTransactions({ agentId: agent.id })).toHaveLength(0);
+    // Retry with a WRONG OTP (single-use OTPs would already be burned): the
+    // ledger-key fallback materialises the row without re-verifying.
+    const tx = await ctx.service.cashIn(
+      agent.id,
+      { farmerId: ctx.farmer.id, amountKobo: 500_000, otp: '000000', idempotencyKey: 'ci-crash-1' },
+      agentActor(ctx.agentUser)
+    );
+    expect(tx.type).toBe('cash_in');
+    expect(tx.amountKobo).toBe(500_000);
+    expect(tx.commissionKobo).toBe(2_500);
+    expect(tx.ledgerEntryId).toBeTruthy();
+    // No double-post: wallet credited exactly once, one ledger entry for the key.
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(500_000);
+    expect(await ctx.service.listTransactions({ agentId: agent.id })).toHaveLength(1);
+  });
+
+  it('same-key retry with a DIFFERENT payload after a crash fails closed 409', async () => {
+    const ctx = await makeService();
+    const agent = await activeAgent(ctx);
+    await fundPlatformCash(ctx, 5_000_000);
+    await topUpFloat(ctx, agent.id, 2_000_000);
+    const failing = vi
+      .spyOn(ctx.transactions, 'create')
+      .mockRejectedValueOnce(new Error('row store lost'));
+    await expect(
+      ctx.service.cashIn(
+        agent.id,
+        { farmerId: ctx.farmer.id, amountKobo: 500_000, otp: otp(ctx.farmer.id, 'ci-crash-2'), idempotencyKey: 'ci-crash-2' },
+        agentActor(ctx.agentUser)
+      )
+    ).rejects.toThrowError('row store lost');
+    failing.mockRestore();
+    // Same key, different amount: the ledger-entry cross-check rejects it.
+    await expect(
+      ctx.service.cashIn(
+        agent.id,
+        { farmerId: ctx.farmer.id, amountKobo: 900_000, otp: '000000', idempotencyKey: 'ci-crash-2' },
+        agentActor(ctx.agentUser)
+      )
+    ).rejects.toBeInstanceOf(ConflictException);
+    // And the different-payload attempt did NOT falsify the books.
+    expect((await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id))).balanceKobo).toBe(500_000);
+    expect(await ctx.service.listTransactions({ agentId: agent.id })).toHaveLength(0);
   });
 });
 
