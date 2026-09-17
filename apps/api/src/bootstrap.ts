@@ -27,8 +27,32 @@ export function buildOpenApiDocument(app: NestExpressApplication) {
   return SwaggerModule.createDocument(app, swaggerConfig);
 }
 
+/**
+ * L-02: resolves the Express `trust proxy` setting from TRUST_PROXY.
+ * OFF (undefined) by default: per-IP throttles key on the client IP, and
+ * behind a single ingress every request would share one IP (one attacker's
+ * budget = the platform's budget) unless the proxy is trusted. Set
+ * TRUST_PROXY to an Express trust-proxy value only when the deployment
+ * terminates TLS at a known ingress that sets X-Forwarded-For (e.g. '1'
+ * for one hop, or a subnet). Enabling it WITHOUT a controlled ingress lets
+ * clients spoof their IP via X-Forwarded-For — worse than leaving it off.
+ */
+export function resolveTrustProxy(env: NodeJS.ProcessEnv = process.env): number | string | undefined {
+  const value = env.TRUST_PROXY;
+  if (value === undefined || value === '' || value === 'false' || value === '0') {
+    return undefined;
+  }
+  const hops = Number(value);
+  return Number.isFinite(hops) ? hops : value;
+}
+
 /** Shared HTTP configuration used by main.ts and e2e tests. */
 export function configureApp(app: NestExpressApplication): void {
+  const trustProxy = resolveTrustProxy();
+  if (trustProxy !== undefined) {
+    app.set('trust proxy', trustProxy);
+  }
+
   app.setGlobalPrefix('api/v1');
 
   // Security headers (helmet) and CORS for the Next.js PWA.
@@ -52,6 +76,13 @@ export function configureApp(app: NestExpressApplication): void {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      // V-74: reject unknown DTO fields instead of silently stripping them
+      // (mass-assignment is visible to the caller, and smuggled fields can
+      // never ride along undetected). Safe for the remaining interface-typed
+      // bodies: their runtime metatype is Object, which the pipe skips by
+      // design — verified against the full e2e suite (api/ussd/webhook/
+      // partner/metrics all green).
+      forbidNonWhitelisted: true,
       transform: true,
       transformOptions: { enableImplicitConversion: true },
       forbidUnknownValues: false

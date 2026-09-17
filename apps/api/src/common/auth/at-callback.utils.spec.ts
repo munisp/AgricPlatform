@@ -1,11 +1,15 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import {
+  assertAtCallbackFreshness,
   assertAtCallbackIp,
   assertAtCallbackToken,
+  AtCallbackNonceCache,
   atCallbackIpAllowlist,
+  AT_CALLBACK_MAX_SKEW_MS,
   AT_CALLBACK_TOKEN_MIN_LENGTH,
   missingAtCallbackConfig,
+  resolveAtCallbackToken,
   weakAtCallbackToken
 } from './at-callback.utils.js';
 
@@ -126,5 +130,84 @@ describe('assertAtCallbackIp (optional allowlist)', () => {
     const env = { AT_CALLBACK_IP_ALLOWLIST: '203.0.113.9' } as unknown as NodeJS.ProcessEnv;
     expect(() => assertAtCallbackIp('203.0.113.10', env)).toThrowError(ForbiddenException);
     expect(() => assertAtCallbackIp(undefined, env)).toThrowError(ForbiddenException);
+  });
+});
+
+describe('resolveAtCallbackToken (V-19 header-only in production)', () => {
+  it('refuses a query-string token in production even when it is correct', () => {
+    expect(() => resolveAtCallbackToken('any-token', undefined, true)).toThrowError(
+      UnauthorizedException
+    );
+    expect(() => resolveAtCallbackToken('any-token', 'header-token', true)).toThrowError(
+      UnauthorizedException
+    );
+  });
+
+  it('uses the header token in production', () => {
+    expect(resolveAtCallbackToken(undefined, 'header-token', true)).toBe('header-token');
+    expect(resolveAtCallbackToken(undefined, undefined, true)).toBeUndefined();
+  });
+
+  it('keeps the query-param fallback outside production', () => {
+    expect(resolveAtCallbackToken('query-token', 'header-token', false)).toBe('query-token');
+    expect(resolveAtCallbackToken(undefined, 'header-token', false)).toBe('header-token');
+  });
+});
+
+describe('assertAtCallbackFreshness (V-19 timestamp/nonce window)', () => {
+  const NOW = 1_750_000_000_000;
+
+  it('is a no-op outside production (non-prod behavior unchanged)', () => {
+    expect(() =>
+      assertAtCallbackFreshness({}, new AtCallbackNonceCache(), false, NOW)
+    ).not.toThrow();
+  });
+
+  it('accepts a fresh timestamp with a unique nonce', () => {
+    expect(() =>
+      assertAtCallbackFreshness(
+        { timestamp: String(NOW - 1000), nonce: 'nonce-abcdefgh' },
+        new AtCallbackNonceCache(),
+        true,
+        NOW
+      )
+    ).not.toThrow();
+  });
+
+  it('rejects missing/malformed/stale timestamps with 401', () => {
+    const cache = new AtCallbackNonceCache();
+    for (const timestamp of [undefined, 'not-a-number', String(NOW - AT_CALLBACK_MAX_SKEW_MS - 1), String(NOW + AT_CALLBACK_MAX_SKEW_MS + 1)]) {
+      expect(() =>
+        assertAtCallbackFreshness({ timestamp, nonce: 'nonce-abcdefgh' }, cache, true, NOW)
+      ).toThrowError(UnauthorizedException);
+    }
+  });
+
+  it('rejects a replayed nonce with 401 and expires it after the window', () => {
+    const cache = new AtCallbackNonceCache();
+    const fresh = { timestamp: String(NOW), nonce: 'captured-nonce-1' };
+    expect(() => assertAtCallbackFreshness(fresh, cache, true, NOW)).not.toThrow();
+    // Verbatim replay inside the window:
+    expect(() => assertAtCallbackFreshness(fresh, cache, true, NOW + 1000)).toThrowError(
+      UnauthorizedException
+    );
+    // After the TTL the same nonce is claimable again (paired with a fresh timestamp).
+    expect(() =>
+      assertAtCallbackFreshness(
+        { timestamp: String(NOW + AT_CALLBACK_MAX_SKEW_MS * 2 + 1000), nonce: 'captured-nonce-1' },
+        cache,
+        true,
+        NOW + AT_CALLBACK_MAX_SKEW_MS * 2 + 1000
+      )
+    ).not.toThrow();
+  });
+
+  it('rejects missing/short/oversized nonces with 401', () => {
+    const cache = new AtCallbackNonceCache();
+    for (const nonce of [undefined, 'short', 'x'.repeat(129)]) {
+      expect(() =>
+        assertAtCallbackFreshness({ timestamp: String(NOW), nonce }, cache, true, NOW)
+      ).toThrowError(UnauthorizedException);
+    }
   });
 });

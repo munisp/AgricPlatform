@@ -20,6 +20,7 @@ class UpsertFeatureFlagDto {
 
   @IsOptional()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   @ArrayMaxSize(16)
   roleAllowlist?: string[];
 

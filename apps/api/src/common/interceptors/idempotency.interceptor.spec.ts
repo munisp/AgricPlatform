@@ -22,13 +22,17 @@ function makeContext(options: {
   url?: string;
   key?: string;
   body?: unknown;
+  userId?: string;
+  ip?: string;
 }): { context: ExecutionContext; headers: Record<string, string> } {
   const headers: Record<string, string> = {};
   const request = {
     method: options.method ?? 'POST',
     originalUrl: options.url ?? '/api/orders',
     headers: options.key ? { 'idempotency-key': options.key } : {},
-    body: options.body
+    body: options.body,
+    ip: options.ip,
+    user: options.userId ? { id: options.userId } : undefined
   };
   const response = {
     setHeader: (name: string, value: string) => {
@@ -117,10 +121,80 @@ describe('IdempotencyInterceptor', () => {
 
   it('replays legacy plain-body cache entries (pre-envelope)', async () => {
     const { store, interceptor } = makeInterceptor();
-    store.entries.set('POST:/api/orders:legacy', { id: 'order-legacy' });
+    store.entries.set('POST:/api/orders:ip:unknown:legacy', { id: 'order-legacy' });
     const ctx = makeContext({ key: 'legacy', body: { anything: true } });
     const replayed = await firstValueFrom(await interceptor.intercept(ctx.context, handler('new')));
     expect(replayed).toEqual({ id: 'order-legacy' });
     expect(ctx.headers['Idempotent-Replay']).toBe('true');
+  });
+
+  it('scopes keys per authenticated principal: same key, different users execute independently', async () => {
+    const { interceptor } = makeInterceptor();
+    const first = await firstValueFrom(
+      await interceptor.intercept(
+        makeContext({ key: 'shared-key', body: { x: 1 }, userId: 'user-a' }).context,
+        handler({ id: 'a-response' })
+      )
+    );
+    expect(first).toEqual({ id: 'a-response' });
+
+    // A second user reusing the same key must NOT replay user A's response
+    // (cross-user replay / key-existence oracle, V-15).
+    const other = makeContext({ key: 'shared-key', body: { x: 1 }, userId: 'user-b' });
+    const second = await firstValueFrom(
+      await interceptor.intercept(other.context, handler({ id: 'b-response' }))
+    );
+    expect(second).toEqual({ id: 'b-response' });
+    expect(other.headers['Idempotent-Replay']).toBeUndefined();
+
+    // But the same user still replays their own cached response.
+    const replay = makeContext({ key: 'shared-key', body: { x: 1 }, userId: 'user-a' });
+    const replayed = await firstValueFrom(
+      await interceptor.intercept(replay.context, handler({ id: 'CHANGED' }))
+    );
+    expect(replayed).toEqual({ id: 'a-response' });
+    expect(replay.headers['Idempotent-Replay']).toBe('true');
+  });
+
+  it('scopes unauthenticated requests by client IP', async () => {
+    const { interceptor } = makeInterceptor();
+    await firstValueFrom(
+      await interceptor.intercept(
+        makeContext({ key: 'k', body: { x: 1 }, ip: '10.0.0.1' }).context,
+        handler('ip-1')
+      )
+    );
+    const otherIp = await firstValueFrom(
+      await interceptor.intercept(
+        makeContext({ key: 'k', body: { x: 1 }, ip: '10.0.0.2' }).context,
+        handler('ip-2')
+      )
+    );
+    expect(otherIp).toBe('ip-2');
+
+    const replay = makeContext({ key: 'k', body: { x: 1 }, ip: '10.0.0.1' });
+    const replayed = await firstValueFrom(
+      await interceptor.intercept(replay.context, handler('CHANGED'))
+    );
+    expect(replayed).toBe('ip-1');
+    expect(replay.headers['Idempotent-Replay']).toBe('true');
+  });
+
+  it('normalises the query string out of the key scope', async () => {
+    const { interceptor } = makeInterceptor();
+    await firstValueFrom(
+      await interceptor.intercept(
+        makeContext({ key: 'k', url: '/api/orders?track=1', body: { x: 1 }, userId: 'u' }).context,
+        handler('cached')
+      )
+    );
+    // A retry with a different tracking query parameter must still replay
+    // (dim05-scenario-3).
+    const retry = makeContext({ key: 'k', url: '/api/orders?track=2', body: { x: 1 }, userId: 'u' });
+    const replayed = await firstValueFrom(
+      await interceptor.intercept(retry.context, handler('CHANGED'))
+    );
+    expect(replayed).toBe('cached');
+    expect(retry.headers['Idempotent-Replay']).toBe('true');
   });
 });
