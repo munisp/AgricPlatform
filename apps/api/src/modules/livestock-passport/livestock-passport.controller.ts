@@ -8,7 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -18,10 +18,12 @@ import type { InitiateTransferInput } from './livestock-passport.service.js';
 
 class InitiateTransferDto implements InitiateTransferInput {
   @IsString()
+  @MaxLength(100)
   toUserId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
