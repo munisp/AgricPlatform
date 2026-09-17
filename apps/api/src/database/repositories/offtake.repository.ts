@@ -37,7 +37,13 @@ export interface OfftakeDeliveryTxInput {
   contractId: string;
   milestoneId: string;
   delivery: OfftakeDelivery;
-  /** New accumulated delivered_qty_kg + derived status + evidence links. */
+  /**
+   * The RESERVED accumulated delivered_qty_kg (V-50: claimed by the
+   * caller's guarded CAS before the payment rails ran) + derived status +
+   * evidence links. The transaction VERIFIES the reservation is still
+   * intact (delivered_qty_kg = patch.deliveredQtyKg) instead of adding
+   * quantity a second time.
+   */
   milestonePatch: {
     deliveredQtyKg: number;
     status: OfftakeMilestone['status'];
@@ -79,6 +85,15 @@ export interface OfftakeContractRepository
   deliveryByIdempotencyKey(idempotencyKey: string): Promise<OfftakeDelivery | undefined>;
   /** Non-transactional delivery insert (in-memory path; the key is the arbiter). */
   addDelivery(delivery: OfftakeDelivery): Promise<OfftakeDelivery>;
+
+  /**
+   * Removes an UNFINALIZED delivery claim row (V-50 saga compensation,
+   * in-memory path only): a saga that claimed the row but failed before
+   * the milestone finalize must not block an honest same-key retry with an
+   * orphan replay. The pg path never calls this — its claim rolls back
+   * with the recordDeliveryTx transaction. No-op when the id is absent.
+   */
+  removeDelivery?(deliveryId: string): Promise<void>;
 
   /**
    * Non-transactional milestone write (in-memory path + the missed/defaulted
@@ -195,6 +210,11 @@ export class InMemoryOfftakeContractRepository
     }
     this.deliveries.set(delivery.id, structuredClone(delivery));
     return structuredClone(delivery);
+  }
+
+  /** V-50 compensation: drop an unfinalized claim row (no-op when absent). */
+  async removeDelivery(deliveryId: string): Promise<void> {
+    this.deliveries.delete(deliveryId);
   }
 
   async updateMilestoneExpected(

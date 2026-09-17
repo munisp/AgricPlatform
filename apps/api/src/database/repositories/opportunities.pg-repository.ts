@@ -16,7 +16,10 @@ export function opportunityCriteriaSql(criteria: OpportunityCriteria): WhereClau
     eq('type', criteria.type),
     criteria.active === undefined ? null : eq('is_active', criteria.active),
     arrayContains('states', criteria.state),
-    arrayContains('value_chains', criteria.valueChain)
+    arrayContains('value_chains', criteria.valueChain),
+    criteria.deadlineFrom === undefined
+      ? null
+      : { where: 'deadline >= $1', params: [criteria.deadlineFrom] }
   );
 }
 

@@ -1,4 +1,4 @@
-import type { Opportunity } from '@agric-platform/shared';
+import type { ApiListResponse, Opportunity } from '@agric-platform/shared';
 import { opportunityMatchesProfile, seedOpportunities } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
@@ -8,6 +8,8 @@ export interface OpportunityCriteria {
   valueChain?: string;
   type?: Opportunity['type'];
   active?: boolean;
+  /** Only opportunities whose deadline is on/after this ISO date (YYYY-MM-DD). */
+  deadlineFrom?: string;
 }
 
 export interface OpportunityRepository extends AsyncRepository<Opportunity, OpportunityCriteria> {
@@ -22,6 +24,15 @@ export interface OpportunityRepository extends AsyncRepository<Opportunity, Oppo
     profileValueChains: string[]
   ): Promise<Opportunity[]>;
   findByPartner(partnerId: string): Promise<Opportunity[]>;
+  /**
+   * Pagination pushed into SQL on the pg driver (LIMIT/OFFSET + COUNT).
+   * Public/list paths must use this instead of find()+slice (V-72).
+   */
+  searchPage(
+    criteria: OpportunityCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<Opportunity>>;
 }
 
 export function opportunityMatcher(
@@ -31,7 +42,8 @@ export function opportunityMatcher(
     (criteria.active === undefined || opportunity.isActive === criteria.active) &&
     (!criteria.type || opportunity.type === criteria.type) &&
     (!criteria.state || opportunity.states.includes(criteria.state)) &&
-    (!criteria.valueChain || opportunity.valueChains.includes(criteria.valueChain));
+    (!criteria.valueChain || opportunity.valueChains.includes(criteria.valueChain)) &&
+    (!criteria.deadlineFrom || opportunity.deadline >= criteria.deadlineFrom);
 }
 
 export class InMemoryOpportunityRepository

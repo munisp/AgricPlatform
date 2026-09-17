@@ -22,6 +22,12 @@ export interface OutboxRepository {
   /** Increments the attempt counter; returns the new count. */
   recordAttempt(id: string): Promise<number>;
   markDeadLetter(id: string, deadLetteredAt: string): Promise<void>;
+  /**
+   * V-79 redrive: clears dead_lettered_at and attempts so the next sweep
+   * re-delivers the row. Returns false when no dead-lettered row with that
+   * id exists (nothing to resurrect).
+   */
+  resetDeadLetter(id: string): Promise<boolean>;
 }
 
 export class InMemoryOutboxRepository implements OutboxRepository {
@@ -71,6 +77,16 @@ export class InMemoryOutboxRepository implements OutboxRepository {
     if (state) {
       state.deadLetteredAt = deadLetteredAt;
     }
+  }
+
+  async resetDeadLetter(id: string): Promise<boolean> {
+    const state = this.state.get(id);
+    if (!state || !state.deadLetteredAt) {
+      return false;
+    }
+    delete state.deadLetteredAt;
+    state.attempts = 0;
+    return true;
   }
 }
 
