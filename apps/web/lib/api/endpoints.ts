@@ -879,7 +879,6 @@ export function fetchCampusClub(id: string): Promise<{ data: CampusClub }> {
 
 export function joinCampusClub(
   clubId: string,
-  userId: string,
   idempotencyKey?: string
 ): Promise<{ data: CampusClubMembership }> {
   return apiFetch(`/campus-clubs/${encodeURIComponent(clubId)}/members`, {
@@ -1081,7 +1080,7 @@ export function fetchRelatedItems(params: {
   type: SearchResult['type'];
   id: string;
   limit?: number;
-}): Promise<{ data: SearchResult[] }> {
+} = {}): Promise<{ data: SearchResult[] }> {
   return apiFetch('/search/related', { query: { ...params } });
 }
 
@@ -2506,7 +2505,7 @@ export interface LakehouseExportStatus {
   /** Present when enabled=false: why the exporter is off. */
   reason?: string;
   bucket?: string;
-  prefix: string;
+  prefix?: string;
   manifest: LakehouseManifest | null;
 }
 
@@ -2653,6 +2652,7 @@ export function syncPull(params: {
   entity: string;
   since?: number;
   limit?: number;
+  v?: number;
 }): Promise<{ data: SyncPullPage }> {
   return apiFetch('/sync/pull', { query: { ...params } });
 }
