@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayMinSize, IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ArrayMinSize, IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { Lender, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -11,9 +11,11 @@ import { LoanService } from './loan.service.js';
 
 class CreateLenderDto implements Omit<Lender, 'id' | 'isActive' | 'source' | 'verified'> {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsString()
+  @MaxLength(500)
   product!: string;
 
   @IsInt()
@@ -30,6 +32,7 @@ class CreateLenderDto implements Omit<Lender, 'id' | 'isActive' | 'source' | 've
   minScore!: number;
 
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   @ArrayMinSize(1)
   criteria!: string[];
 
