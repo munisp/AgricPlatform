@@ -124,7 +124,23 @@ export class LedgerService {
     type: LedgerAccountType;
     ownerId?: string;
   }): Promise<LedgerAccount> {
-    return (await this.accounts.findByCode(input.code)) ?? this.createAccount(input);
+    const existing = await this.accounts.findByCode(input.code);
+    if (existing) {
+      return existing;
+    }
+    try {
+      return await this.createAccount(input);
+    } catch (error) {
+      // Adopt-on-conflict: a concurrent provisioner claimed the code between
+      // the check and the create — converge on the winner's account.
+      if (error instanceof ConflictException) {
+        const winner = await this.accounts.findByCode(input.code);
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
   }
 
   async postEntry(input: PostEntryInput, actorId: string): Promise<LedgerJournalEntry> {
@@ -154,12 +170,27 @@ export class LedgerService {
       { entryId: entry.id, idempotencyKey: entry.idempotencyKey, referenceId: entry.referenceId },
       actorId
     );
-    const posted = await this.entries.postEntry(
-      entry,
-      input.requireSolventAccounts,
-      event,
-      input.dailyLimitReservation
-    );
+    let posted: LedgerJournalEntry;
+    try {
+      posted = await this.entries.postEntry(
+        entry,
+        input.requireSolventAccounts,
+        event,
+        input.dailyLimitReservation
+      );
+    } catch (error) {
+      // Adopt-on-conflict: the persistence layer enforces UNIQUE on
+      // idempotency_key (pg 23505 → 409; in-memory mirror), so a concurrent
+      // posting with the same deterministic key loses here — converge on the
+      // winner's entry exactly like the replay branch above.
+      if (error instanceof ConflictException) {
+        const winner = await this.entries.findByIdempotencyKey(input.idempotencyKey);
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
     if (this.entries.transactionalOutbox) {
       this.events.emit(event);
     } else {
