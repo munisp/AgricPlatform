@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -34,9 +35,9 @@ import type {
   FarmPlotRepository,
   HarvestRecordRepository
 } from '../../database/repositories/farms.repository.js';
-import type { EntityVersionRepository } from '../../database/repositories/sync.repository.js';
+import type { EntityVersionBump, EntityVersionRepository } from '../../database/repositories/sync.repository.js';
 import type { SyncVersioningService } from '../sync/sync-versioning.service.js';
-import type { SyncPushItem } from '../sync/sync.types.js';
+import { SyncVersionConflictError, type SyncPushItem } from '../sync/sync.types.js';
 
 /** Sync protocol entity key for farm plots (docs/sync-protocol.md §2). */
 export const SYNC_ENTITY_FARM_PLOT = 'farm_plot';
@@ -196,6 +197,33 @@ export class FarmsService {
     return plot;
   }
 
+  /**
+   * V-18/L-10 REST write discipline: the version-ledger row is CAS-claimed
+   * atomically (against its current version, read immediately before the
+   * claim) and the entity write runs only while the claim is held. A
+   * concurrent sync push or REST write that moved the ledger fails the
+   * claim → 409 Conflict instead of a silent source-row overwrite; a write
+   * that throws rolls the claim back, so a REST write can never become
+   * sync-invisible (the L-10 gap).
+   */
+  private async writePlotWithVersionClaim<T>(
+    claim: EntityVersionBump,
+    write: () => Promise<T>
+  ): Promise<T> {
+    const entityVersions = this.entityVersions!;
+    const current = await entityVersions.current(claim.entity, claim.entityId);
+    const claimed = await entityVersions.applyGuarded(
+      { ...claim, expectedVersion: current?.version ?? 0 },
+      write
+    );
+    if (claimed === null) {
+      throw new ConflictException(
+        `farm plot '${claim.entityId}' was modified concurrently — re-read and retry`
+      );
+    }
+    return claimed.value;
+  }
+
   /* ------------------------------- plots ------------------------------- */
 
   async createPlot(actor: User | null, input: CreatePlotInput): Promise<FarmPlot> {
@@ -218,7 +246,18 @@ export class FarmsService {
       version: 1,
       clientId: input.clientId
     };
-    const created = await this.plots.create(plot);
+    const created = this.entityVersions
+      ? await this.writePlotWithVersionClaim(
+          {
+            entity: SYNC_ENTITY_FARM_PLOT,
+            entityId: plot.id,
+            ownerId: owner.id,
+            updatedBy: owner.id,
+            deleted: false
+          },
+          () => this.plots.create(plot)
+        )
+      : await this.plots.create(plot);
     await this.audit.record({
       actorId: owner.id,
       action: 'farms.plot_created',
@@ -231,12 +270,14 @@ export class FarmsService {
       { plotId: created.id, ownerUserId: owner.id, state: created.state },
       owner.id
     );
-    await this.syncVersioning?.recordChange({
-      entity: SYNC_ENTITY_FARM_PLOT,
-      entityId: created.id,
-      ownerId: owner.id,
-      actorId: owner.id
-    });
+    if (!this.entityVersions) {
+      await this.syncVersioning?.recordChange({
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId: created.id,
+        ownerId: owner.id,
+        actorId: owner.id
+      });
+    }
     return created;
   }
 
@@ -265,11 +306,24 @@ export class FarmsService {
   async updatePlot(actor: User | null, id: string, patch: UpdatePlotInput): Promise<FarmPlot> {
     const plot = await this.assertPlotAccess(actor, id);
     this.assertValidPlot(patch);
-    const updated = await this.plots.update(id, {
-      ...patch,
-      updatedAt: new Date().toISOString(),
-      version: plot.version + 1
-    });
+    const write = (): Promise<FarmPlot> =>
+      this.plots.update(id, {
+        ...patch,
+        updatedAt: new Date().toISOString(),
+        version: plot.version + 1
+      });
+    const updated = this.entityVersions
+      ? await this.writePlotWithVersionClaim(
+          {
+            entity: SYNC_ENTITY_FARM_PLOT,
+            entityId: id,
+            ownerId: plot.ownerUserId,
+            updatedBy: actor!.id,
+            deleted: false
+          },
+          write
+        )
+      : await write();
     await this.audit.record({
       actorId: actor!.id,
       action: 'farms.plot_updated',
@@ -282,12 +336,14 @@ export class FarmsService {
       { plotId: id, ownerUserId: plot.ownerUserId, version: updated.version },
       actor!.id
     );
-    await this.syncVersioning?.recordChange({
-      entity: SYNC_ENTITY_FARM_PLOT,
-      entityId: id,
-      ownerId: plot.ownerUserId,
-      actorId: actor!.id
-    });
+    if (!this.entityVersions) {
+      await this.syncVersioning?.recordChange({
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId: id,
+        ownerId: plot.ownerUserId,
+        actorId: actor!.id
+      });
+    }
     return updated;
   }
 
@@ -311,7 +367,18 @@ export class FarmsService {
   /** Owner-or-admin delete; child plantings/harvests/expenses go with it. */
   async removePlot(actor: User | null, id: string): Promise<{ removed: boolean }> {
     const plot = await this.assertPlotAccess(actor, id);
-    const removed = await this.deletePlotCascade(id);
+    const removed = this.entityVersions
+      ? await this.writePlotWithVersionClaim(
+          {
+            entity: SYNC_ENTITY_FARM_PLOT,
+            entityId: id,
+            ownerId: plot.ownerUserId,
+            updatedBy: actor!.id,
+            deleted: true
+          },
+          () => this.deletePlotCascade(id)
+        )
+      : await this.deletePlotCascade(id);
     await this.audit.record({
       actorId: actor!.id,
       action: 'farms.plot_removed',
@@ -324,13 +391,15 @@ export class FarmsService {
       { plotId: id, ownerUserId: plot.ownerUserId },
       actor!.id
     );
-    await this.syncVersioning?.recordChange({
-      entity: SYNC_ENTITY_FARM_PLOT,
-      entityId: id,
-      ownerId: plot.ownerUserId,
-      actorId: actor!.id,
-      deleted: true
-    });
+    if (!this.entityVersions) {
+      await this.syncVersioning?.recordChange({
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId: id,
+        ownerId: plot.ownerUserId,
+        actorId: actor!.id,
+        deleted: true
+      });
+    }
     return { removed };
   }
 
@@ -340,93 +409,113 @@ export class FarmsService {
    * Applies one validated sync push item for `farm_plot`
    * (docs/sync-protocol.md §4). The sync engine has already authenticated
    * the caller, enforced owner scoping and pre-checked the baseVersion CAS;
-   * this method performs the entity write and advances sync.entity_versions
-   * atomically via bumpExpected. Upserts are full replacements (create with
-   * the client-stable entityId when the record does not exist yet); deletes
-   * cascade like REST deletes and leave a tombstone version row. Any thrown
-   * error surfaces as a per-item `error` result — never a silent write.
+   * this method CLAIMS the sync.entity_versions row atomically (applyGuarded)
+   * and performs the entity write only while the claim is held — a
+   * concurrent push or REST write for the same record can never interleave
+   * its write between our pre-check and our CAS (V-18). A lost claim throws
+   * SyncVersionConflictError, which the sync engine maps to a per-item
+   * `conflict` — the losing payload never touches the source row. Upserts
+   * are full replacements (create with the client-stable entityId when the
+   * record does not exist yet); deletes cascade like REST deletes and leave
+   * a tombstone version row. Any other thrown error surfaces as a per-item
+   * `error` result — never a silent write.
    */
   async applySyncedPlot(actor: User, item: SyncPushItem): Promise<number> {
     if (!this.entityVersions) {
       throw new Error('Sync version persistence is not configured for farm plots');
     }
+    const entityVersions = this.entityVersions;
     const existing = await this.plots.findById(item.entityId);
     if (existing) {
       // Defence in depth on top of the sync engine's scope check.
       assertSelfOrAdmin(actor, existing.ownerUserId);
+    } else {
+      // V-63 defence in depth: with no live row, ownership comes from the
+      // version ledger — refuse create-over-foreign-tombstone even if this
+      // hook is ever invoked without the engine's scoping.
+      const ledgerRow = await entityVersions.current(SYNC_ENTITY_FARM_PLOT, item.entityId);
+      if (ledgerRow?.ownerId && ledgerRow.ownerId !== actor.id && !actor.roles.includes('admin')) {
+        throw new ForbiddenException('This record id is owned by another user');
+      }
     }
 
     if (item.op === 'delete') {
-      if (existing) {
-        await this.deletePlotCascade(existing.id);
+      const claimed = await entityVersions.applyGuarded(
+        {
+          entity: SYNC_ENTITY_FARM_PLOT,
+          entityId: item.entityId,
+          // The original owner keeps the tombstone in their sync scope even
+          // when an admin performed the delete.
+          ownerId: existing?.ownerUserId ?? actor.id,
+          updatedBy: actor.id,
+          deleted: true,
+          expectedVersion: item.baseVersion
+        },
+        async () => {
+          if (existing) {
+            await this.deletePlotCascade(existing.id);
+          }
+        }
+      );
+      if (claimed === null) {
+        throw new SyncVersionConflictError(SYNC_ENTITY_FARM_PLOT, item.entityId);
       }
-      const version = await this.entityVersions.bumpExpected({
-        entity: SYNC_ENTITY_FARM_PLOT,
-        entityId: item.entityId,
-        // The original owner keeps the tombstone in their sync scope even
-        // when an admin performed the delete.
-        ownerId: existing?.ownerUserId ?? actor.id,
-        updatedBy: actor.id,
-        deleted: true,
-        expectedVersion: item.baseVersion
-      });
-      if (version === null) {
-        throw new Error('version race');
-      }
-      return version;
+      return claimed.version;
     }
 
     const input = parseSyncedPlotPayload(item.payload);
     this.assertValidPlot(input);
     const now = new Date().toISOString();
-    let ownerId: string;
-    if (existing) {
-      ownerId = existing.ownerUserId;
-      await this.plots.update(existing.id, {
-        name: input.name,
-        state: input.state,
-        lga: input.lga,
-        centroidLat: input.centroidLat,
-        centroidLong: input.centroidLong,
-        boundaryGeojson: input.boundaryGeojson,
-        sizeHectares: input.sizeHectares,
-        soilType: input.soilType,
-        updatedAt: now,
-        version: existing.version + 1
-      });
-    } else {
-      // Create with the client-stable entity id — the sync ledger and the
-      // source row share one identity, so pulls map 1:1 onto pushed records.
-      ownerId = actor.id;
-      await this.plots.create({
-        id: item.entityId,
-        ownerUserId: actor.id,
-        name: input.name,
-        state: input.state,
-        lga: input.lga,
-        centroidLat: input.centroidLat,
-        centroidLong: input.centroidLong,
-        boundaryGeojson: input.boundaryGeojson,
-        sizeHectares: input.sizeHectares,
-        soilType: input.soilType,
-        createdAt: now,
-        updatedAt: now,
-        version: 1,
-        clientId: input.clientId ?? item.clientMutationId
-      });
+    const claimed = await entityVersions.applyGuarded(
+      {
+        entity: SYNC_ENTITY_FARM_PLOT,
+        entityId: item.entityId,
+        ownerId: existing?.ownerUserId ?? actor.id,
+        updatedBy: actor.id,
+        deleted: false,
+        expectedVersion: item.baseVersion
+      },
+      async () => {
+        if (existing) {
+          await this.plots.update(existing.id, {
+            name: input.name,
+            state: input.state,
+            lga: input.lga,
+            centroidLat: input.centroidLat,
+            centroidLong: input.centroidLong,
+            boundaryGeojson: input.boundaryGeojson,
+            sizeHectares: input.sizeHectares,
+            soilType: input.soilType,
+            updatedAt: now,
+            version: existing.version + 1
+          });
+        } else {
+          // Create with the client-stable entity id — the sync ledger and
+          // the source row share one identity, so pulls map 1:1 onto pushed
+          // records.
+          await this.plots.create({
+            id: item.entityId,
+            ownerUserId: actor.id,
+            name: input.name,
+            state: input.state,
+            lga: input.lga,
+            centroidLat: input.centroidLat,
+            centroidLong: input.centroidLong,
+            boundaryGeojson: input.boundaryGeojson,
+            sizeHectares: input.sizeHectares,
+            soilType: input.soilType,
+            createdAt: now,
+            updatedAt: now,
+            version: 1,
+            clientId: input.clientId ?? item.clientMutationId
+          });
+        }
+      }
+    );
+    if (claimed === null) {
+      throw new SyncVersionConflictError(SYNC_ENTITY_FARM_PLOT, item.entityId);
     }
-    const version = await this.entityVersions.bumpExpected({
-      entity: SYNC_ENTITY_FARM_PLOT,
-      entityId: item.entityId,
-      ownerId,
-      updatedBy: actor.id,
-      deleted: false,
-      expectedVersion: item.baseVersion
-    });
-    if (version === null) {
-      throw new Error('version race');
-    }
-    return version;
+    return claimed.version;
   }
 
   /* ----------------------------- plantings ----------------------------- */

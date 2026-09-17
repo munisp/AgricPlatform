@@ -93,7 +93,13 @@ export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, Readonly<Partial<Re
   },
   deposit_paid: {
     in_fulfilment: ['seller'],
-    disputed: ['buyer', 'seller']
+    disputed: ['buyer', 'seller'],
+    // V-50: compensating cancel of a paid order whose offtake delivery saga
+    // failed AFTER the deposit — admin/system-mediated only (empty actor
+    // list, same doctrine as dispute resolution). The cancel hook refunds
+    // the held escrow (ESCROW_TRANSITIONS refund path) and cancels the
+    // invoice, so no paid order is ever orphaned by a failed saga.
+    cancelled: []
   },
   in_fulfilment: {
     delivered: ['seller'],
@@ -392,6 +398,13 @@ export class MarketplaceService {
           const deposit = await this.verifyDeposit(order, options?.paymentReference, actor.id);
           await this.escrow.holdForOrder(id, actor.id, deposit);
         }
+      }
+      // V-53: a prior confirm attempt may have crashed between the guarded
+      // status write and the invoice hook. Re-drive the idempotent
+      // issueForOrder on replay so a confirmed order is never stranded
+      // without its invoice.
+      if (status === 'confirmed' && this.invoices) {
+        await this.invoices.issueForOrder(id, actor.id);
       }
       return order; // idempotent replay of a retry
     }
