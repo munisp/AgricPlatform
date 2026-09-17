@@ -244,7 +244,9 @@ describe('farm_plot sync push — deletes', () => {
     expect(await h.plots.findById('plot-a')).toBeUndefined();
 
     const page = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, 0);
-    expect(page.items).toEqual([{ entityId: 'plot-a', version: 2, deleted: true, payload: null }]);
+    expect(page.items).toEqual([
+      { entityId: 'plot-a', version: 2, changeSeq: 2, deleted: true, payload: null }
+    ]);
   });
 
   it('conflicts a delete based on a stale version', async () => {
@@ -282,18 +284,18 @@ describe('farm_plot sync pull', () => {
 
     const page = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, 0);
     expect(page.items.map((item) => item.entityId)).toEqual(['plot-a', 'plot-b']);
-    expect(page.cursor).toBe(1); // per-record versions: max in scope is 1
+    expect(page.cursor).toBe(2); // v2: cursor is the max change_seq in scope
     expect(page.hasMore).toBe(false);
 
     // Empty follow-up page never regresses the cursor.
-    const empty = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, page.cursor);
+    const empty = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, page.cursor, undefined, 2);
     expect(empty.items).toEqual([]);
-    expect(empty.cursor).toBe(1);
+    expect(empty.cursor).toBe(2);
   });
 
   it('pages with hasMore until the caller\'s scope is exhausted', async () => {
-    // Versions are per-record (protocol §9): give each plot a distinct
-    // version so the version-ordered pages partition cleanly.
+    // v2: pages are ordered by the global change_seq, so the rows are
+    // plot-a (seq 1, v1), plot-b (seq 4, v2), plot-c (seq 6, v3).
     await h.sync.push(farmer, [pushItem({ entityId: 'plot-a', clientMutationId: 'm-1' })]);
     await h.sync.push(farmer, [pushItem({ entityId: 'plot-b', clientMutationId: 'm-2' })]);
     await h.sync.push(farmer, [pushItem({ entityId: 'plot-c', clientMutationId: 'm-3' })]);
@@ -312,8 +314,9 @@ describe('farm_plot sync pull', () => {
       ['plot-a', 1],
       ['plot-b', 2]
     ]);
+    expect(first.cursor).toBe(4);
     expect(first.hasMore).toBe(true);
-    const second = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, first.cursor, 2);
+    const second = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, first.cursor, 2, 2);
     expect(second.items.map((item) => [item.entityId, item.version])).toEqual([['plot-c', 3]]);
     expect(second.hasMore).toBe(false);
   });
@@ -333,8 +336,10 @@ describe('farm_plot sync pull', () => {
     expect((page.items[0].payload as { name: string }).name).toBe('REST plot');
 
     await h.farms.removePlot(farmer, created.id);
-    page = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, page.cursor);
-    expect(page.items).toEqual([{ entityId: created.id, version: 2, deleted: true, payload: null }]);
+    page = await h.sync.pull(farmer, SYNC_ENTITY_FARM_PLOT, page.cursor, undefined, 2);
+    expect(page.items).toEqual([
+      { entityId: created.id, version: 2, changeSeq: 2, deleted: true, payload: null }
+    ]);
   });
 
   it('scopes tombstones to the owner (outsider never sees them)', async () => {
