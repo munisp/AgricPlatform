@@ -1,6 +1,6 @@
 import { Body, Controller, HttpCode, Post, UnauthorizedException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsString } from 'class-validator';
+import { IsIn, IsString, MaxLength } from 'class-validator';
 import { PartnerAuthService } from './partner-auth.service.js';
 
 class ClientCredentialsGrantDto {
@@ -8,9 +8,11 @@ class ClientCredentialsGrantDto {
   grant_type!: 'client_credentials';
 
   @IsString()
+  @MaxLength(100)
   client_id!: string;
 
   @IsString()
+  @MaxLength(100)
   client_secret!: string;
 }
 
