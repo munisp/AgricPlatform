@@ -31,6 +31,7 @@ import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   ANIMAL_REPOSITORY,
+  LIVESTOCK_DISEASE_GUARD,
   LIVESTOCK_TRANSFER_GUARD,
   LOT_REPOSITORY,
   OWNERSHIP_TRANSFER_REPOSITORY,
@@ -137,7 +138,16 @@ export class LivestockService {
      */
     @Optional()
     @Inject(LIVESTOCK_TRANSFER_GUARD)
-    private readonly transferGuard?: LivestockTransferGuard
+    private readonly transferGuard?: LivestockTransferGuard,
+    /**
+     * V-12 quarantine guard port: when bound (disease-flag-backed
+     * implementation registered by the DatabaseModule), transferAnimal blocks
+     * animals whose home state is under a confirmed disease quarantine.
+     * Optional for the same no-cycle reason as the lien guard.
+     */
+    @Optional()
+    @Inject(LIVESTOCK_DISEASE_GUARD)
+    private readonly diseaseGuard?: LivestockTransferGuard
   ) {}
 
   /**
@@ -298,6 +308,11 @@ export class LivestockService {
     // transferred or sold (guard is a no-op when unbound).
     if (this.transferGuard) {
       await this.transferGuard.assertTransferable(id);
+    }
+    // V-12: an animal in a confirmed-quarantine state cannot change hands
+    // (guard is a no-op when unbound).
+    if (this.diseaseGuard) {
+      await this.diseaseGuard.assertTransferable(id);
     }
     await this.users.getById(input.toUserId); // 404 for unknown recipients
     const now = new Date().toISOString();
