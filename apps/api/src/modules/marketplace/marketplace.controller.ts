@@ -11,17 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
-import {
-  IsBoolean,
-  IsIn,
-  IsInt,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-  ValidateNested
-} from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import {
   ORDER_STATUSES,
   type LocationRef,
@@ -51,14 +41,17 @@ class ListListingsQuery extends ListQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   q?: string;
 
   @IsOptional()
@@ -69,28 +62,34 @@ class ListListingsQuery extends ListQueryDto {
 
 class LocationDto implements LocationRef {
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ward?: string;
 }
 
 class CreateListingDto implements CreateListingInput {
   @IsString()
+  @MaxLength(100)
   sellerId!: string;
 
   @IsIn(LISTING_KINDS)
   kind!: MarketplaceListing['kind'];
 
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   crop?: string;
 
   @IsNumber()
@@ -98,6 +97,7 @@ class CreateListingDto implements CreateListingInput {
   quantity!: number;
 
   @IsString()
+  @MaxLength(500)
   unit!: string;
 
   @IsNumber()
@@ -110,17 +110,20 @@ class CreateListingDto implements CreateListingInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   harvestDate?: string;
 
   /** Link to a livestock-trade certified listing (provenance badge source). */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   certifiedListingId?: string;
 }
 
 class UpdateListingDto implements UpdateListingInput {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @IsOptional()
@@ -140,6 +143,7 @@ class UpdateListingDto implements UpdateListingInput {
 
 class CreateOrderDto {
   @IsString()
+  @MaxLength(100)
   buyerId!: string;
 
   @IsInt()
@@ -154,6 +158,7 @@ class CreateOrderDto {
    */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   idempotencyKey?: string;
 }
 
@@ -169,11 +174,13 @@ class OrderStatusDto {
    */
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   paymentReference?: string;
 }
 
 class ReviewDto {
   @IsString()
+  @MaxLength(100)
   authorId!: string;
 
   @IsInt()
@@ -183,6 +190,7 @@ class ReviewDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   comment?: string;
 }
 
