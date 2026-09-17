@@ -10,6 +10,7 @@ import {
 import {
   addMonthsIso,
   generateAmortisationSchedule,
+  MAX_LOAN_TERM_MONTHS,
   type Lender,
   type LoanApplication,
   type LoanStatus,
@@ -174,6 +175,11 @@ export class LoanService {
     if (!Number.isSafeInteger(input.termMonths) || input.termMonths < 1) {
       throw new BadRequestException('termMonths must be a positive integer');
     }
+    if (input.termMonths > MAX_LOAN_TERM_MONTHS) {
+      // Service-layer mirror of the DTO cap (V-23): the hostile value must
+      // never be persisted, because disbursement detonates it later.
+      throw new BadRequestException(`termMonths must not exceed ${MAX_LOAN_TERM_MONTHS}`);
+    }
     if (!Number.isSafeInteger(input.annualRateBps) || input.annualRateBps < 0) {
       throw new BadRequestException('annualRateBps must be a non-negative integer');
     }
@@ -286,6 +292,17 @@ export class LoanService {
     if (loan.status !== 'approved') {
       throw new BadRequestException(`Only approved loans can be disbursed (loan is '${loan.status}')`);
     }
+    // Validate everything the schedule generator needs BEFORE the ledger
+    // posting below — a rejection after posting would strand the
+    // disbursement leg (L-12 / V-23 defense-in-depth for legacy rows).
+    if (loan.termMonths > MAX_LOAN_TERM_MONTHS) {
+      throw new BadRequestException(
+        `Loan term ${loan.termMonths} months exceeds the business ceiling of ${MAX_LOAN_TERM_MONTHS}`
+      );
+    }
+    if (firstDueDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(firstDueDate)) {
+      throw new BadRequestException('firstDueDate must be an ISO date (YYYY-MM-DD)');
+    }
     const receivable = await this.ledger.ensureAccount({
       code: `member:${loan.applicantId}:loans_receivable`,
       type: 'asset',
@@ -310,12 +327,22 @@ export class LoanService {
       },
       actorId
     );
-    const schedule = generateAmortisationSchedule({
-      principalKobo: loan.amountKobo,
-      annualRateBps: loan.annualRateBps,
-      termMonths: loan.termMonths,
-      firstDueDate: firstDueDate ?? addMonthsIso(now.slice(0, 10), 1)
-    }).map(
+    // Boundary mapping (L-12): the shared math lib throws plain Errors;
+    // convert them to a client-visible 400 instead of a 500.
+    let rawSchedule: ReturnType<typeof generateAmortisationSchedule>;
+    try {
+      rawSchedule = generateAmortisationSchedule({
+        principalKobo: loan.amountKobo,
+        annualRateBps: loan.annualRateBps,
+        termMonths: loan.termMonths,
+        firstDueDate: firstDueDate ?? addMonthsIso(now.slice(0, 10), 1)
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid amortisation input'
+      );
+    }
+    const schedule = rawSchedule.map(
       (installment): RepaymentInstallment => ({
         id: newId('installment'),
         loanId: loan.id,
