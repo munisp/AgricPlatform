@@ -29,11 +29,13 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CERTIFIED_WAREHOUSE_REPOSITORY,
   COMMODITY_LOT_REPOSITORY,
+  USER_REPOSITORY,
   WAREHOUSE_DEPOSIT_REPOSITORY,
   WAREHOUSE_PLEDGE_REPOSITORY,
   WAREHOUSE_RECEIPT_REPOSITORY,
   WAREHOUSE_TRANSFER_REPOSITORY
 } from '../../database/persistence.tokens.js';
+import type { UserRepository } from '../../database/repositories/user.repository.js';
 import type { CommodityLotRepository } from '../../database/repositories/traceability.repository.js';
 import type {
   CertifiedWarehouseRepository,
@@ -154,6 +156,8 @@ export class WarehouseService {
     private readonly certificationFeed: WarehouseCertificationFeed,
     @Inject(COLLATERAL_REGISTRY)
     private readonly collateralRegistry: CollateralRegistry,
+    @Inject(USER_REPOSITORY)
+    private readonly users: UserRepository,
     @Optional() private readonly audit?: AuditService
   ) {}
 
@@ -292,7 +296,19 @@ export class WarehouseService {
       createdAt: now,
       updatedAt: now
     };
-    const created = await this.deposits.create(deposit);
+    let created: WarehouseDeposit;
+    try {
+      // Claim: pg enforces one open deposit per lot via the partial unique
+      // index warehouse_deposits_open_lot_uq (migration 080); the in-memory
+      // driver mirrors it in InMemoryWarehouseDepositRepository.create. A
+      // concurrent second claim loses with 409 on BOTH drivers.
+      created = await this.deposits.create(deposit);
+    } catch (error) {
+      if (error instanceof ConflictException && input.lotId) {
+        throw new ConflictException('This commodity lot already has an open warehouse deposit');
+      }
+      throw error;
+    }
     await this.events.publish(
       'warehouse.deposit.received',
       { depositId: created.id, warehouseId: warehouse.id, farmerId },
@@ -419,18 +435,62 @@ export class WarehouseService {
       createdAt: now,
       updatedAt: now
     };
-    const created = await this.receipts.create(receipt);
-    await this.deposits.update(depositId, {
-      status: 'issued',
-      receiptId: created.id,
-      updatedAt: now
-    });
+    let created: WarehouseReceipt;
+    try {
+      // pg: UNIQUE(deposit_id) on warehouse.receipts; in-memory mirrors it.
+      // A concurrent issue for the same deposit loses here with 409.
+      created = await this.receipts.create(receipt);
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        return this.adoptIssuedReceipt(depositId);
+      }
+      throw error;
+    }
+    try {
+      // CAS claim: only the 'graded' → 'issued' transition may attach a
+      // receipt (a graded deposit has receiptId IS NULL by construction), so
+      // a concurrent issuer that slipped past the receipt uniqueness still
+      // loses here and adopts the winner's receipt below.
+      await this.deposits.updateExpected(
+        depositId,
+        {
+          status: 'issued',
+          receiptId: created.id,
+          updatedAt: now
+        },
+        { status: 'graded' }
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        return this.adoptIssuedReceipt(depositId);
+      }
+      throw error;
+    }
     await this.events.publish(
       'warehouse.receipt.issued',
       { receiptId: created.id, receiptNumber, depositId, ownerId: created.ownerId },
       actor.id
     );
     return created;
+  }
+
+  /**
+   * Adopt-on-conflict: a concurrent issueReceipt already attached a receipt
+   * to this deposit — return the winner's receipt instead of erroring, so
+   * issuer retries/double-clicks converge to exactly one receipt.
+   */
+  private async adoptIssuedReceipt(depositId: string): Promise<WarehouseReceipt> {
+    const deposit = await this.deposits.getById(depositId);
+    if (deposit.receiptId) {
+      return this.receipts.getById(deposit.receiptId);
+    }
+    const existing = await this.receipts.findOne({ depositId });
+    if (existing) {
+      return existing;
+    }
+    throw new ConflictException(
+      `Concurrent receipt issuance on deposit '${depositId}'; retry the operation`
+    );
   }
 
   /** Server-side signature verification (tamper evidence for audits). */
@@ -515,13 +575,35 @@ export class WarehouseService {
     }
     const receipt = await this.receipts.getById(receiptId);
     if (receipt.status === 'pledged') {
-      throw new ConflictException('This receipt is already pledged to a lender');
+      const existing = await this.pledges.findOne({ receiptId, status: 'active' });
+      if (existing) {
+        if (existing.lenderId === lender.id) {
+          return { receipt, pledge: existing }; // idempotent replay
+        }
+        throw new ConflictException('This receipt is already pledged to a lender');
+      }
+      // Orphaned claim: a prior attempt CAS-claimed the receipt but died
+      // (crash or compensated failure) before the pledge row committed. Roll
+      // the receipt back to 'active' so the asset is never permanently
+      // bricked, and tell the caller to retry the pledge from scratch.
+      await this.rollbackPledgeClaim(receipt, lender.id);
+      throw new ConflictException(
+        'A previous pledge attempt on this receipt did not complete; the receipt was rolled back to active — retry the pledge'
+      );
     }
     if (!WHR_TRANSITIONS[receipt.status].includes('pledged')) {
       throw new BadRequestException(
         `Receipt cannot be pledged from status '${receipt.status}'`
       );
     }
+    // 1) CAS claim FIRST (active → pledged): exactly one concurrent pledge
+    //    wins the claim, so the loser NEVER reaches the external collateral
+    //    registry — no orphan liens.
+    const claimed = await this.transitionReceipt(receipt, 'pledged', lender.id);
+    // 2) External registration + pledge row, with compensation on ANY
+    //    downstream failure: release the registry registration and CAS the
+    //    receipt back to active, so a failed pledge leaves no lien and no
+    //    locked asset.
     const now = new Date().toISOString();
     const pledgeId = newId('whpledge');
     let registration;
@@ -535,6 +617,7 @@ export class WarehouseService {
         principalKobo: input.principalKobo
       });
     } catch (error) {
+      await this.rollbackPledgeClaim(claimed, lender.id);
       if (isProviderError(error)) {
         throw new ServiceUnavailableException(
           'Collateral registry is unavailable (fail-closed: the pledge was not recorded).'
@@ -547,6 +630,7 @@ export class WarehouseService {
     // recorded on it in production would be legally meaningless and
     // unverifiable. Refuse the pledge instead of persisting it.
     if (isProduction() && registration.basis !== 'live') {
+      await this.compensateFailedPledge(claimed, registration.reference, lender.id);
       throw new ServiceUnavailableException(
         'The collateral registry registration was not confirmed against the live national ' +
           'registry (basis is not live). Refusing the pledge in production — configure ' +
@@ -567,8 +651,15 @@ export class WarehouseService {
       createdAt: now,
       updatedAt: now
     };
-    const updated = await this.transitionReceipt(receipt, 'pledged', lender.id);
-    const created = await this.pledges.create(pledge);
+    let created: WarehousePledge;
+    try {
+      created = await this.pledges.create(pledge);
+    } catch (error) {
+      // Compensation: the registry registration must not outlive the pledge
+      // row — release it and roll the receipt back to active.
+      await this.compensateFailedPledge(claimed, registration.reference, lender.id);
+      throw error;
+    }
     await this.audit?.record({
       actorId: lender.id,
       action: 'warehouse.receipt.pledged',
@@ -592,7 +683,61 @@ export class WarehouseService {
       },
       lender.id
     );
-    return { receipt: updated, pledge: created };
+    return { receipt: claimed, pledge: created };
+  }
+
+  /**
+   * Compensate a failed pledge after the CAS claim succeeded: release the
+   * external registry registration (best-effort — release is idempotent per
+   * reference; a release failure is audited, never swallowed silently) and
+   * roll the receipt back to 'active'.
+   */
+  private async compensateFailedPledge(
+    receipt: WarehouseReceipt,
+    registryRef: string,
+    actorId: string
+  ): Promise<void> {
+    try {
+      await this.collateralRegistry.release(registryRef);
+    } catch (error) {
+      await this.audit?.record({
+        actorId,
+        action: 'warehouse.pledge.compensation_release_failed',
+        entityType: 'warehouse_receipt',
+        entityId: receipt.id,
+        metadata: {
+          registryRef,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+    await this.rollbackPledgeClaim(receipt, actorId);
+  }
+
+  /**
+   * Roll a pledge-claimed receipt back to 'active'. This is an internal
+   * compensation, not a user-facing transition, so it deliberately bypasses
+   * the WHR_TRANSITIONS whitelist (which has no pledged → active edge) with
+   * a direct CAS guarded on the claimed state.
+   */
+  private async rollbackPledgeClaim(receipt: WarehouseReceipt, actorId: string): Promise<void> {
+    const event = this.events.build(
+      'warehouse.receipt.status_changed',
+      { receiptId: receipt.id, from: 'pledged', to: 'active', reason: 'pledge_rollback' },
+      actorId
+    );
+    const rolledBack = await this.receipts.updateExpected(
+      receipt.id,
+      { status: 'active', updatedAt: new Date().toISOString() },
+      { status: 'pledged' },
+      event
+    );
+    if (this.receipts.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
+    void rolledBack;
   }
 
   /**
@@ -669,6 +814,15 @@ export class WarehouseService {
     if (!toOwnerId?.trim() || toOwnerId === receipt.ownerId) {
       throw new BadRequestException('toOwnerId must be a different user');
     }
+    // V-38: the recipient must be a real, non-suspended account — otherwise
+    // the asset is orphaned to a typo'd id or a dead account.
+    const recipient = await this.users.findById(toOwnerId);
+    if (!recipient) {
+      throw new BadRequestException(`Recipient user '${toOwnerId}' does not exist`);
+    }
+    if ((await this.users.statusFor(toOwnerId)) === 'suspended') {
+      throw new ConflictException('The recipient account is suspended');
+    }
     if (receipt.status === 'pledged') {
       throw new ConflictException('A pledged receipt cannot be transferred until the lien is released');
     }
@@ -720,16 +874,35 @@ export class WarehouseService {
       throw new ForbiddenException('Only the receipt owner may redeem it');
     }
     if (receipt.status === 'redeemed') {
+      // V-54 re-entrant convergence: a prior attempt may have crashed between
+      // the receipt CAS and the deposit update. Drive the deposit to
+      // 'withdrawn' again instead of blindly returning, so the two-write
+      // window always converges on retry.
+      const deposit = await this.deposits.getById(receipt.depositId);
+      if (deposit.status !== 'withdrawn') {
+        await this.withdrawDepositForRedeemedReceipt(receipt.depositId, deposit.status);
+      }
       return receipt; // idempotent replay
     }
     if (receipt.status === 'pledged') {
       throw new ConflictException('A pledged receipt cannot be redeemed until the lien is released');
     }
-    const updated = await this.transitionReceipt(receipt, 'redeemed', actor.id);
-    await this.deposits.update(receipt.depositId, {
-      status: 'withdrawn',
-      updatedAt: new Date().toISOString()
-    });
+    let updated: WarehouseReceipt;
+    try {
+      updated = await this.transitionReceipt(receipt, 'redeemed', actor.id);
+    } catch (error) {
+      // Converge with a concurrent redeem: if the twin already redeemed the
+      // receipt, fall through to the replay path instead of a raw 409.
+      if (error instanceof ConflictException) {
+        return this.redeemReceipt(id, actor);
+      }
+      throw error;
+    }
+    // CAS the deposit update (guarded on the receipt-bearing state read
+    // above): a concurrent grader/issuer state change surfaces as a conflict
+    // instead of being silently clobbered.
+    const deposit = await this.deposits.getById(receipt.depositId);
+    await this.withdrawDepositForRedeemedReceipt(receipt.depositId, deposit.status);
     await this.audit?.record({
       actorId: actor.id,
       action: 'warehouse.receipt.redeemed',
@@ -778,6 +951,35 @@ export class WarehouseService {
       .slice(0, 8)
       .toUpperCase();
     return `WHR-${new Date().getUTCFullYear()}-${suffix}`;
+  }
+
+  /**
+   * V-54: CAS the deposit behind a redeemed receipt to 'withdrawn'. Guarded
+   * on the status observed by the caller so a concurrent state change (e.g.
+   * a grader re-touch) conflicts instead of being clobbered; a conflict here
+   * means the deposit already moved on — re-reading converges.
+   */
+  private async withdrawDepositForRedeemedReceipt(
+    depositId: string,
+    expectedStatus: WarehouseDeposit['status']
+  ): Promise<void> {
+    try {
+      await this.deposits.updateExpected(
+        depositId,
+        { status: 'withdrawn', updatedAt: new Date().toISOString() },
+        { status: expectedStatus }
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        // Converge: another flow already moved the deposit; if it is now
+        // withdrawn the redeem is complete, otherwise surface the conflict.
+        const current = await this.deposits.getById(depositId);
+        if (current.status === 'withdrawn') {
+          return;
+        }
+      }
+      throw error;
+    }
   }
 
   private async transitionReceipt(
