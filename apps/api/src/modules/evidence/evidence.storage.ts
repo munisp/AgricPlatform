@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import {
   DeleteObjectCommand,
+  HeadBucketCommand,
   HeadObjectCommand,
   S3Client
 } from '@aws-sdk/client-s3';
@@ -58,6 +59,12 @@ export interface EvidenceStorageDriver {
   stat(objectKey: string): Promise<EvidenceObjectStat | null>;
   presignDownload(objectKey: string): Promise<PresignedEvidenceUrl>;
   remove(objectKey: string): Promise<void>;
+  /**
+   * L-20 readiness probe for /health/ready. Stub reports configured:false
+   * (fail-closed doctrine: never 'down'); the s3 driver probes bucket
+   * reachability and reports healthy:false with failure evidence only.
+   */
+  healthCheck(): Promise<{ configured: boolean; healthy: boolean; detail: string }>;
 }
 
 export const EVIDENCE_STORAGE_DRIVER = Symbol('EVIDENCE_STORAGE_DRIVER');
@@ -85,6 +92,14 @@ export class StubEvidenceStorageDriver implements EvidenceStorageDriver {
   }
   remove(): Promise<void> {
     return Promise.reject(new ServiceUnavailableException(STORAGE_UNAVAILABLE));
+  }
+
+  healthCheck(): Promise<{ configured: boolean; healthy: boolean; detail: string }> {
+    return Promise.resolve({
+      configured: false,
+      healthy: true,
+      detail: 'stub driver — evidence storage not configured (uploads fail closed with 503)'
+    });
   }
 }
 
@@ -252,6 +267,9 @@ export class S3EvidenceStorageDriver implements EvidenceStorageDriver {
   }): Promise<PresignedEvidenceUrl> {
     // Pin the declared content hash as a signed metadata header: the object
     // cannot land without it, and confirm re-reads it via HeadObject.
+    // V-73: Content-Length is folded into the signature too, so the client
+    // can only PUT exactly the declared byte count — the presign itself
+    // enforces the service-side size ceiling, not just confirm.
     const url = presignS3Url({
       method: 'PUT',
       endpoint: this.config.endpoint,
@@ -262,13 +280,17 @@ export class S3EvidenceStorageDriver implements EvidenceStorageDriver {
       secretAccessKey: this.config.secretAccessKey,
       expiresInSeconds: this.config.presignTtlSeconds,
       now: new Date(),
-      extraSignedHeaders: { 'x-amz-meta-sha256': input.sha256 }
+      extraSignedHeaders: {
+        'content-length': String(input.sizeBytes),
+        'x-amz-meta-sha256': input.sha256
+      }
     });
     return Promise.resolve({
       url,
       method: 'PUT',
       headers: {
         'Content-Type': input.mime,
+        'Content-Length': String(input.sizeBytes),
         'x-amz-meta-sha256': input.sha256
       },
       expiresAt: new Date(Date.now() + this.config.presignTtlSeconds * 1000).toISOString()
@@ -321,6 +343,31 @@ export class S3EvidenceStorageDriver implements EvidenceStorageDriver {
         new DeleteObjectCommand({ Bucket: this.config.bucket, Key: objectKey })
       );
     });
+  }
+
+  /**
+   * L-20 readiness probe: a HeadBucket round-trip proves the endpoint,
+   * credentials and bucket are all usable (HeadObject would treat a missing
+   * bucket as honest absence, so the bucket-level probe is used). Never
+   * throws — probes must not break /health/ready.
+   */
+  async healthCheck(): Promise<{ configured: boolean; healthy: boolean; detail: string }> {
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.config.bucket }));
+      return {
+        configured: true,
+        healthy: true,
+        detail: `s3 bucket '${this.config.bucket}' reachable at ${this.config.endpoint}`
+      };
+    } catch (error) {
+      return {
+        configured: true,
+        healthy: false,
+        detail: `s3 bucket '${this.config.bucket}' probe failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      };
+    }
   }
 }
 
