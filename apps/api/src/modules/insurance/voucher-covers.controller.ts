@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { FLOOD_SEVERITY_RANKS, type FloodSeverityRank, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -13,6 +13,7 @@ import { VoucherCoversService } from './voucher-covers.service.js';
 class DefineRiderDto {
   /** Catalog product code (trigger type source), e.g. 'NG-RAIN-WET-26'. */
   @IsString()
+  @MaxLength(100)
   @IsNotEmpty()
   productCode!: string;
 
