@@ -109,6 +109,21 @@ export function isCreditReviewer(actor: CreditActor): boolean {
   return actor.roles.includes('admin') || actor.roles.includes('lender');
 }
 
+/**
+ * Application statuses that constitute an ACTIVE lender linkage for the
+ * V-61 score-preview scope: the application is in the pipeline a lender
+ * reviewer could action. Terminal outcomes (rejected/repaid/defaulted/
+ * written_off) require a decidedBy binding instead. Drafts are the
+ * applicant's alone.
+ */
+const SCORE_LINKED_ACTIVE_STATUSES: ReadonlySet<CreditLoanStatus> = new Set([
+  'submitted',
+  'scoring',
+  'approved',
+  'disbursed',
+  'repaying'
+]);
+
 function requireReviewer(actor: CreditActor): void {
   if (!isCreditReviewer(actor)) {
     throw new ForbiddenException('Only admin or lender reviewers may perform this action');
@@ -854,6 +869,30 @@ export class CreditService {
   }
 
   /* ------------------------------------------------------------- scoring -- */
+
+  /**
+   * Score-preview authorisation (V-61): self and admin always pass; a LENDER
+   * passes only with a real application linkage to the target user — an
+   * application this lender decided, or one still in an active pipeline
+   * state the lender could action. This mirrors the credit-passport
+   * consent-scoped disclosure doctrine: without it any onboarded lender
+   * could build an unauthorised credit bureau over the whole farmer base.
+   */
+  async assertScoreReadAccess(actor: CreditActor, userId: string): Promise<void> {
+    if (actor.id === userId || actor.roles.includes('admin')) {
+      return;
+    }
+    if (actor.roles.includes('lender')) {
+      const applications = await this.loans.find({ applicantUserId: userId });
+      const linked = applications.some(
+        (loan) => loan.decidedBy === actor.id || SCORE_LINKED_ACTIVE_STATUSES.has(loan.status)
+      );
+      if (linked) {
+        return;
+      }
+    }
+    throw new ForbiddenException('You may only preview your own score');
+  }
 
   /** Standalone score preview (no persistence) for a user. */
   async assessApplicant(userId: string): Promise<CreditScoreAssessment> {
