@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { ClubMemberRole, PathwayTrack, User } from '@agric-platform/shared';
 import { CLUB_MEMBER_ROLES, PATHWAY_TRACKS } from '@agric-platform/shared';
@@ -12,11 +12,14 @@ import { PathwaysService, type CreateClubInput, type CreateTemplateInput } from 
 
 class TemplateStageDto {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   requiredActions?: string[];
 }
 
@@ -25,10 +28,12 @@ class CreateTemplateDto implements CreateTemplateInput {
   track!: PathwayTrack;
 
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsArray()
@@ -39,21 +44,25 @@ class CreateTemplateDto implements CreateTemplateInput {
 
 class EnrolPathwayDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 }
 
 class CompleteStageDto {
   @IsString()
+  @MaxLength(500)
   evidence!: string;
 }
 
 class ListClubsQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   institution?: string;
 
   @IsOptional()
@@ -64,15 +73,19 @@ class ListClubsQuery {
 
 class CreateClubDto implements CreateClubInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsString()
+  @MaxLength(500)
   institution!: string;
 
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   coordinatorUserId!: string;
 
   @IsOptional()
@@ -82,6 +95,7 @@ class CreateClubDto implements CreateClubInput {
 
 class JoinClubDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsOptional()
