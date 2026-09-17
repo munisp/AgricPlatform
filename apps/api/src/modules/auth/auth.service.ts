@@ -15,6 +15,8 @@ import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { OTP_STORE } from '../../database/persistence.tokens.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
+import type { SmsDriver } from '../integrations/drivers/sms.drivers.js';
+import type { IntegrationsService } from '../integrations/integrations.service.js';
 import { UsersService, type CreateUserInput } from '../users/users.service.js';
 import { AUTH_UNAVAILABLE, KeycloakPhoneTokenService } from './keycloak-phone-token.service.js';
 import { SessionService } from './session.service.js';
@@ -29,6 +31,16 @@ export const OTP_MAX_ATTEMPTS = 5;
  */
 export const OTP_PHONE_MAX_FAILURES = 20;
 export const OTP_PHONE_FAILURE_WINDOW_MS = 60 * 60 * 1000;
+/**
+ * Per-phone OTP request caps (V-62): the per-IP throttle cannot stop an
+ * attacker rotating source IPs from SMS-bombing one victim (toll fraud).
+ * Requests are counted per phone in a 10-minute and a daily fixed window;
+ * beyond either cap the request is refused with 429 before any SMS is sent.
+ */
+export const OTP_PHONE_MAX_REQUESTS_SHORT = 3;
+export const OTP_PHONE_REQUEST_SHORT_WINDOW_MS = 10 * 60 * 1000;
+export const OTP_PHONE_MAX_REQUESTS_DAILY = 10;
+export const OTP_PHONE_REQUEST_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export interface OtpRequestResult {
   requestId: string;
@@ -66,10 +78,31 @@ export class AuthService {
      * constructions (unit tests) keep working: when absent a fresh instance
      * is resolved from the environment at issuance time.
      */
-    @Optional() private readonly phoneTokens?: KeycloakPhoneTokenService
+    @Optional() private readonly phoneTokens?: KeycloakPhoneTokenService,
+    /**
+     * OTP delivery (V-16): supplies the live SMS driver. Optional so bare
+     * unit-test constructions keep working — an absent integrations service
+     * behaves like the stub driver (devCode outside production, fail-closed
+     * 503 in production).
+     */
+    @Optional() private readonly integrations?: IntegrationsService
   ) {}
 
   async requestOtp(phone: string): Promise<OtpRequestResult> {
+    // Per-phone resend caps (V-62), checked BEFORE any state change: a
+    // refused request must not invalidate the caller's still-usable
+    // challenge, and the atomic increment-first ordering means capped
+    // requests still burn budget instead of racing the check.
+    const [shortCount, dailyCount] = await Promise.all([
+      this.otp.registerPhoneRequest(phone, OTP_PHONE_REQUEST_SHORT_WINDOW_MS),
+      this.otp.registerPhoneRequest(phone, OTP_PHONE_REQUEST_DAILY_WINDOW_MS)
+    ]);
+    if (shortCount > OTP_PHONE_MAX_REQUESTS_SHORT || dailyCount > OTP_PHONE_MAX_REQUESTS_DAILY) {
+      throw new HttpException(
+        'Too many OTP requests for this phone number. Try again later.',
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
     // Invalidate outstanding challenges for this phone so only the newest
     // code is usable (limits parallel guessing windows).
     await this.otp.invalidateForPhone(phone);
@@ -86,6 +119,15 @@ export class AuthService {
       attempts: 0
     };
     await this.otp.save(challenge, OTP_TTL_MS);
+    try {
+      await this.deliverCode(phone, code);
+    } catch (error) {
+      // Fail closed (V-16): an undelivered code must leave no usable
+      // challenge behind — a stuck challenge would only hand attackers a
+      // guessing window on a code the user never received.
+      await this.otp.invalidateForPhone(phone);
+      throw error;
+    }
     // Phase 1 delivers via SMS (Termii); the channel label stays low-cardinality.
     this.metrics.otpRequested('sms');
     await this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
@@ -110,7 +152,7 @@ export class AuthService {
       this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
-    if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
+    if ((await this.otp.attemptCount(requestId)) >= OTP_MAX_ATTEMPTS) {
       await this.otp.delete(requestId);
       this.metrics.otpVerification('locked');
       throw new HttpException(
@@ -129,9 +171,16 @@ export class AuthService {
       );
     }
     if (challenge.codeHash !== this.hash(code)) {
-      challenge.attempts += 1;
+      // Atomic attempt accounting (V-68): the counter is incremented in the
+      // store, so parallel wrong guesses each consume an attempt — the old
+      // read-modify-write on the challenge JSON let concurrent guesses race
+      // and spend fewer attempts than they made.
+      const attempts = await this.otp.registerAttempt(
+        requestId,
+        challenge.expiresAt - Date.now()
+      );
       await this.otp.registerPhoneFailure(challenge.phone, OTP_PHONE_FAILURE_WINDOW_MS);
-      if (challenge.attempts >= OTP_MAX_ATTEMPTS) {
+      if (attempts >= OTP_MAX_ATTEMPTS) {
         await this.otp.delete(requestId);
         this.metrics.otpVerification('locked');
         throw new HttpException(
@@ -139,7 +188,6 @@ export class AuthService {
           HttpStatus.TOO_MANY_REQUESTS
         );
       }
-      await this.otp.save(challenge, challenge.expiresAt - Date.now());
       this.metrics.otpVerification('invalid');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
@@ -152,8 +200,11 @@ export class AuthService {
     }
     const user = await this.users.findByPhone(consumed.phone);
     if (!user) {
+      // Uniform error wording (V-68): a distinct "no account" message after a
+      // correct code would confirm the number is unregistered — an
+      // enumeration oracle. Unknown numbers and wrong codes answer alike.
       this.metrics.otpVerification('invalid');
-      throw new UnauthorizedException('No account for this phone number. Register first.');
+      throw new UnauthorizedException('Invalid or expired OTP code');
     }
     this.metrics.otpVerification('success');
     // Credential threading: the just-consumed OTP code is the verified
@@ -237,6 +288,49 @@ export class AuthService {
     // Not a real JWT. Dev/test only — issueAccessToken refuses this path in
     // production, and PHONE_AUTH_KEYCLOAK=true replaces it with Keycloak.
     return `stub-token.${Buffer.from(user.id).toString('base64url')}`;
+  }
+
+  /**
+   * OTP delivery (V-16). With a live SMS driver the code goes out over the
+   * provider's OTP endpoint; any provider failure is a 503 (fail closed —
+   * never silently succeed). The stub driver sends nothing: outside
+   * production the devCode path covers local development, while production
+   * without live delivery is a hard 503 so phone login fails closed instead
+   * of issuing undeliverable codes (activation: E-03).
+   */
+  private async deliverCode(phone: string, code: string): Promise<void> {
+    let driver: SmsDriver | undefined;
+    try {
+      driver = this.integrations?.smsDriver();
+    } catch (error) {
+      // Enabled-but-misconfigured live driver (non-production lazy build):
+      // fail closed with 503 rather than an unmapped 500.
+      throw new ServiceUnavailableException(
+        `OTP delivery is unavailable: ${error instanceof Error ? error.message : 'SMS driver error'}`
+      );
+    }
+    if (!driver) {
+      if (isProduction()) {
+        throw new ServiceUnavailableException(
+          'OTP delivery is unavailable: SMS_DRIVER is stub, so no code can be delivered. ' +
+            'Configure a live SMS driver (Termii/Twilio credentials) to open phone login.'
+        );
+      }
+      return;
+    }
+    try {
+      const result = await driver.sendOtp(phone, code);
+      if (!result.delivered) {
+        throw new Error(`provider ${result.provider} reported the message as not delivered`);
+      }
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(
+        `OTP delivery failed: ${error instanceof Error ? error.message : 'SMS provider error'}`
+      );
+    }
   }
 
   private hash(value: string): string {
