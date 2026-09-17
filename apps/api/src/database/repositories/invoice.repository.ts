@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import type { Invoice, InvoiceStatus } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
@@ -40,6 +41,25 @@ export class InMemoryInvoiceRepository
     const next = this.counters.get(sellerId) ?? 1;
     this.counters.set(sellerId, next + 1);
     return next;
+  }
+
+  /**
+   * V-52: mirror the pg partial unique index `invoices_open_order_uq ON
+   * marketplace.invoices (order_id) WHERE status <> 'cancelled'` (migration
+   * 080): one non-cancelled invoice per order. Synchronous check-and-set so
+   * concurrent issuance serialises (second claim → 409 → service adopts).
+   */
+  override async create(invoice: Invoice): Promise<Invoice> {
+    if (invoice.status !== 'cancelled') {
+      for (const existing of this.items.values()) {
+        if (existing.orderId === invoice.orderId && existing.status !== 'cancelled') {
+          throw new ConflictException(
+            `Order '${invoice.orderId}' already has a non-cancelled invoice`
+          );
+        }
+      }
+    }
+    return super.create(invoice);
   }
 }
 

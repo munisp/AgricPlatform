@@ -1,4 +1,5 @@
 import type {
+  ApiListResponse,
   FloodSeverityRank,
   ParametricPayout,
   ParametricPolicy,
@@ -7,6 +8,7 @@ import type {
   ParametricTriggerEvent
 } from '@agric-platform/shared';
 import { ConflictException } from '@nestjs/common';
+import { paginate } from '../../common/pagination.js';
 
 /**
  * Parametric insurance persistence ports (wave-insurance, migration 031,
@@ -198,6 +200,15 @@ export interface ParametricTriggerEventRepository {
   find(criteria: ParametricTriggerEventCriteria): Promise<ParametricTriggerEvent[]>;
   findById(id: string): Promise<ParametricTriggerEvent | undefined>;
   all(): Promise<ParametricTriggerEvent[]>;
+  /**
+   * Bounded page (LIMIT/OFFSET + COUNT on the pg driver). Admin list
+   * endpoints must use this instead of all() (V-72).
+   */
+  searchPage(
+    criteria: ParametricTriggerEventCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<ParametricTriggerEvent>>;
 }
 
 export function insuranceTriggerEventMatcher(
@@ -243,6 +254,14 @@ export class InMemoryParametricTriggerEventRepository implements ParametricTrigg
   all(): Promise<ParametricTriggerEvent[]> {
     return Promise.resolve([...this.items.values()].map((item) => structuredClone(item)));
   }
+
+  async searchPage(
+    criteria: ParametricTriggerEventCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<ParametricTriggerEvent>> {
+    return paginate(await this.find(criteria), page, pageSize);
+  }
 }
 
 export function createInMemoryParametricTriggerEventRepository(): InMemoryParametricTriggerEventRepository {
@@ -265,6 +284,12 @@ export interface ParametricPayoutRepository {
   find(criteria: ParametricPayoutCriteria): Promise<ParametricPayout[]>;
   findById(id: string): Promise<ParametricPayout | undefined>;
   all(): Promise<ParametricPayout[]>;
+  /** Bounded page (LIMIT/OFFSET + COUNT on the pg driver) — V-72. */
+  searchPage(
+    criteria: ParametricPayoutCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<ParametricPayout>>;
 }
 
 export function insurancePayoutMatcher(
@@ -315,6 +340,14 @@ export class InMemoryParametricPayoutRepository implements ParametricPayoutRepos
 
   all(): Promise<ParametricPayout[]> {
     return Promise.resolve([...this.items.values()].map((item) => structuredClone(item)));
+  }
+
+  async searchPage(
+    criteria: ParametricPayoutCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<ParametricPayout>> {
+    return paginate(await this.find(criteria), page, pageSize);
   }
 }
 

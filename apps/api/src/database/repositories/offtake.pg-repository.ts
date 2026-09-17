@@ -454,15 +454,18 @@ export class PgOfftakeContractRepository
         // (empty) transaction and let the caller replay the record.
         throw new OfftakeDeliveryReplay();
       }
-      // 3. Milestone accumulation CAS: the delta and the derived status are
-      //    computed IN SQL so concurrent deliveries serialise on the row
-      //    lock and can never double-count or overshoot the milestone.
-      const qtyDelta = input.delivery.qtyKg;
+      // 3. Reservation verification + finalize (V-50): the caller claimed
+      //    the milestone quantity with a guarded CAS BEFORE driving the
+      //    payment rails, so this step never adds quantity again — it
+      //    proves the reservation is still intact (delivered_qty_kg equals
+      //    the reserved total) and finalizes the derived status + evidence
+      //    links. Concurrent deliveries serialised at the reservation, so
+      //    a mismatch here means the reservation was legitimately unwound.
+      const reservedQtyKg = input.milestonePatch.deliveredQtyKg;
       const milestone = await client.query(
         `UPDATE marketplace.offtake_milestones
-            SET delivered_qty_kg = delivered_qty_kg + $2,
-                status = CASE
-                           WHEN delivered_qty_kg + $2 >= qty_kg THEN 'met'
+            SET status = CASE
+                           WHEN delivered_qty_kg >= qty_kg THEN 'met'
                            ELSE 'partial'
                          END,
                 linked_lot_id = $3,
@@ -472,11 +475,11 @@ export class PgOfftakeContractRepository
           WHERE id = $1
             AND contract_id = $6
             AND status IN ('pending','partial')
-            AND delivered_qty_kg + $2 <= qty_kg
+            AND delivered_qty_kg = $2
           RETURNING ${MILESTONE_COLUMNS}`,
         [
           input.milestoneId,
-          qtyDelta,
+          reservedQtyKg,
           input.delivery.lotId,
           input.delivery.invoiceId ?? null,
           input.delivery.escrowId ?? null,
@@ -485,8 +488,8 @@ export class PgOfftakeContractRepository
       );
       if (!milestone.rows[0]) {
         throw new ConflictException(
-          `Offtake milestone '${input.milestoneId}' cannot accept ${qtyDelta} kg ` +
-            '(met, missed, or the delivery would overshoot the contracted quantity)'
+          `Offtake milestone '${input.milestoneId}' no longer holds the reserved ` +
+            `${reservedQtyKg} kg (met, missed, or the reservation was rolled back)`
         );
       }
       const updatedMilestone = offtakeMilestoneMapper.fromRow(milestone.rows[0]);

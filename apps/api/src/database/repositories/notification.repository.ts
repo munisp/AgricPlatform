@@ -1,4 +1,4 @@
-import type { NotificationMessage } from '@agric-platform/shared';
+import type { ApiListResponse, NotificationMessage } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
 import { seedNotificationMessages } from '../seed-data.js';
@@ -12,6 +12,12 @@ export interface NotificationCriteria {
 export interface NotificationRepository
   extends AsyncRepository<NotificationMessage, NotificationCriteria> {
   countUnread(userId: string): Promise<number>;
+  /** Bounded page — SQL LIMIT/OFFSET on the pg driver (V-72). */
+  searchPage(
+    criteria: NotificationCriteria,
+    page?: number,
+    pageSize?: number
+  ): Promise<ApiListResponse<NotificationMessage>>;
   /**
    * Delivery log append + message status update as one atomic unit
    * (notifications.delivery_logs + notifications.notifications).
