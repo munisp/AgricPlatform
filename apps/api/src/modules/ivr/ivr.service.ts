@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { AdvisoryItem, Profile, User } from '@agric-platform/shared';
 import { missingAtCallbackConfig } from '../../common/auth/at-callback.utils.js';
 import { isProduction } from '../../common/auth/auth.config.js';
@@ -155,6 +155,18 @@ export class IvrService {
     const existing = await this.calls.findById(input.sessionId);
     const live = existing && existing.expiresAt > new Date(now).toISOString();
     const stored = live ? (existing.state as unknown as StoredIvrState) : undefined;
+
+    // Caller-number binding (V-67, mirrors the USSD session phone binding):
+    // a live call stays bound to the number that opened it. A mid-call
+    // callerNumber change would silently re-attribute the call — and the
+    // identity the Voice Teller resolves from it — so it is rejected with
+    // 409 instead. The hangup notification below is exempt: it carries no
+    // steering input.
+    if (existing && live && input.isActive !== '0' && existing.callerNumber !== input.callerNumber) {
+      throw new ConflictException(
+        'IVR call is bound to a different caller number; start a new call.'
+      );
+    }
 
     // Final hangup notification: no actions, keep the record for the sweep.
     if (input.isActive === '0') {
