@@ -155,6 +155,19 @@ function requireActor(actor: User | null): User {
   return actor;
 }
 
+/**
+ * Internal control-flow signal (V-50): the in-memory delivery claim lost to
+ * a same-key twin. The saga wrapper unwinds ONLY the reservation and
+ * replays the twin's record — the rails rows belong to the twin and must
+ * never be compensated by the loser.
+ */
+class OfftakeDeliveryClaimConflict extends Error {
+  constructor() {
+    super('offtake delivery claim lost to a same-key twin');
+    this.name = 'OfftakeDeliveryClaimConflict';
+  }
+}
+
 function isAdmin(actor: User): boolean {
   return actor.roles.includes('admin');
 }
@@ -408,9 +421,28 @@ export class OfftakeService implements OnModuleInit {
     return this.buildView(contract);
   }
 
-  /** Credit-side read-only underwriting input (lender/admin; role enforced at the controller). */
-  async collateralView(contractId: string): Promise<OfftakeCollateralView> {
+  /**
+   * Credit-side read-only underwriting input. V-61: scoped to the contract
+   * parties (the cooperative owner and the buyer on the contract) plus
+   * admin and regulator; everyone else gets 403. NOTE: no contract↔lender
+   * schema linkage exists — one is deliberately NOT invented here. Lender
+   * visibility (consent/application-scoped reads) is deferred to the V-31
+   * design item; until it lands, lenders are refused like any other
+   * non-party.
+   */
+  async collateralView(actor: User | null, contractId: string): Promise<OfftakeCollateralView> {
+    const caller = requireActor(actor);
     const contract = await this.contracts.getById(contractId);
+    const privileged = isAdmin(caller) || caller.roles.includes('regulator');
+    if (
+      !privileged &&
+      caller.id !== contract.cooperativeId &&
+      caller.id !== contract.buyerOrgId
+    ) {
+      throw new ForbiddenException(
+        'Only a contract party, an administrator or a regulator may read offtake collateral'
+      );
+    }
     const view = await this.buildView(contract);
     const deliveredQtyKg = view.milestones.reduce((sum, milestone) => sum + milestone.deliveredQtyKg, 0);
     const deliveredAmountKobo = view.deliveries.reduce((sum, delivery) => sum + delivery.amountKobo, 0);
@@ -543,6 +575,120 @@ export class OfftakeService implements OnModuleInit {
     const amountKobo = deliveryAmountKobo(qtyKg, input.priceKoboPerKg);
     const deliveryKey = input.idempotencyKey ?? newId('offdel');
     const ids = railIds(deliveryKey);
+    // V-50 saga claim: reserve the milestone quantity with a guarded CAS
+    // BEFORE driving the payment rails. Two concurrent deliveries against
+    // the same milestone serialise HERE — the loser gets 409 before any
+    // listing/order/invoice/escrow row exists, so a lost race can never
+    // orphan a paid order + provider-verified escrow hold (the pre-fix
+    // failure mode). Any failure after this point runs the compensating
+    // unwind (cancel order -> escrow refund + invoice cancel, reverse the
+    // hold journal, roll the reservation back) so a permanent commit
+    // failure leaves NO orphan either.
+    //
+    // Crash-retry adoption: rails rows are created ONLY after the
+    // reservation CAS, so an existing live order under this key's
+    // deterministic id proves a prior attempt of THIS saga already holds
+    // the reservation — adopt it and re-drive the idempotent rails instead
+    // of double-reserving. A compensated attempt (cancelled order) is
+    // terminal for the key: fail closed and ask for a fresh key. Residual
+    // narrow window: a crash between the reservation CAS and the first
+    // rails write leaves an unowned reservation (logged by compensation in
+    // every other case) — reconciled by ops, never silently double-counted
+    // here because the overshoot guard still bounds the milestone.
+    let reservedQtyKg = milestone.deliveredQtyKg + qtyKg;
+    let reservedByThisAttempt = false;
+    if (input.idempotencyKey) {
+      const priorOrder = await this.orders.findById(ids.orderId);
+      if (priorOrder) {
+        if (priorOrder.status === 'cancelled') {
+          throw new ConflictException(
+            `Offtake delivery key '${deliveryKey}' belongs to a saga that permanently failed ` +
+              'and was compensated (order cancelled, escrow refunded); retry with a NEW idempotency key'
+          );
+        }
+        if (milestone.deliveredQtyKg >= qtyKg) {
+          reservedQtyKg = milestone.deliveredQtyKg; // prior attempt's reservation, adopted
+        }
+      }
+    }
+    if (reservedQtyKg !== milestone.deliveredQtyKg) {
+      try {
+        await this.contracts.updateMilestoneExpected(
+          milestone.id,
+          { deliveredQtyKg: reservedQtyKg },
+          { status: milestone.status, deliveredQtyKg: milestone.deliveredQtyKg }
+        );
+        reservedByThisAttempt = true;
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          throw new ConflictException(
+            `Milestone ${input.milestoneSeq} of contract '${contractId}' is being updated ` +
+              'by a concurrent delivery; retry the operation'
+          );
+        }
+        throw error;
+      }
+    }
+    try {
+      return await this.driveDeliveryRails(
+        contract,
+        milestone,
+        input,
+        caller,
+        { amountKobo, deliveryKey, ids, reservedQtyKg, reservedByThisAttempt }
+      );
+    } catch (error) {
+      if (error instanceof OfftakeDeliveryClaimConflict) {
+        // A same-key twin owns this saga (it claimed the delivery row): it
+        // also owns the rails rows, so unwind ONLY a reservation we made
+        // ourselves and replay the twin's record — never compensate rails
+        // we do not own.
+        if (reservedByThisAttempt) {
+          await this.rollbackMilestoneReservation(contract.id, milestone.id, qtyKg);
+        }
+        const existing = await this.contracts.deliveryByIdempotencyKey(deliveryKey);
+        if (existing) {
+          return this.deliveryResult(contractId, existing, true);
+        }
+        throw new ConflictException(
+          `Offtake delivery key '${deliveryKey}' was claimed but no delivery is visible; retry`
+        );
+      }
+      await this.compensateDeliverySaga({
+        contractId: contract.id,
+        milestoneId: milestone.id,
+        qtyKg,
+        orderId: ids.orderId,
+        deliveryId: ids.deliveryId,
+        deliveryKey
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Delivery saga rails + commit (runs under the V-50 milestone
+   * reservation): listing -> order -> confirm/invoice -> deposit/escrow
+   * hold -> atomic commit. Every rail row is idempotent per deterministic
+   * id or per order, so a mid-saga retry with the same idempotency key
+   * converges.
+   */
+  private async driveDeliveryRails(
+    contract: OfftakeContract,
+    milestone: OfftakeMilestone,
+    input: RecordDeliveryInput,
+    caller: User,
+    saga: {
+      amountKobo: number;
+      deliveryKey: string;
+      ids: { deliveryId: string; orderId: string; listingId: string };
+      reservedQtyKg: number;
+      reservedByThisAttempt: boolean;
+    }
+  ): Promise<OfftakeDeliveryResult> {
+    const contractId = contract.id;
+    const qtyKg = input.qtyKg;
+    const { amountKobo, deliveryKey, ids, reservedQtyKg, reservedByThisAttempt } = saga;
     // 1. Dormant per-delivery listing: the invoice rail prices from the
     //    listing, so it carries THIS delivery's contracted-band price. Never
     //    buyer-searchable (isActive = false); the location comes from the
@@ -620,7 +766,142 @@ export class OfftakeService implements OnModuleInit {
     };
     const entry = this.buildEscrowHoldEntry(contract, delivery);
     delivery.ledgerEntryId = entry.id;
-    return this.commitDelivery(contract, milestone, delivery, entry, caller.id);
+    return this.commitDelivery(
+      contract,
+      milestone,
+      delivery,
+      entry,
+      caller.id,
+      reservedQtyKg,
+      reservedByThisAttempt
+    );
+  }
+
+  /**
+   * V-50 compensating unwind for a permanently failed delivery saga. Runs
+   * best-effort in reverse order of the saga's commitments; every step is
+   * individually guarded and logged so one failing step never blocks the
+   * others (the original saga error always propagates to the caller):
+   *   1. reverse the escrow-hold journal if this saga posted one (the
+   *      in-memory path posts before finalizing; the pg journal rolls back
+   *      with its transaction, so the lookup proves which case we are in);
+   *   2. cancel the orphaned order through the order state machine — the
+   *      cancel hook refunds the held escrow (ESCROW_TRANSITIONS refund
+   *      path) and cancels the invoice, all idempotent no-ops when the saga
+   *      never got that far;
+   *   3. drop a committed-but-unfinalized delivery claim row (in-memory
+   *      path) so a same-key retry re-drives instead of replaying an
+   *      orphan; the pg claim rolls back with its transaction;
+   *   4. roll the milestone quantity reservation back (and reopen a
+   *      contract that was fulfilled off the rolled-back quantity).
+   */
+  private async compensateDeliverySaga(input: {
+    contractId: string;
+    milestoneId: string;
+    qtyKg: number;
+    orderId: string;
+    deliveryId: string;
+    deliveryKey: string;
+  }): Promise<void> {
+    const problems: string[] = [];
+    try {
+      const posted = await this.ledger.findEntryByIdempotencyKey(
+        deliveryLedgerIdempotencyKey(input.deliveryKey)
+      );
+      if (posted) {
+        await this.ledger.reverseEntry(posted.id, 'system');
+      }
+    } catch (error) {
+      problems.push(`journal reversal: ${(error as Error)?.message ?? error}`);
+    }
+    try {
+      const order = await this.orders.findById(input.orderId);
+      if (order && order.status !== 'cancelled') {
+        await this.marketplace.setOrderStatus(input.orderId, 'cancelled', {
+          id: 'system',
+          roles: ['admin']
+        });
+      }
+    } catch (error) {
+      problems.push(`order cancel/escrow refund: ${(error as Error)?.message ?? error}`);
+    }
+    try {
+      await this.contracts.removeDelivery?.(input.deliveryId);
+    } catch (error) {
+      problems.push(`delivery claim removal: ${(error as Error)?.message ?? error}`);
+    }
+    try {
+      await this.rollbackMilestoneReservation(input.contractId, input.milestoneId, input.qtyKg);
+    } catch (error) {
+      problems.push(`reservation rollback: ${(error as Error)?.message ?? error}`);
+    }
+    if (problems.length > 0) {
+      this.logger.error(
+        `offtake delivery saga compensation incomplete for order ${input.orderId} ` +
+          `(manual reconciliation required): ${problems.join('; ')}`
+      );
+    }
+  }
+
+  /**
+   * Rolls a V-50 milestone reservation back by `qtyKg`, guarded by CAS with
+   * bounded retries (a concurrent reservation may sit on top — the delta is
+   * subtracted from whatever is current, never blindly reset). The derived
+   * status is recomputed so a 'met' milestone regresses to 'partial' when
+   * its quantity is unwound; a 'missed' milestone is left to the sweep.
+   * When the rollback un-mets a milestone, a contract that was fulfilled
+   * off the rolled-back quantity is reopened (fulfilled -> active CAS).
+   */
+  private async rollbackMilestoneReservation(
+    contractId: string,
+    milestoneId: string,
+    qtyKg: number
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const milestones = await this.contracts.listMilestones(contractId);
+      const current = milestones.find((candidate) => candidate.id === milestoneId);
+      if (!current) {
+        return;
+      }
+      const rolledQtyKg = current.deliveredQtyKg - qtyKg;
+      if (rolledQtyKg < 0) {
+        return; // already unwound (e.g. a prior compensation)
+      }
+      const patch: Partial<OfftakeMilestone> = { deliveredQtyKg: rolledQtyKg };
+      if (current.status === 'pending' || current.status === 'partial' || current.status === 'met') {
+        patch.status = milestoneStatusAfterDelivery(rolledQtyKg, current.qtyKg);
+      }
+      try {
+        const updated = await this.contracts.updateMilestoneExpected(
+          milestoneId,
+          patch,
+          { deliveredQtyKg: current.deliveredQtyKg }
+        );
+        if (updated.status !== 'met') {
+          // Reopen a contract that was fulfilled off the rolled-back qty.
+          await this.contracts
+            .updateExpected(
+              contractId,
+              { status: 'active', updatedAt: new Date().toISOString() },
+              { status: 'fulfilled' }
+            )
+            .catch((error: unknown) => {
+              if (!(error instanceof ConflictException || error instanceof NotFoundException)) {
+                throw error;
+              }
+            });
+        }
+        return;
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+      }
+    }
+    this.logger.error(
+      `offtake saga compensation: could not roll back the ${qtyKg} kg reservation ` +
+        `on milestone '${milestoneId}' after 5 guarded attempts; manual reconciliation required`
+    );
   }
 
   /** Balanced escrow-hold journal: DR buyer escrow asset, CR contract liability. */
@@ -669,18 +950,23 @@ export class OfftakeService implements OnModuleInit {
   }
 
   /**
-   * The atomic core of the delivery saga. PostgreSQL: ONE transaction via
-   * recordDeliveryTx (claim + accumulation CAS + journal + fulfilment CAS +
-   * outbox). In-memory: the idempotency-key claim is the arbiter and the
-   * journal posts through LedgerService (idempotency-keyed) before the
-   * milestone state finalizes.
+   * The atomic core of the delivery saga. The milestone quantity was
+   * ALREADY reserved by the caller (V-50), so this step verifies the
+   * reservation is intact and finalizes the derived state — it never adds
+   * quantity a second time. PostgreSQL: ONE transaction via
+   * recordDeliveryTx (claim + reservation verification + journal +
+   * fulfilment CAS + outbox). In-memory: the idempotency-key claim is the
+   * arbiter and the journal posts through LedgerService
+   * (idempotency-keyed) before the milestone state finalizes.
    */
   private async commitDelivery(
     contract: OfftakeContract,
     milestone: OfftakeMilestone,
     delivery: OfftakeDelivery,
     entry: LedgerJournalEntry,
-    actorId: string
+    actorId: string,
+    reservedQtyKg: number,
+    reservedByThisAttempt: boolean
   ): Promise<OfftakeDeliveryResult> {
     await this.ensureEscrowAccounts(contract);
     if (this.contracts.transactionalDelivery && this.contracts.recordDeliveryTx) {
@@ -690,11 +976,8 @@ export class OfftakeService implements OnModuleInit {
         milestoneId: milestone.id,
         delivery,
         milestonePatch: {
-          deliveredQtyKg: milestone.deliveredQtyKg + delivery.qtyKg,
-          status: milestoneStatusAfterDelivery(
-            milestone.deliveredQtyKg + delivery.qtyKg,
-            milestone.qtyKg
-          ),
+          deliveredQtyKg: reservedQtyKg,
+          status: milestoneStatusAfterDelivery(reservedQtyKg, milestone.qtyKg),
           linkedLotId: delivery.lotId,
           invoiceId: delivery.invoiceId,
           escrowId: delivery.escrowId
@@ -709,6 +992,12 @@ export class OfftakeService implements OnModuleInit {
       if (outcome === 'replay') {
         const existing = await this.contracts.deliveryByIdempotencyKey(delivery.idempotencyKey!);
         if (existing) {
+          // A same-key twin committed between our entry check and the
+          // transaction: unwind only a reservation WE made (an adopted
+          // crash-retry reservation belongs to the twin's committed saga).
+          if (reservedByThisAttempt) {
+            await this.rollbackMilestoneReservation(contract.id, milestone.id, delivery.qtyKg);
+          }
           return this.deliveryResult(contract.id, existing, true);
         }
         throw new ConflictException(
@@ -722,7 +1011,18 @@ export class OfftakeService implements OnModuleInit {
       return this.deliveryResult(contract.id, delivery, false);
     }
     // In-memory path (tests/dev): claim -> journal -> state -> events.
-    const claimed = await this.contracts.addDelivery(delivery); // 409 on key replay
+    let claimed: OfftakeDelivery;
+    try {
+      claimed = await this.contracts.addDelivery(delivery);
+    } catch (error) {
+      // 409 on key replay: a same-key twin owns this saga. The caller
+      // unwinds our reservation and replays the twin's record — the rails
+      // rows belong to the twin and are never compensated here.
+      if (error instanceof ConflictException) {
+        throw new OfftakeDeliveryClaimConflict();
+      }
+      throw error;
+    }
     await this.ledger.postEntry(
       {
         idempotencyKey: entry.idempotencyKey,
@@ -733,17 +1033,19 @@ export class OfftakeService implements OnModuleInit {
       },
       actorId
     );
-    const deliveredQtyKg = milestone.deliveredQtyKg + delivery.qtyKg;
+    // Finalize the derived milestone state ON TOP of the reservation (the
+    // quantity was already claimed before the rails ran, V-50): the CAS
+    // precondition proves our reservation is still intact, so concurrent
+    // deliveries serialise and can never double-count or overshoot.
     const updatedMilestone = await this.contracts.updateMilestoneExpected(
       milestone.id,
       {
-        deliveredQtyKg,
-        status: milestoneStatusAfterDelivery(deliveredQtyKg, milestone.qtyKg),
+        status: milestoneStatusAfterDelivery(reservedQtyKg, milestone.qtyKg),
         linkedLotId: delivery.lotId,
         invoiceId: delivery.invoiceId,
         escrowId: delivery.escrowId
       },
-      { status: milestone.status, deliveredQtyKg: milestone.deliveredQtyKg }
+      { deliveredQtyKg: reservedQtyKg }
     );
     const milestones = await this.contracts.listMilestones(contract.id);
     let fulfilled = false;
@@ -861,23 +1163,34 @@ export class OfftakeService implements OnModuleInit {
     if (!payload?.escrowId || payload.to !== 'released') {
       return;
     }
-    const milestone = await this.contracts.milestoneByEscrowId(payload.escrowId);
+    await this.postSettlementJournal(payload.escrowId);
+  }
+
+  /**
+   * Posts the delivery settlement journal for one released offtake escrow.
+   * Idempotency-keyed per escrow (`offtake-settle:<escrowId>`), so the
+   * listener, a manual retry and the V-51 sweep all converge on ONE
+   * identical journal — replays never double-post. Returns true when the
+   * escrow belongs to an offtake delivery (journal posted or adopted).
+   */
+  private async postSettlementJournal(escrowId: string): Promise<boolean> {
+    const milestone = await this.contracts.milestoneByEscrowId(escrowId);
     if (!milestone) {
-      return; // not an offtake escrow
+      return false; // not an offtake escrow
     }
     const deliveries = await this.contracts.listDeliveries(milestone.contractId);
-    const delivery = deliveries.find((candidate) => candidate.escrowId === payload.escrowId);
+    const delivery = deliveries.find((candidate) => candidate.escrowId === escrowId);
     if (!delivery) {
-      return;
+      return false;
     }
     const contract = await this.contracts.getById(milestone.contractId);
     await this.ensureEscrowAccounts(contract);
     await this.ledger.postEntry(
       {
-        idempotencyKey: settlementLedgerIdempotencyKey(payload.escrowId),
+        idempotencyKey: settlementLedgerIdempotencyKey(escrowId),
         referenceType: 'offtake_settlement',
-        referenceId: payload.escrowId,
-        description: `Offtake delivery settlement (escrow ${payload.escrowId} released)`,
+        referenceId: escrowId,
+        description: `Offtake delivery settlement (escrow ${escrowId} released)`,
         postings: [
           {
             accountCode: contractEscrowLiabilityAccountCode(contract.id),
@@ -893,6 +1206,48 @@ export class OfftakeService implements OnModuleInit {
       },
       'system'
     );
+    return true;
+  }
+
+  /**
+   * V-51 durable settlement retry (admin). The escrow-release listener is a
+   * best-effort in-process consumer (V-51): a single listener failure drops
+   * the settlement journal because the outbox event is already consumed.
+   * This sweep is the durable backstop: it finds every offtake delivery
+   * whose escrow was RELEASED but has no `offtake-settle:<escrowId>`
+   * journal and re-drives the posting. The posting is idempotency-keyed, so
+   * the sweep is safe to run repeatedly and concurrently — re-drives
+   * converge on the identical journal, never duplicate legs. A held or
+   * refunded escrow (e.g. a V-50 compensated saga) never settles here.
+   */
+  async settlementSweep(actor: User | null): Promise<{ scanned: number; redriven: number }> {
+    const caller = requireActor(actor);
+    if (!isAdmin(caller)) {
+      throw new ForbiddenException('Only admins run the offtake settlement sweep');
+    }
+    let scanned = 0;
+    let redriven = 0;
+    for (const contract of await this.contracts.find({})) {
+      for (const delivery of await this.contracts.listDeliveries(contract.id)) {
+        if (!delivery.escrowId) {
+          continue;
+        }
+        scanned += 1;
+        const existing = await this.ledger.findEntryByIdempotencyKey(
+          settlementLedgerIdempotencyKey(delivery.escrowId)
+        );
+        if (existing) {
+          continue; // journal already posted (listener or a prior sweep)
+        }
+        const record = await this.escrow.escrowForOrder(delivery.orderId);
+        if (!record || record.id !== delivery.escrowId || record.status !== 'released') {
+          continue; // only a released escrow owes a settlement journal
+        }
+        await this.postSettlementJournal(delivery.escrowId);
+        redriven += 1;
+      }
+    }
+    return { scanned, redriven };
   }
 
   /**
