@@ -398,6 +398,7 @@ import {
   INSURANCE_CLAIM_REPOSITORY,
   INSURANCE_POLICY_REPOSITORY,
   LIEN_REPOSITORY,
+  LIVESTOCK_DISEASE_GUARD,
   LIVESTOCK_TRANSFER_GUARD,
   OFFTAKE_CONTRACT_REPOSITORY,
   OFFTAKE_TEMPLATE_REPOSITORY
@@ -415,6 +416,7 @@ import {
   createInMemoryOfftakeTemplateRepository,
   createLienTransferGuard
 } from './repositories/livestock-trade.repository.js';
+import { createDiseaseTransferGuard } from '../modules/livestock-health/disease-quarantine.js';
 import {
   createPgAggregationPointRepository,
   createPgCertifiedListingRepository,
@@ -1477,6 +1479,18 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
       inject: [LIEN_REPOSITORY]
     },
+    // V-12 quarantine transfer guard: blocks transfers of animals whose home
+    // state is under a confirmed in-window disease quarantine (same optional
+    // port pattern as the lien guard; no module cycle).
+    {
+      provide: LIVESTOCK_DISEASE_GUARD,
+      useFactory: (diseaseFlags: unknown, animals: unknown) =>
+        createDiseaseTransferGuard(
+          diseaseFlags as Parameters<typeof createDiseaseTransferGuard>[0],
+          animals as Parameters<typeof createDiseaseTransferGuard>[1]
+        ),
+      inject: [DISEASE_FLAG_REPOSITORY, ANIMAL_REPOSITORY]
+    },
     // Wave P: platform foundation (appended).
     {
       provide: AUTH_SESSION_REPOSITORY,
@@ -2199,6 +2213,7 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     DISBURSEMENT_REPOSITORY,
     AGGREGATION_POINT_REPOSITORY,
     COLD_CHAIN_LOG_REPOSITORY,
+    LIVESTOCK_DISEASE_GUARD,
     LIVESTOCK_TRANSFER_GUARD,
     LISTING_VARIANT_REPOSITORY,
     BUYER_GROUP_REPOSITORY,
@@ -2234,7 +2249,6 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     CREDIT_LOAN_REPOSITORY,
     CREDIT_REPAYMENT_REPOSITORY,
     CREDIT_COLLATERAL_REPOSITORY,
-    CREDIT_GUARANTOR_REPOSITORY,
     CREDIT_GROUP_REPOSITORY,
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
