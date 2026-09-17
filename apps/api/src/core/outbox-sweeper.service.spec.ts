@@ -213,3 +213,51 @@ describe('EventDedupService (events.processed_events)', () => {
     expect(handled).toEqual([event.id]);
   });
 });
+
+describe('OutboxSweeperService redriveDeadLetter (V-79)', () => {
+  it('resurrects a dead-lettered row: attempts cleared, re-published on next sweep', async () => {
+    const outbox = createInMemoryOutboxRepository();
+    const failingBus: EventBus = {
+      name: 'kafka',
+      publish: () => Promise.reject(new Error('broker down')),
+      status: () =>
+        Promise.resolve({ configured: true, healthy: false, detail: 'failing test bus' }),
+      close: () => Promise.resolve()
+    };
+    const failingEvents = new DomainEventsService(outbox, failingBus);
+    const deadSweeper = new OutboxSweeperService(failingEvents, outbox);
+    const stalled = await seedStalled({ outbox, events: failingEvents, sweeper: deadSweeper });
+    // Drive the row to the dead-letter cap: seed attempts just below it,
+    // then one failing sweep past the backoff window dead-letters it.
+    for (let i = 0; i < OUTBOX_MAX_ATTEMPTS - 1; i += 1) {
+      await outbox.recordAttempt(stalled.id);
+    }
+    await deadSweeper.sweep(new Date(Date.now() + OUTBOX_RETRY_BASE_MS * 2 ** OUTBOX_MAX_ATTEMPTS));
+    let record = (await outbox.listRecords()).find((row) => row.event.id === stalled.id);
+    expect(record?.deadLetteredAt).toBeTruthy();
+    expect(record?.attempts).toBe(OUTBOX_MAX_ATTEMPTS);
+
+    // Redrive: clears dead_lettered_at + attempts.
+    const redriven = await deadSweeper.redriveDeadLetter(stalled.id);
+    expect(redriven.event.id).toBe(stalled.id);
+    record = (await outbox.listRecords()).find((row) => row.event.id === stalled.id);
+    expect(record?.deadLetteredAt).toBeUndefined();
+    expect(record?.attempts).toBe(0);
+
+    // A working sweeper over the same outbox now delivers it.
+    const { sweeper: liveSweeper } = build();
+    const liveEvents = new DomainEventsService(outbox);
+    const healthySweeper = new OutboxSweeperService(liveEvents, outbox);
+    void liveSweeper;
+    expect((await healthySweeper.sweep()).published).toBe(1);
+    record = (await outbox.listRecords()).find((row) => row.event.id === stalled.id);
+    expect(record?.publishedAt).toBeTruthy();
+  });
+
+  it('404s for rows that are not dead-lettered (or missing)', async () => {
+    const { sweeper, events, outbox } = build();
+    const stalled = await seedStalled({ events, sweeper, outbox });
+    await expect(sweeper.redriveDeadLetter(stalled.id)).rejects.toThrowError(/dead-lettered/);
+    await expect(sweeper.redriveDeadLetter('event-missing')).rejects.toThrowError(/dead-lettered/);
+  });
+});

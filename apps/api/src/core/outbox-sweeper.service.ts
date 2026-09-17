@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { OUTBOX_REPOSITORY } from '../database/persistence.tokens.js';
 import type { OutboxRecord, OutboxRepository } from '../database/repositories/outbox.repository.js';
 import { DomainEventsService } from './domain-events.service.js';
@@ -62,6 +62,21 @@ export class OutboxSweeperService {
 
   async deadLetters(): Promise<OutboxRecord[]> {
     return (await this.outbox.listRecords()).filter((record) => record.deadLetteredAt);
+  }
+
+  /**
+   * V-79 redrive: resurrect a dead-lettered row — clears dead_lettered_at
+   * and the attempt counter so the next sweep re-delivers it (consumer-side
+   * dedup via events.processed_events makes re-delivery safe). 404 when no
+   * dead-lettered row with that id exists.
+   */
+  async redriveDeadLetter(id: string): Promise<OutboxRecord> {
+    const record = (await this.outbox.listRecords()).find((row) => row.event.id === id);
+    if (!record || !record.deadLetteredAt) {
+      throw new NotFoundException(`No dead-lettered outbox row '${id}'`);
+    }
+    await this.outbox.resetDeadLetter(id);
+    return record;
   }
 
   /**
