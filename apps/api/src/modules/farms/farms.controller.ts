@@ -10,15 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Min
-} from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   FARM_EXPENSE_CATEGORIES,
@@ -41,12 +33,15 @@ import { FarmsService } from './farms.service.js';
 
 class CreatePlotDto implements CreatePlotInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsNumber()
@@ -68,20 +63,24 @@ class CreatePlotDto implements CreatePlotInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   clientId?: string;
 }
 
 class UpdatePlotDto implements UpdatePlotInput {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lga?: string;
 
   @IsOptional()
@@ -107,22 +106,27 @@ class UpdatePlotDto implements UpdatePlotInput {
 class ListPlotsQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerUserId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 }
 
 class CreatePlantingDto implements CreatePlantingInput {
   @IsString()
+  @MaxLength(100)
   crop!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   variety?: string;
 
   @IsString()
+  @MaxLength(500)
   season!: string;
 
   @IsISO8601()
@@ -134,6 +138,7 @@ class CreatePlantingDto implements CreatePlantingInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   clientId?: string;
 }
 
@@ -172,12 +177,14 @@ class CreateExpenseDto implements CreateExpenseInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
 class SummaryQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerUserId?: string;
 }
 
