@@ -144,6 +144,13 @@ export class PartnerAuthService {
     if (!payload.sub) {
       throw new Error('Partner token is missing the sub claim');
     }
+    // L-01: re-check the client status on every verification — a deactivated
+    // client loses access immediately instead of riding out the remaining
+    // JWT lifetime (up to tokenTtlSeconds).
+    const client = await this.clients.findOne({ clientId: payload.sub });
+    if (!client || client.status !== 'active') {
+      throw new Error('Partner client is deactivated or unknown');
+    }
     return {
       clientId: payload.sub,
       scopes: typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [],
