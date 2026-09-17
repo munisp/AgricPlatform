@@ -8,17 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  ArrayNotEmpty,
-  IsArray,
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Min
-} from 'class-validator';
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsISO8601, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   DISBURSEMENT_MILESTONES,
@@ -39,6 +29,7 @@ class RegisterLienDto implements RegisterLienInput {
   subjectType!: RegisterLienInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 
   @IsInt()
@@ -46,6 +37,7 @@ class RegisterLienDto implements RegisterLienInput {
   principalKobo!: number;
 
   @IsString()
+  @MaxLength(500)
   @IsNotEmpty()
   terms!: string;
 }
@@ -55,6 +47,7 @@ class ListLiensQuery {
   subjectType!: RegisterLienInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 }
 
@@ -63,6 +56,7 @@ class QuotePolicyDto implements QuotePolicyInput {
   subjectType!: QuotePolicyInput['subjectType'];
 
   @IsString()
+  @MaxLength(100)
   subjectId!: string;
 
   @IsInt()
@@ -84,11 +78,14 @@ class QuotePolicyDto implements QuotePolicyInput {
 
 class SubmitClaimDto implements SubmitClaimInput {
   @IsString()
+  @MaxLength(100)
   policyId!: string;
 
   @IsArray()
+  @ArrayMaxSize(100)
   @ArrayNotEmpty()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   animalIds!: string[];
 
   @IsOptional()
@@ -98,6 +95,7 @@ class SubmitClaimDto implements SubmitClaimInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
@@ -109,6 +107,7 @@ class AssessClaimDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
@@ -119,6 +118,7 @@ class SettleClaimDto {
 
 class ScheduleDisbursementDto implements ScheduleDisbursementInput {
   @IsString()
+  @MaxLength(100)
   @IsNotEmpty()
   programmeId!: string;
 
@@ -130,6 +130,7 @@ class ScheduleDisbursementDto implements ScheduleDisbursementInput {
   amountKobo!: number;
 
   @IsString()
+  @MaxLength(100)
   beneficiaryUserId!: string;
 }
 
