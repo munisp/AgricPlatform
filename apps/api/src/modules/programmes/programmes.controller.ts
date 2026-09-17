@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsIn, IsInt, IsISO8601, IsOptional, IsString, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsISO8601, IsIn, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { CohortStatus, MilestoneProgressStatus, ProgrammeType, User } from '@agric-platform/shared';
 import { COHORT_STATUSES, MILESTONE_PROGRESS_STATUSES, PROGRAMME_TYPES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -26,6 +26,7 @@ class ListCohortsQuery extends ListQueryDto {
 
 class CreateCohortDto implements CreateCohortInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsIn(PROGRAMME_TYPES)
@@ -43,7 +44,9 @@ class CreateCohortDto implements CreateCohortInput {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   moderatorIds?: string[];
 }
 
@@ -54,6 +57,7 @@ class SetCohortStatusDto {
 
 class EnrolDto implements EnrolInput {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsOptional()
@@ -68,6 +72,7 @@ class EnrolDto implements EnrolInput {
 
 class AddMilestoneDto {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsInt()
@@ -81,6 +86,7 @@ class AddMilestoneDto {
 
 class SetProgressDto {
   @IsString()
+  @MaxLength(100)
   userId!: string;
 
   @IsIn(MILESTONE_PROGRESS_STATUSES)
@@ -89,6 +95,7 @@ class SetProgressDto {
 
 class AddCriterionDto {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsInt()
@@ -98,17 +105,21 @@ class AddCriterionDto {
 
 class AssignJudgeDto {
   @IsString()
+  @MaxLength(100)
   judgeUserId!: string;
 }
 
 class SubmitScoreDto {
   @IsString()
+  @MaxLength(100)
   judgeUserId!: string;
 
   @IsString()
+  @MaxLength(100)
   entryUserId!: string;
 
   @IsString()
+  @MaxLength(100)
   criterionId!: string;
 
   @IsInt()
@@ -118,11 +129,13 @@ class SubmitScoreDto {
 
 class CreateThreadDto {
   @IsString()
+  @MaxLength(200)
   title!: string;
 }
 
 class CreatePostDto {
   @IsString()
+  @MaxLength(2000)
   body!: string;
 }
 
