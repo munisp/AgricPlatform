@@ -36,6 +36,10 @@ import {
   VACCINATION_SCHEDULES
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import {
+  activeQuarantineFlags,
+  DISEASE_QUARANTINE_WINDOW_DAYS
+} from './disease-quarantine.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { resolveVetSigningSecret } from '../../config/livestock-health.config.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -576,11 +580,40 @@ export class LivestockHealthService {
     if (animalIds.length + lotIds.length === 0) {
       throw new BadRequestException('A permit must reference at least one animal or lot');
     }
+    const subjectSpecies: LivestockSpecies[] = [];
     for (const animalId of animalIds) {
-      await this.animals.getById(animalId); // 404 unknown animal
+      const animal = await this.animals.getById(animalId); // 404 unknown animal
+      subjectSpecies.push(animal.species);
     }
     for (const lotId of lotIds) {
-      await this.lots.getById(lotId); // 404 unknown lot
+      const lot = await this.lots.getById(lotId); // 404 unknown lot
+      subjectSpecies.push(lot.species);
+    }
+    // V-12 quarantine gate: a confirmed, in-window disease flag in the
+    // ORIGIN state blocks movement out of that state for matching species.
+    // Fail closed with 409 + audit — a permit issued against a quarantine
+    // defeats the entire surveillance programme.
+    const confirmed = await this.diseaseFlags.find({ status: 'confirmed', state: input.fromState });
+    const blocking = activeQuarantineFlags(confirmed, input.fromState, subjectSpecies);
+    if (blocking.length > 0) {
+      const flag = blocking[0];
+      await this.audit.record({
+        actorId: issuer.id,
+        action: 'livestock_health.permit_quarantine_blocked',
+        entityType: 'disease_flag',
+        entityId: flag.id,
+        metadata: {
+          fromState: input.fromState,
+          toState: input.toState,
+          disease: flag.disease,
+          animalIds,
+          lotIds
+        }
+      });
+      throw new ConflictException(
+        `Movement permit refused: confirmed ${flag.disease} quarantine in ${flag.state} ` +
+          `(flag '${flag.id}', window ${DISEASE_QUARANTINE_WINDOW_DAYS} days from confirmation)`
+      );
     }
     const now = new Date().toISOString();
     const permitNumber = `PMT-${NIGERIAN_STATE_CODES[input.fromState]}-${
