@@ -235,7 +235,12 @@ describe('S3EvidenceStorageDriver — stat/remove over the narrow client', () =>
     expect(upload.method).toBe('PUT');
     expect(upload.url).toContain('evidence/vsla/grp-1/evi-9');
     expect(upload.headers['x-amz-meta-sha256']).toBe('c'.repeat(64));
-    expect(upload.url).toContain('X-Amz-SignedHeaders=host%3Bx-amz-meta-sha256');
+    // V-73: Content-Length is pinned in the signature so the presigned PUT
+    // can only carry the declared byte count.
+    expect(upload.headers['Content-Length']).toBe('100');
+    expect(upload.url).toContain(
+      'X-Amz-SignedHeaders=content-length%3Bhost%3Bx-amz-meta-sha256'
+    );
     expect(Date.parse(upload.expiresAt) > Date.now()).toBe(true);
   });
 });
