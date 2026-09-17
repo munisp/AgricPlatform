@@ -9,7 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayNotEmpty, IsArray, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -28,6 +28,7 @@ import { FLOAT_FORECASTER_FLAG, FloatForecastService } from './float-forecast.se
 class ForecastQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   agentId?: string;
 }
 
@@ -38,23 +39,28 @@ class AlertQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   agentId?: string;
 }
 
 class ResolveAlertDto {
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   resolution?: string;
 }
 
 class CreateRunDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @ArrayNotEmpty()
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   alertIds!: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   notes?: string;
 }
 
@@ -68,6 +74,7 @@ class ForecastRunDto {
   /** Pin the as-of day (YYYY-MM-DD); defaults to today (UTC). */
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   asOfDate?: string;
 
   @IsOptional()

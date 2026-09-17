@@ -13,7 +13,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsObject, IsOptional, IsString } from 'class-validator';
+import { IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -23,6 +23,7 @@ import { LenderScorecardService } from './lender-scorecard.service.js';
 class PublishScorecardVersionDto {
   /** Version string, e.g. '1.0.0' — immutable once published. */
   @IsString()
+  @MaxLength(500)
   version!: string;
 
   /** Definition overrides; omitted fields take the v1 defaults. */
