@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsISO8601, IsIn, IsOptional, IsString } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsISO8601, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { Opportunity, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -28,27 +28,35 @@ const OPPORTUNITY_TYPES = [
 
 class CreateProgrammeDto {
   @IsString()
+  @MaxLength(200)
   title!: string;
 
   @IsIn(OPPORTUNITY_TYPES)
   type!: Opportunity['type'];
 
   @IsString()
+  @MaxLength(2000)
   description!: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   states?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   valueChains?: string[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   eligibility?: string[];
 
   @IsISO8601()
