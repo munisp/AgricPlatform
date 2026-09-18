@@ -76,8 +76,12 @@ describe('HealthController access control (G14)', () => {
 /**
  * WP-G10: /health/ready degraded-not-down aggregation. Optional infra
  * drivers (event-bus, orchestrator, authz) degrade the response payload
- * without failing it; only REQUIRED dependencies (postgres, redis) fail
- * the probe with 503; stub/unconfigured drivers report 'disabled'.
+ * without failing it; only REQUIRED dependencies (postgres) fail the probe
+ * with 503; stub/unconfigured drivers report 'disabled'.
+ *
+ * V-77: redis is no longer REQUIRED — the degraded-tier design keeps the
+ * API alive (throttle cache fail-open, idempotency/OTP stores fail-closed)
+ * and surfaces the outage as a tier-aware degraded[] entry instead.
  */
 function readyController(options: {
   dependencies?: DependencyIndicator[];
@@ -163,6 +167,26 @@ describe('HealthController /health/ready aggregation (WP-G10)', () => {
     expect(failure).toBeInstanceOf(ServiceUnavailableException);
     expect((failure as ServiceUnavailableException).getStatus()).toBe(503);
     expect((failure as ServiceUnavailableException).message).toContain('database');
+  });
+
+  it('V-77: redis down is degraded-not-down, with a cache-vs-store tier reason', async () => {
+    const failingRedis: DependencyIndicator = {
+      name: 'redis',
+      configured: () => true,
+      check: () => Promise.reject(new Error('connection refused'))
+    };
+    const controller = readyController({ dependencies: [failingRedis] });
+    // Must RESOLVE (200-degraded), not 503 — pods must not all evict on a
+    // redis blip (S-40).
+    const report = await controller.ready();
+    expect(report.status).toBe('degraded');
+    expect(report.persistence.redis).toBe('down');
+    const redisDegradation = report.degraded.find((entry) => entry.name === 'redis');
+    expect(redisDegradation).toBeDefined();
+    // The reason distinguishes the two tiers: cache (fail-open) vs store
+    // (fail-closed 503).
+    expect(redisDegradation?.reason).toContain('fail-open');
+    expect(redisDegradation?.reason).toContain('fail-closed');
   });
 
   it('does not fail when postgres is unconfigured (skipped → disabled)', async () => {
