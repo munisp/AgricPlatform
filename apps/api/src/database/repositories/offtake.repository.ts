@@ -4,6 +4,7 @@ import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
 import type {
+  OfftakeAmendment,
   OfftakeContract,
   OfftakeContractStatus,
   OfftakeDelivery,
@@ -111,6 +112,24 @@ export interface OfftakeContractRepository
    * idempotency key was already committed (nothing is re-posted).
    */
   recordDeliveryTx?(input: OfftakeDeliveryTxInput): Promise<'applied' | 'replay'>;
+
+  /* ---------------- V-34: contract amendments (versioned terms) ---------- */
+
+  /** Persists a new amendment proposal (append-only evidence). */
+  addAmendment(amendment: OfftakeAmendment): Promise<OfftakeAmendment>;
+  /** Amendments of a contract, ordered by seq. */
+  listAmendments(contractId: string): Promise<OfftakeAmendment[]>;
+  /** One amendment by id; undefined when absent. */
+  amendmentById(id: string): Promise<OfftakeAmendment | undefined>;
+  /**
+   * Guarded amendment status write (proposed → accepted/rejected/superseded);
+   * `expected` preconditions must still hold, else 409.
+   */
+  updateAmendmentExpected(
+    id: string,
+    patch: Partial<OfftakeAmendment>,
+    expected: Partial<OfftakeAmendment>
+  ): Promise<OfftakeAmendment>;
 }
 
 export function offtakeContractMatcher(
@@ -233,6 +252,49 @@ export class InMemoryOfftakeContractRepository
     }
     const updated = { ...existing, ...patch, updatedAt: new Date().toISOString() };
     this.milestones.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  /* ---------------------------- V-34: amendments ------------------------- */
+
+  private readonly amendments = new Map<string, OfftakeAmendment>();
+
+  async addAmendment(amendment: OfftakeAmendment): Promise<OfftakeAmendment> {
+    this.amendments.set(amendment.id, structuredClone(amendment));
+    return structuredClone(amendment);
+  }
+
+  async listAmendments(contractId: string): Promise<OfftakeAmendment[]> {
+    return [...this.amendments.values()]
+      .filter((amendment) => amendment.contractId === contractId)
+      .sort((a, b) => a.seq - b.seq)
+      .map((amendment) => structuredClone(amendment));
+  }
+
+  async amendmentById(id: string): Promise<OfftakeAmendment | undefined> {
+    const found = this.amendments.get(id);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  async updateAmendmentExpected(
+    id: string,
+    patch: Partial<OfftakeAmendment>,
+    expected: Partial<OfftakeAmendment>
+  ): Promise<OfftakeAmendment> {
+    const existing = this.amendments.get(id);
+    if (!existing) {
+      throw new NotFoundException(`Offtake amendment '${id}' not found`);
+    }
+    const matches = Object.entries(expected).every(
+      ([key, value]) => (existing as unknown as Record<string, unknown>)[key] === value
+    );
+    if (!matches) {
+      throw new ConflictException(
+        `Concurrent state change on offtake amendment '${id}'; re-read and retry the operation`
+      );
+    }
+    const updated = { ...existing, ...patch };
+    this.amendments.set(id, updated);
     return structuredClone(updated);
   }
 }
