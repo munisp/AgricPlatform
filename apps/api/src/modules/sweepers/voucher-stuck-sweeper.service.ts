@@ -39,6 +39,8 @@ export interface VoucherStuckSweepResult {
   redeemed: number;
   /** Stuck REDEEMING claims rolled back to ISSUED (posting proven absent). */
   rolledBack: number;
+  /** W2-C2 (V-02): stuck REFUNDING claims resumed to REFUNDED. */
+  refunded: number;
   /** Rows already swept to a terminal state (exactly-once marker). */
   skippedMarked: number;
   /** Rows lost to a concurrent transition (CAS loser backs off). */
@@ -85,12 +87,12 @@ export class VoucherStuckSweeperService {
       return this.voucherRepo.findSweepCandidates({ nowIso, stuckBeforeIso, limit });
     }
     const due: InputVoucherRecord[] = [];
-    for (const status of ['ISSUED', 'EXPIRING'] as const) {
+    for (const status of ['ISSUED', 'EXPIRING', 'PARTIALLY_REDEEMED'] as const) {
       due.push(
         ...(await this.voucherRepo.find({ status })).filter((v) => v.expiresAt <= nowIso)
       );
     }
-    for (const status of ['VOIDING', 'REDEEMING'] as const) {
+    for (const status of ['VOIDING', 'REDEEMING', 'REFUNDING'] as const) {
       due.push(
         ...(await this.voucherRepo.find({ status })).filter(
           (v) => (v.updatedAt ?? v.createdAt) <= stuckBeforeIso
@@ -114,6 +116,7 @@ export class VoucherStuckSweeperService {
       voided: 0,
       redeemed: 0,
       rolledBack: 0,
+      refunded: 0,
       skippedMarked: 0,
       conflicts: 0,
       failed: 0
@@ -158,10 +161,18 @@ export class VoucherStuckSweeperService {
     switch (voucher.status) {
       case 'ISSUED':
       case 'EXPIRING':
+      // W2-C2 (V-32): a partially redeemed voucher past expiry releases its
+      // remaining balance through the same EXPIRING path.
+      case 'PARTIALLY_REDEEMED':
         await this.vouchers.expireVoucher(voucher.id, 'system');
         return true;
       case 'VOIDING':
         await this.vouchers.voidVoucher(voucher.id, 'system');
+        return true;
+      case 'REFUNDING':
+        // W2-C2 (V-02): resume a stuck refund — reason/complaintCaseId were
+        // captured on the row by the claim CAS, and every posting replays.
+        await this.vouchers.refundVoucher(voucher.id, 'system');
         return true;
       case 'REDEEMING': {
         const recovered = await this.vouchers.recoverStuckRedemption(voucher.id, 'system');
@@ -179,12 +190,16 @@ export class VoucherStuckSweeperService {
     status: InputVoucherRecord['status'],
     terminal: boolean
   ): void {
-    if (status === 'ISSUED' || status === 'EXPIRING') {
+    if (status === 'ISSUED' || status === 'EXPIRING' || status === 'PARTIALLY_REDEEMED') {
       result.expired += 1;
       return;
     }
     if (status === 'VOIDING') {
       result.voided += 1;
+      return;
+    }
+    if (status === 'REFUNDING') {
+      result.refunded += 1;
       return;
     }
     if (status === 'REDEEMING') {
