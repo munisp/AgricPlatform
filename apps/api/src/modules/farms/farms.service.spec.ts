@@ -3,6 +3,7 @@ import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   createInMemoryCropPlantingRepository,
+  createInMemoryFarmExpenseAllocationRepository,
   createInMemoryFarmExpenseRepository,
   createInMemoryFarmPlotRepository,
   createInMemoryHarvestRecordRepository
@@ -76,7 +77,10 @@ describe('FarmsService', () => {
       plots,
       plantings,
       harvests,
-      expenses
+      expenses,
+      undefined,
+      undefined,
+      createInMemoryFarmExpenseAllocationRepository()
     );
   });
 
@@ -175,9 +179,16 @@ describe('FarmsService', () => {
   it('enforces the planting status lifecycle with idempotent replays', async () => {
     const plot = await service.createPlot(farmer, plotInput);
     const planting = await service.createPlanting(farmer, plot.id, plantingInput);
-    const failed = await service.updatePlantingStatus(farmer, planting.id, 'failed');
+    // V-03 contract input: the failure transition requires a failureReason.
+    await expect(service.updatePlantingStatus(farmer, planting.id, 'failed')).rejects.toThrow(
+      /failureReason is required/
+    );
+    const failed = await service.updatePlantingStatus(farmer, planting.id, 'failed', {
+      failureReason: 'drought'
+    });
     expect(failed.status).toBe('failed');
-    // Replay of the same transition is a no-op.
+    expect(failed.failureReason).toBe('drought');
+    // Replay of the same transition is a no-op (no reason needed).
     expect(await service.updatePlantingStatus(farmer, planting.id, 'failed')).toEqual(failed);
     await expect(service.updatePlantingStatus(farmer, planting.id, 'growing')).rejects.toThrow(
       /Invalid planting status transition/
@@ -193,7 +204,7 @@ describe('FarmsService', () => {
 
   /* ------------------------------ harvests ----------------------------- */
 
-  it('records a harvest and flips the planting to harvested', async () => {
+  it('records a harvest pick and flips the planting to partially_harvested (A3)', async () => {
     const plot = await service.createPlot(farmer, plotInput);
     const planting = await service.createPlanting(farmer, plot.id, plantingInput);
     const harvest = await service.recordHarvest(farmer, planting.id, {
@@ -203,7 +214,7 @@ describe('FarmsService', () => {
       qualityGrade: 'A'
     });
     expect(harvest.plantingId).toBe(planting.id);
-    expect((await plantings.getById(planting.id)).status).toBe('harvested');
+    expect((await plantings.getById(planting.id)).status).toBe('partially_harvested');
     expect(await service.listHarvests(farmer, planting.id)).toHaveLength(1);
     await expect(service.listHarvests(otherFarmer, planting.id)).rejects.toThrow(
       /your own records/
@@ -262,7 +273,11 @@ describe('FarmsService', () => {
       amountKobo: 200_000,
       incurredAt: '2025-05-10T00:00:00.000Z'
     });
-    const summary = await service.summary(farmer);
+    let summary = await service.summary(farmer);
+    expect(summary.activePlantings).toBe(2); // cassava growing + maize partially harvested (A3)
+    // Close the maize season explicitly (partially_harvested → harvested).
+    await service.updatePlantingStatus(farmer, maize.id, 'harvested');
+    summary = await service.summary(farmer);
     expect(summary.ownerUserId).toBe('farmer-1');
     expect(summary.plotCount).toBe(2);
     expect(summary.totalHectares).toBe(4);
