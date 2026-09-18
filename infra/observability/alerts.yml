@@ -168,6 +168,23 @@ groups:
             Check OTP request sources; consider tightening throttler limits on
             /auth/otp/* per docs/security-compliance.md §7.
 
+      - alert: AgricThrottleRedisFailOpen
+        # V-77 degraded tier: any redis error in the throttler storage means
+        # rate limiting is running fail-open (requests served unthrottled).
+        # Page-worthy after 5m: abuse windows are unprotected while it fires.
+        expr: rate(agric_throttle_redis_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: Rate limiting fail-open — Redis throttler cache down
+          action: >-
+            Check Redis health (redis dependency on /health/ready shows the
+            degraded tier: cache fail-open, idempotency/OTP stores
+            fail-closed). While this fires, per-IP rate limits are NOT
+            enforced — watch http_requests_total for abuse and restore Redis
+            per docs/runbooks/ops.md.
+
       - alert: AgricIdempotentReplayStorm
         expr: rate(agric_idempotent_replays_total[10m]) > 1
         for: 15m
