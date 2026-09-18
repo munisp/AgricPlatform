@@ -242,3 +242,26 @@ Break-glass protocol:
    (see dim06 findings V-13/V-14).
 4. Feature flags, rate limits and audit anchors are likewise per-pod in
    this mode — do not treat their state as authoritative.
+
+## Secret compromise / key rotation (S-37 / V-26)
+
+Signing secrets and hashing salts are versioned key RINGS
+(`apps/api/src/common/crypto/key-rotation.ts`, adoption checklist:
+`docs/security/key-rotation.md`). On a suspected compromise:
+
+1. Generate a replacement secret; set the module's `<NAME>_KEYS` env to
+   `<newKid>=<newSecret>,<oldKid>=<oldSecret>` (new kid first = active;
+   old kid stays verify-only) and redeploy. New artifacts are signed with
+   the new key immediately; fielded artifacts keep verifying.
+2. Watch for verification failures with reason `retired-kid` — clients
+   presenting artifacts signed with a key that has left the window.
+   Distinguish from `mismatch` (tampering).
+3. Close the window once the artifact lifetime has passed (voucher expiry
+   horizon, QR re-issue cycle): remove the old pair and redeploy.
+4. If the compromise is CONFIRMED (not suspected), skip the grace window:
+   remove the old key immediately and force re-issuance of outstanding
+   artifacts (revoke/reissue vouchers; partners re-register webhooks).
+5. Keyed-hash salts (NIN/MSISDN): rotate the salt the same way; rows
+   converge to the active salt via opportunistic re-hash at next
+   presentation (batch re-hash is impossible by design — no plaintext is
+   stored).
