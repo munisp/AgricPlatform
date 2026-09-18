@@ -96,7 +96,8 @@ export class HttpAnchorSink implements AuditAnchorSink {
       });
     } catch (error) {
       throw new Error(
-        `audit anchor sink ${this.url} unreachable: ${error instanceof Error ? error.message : String(error)}`
+        `audit anchor sink ${this.url} unreachable: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     } finally {
       clearTimeout(timer);
