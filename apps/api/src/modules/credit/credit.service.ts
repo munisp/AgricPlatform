@@ -1,9 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
-  Optional
+  Optional,
+  ServiceUnavailableException,
+  type OnModuleInit
 } from '@nestjs/common';
 import {
   CREDIT_FACTOR_MAX,
@@ -12,6 +15,7 @@ import {
   type CreditGuarantor,
   type CreditLoanApplication,
   type CreditLoanProduct,
+  type CreditLoanRestructure,
   type CreditLoanStatus,
   type CreditPortfolioReport,
   type CreditRepayment,
@@ -21,30 +25,37 @@ import {
 } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
+import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import {
   CREDIT_COLLATERAL_REPOSITORY,
   CREDIT_GUARANTOR_REPOSITORY,
   CREDIT_GROUP_MEMBER_REPOSITORY,
+  CREDIT_GROUP_REPOSITORY,
   CREDIT_LOAN_REPOSITORY,
   CREDIT_PRODUCT_REPOSITORY,
   CREDIT_REPAYMENT_REPOSITORY,
+  CREDIT_RESTRUCTURE_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+  CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
   ORDER_REPOSITORY,
   PROFILE_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
   CreditCollateralRepository,
   CreditGroupMemberRepository,
+  CreditGroupRepository,
   CreditGuarantorRepository,
   CreditLoanCriteria,
   CreditLoanRepository,
   CreditProductRepository,
   CreditRepaymentRepository,
-  CreditSavingsAccountRepository
+  CreditRestructureRepository,
+  CreditSavingsAccountRepository,
+  CreditSavingsTransactionRepository
 } from '../../database/repositories/credit-suite.repository.js';
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 import type { ProfileRepository } from '../../database/repositories/profile.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 // Stage 27 (innovation #20): shared pure PAR accumulation — see ./par.ts.
 import { computeParMetrics, type ParLoanFact } from './par.js';
 
@@ -56,11 +67,15 @@ type LoanParty = 'applicant' | 'reviewer';
 const DAY_MS = 86_400_000;
 
 /**
- * Credit loan lifecycle state machine (Wave CREDIT):
+ * Credit loan lifecycle state machine (Wave CREDIT + Wave-2 design gaps):
  *   draft → submitted → scoring → approved | rejected
  *   approved → disbursed → repaying → repaid | defaulted → written_off
- * `repaid` is system-driven (last installment paid) and never accepted by
- * the generic transition guard. Every transition is a guarded
+ *   repaying → consolidated (V-30: folded into a top-up loan)
+ *   defaulted → repaying    (V-05: cure — a payment on a defaulted loan
+ *                            re-activates it and its missed installments)
+ * `repaid` is system-driven (last installment fully covered) and never
+ * accepted by the generic transition guard; `consolidated` is driven by
+ * the top-up approval path only. Every transition is a guarded
  * compare-and-set (updateExpected) with an audit entry and a domain event.
  */
 export const CREDIT_LOAN_TRANSITIONS: Readonly<
@@ -72,11 +87,40 @@ export const CREDIT_LOAN_TRANSITIONS: Readonly<
   approved: { disbursed: ['reviewer'] },
   rejected: {},
   disbursed: { repaying: ['reviewer'] },
-  repaying: { defaulted: ['reviewer'] },
+  repaying: { defaulted: ['reviewer'], consolidated: ['reviewer'] },
   repaid: {},
-  defaulted: { written_off: ['reviewer'] },
-  written_off: {}
+  defaulted: { written_off: ['reviewer'], repaying: ['reviewer', 'applicant'] },
+  written_off: {},
+  consolidated: {}
 };
+
+/**
+ * V-30 exposure control: a borrower may hold at most this many ACTIVE
+ * loans (approved/disbursed/repaying) and the aggregate outstanding
+ * balance across active + defaulted loans plus the requested principal may
+ * not exceed the ceiling. Platform-wide conservative defaults; per-product
+ * ranges still apply on top.
+ */
+export const CREDIT_MAX_ACTIVE_LOANS = 3;
+export const CREDIT_MAX_AGGREGATE_EXPOSURE_KOBO = 50_000_000;
+
+/** Loan statuses that count against the active-loan count cap (V-30). */
+const EXPOSURE_COUNT_STATUSES: ReadonlySet<CreditLoanStatus> = new Set([
+  'approved',
+  'disbursed',
+  'repaying'
+]);
+
+/** Loan statuses whose unpaid balances count toward the exposure ceiling. */
+const EXPOSURE_BALANCE_STATUSES: ReadonlySet<CreditLoanStatus> = new Set([
+  'approved',
+  'disbursed',
+  'repaying',
+  'defaulted'
+]);
+
+/** V-03 review flag value set by the crop-failure grace subscriber. */
+export const CREDIT_REVIEW_CROP_FAILURE = 'crop_failure';
 
 export interface CreateCreditProductInput {
   name: string;
@@ -92,16 +136,55 @@ export interface ApplyForLoanInput {
   productId: string;
   principalKobo: number;
   purpose?: string;
+  /**
+   * V-03: optional link to the financed plot / planting. Persisted on the
+   * application so a farms planting-failure event can trigger the grace
+   * path (aging suspension + review flag) on the linked loan.
+   */
+  plotId?: string;
+  plantingId?: string;
 }
 
 export interface ApplyForGroupLoanInput extends ApplyForLoanInput {
   groupId: string;
 }
 
+/** V-30 top-up consolidation: a new application that folds a live loan. */
+export interface ApplyForTopUpInput extends ApplyForLoanInput {
+  /** The applicant's own repaying loan to consolidate. */
+  consolidatesLoanId: string;
+}
+
 export interface AddCollateralInput {
   kind: string;
   description: string;
   estimatedValueKobo: number;
+  /**
+   * V-31: when the collateral is a warehouse-pledged receipt, record the
+   * pledge / receipt references so a later claim can drive the warehouse
+   * liquidation path (see the credit.collateral.claimed event contract).
+   */
+  warehousePledgeId?: string;
+  warehouseReceiptId?: string;
+}
+
+/** V-04 restructure terms. */
+export interface RestructureLoanInput {
+  /** Replacement tenor in days (must be a positive integer). */
+  termDays: number;
+  /** Replacement annual rate; defaults to the product's current rate. */
+  interestBpsAnnual?: number;
+  /** Free-text reason (audited, pinned on the restructure record). */
+  reason: string;
+}
+
+/** V-05 settlement-for-less input. */
+export interface SettleLoanInput {
+  /**
+   * Cash actually received, integer kobo, 0..outstanding. The remainder is
+   * written down (platform:loan_losses debit) in the same balanced entry.
+   */
+  settlementKobo: number;
 }
 
 /** True for admin|lender reviewers (the 'lender' role predates this wave). */
@@ -154,6 +237,8 @@ export function generateCreditSchedule(input: {
   interestBpsAnnual: number;
   termDays: number;
   startIso: string;
+  /** Schedule generation (V-04): 1 for the approval-time schedule. */
+  scheduleVersion?: number;
 }): CreditRepayment[] {
   const principal = BigInt(input.principalKobo);
   const interest =
@@ -175,10 +260,22 @@ export function generateCreditSchedule(input: {
       sequence,
       dueAt: new Date(startMs + dueOffsetDays * DAY_MS).toISOString(),
       amountKobo: Number(amount),
+      // V-29: the balance accumulates from 0; a concrete (non-null) value is
+      // required so partial payments can CAS on the running total.
+      paidAmountKobo: 0,
+      scheduleVersion: input.scheduleVersion ?? 1,
       status: 'pending'
     });
   }
   return schedule;
+}
+
+/** Unpaid remainder of one installment (integer kobo). */
+export function installmentOutstandingKobo(repayment: CreditRepayment): number {
+  if (repayment.status === 'paid' || repayment.status === 'superseded') {
+    return 0;
+  }
+  return repayment.amountKobo - (repayment.paidAmountKobo ?? 0);
 }
 
 /**
@@ -196,7 +293,7 @@ export function effectiveRepaymentStatus(
 }
 
 @Injectable()
-export class CreditService {
+export class CreditService implements OnModuleInit {
   constructor(
     private readonly events: DomainEventsService,
     @Inject(CREDIT_PRODUCT_REPOSITORY) private readonly products: CreditProductRepository,
@@ -204,11 +301,24 @@ export class CreditService {
     @Inject(CREDIT_REPAYMENT_REPOSITORY) private readonly repayments: CreditRepaymentRepository,
     @Inject(CREDIT_COLLATERAL_REPOSITORY) private readonly collateral: CreditCollateralRepository,
     @Inject(CREDIT_GUARANTOR_REPOSITORY) private readonly guarantors: CreditGuarantorRepository,
+    @Inject(CREDIT_GROUP_REPOSITORY) private readonly groups: CreditGroupRepository,
     @Inject(CREDIT_GROUP_MEMBER_REPOSITORY) private readonly members: CreditGroupMemberRepository,
     @Inject(CREDIT_SAVINGS_ACCOUNT_REPOSITORY)
     private readonly savingsAccounts: CreditSavingsAccountRepository,
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
+    @Inject(CREDIT_RESTRUCTURE_REPOSITORY)
+    private readonly restructures: CreditRestructureRepository,
+    @Inject(CREDIT_SAVINGS_TRANSACTION_REPOSITORY)
+    private readonly savingsTransactions: CreditSavingsTransactionRepository,
+    /**
+     * Wave-2 money movements (V-05 settlement write-down, V-28 guarantor
+     * liability/settlement legs) post through the double-entry ledger. The
+     * dependency is optional for construction (unit tests) but the posting
+     * paths fail closed when it is absent — a money-moving operation never
+     * silently skips its legs.
+     */
+    @Optional() private readonly ledger?: LedgerService,
     @Optional() private readonly audit?: AuditService
   ) {}
 
@@ -310,6 +420,12 @@ export class CreditService {
     if (!membership) {
       throw new ForbiddenException('Only group members may apply for a group loan');
     }
+    const group = await this.groups.getById(input.groupId);
+    if (group.status === 'dissolved') {
+      throw new BadRequestException(
+        `Group ${input.groupId} is dissolved; no new group loans may be drawn on it`
+      );
+    }
     const loan = await this.createApplication(input, product, actor, input.groupId);
     const coObligors = (await this.members.listByGroup(input.groupId)).filter(
       (member) => member.userId !== actor.id
@@ -325,11 +441,85 @@ export class CreditService {
     return loan;
   }
 
+  /**
+   * V-30 exposure control: rejects the application (400) when the applicant
+   * already holds CREDIT_MAX_ACTIVE_LOANS active loans, or when the
+   * applicant's aggregate outstanding balance (active + defaulted loans)
+   * plus the requested principal would exceed CREDIT_MAX_AGGREGATE_EXPOSURE_KOBO.
+   * `additionalKobo` is the NET new exposure (a top-up consolidation passes
+   * only its top-up principal — the consolidated balance is already counted).
+   */
+  private async assertExposureAllowance(
+    applicantUserId: string,
+    additionalKobo: number
+  ): Promise<void> {
+    const mine = await this.loans.find({ applicantUserId });
+    const active = mine.filter((loan) => EXPOSURE_COUNT_STATUSES.has(loan.status));
+    if (active.length >= CREDIT_MAX_ACTIVE_LOANS) {
+      throw new BadRequestException(
+        `EXPOSURE_CAP: applicant already holds ${active.length} active loans (cap ${CREDIT_MAX_ACTIVE_LOANS})`
+      );
+    }
+    let exposureKobo = 0;
+    for (const loan of mine) {
+      if (!EXPOSURE_BALANCE_STATUSES.has(loan.status)) {
+        continue;
+      }
+      if (loan.status === 'approved') {
+        // Approved but not yet disbursed: the full principal is committed.
+        exposureKobo += loan.principalKobo;
+        continue;
+      }
+      const schedule = await this.repayments.find({ loanId: loan.id });
+      for (const repayment of schedule) {
+        exposureKobo += installmentOutstandingKobo(repayment);
+      }
+    }
+    if (exposureKobo + additionalKobo > CREDIT_MAX_AGGREGATE_EXPOSURE_KOBO) {
+      throw new BadRequestException(
+        `EXPOSURE_CEILING: outstanding exposure ${exposureKobo} kobo + requested ` +
+          `${additionalKobo} kobo exceeds the aggregate ceiling of ${CREDIT_MAX_AGGREGATE_EXPOSURE_KOBO} kobo`
+      );
+    }
+  }
+
+  /**
+   * V-30 top-up consolidation: the borrower applies for additional principal
+   * on a product while folding an existing REPAYING loan into the new one.
+   * The fold happens AT APPROVAL (see approve): the old loan transitions
+   * repaying → consolidated (CAS), its open installments are superseded and
+   * the new schedule covers top-up principal + the old outstanding balance
+   * — one atomic consolidation instead of two parallel loans.
+   */
+  async applyForTopUp(input: ApplyForTopUpInput, actor: CreditActor): Promise<CreditLoanApplication> {
+    const product = await this.products.getById(input.productId);
+    if (product.groupLending) {
+      throw new BadRequestException('Top-up consolidation is not available for group products');
+    }
+    const existing = await this.loans.getById(input.consolidatesLoanId);
+    if (existing.applicantUserId !== actor.id) {
+      throw new ForbiddenException('You may only consolidate your own loans');
+    }
+    if (existing.status !== 'repaying') {
+      throw new BadRequestException(
+        `TOP_UP_STATE: loan ${existing.id} is '${existing.status}'; only a repaying loan can be consolidated`
+      );
+    }
+    const already = await this.loans.findOne({ consolidatesLoanId: existing.id });
+    if (already) {
+      throw new ConflictException(
+        `TOP_UP_EXISTS: loan ${existing.id} is already consolidated by application ${already.id}`
+      );
+    }
+    return this.createApplication(input, product, actor, undefined, existing.id);
+  }
+
   private async createApplication(
     input: ApplyForLoanInput,
     product: CreditLoanProduct,
     actor: CreditActor,
-    groupId?: string
+    groupId?: string,
+    consolidatesLoanId?: string
   ): Promise<CreditLoanApplication> {
     if (!product.active) {
       throw new BadRequestException(`Product '${product.name}' is not accepting applications`);
@@ -343,6 +533,9 @@ export class CreditService {
         `principalKobo must be within the product range ${product.minPrincipalKobo}–${product.maxPrincipalKobo} kobo`
       );
     }
+    // V-30 exposure control: active-loan count cap + aggregate exposure
+    // ceiling, checked at application time (not just at decision time).
+    await this.assertExposureAllowance(actor.id, input.principalKobo);
     const now = new Date().toISOString();
     const loan: CreditLoanApplication = {
       id: newId('cloan'),
@@ -352,6 +545,9 @@ export class CreditService {
       status: 'draft',
       purpose: input.purpose,
       groupId,
+      plotId: input.plotId,
+      plantingId: input.plantingId,
+      consolidatesLoanId,
       createdAt: now,
       updatedAt: now
     };
@@ -466,33 +662,147 @@ export class CreditService {
   async approve(id: string, actor: CreditActor): Promise<CreditLoanApplication> {
     requireReviewer(actor);
     const loan = await this.loans.getById(id);
-    if (loan.status === 'approved') {
+    if (loan.status === 'approved' && !loan.consolidatesLoanId) {
       return loan; // idempotent replay
-    }
-    this.assertTransition(loan, 'approved');
-    const pendingGuarantors = await this.guarantors.find({ loanId: id, status: 'invited' });
-    if (pendingGuarantors.length > 0) {
-      throw new BadRequestException(
-        'All invited guarantors must accept or decline before approval'
-      );
     }
     const product = await this.products.getById(loan.productId);
     const now = new Date().toISOString();
-    const updated = await this.transitionLoan(loan, 'approved', actor, {
-      decidedAt: now,
-      decidedBy: actor.id
-    });
-    const schedule = generateCreditSchedule({
-      loanId: loan.id,
-      principalKobo: loan.principalKobo,
-      interestBpsAnnual: product.interestBpsAnnual,
-      termDays: product.termDays,
-      startIso: now
-    });
-    for (const repayment of schedule) {
-      await this.repayments.create(repayment);
+    let updated = loan;
+    if (loan.status !== 'approved') {
+      this.assertTransition(loan, 'approved');
+      const pendingGuarantors = await this.guarantors.find({ loanId: id, status: 'invited' });
+      if (pendingGuarantors.length > 0) {
+        throw new BadRequestException(
+          'All invited guarantors must accept or decline before approval'
+        );
+      }
+      updated = await this.transitionLoan(loan, 'approved', actor, {
+        decidedAt: now,
+        decidedBy: actor.id
+      });
+    }
+    let schedulePrincipal = loan.principalKobo;
+    if (loan.consolidatesLoanId) {
+      // V-30 top-up consolidation: fold the source loan into this one —
+      // claim the source loan (CAS repaying → consolidated), supersede its
+      // open installments, record the fold, and schedule this loan over
+      // top-up principal + the source's outstanding balance. Retry-safe:
+      // an already-approved application resumes the fold here.
+      schedulePrincipal = await this.consolidateSourceLoan(loan, actor, now);
+    }
+    // Schedule generation is idempotent: a retried approval (or a resumed
+    // consolidation) does not duplicate repayment rows.
+    const existingSchedule = await this.repayments.find({ loanId: loan.id });
+    if (existingSchedule.length === 0) {
+      const schedule = generateCreditSchedule({
+        loanId: loan.id,
+        principalKobo: schedulePrincipal,
+        interestBpsAnnual: product.interestBpsAnnual,
+        termDays: product.termDays,
+        startIso: now
+      });
+      for (const repayment of schedule) {
+        await this.repayments.create(repayment);
+      }
     }
     return updated;
+  }
+
+  /**
+   * V-30: folds the repaying source loan into the top-up application.
+   * Claim-first: the source loan is CAS-claimed (repaying → consolidated)
+   * BEFORE any schedule mutation, so a concurrent consolidation/payment
+   * loses cleanly with a 409. Retry-safe: when a previous attempt already
+   * consolidated the source (crash between claim and schedule generation),
+   * the fold is adopted and the outstanding is recomputed from the pinned
+   * restructure record instead of re-superseding rows.
+   * Returns the schedule principal (top-up principal + source outstanding).
+   */
+  private async consolidateSourceLoan(
+    loan: CreditLoanApplication,
+    actor: CreditActor,
+    now: string
+  ): Promise<number> {
+    const source = await this.loans.getById(loan.consolidatesLoanId!);
+    if (source.applicantUserId !== loan.applicantUserId) {
+      throw new BadRequestException('TOP_UP_OWNER: a top-up can only consolidate the same borrower’s loan');
+    }
+    let outstandingKobo: number;
+    if (source.status === 'repaying') {
+      const sourceSchedule = await this.repayments.find({ loanId: source.id });
+      const open = sourceSchedule.filter(
+        (repayment) => repayment.status === 'pending' || repayment.status === 'missed'
+      );
+      outstandingKobo = open.reduce((sum, repayment) => sum + installmentOutstandingKobo(repayment), 0);
+      const event = this.events.build(
+        'credit.loan.consolidated',
+        { loanId: source.id, consolidatedByLoanId: loan.id, outstandingKobo },
+        actor.id
+      );
+      await this.loans.updateExpected(
+        source.id,
+        { status: 'consolidated', updatedAt: now },
+        { status: 'repaying', updatedAt: source.updatedAt },
+        event
+      );
+      if (this.loans.transactionalOutbox) {
+        this.events.emit(event);
+      } else {
+        await this.events.persist(event);
+      }
+      // Supersede the source's open schedule rows (immutable audit history).
+      for (const repayment of open) {
+        await this.repayments.update(repayment.id, { status: 'superseded' });
+      }
+      // Pin the fold as a restructure record on the SOURCE loan.
+      await this.restructures.create({
+        id: newId('crst'),
+        loanId: source.id,
+        version:
+          (await this.restructures.find({ loanId: source.id })).reduce(
+            (max, row) => Math.max(max, row.version),
+            0
+          ) + 1,
+        reason: `top-up consolidation into application ${loan.id}`,
+        outstandingKobo,
+        supersededSchedule: open.map((repayment) => ({
+          repaymentId: repayment.id,
+          sequence: repayment.sequence,
+          dueAt: repayment.dueAt,
+          amountKobo: repayment.amountKobo,
+          paidAmountKobo: repayment.paidAmountKobo ?? 0
+        })),
+        newInstallmentCount: 0,
+        createdBy: actor.id,
+        createdAt: now
+      });
+    } else if (source.status === 'consolidated') {
+      // Retry adoption: the source was already folded by an earlier attempt
+      // of THIS application — recompute the carried balance from the pinned
+      // fold record instead of re-mutating anything.
+      const folds = (await this.restructures.find({ loanId: source.id })).filter((row) =>
+        row.reason.endsWith(loan.id)
+      );
+      const fold = folds.sort((a, b) => b.version - a.version)[0];
+      if (!fold) {
+        throw new ConflictException(
+          `TOP_UP_CONFLICT: loan ${source.id} was consolidated by a different application`
+        );
+      }
+      outstandingKobo = fold.outstandingKobo;
+    } else {
+      throw new BadRequestException(
+        `TOP_UP_STATE: loan ${source.id} is '${source.status}'; only a repaying loan can be consolidated`
+      );
+    }
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'credit.loan.consolidated',
+      entityType: 'credit_loan_application',
+      entityId: source.id,
+      metadata: { consolidatedByLoanId: loan.id, outstandingKobo }
+    });
+    return loan.principalKobo + outstandingKobo;
   }
 
   async reject(id: string, actor: CreditActor): Promise<CreditLoanApplication> {
@@ -531,7 +841,14 @@ export class CreditService {
     return this.transitionLoan(loan, 'repaying', actor);
   }
 
-  /** repaying → defaulted: marks every unpaid installment 'missed'. */
+  /**
+   * repaying → defaulted: marks every unpaid installment 'missed' and
+   * issues GUARANTOR DEMANDS (V-28): every accepted guarantor is called for
+   * a computed share of the outstanding balance (largest-remainder split,
+   * deterministic by guarantor id). Each demand is a CAS accepted → called
+   * plus a `credit.guarantor.demand_issued` notification event; a replayed
+   * default skips guarantors already called.
+   */
   async defaultLoan(id: string, actor: CreditActor): Promise<CreditLoanApplication> {
     requireReviewer(actor);
     const loan = await this.loans.getById(id);
@@ -539,12 +856,72 @@ export class CreditService {
       return loan; // idempotent replay
     }
     this.assertTransition(loan, 'defaulted');
+    let outstandingKobo = 0;
     for (const repayment of await this.repayments.find({ loanId: id })) {
       if (repayment.status === 'pending') {
         await this.repayments.update(repayment.id, { status: 'missed' });
+        outstandingKobo += installmentOutstandingKobo(repayment);
       }
     }
-    return this.transitionLoan(loan, 'defaulted', actor);
+    const updated = await this.transitionLoan(loan, 'defaulted', actor);
+    await this.issueGuarantorDemands(loan, outstandingKobo, actor);
+    return updated;
+  }
+
+  /**
+   * V-28: calls every accepted guarantor for their share of the defaulted
+   * outstanding balance. Shares use a largest-remainder split over the
+   * guarantor list sorted by id, so the split is deterministic and sums
+   * exactly to the outstanding balance.
+   */
+  private async issueGuarantorDemands(
+    loan: CreditLoanApplication,
+    outstandingKobo: number,
+    actor: CreditActor
+  ): Promise<void> {
+    const accepted = (await this.guarantors.find({ loanId: loan.id, status: 'accepted' })).sort(
+      (a, b) => a.id.localeCompare(b.id)
+    );
+    if (accepted.length === 0 || outstandingKobo <= 0) {
+      return;
+    }
+    const base = Math.floor(outstandingKobo / accepted.length);
+    const remainder = outstandingKobo - base * accepted.length;
+    const now = new Date().toISOString();
+    for (const [index, guarantor] of accepted.entries()) {
+      const share = base + (index < remainder ? 1 : 0);
+      try {
+        const called = await this.guarantors.updateExpected(
+          guarantor.id,
+          { status: 'called', demandAmountKobo: share, demandedAt: now },
+          { status: 'accepted' }
+        );
+        await this.events.publish(
+          'credit.guarantor.demand_issued',
+          {
+            guarantorId: called.id,
+            loanId: loan.id,
+            guarantorUserId: called.guarantorUserId,
+            demandAmountKobo: share
+          },
+          actor.id
+        );
+        await this.audit?.record({
+          actorId: actor.id,
+          action: 'credit.guarantor.demand_issued',
+          entityType: 'credit_guarantor',
+          entityId: called.id,
+          metadata: { loanId: loan.id, demandAmountKobo: share }
+        });
+      } catch (error) {
+        // CAS race (concurrent default replay already called this guarantor):
+        // the winner's demand stands — never double-demand.
+        if (error instanceof ConflictException) {
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   /** defaulted → written_off (admin only — balance-sheet write-off). */
@@ -607,55 +984,109 @@ export class CreditService {
 
   /* ---------------------------------------------------------- repayments -- */
 
-  /** Schedule with read-time late marking (due_at < now && pending → late). */
+  /**
+   * Schedule with read-time late marking (due_at < now && pending → late).
+   * V-03 grace: while the loan's aging is suspended (reviewFlag set by the
+   * crop-failure subscriber), pending installments are returned as stored —
+   * they do not age into 'late' until a reviewer resolves the review.
+   */
   async getSchedule(loanId: string, actor: CreditActor): Promise<CreditRepayment[]> {
     const loan = await this.loans.getById(loanId);
     await this.assertLoanParty(loan, actor);
     const nowMs = Date.now();
+    const agingSuspended = loan.agingSuspendedAt !== undefined;
     const schedule = await this.repayments.find({ loanId });
     return schedule
-      .map((repayment) => ({ ...repayment, status: effectiveRepaymentStatus(repayment, nowMs) }))
+      .map((repayment) =>
+        agingSuspended
+          ? repayment
+          : { ...repayment, status: effectiveRepaymentStatus(repayment, nowMs) }
+      )
       .sort((a, b) => a.sequence - b.sequence);
   }
 
   /**
-   * Records an installment payment. Idempotent: an already-paid installment
-   * returns its stored state. Paying the final installment flips the loan
-   * repaying → repaid (system-driven transition, CAS-guarded).
+   * Records an installment payment. V-29: amount-parameterised — a payment
+   * covers `amountKobo` of the installment's outstanding balance (default:
+   * the full remaining balance, the pre-V-29 behaviour); overpayment beyond
+   * the remaining balance is REJECTED (400, V-57 pattern — cash never
+   * silently vanishes from the books). The installment flips to 'paid' only
+   * when fully covered, and the loan closes (repaying → repaid) only when
+   * every installment is fully covered.
+   *
+   * V-05 cure: a payment against a DEFAULTED loan first cures it — the loan
+   * CAS-transitions defaulted → repaying and its missed installments
+   * re-activate (missed → pending) — then applies the payment normally.
+   *
+   * Idempotent: an already-paid installment returns its stored state. The
+   * balance accumulation is CAS-guarded (expected paidAmountKobo + status),
+   * so concurrent partial payments serialise instead of losing updates.
    */
   async recordPayment(
     loanId: string,
     sequence: number,
-    actor: CreditActor
+    actor: CreditActor,
+    amountKobo?: number
   ): Promise<CreditRepayment> {
-    const loan = await this.loans.getById(loanId);
+    let loan = await this.loans.getById(loanId);
     if (loan.applicantUserId !== actor.id && !isCreditReviewer(actor)) {
       throw new ForbiddenException('Only the borrower or a reviewer may record a payment');
+    }
+    if (loan.status === 'defaulted') {
+      loan = await this.cureLoan(loan, actor);
     }
     if (loan.status !== 'repaying') {
       throw new BadRequestException(
         `Loan ${loanId} is not repaying (status '${loan.status}'); payments are only recorded on active repayment`
       );
     }
-    const repayment = (await this.repayments.find({ loanId })).find(
+    // V-04/V-30: after a restructure/consolidation the superseded rows and
+    // the replacement schedule share sequence numbers — the OPEN row
+    // (pending/missed) wins; candidates[0] is the fallback so a fully
+    // closed installment still replays idempotently.
+    const candidates = (await this.repayments.find({ loanId })).filter(
       (entry) => entry.sequence === sequence
     );
+    const repayment =
+      candidates.find((entry) => entry.status === 'pending' || entry.status === 'missed') ??
+      candidates[0];
     if (!repayment) {
       throw new BadRequestException(`Loan ${loanId} has no installment #${sequence}`);
     }
     if (repayment.status === 'paid') {
       return repayment; // idempotent replay
     }
+    if (repayment.status === 'superseded') {
+      throw new BadRequestException(
+        `Installment #${sequence} of loan ${loanId} was superseded by a restructure; pay against the current schedule`
+      );
+    }
+    const paidSoFar = repayment.paidAmountKobo ?? 0;
+    const outstanding = repayment.amountKobo - paidSoFar;
+    const payment = amountKobo === undefined ? outstanding : amountKobo;
+    assertKobo(payment, 'amountKobo', 1);
+    if (payment > outstanding) {
+      throw new BadRequestException(
+        `OVERPAYMENT_REJECTED: installment #${sequence} of loan ${loanId} has ${outstanding} kobo outstanding; ` +
+          `a ${payment} kobo payment would exceed it`
+      );
+    }
     const now = new Date().toISOString();
+    const newPaid = paidSoFar + payment;
+    const fullyCovered = newPaid >= repayment.amountKobo;
     const event = this.events.build(
       'credit.repayment.paid',
-      { loanId, sequence, amountKobo: repayment.amountKobo },
+      { loanId, sequence, amountKobo: payment, fullyCovered },
       actor.id
     );
     const paid = await this.repayments.updateExpected(
       repayment.id,
-      { status: 'paid', paidAt: now, paidAmountKobo: repayment.amountKobo },
-      { status: 'pending' },
+      {
+        status: fullyCovered ? 'paid' : repayment.status,
+        paidAmountKobo: newPaid,
+        ...(fullyCovered ? { paidAt: now } : {})
+      },
+      { status: repayment.status, paidAmountKobo: paidSoFar },
       event
     );
     if (this.repayments.transactionalOutbox) {
@@ -663,8 +1094,13 @@ export class CreditService {
     } else {
       await this.events.persist(event);
     }
-    // Final installment paid → the loan closes (repaying → repaid).
-    const remaining = await this.repayments.find({ loanId, status: 'pending' });
+    if (!fullyCovered) {
+      return paid; // partial payment: the loan stays open
+    }
+    // Final installment fully covered → the loan closes (repaying → repaid).
+    const remaining = (await this.repayments.find({ loanId, status: 'pending' })).filter(
+      (entry) => installmentOutstandingKobo(entry) > 0
+    );
     if (remaining.length === 0) {
       const current = await this.loans.getById(loanId);
       if (current.status === 'repaying') {
@@ -688,6 +1124,548 @@ export class CreditService {
       }
     }
     return paid;
+  }
+
+  /**
+   * V-05 cure: defaulted → repaying with installment re-activation
+   * (missed → pending). CAS-guarded; a concurrent cure is adopted (the
+   * re-read loan is already repaying) instead of failing the payer.
+   */
+  private async cureLoan(
+    loan: CreditLoanApplication,
+    actor: CreditActor
+  ): Promise<CreditLoanApplication> {
+    const now = new Date().toISOString();
+    const event = this.events.build(
+      'credit.loan.status_changed',
+      { loanId: loan.id, from: 'defaulted', to: 'repaying', cured: true },
+      actor.id
+    );
+    try {
+      const cured = await this.loans.updateExpected(
+        loan.id,
+        { status: 'repaying', updatedAt: now },
+        { status: 'defaulted', updatedAt: loan.updatedAt },
+        event
+      );
+      if (this.loans.transactionalOutbox) {
+        this.events.emit(event);
+      } else {
+        await this.events.persist(event);
+      }
+      // Re-activate missed installments so they accept payments again.
+      for (const repayment of await this.repayments.find({ loanId: loan.id, status: 'missed' })) {
+        await this.repayments.updateExpected(
+          repayment.id,
+          { status: 'pending' },
+          { status: 'missed' }
+        );
+      }
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'credit.loan.cured',
+        entityType: 'credit_loan_application',
+        entityId: loan.id,
+        metadata: { from: 'defaulted', to: 'repaying' }
+      });
+      return cured;
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        // Adopt-on-conflict: a concurrent cure won — re-read and proceed.
+        const current = await this.loans.getById(loan.id);
+        if (current.status === 'repaying') {
+          return current;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * V-05 settlement-for-less (reviewer): closes a defaulted loan for less
+   * than the outstanding balance. Posts ONE balanced ledger entry —
+   *   debit  platform:cash          settlementKobo (cash actually received)
+   *   debit  platform:loan_losses   writeDownKobo  (the write-down)
+   *   credit member:<applicant>:loans_receivable  outstandingKobo
+   * (the cash leg is omitted when settlementKobo is 0) — then transitions
+   * defaulted → written_off with the settlement split recorded on the loan.
+   * Idempotent by the entity-derived key `credit-settlement:<loanId>`; a
+   * replay returns the stored loan without re-posting.
+   */
+  async settleDefaultedLoan(
+    loanId: string,
+    input: SettleLoanInput,
+    actor: CreditActor
+  ): Promise<CreditLoanApplication> {
+    requireReviewer(actor);
+    if (!this.ledger) {
+      // Fail closed: a settlement moves money and MUST post its legs.
+      throw new ServiceUnavailableException('Ledger service is unavailable; settlement refused');
+    }
+    const loan = await this.loans.getById(loanId);
+    if (loan.status === 'written_off' && loan.settledAmountKobo !== undefined) {
+      return loan; // idempotent replay of a settled write-off
+    }
+    if (loan.status !== 'defaulted') {
+      throw new BadRequestException(
+        `SETTLEMENT_STATE: loan ${loanId} is '${loan.status}'; only a defaulted loan can be settled for less`
+      );
+    }
+    const schedule = await this.repayments.find({ loanId });
+    const outstandingKobo = schedule.reduce(
+      (sum, repayment) => sum + installmentOutstandingKobo(repayment),
+      0
+    );
+    assertKobo(input.settlementKobo, 'settlementKobo', 0);
+    if (input.settlementKobo > outstandingKobo) {
+      throw new BadRequestException(
+        `OVERPAYMENT_REJECTED: loan ${loanId} has ${outstandingKobo} kobo outstanding; ` +
+          `settlement of ${input.settlementKobo} kobo exceeds it`
+      );
+    }
+    const writeDownKobo = outstandingKobo - input.settlementKobo;
+    if (writeDownKobo === 0) {
+      throw new BadRequestException(
+        'Settlement covers the full outstanding balance; record the payments instead (cure path)'
+      );
+    }
+    const receivableCode = `member:${loan.applicantUserId}:loans_receivable`;
+    const postings = [
+      ...(input.settlementKobo > 0
+        ? [
+            {
+              accountCode: 'platform:cash',
+              direction: 'debit' as const,
+              amountKobo: input.settlementKobo
+            }
+          ]
+        : []),
+      {
+        accountCode: 'platform:loan_losses',
+        direction: 'debit' as const,
+        amountKobo: writeDownKobo
+      },
+      {
+        accountCode: receivableCode,
+        direction: 'credit' as const,
+        amountKobo: outstandingKobo
+      }
+    ];
+    await this.ledger.ensureAccount({ code: 'platform:cash', type: 'asset' });
+    await this.ledger.ensureAccount({ code: 'platform:loan_losses', type: 'expense' });
+    await this.ledger.ensureAccount({
+      code: receivableCode,
+      type: 'asset',
+      ownerId: loan.applicantUserId
+    });
+    await this.ledger.postEntry(
+      {
+        idempotencyKey: `credit-settlement:${loanId}`,
+        referenceType: 'credit_loan_application',
+        referenceId: loanId,
+        description: `Credit settlement-for-less on defaulted loan ${loanId}`,
+        postings
+      },
+      actor.id
+    );
+    const now = new Date().toISOString();
+    const updated = await this.transitionLoan(loan, 'written_off', actor, {
+      settledAmountKobo: input.settlementKobo,
+      writeDownKobo,
+      decidedAt: now,
+      decidedBy: actor.id
+    });
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'credit.loan.settled',
+      entityType: 'credit_loan_application',
+      entityId: loanId,
+      metadata: { settlementKobo: input.settlementKobo, writeDownKobo, outstandingKobo }
+    });
+    return updated;
+  }
+
+  /* --------------------------------------------------------- restructure -- */
+
+  /**
+   * V-04 loan restructure (reviewer): regenerates a REPAYING loan's
+   * schedule from its outstanding balance.
+   *   - claim-first CAS: the loan row is claimed with an updatedAt
+   *     compare-and-set BEFORE any schedule mutation, so two concurrent
+   *     restructures serialise — the loser gets a 409 and never touches the
+   *     schedule (unit-tested);
+   *   - the old OPEN installments (pending/missed) are marked 'superseded'
+   *     (immutable audit history — paid rows are untouched);
+   *   - an append-only credit.loan_restructures row pins the replaced
+   *     schedule (snapshot) and the carry-forward balance;
+   *   - the replacement schedule is generated over the outstanding balance
+   *     with the next schedule_version;
+   *   - credit-score factor recompute hook: the borrower's score is
+   *     recomputed at restructure time, persisted on the loan and pinned on
+   *     the restructure record (scoreAfter);
+   *   - a crop-failure review flag (V-03) is cleared — the restructure IS
+   *     the review resolution — and aging resumes on the new schedule.
+   */
+  async restructureLoan(
+    loanId: string,
+    input: RestructureLoanInput,
+    actor: CreditActor
+  ): Promise<{ loan: CreditLoanApplication; restructure: CreditLoanRestructure }> {
+    requireReviewer(actor);
+    if (!Number.isSafeInteger(input.termDays) || input.termDays < 1) {
+      throw new BadRequestException('termDays must be a positive integer');
+    }
+    if (!input.reason.trim()) {
+      throw new BadRequestException('A restructure reason is required (audit trail)');
+    }
+    const loan = await this.loans.getById(loanId);
+    if (loan.status !== 'repaying') {
+      throw new BadRequestException(
+        `RESTRUCTURE_STATE: loan ${loanId} is '${loan.status}'; only a repaying loan can be restructured`
+      );
+    }
+    const product = await this.products.getById(loan.productId);
+    const interestBpsAnnual = input.interestBpsAnnual ?? product.interestBpsAnnual;
+    if (!Number.isSafeInteger(interestBpsAnnual) || interestBpsAnnual < 0) {
+      throw new BadRequestException('interestBpsAnnual must be a non-negative integer');
+    }
+    const schedule = await this.repayments.find({ loanId });
+    const open = schedule.filter(
+      (repayment) => repayment.status === 'pending' || repayment.status === 'missed'
+    );
+    const outstandingKobo = open.reduce(
+      (sum, repayment) => sum + installmentOutstandingKobo(repayment),
+      0
+    );
+    if (outstandingKobo <= 0) {
+      throw new BadRequestException(`RESTRUCTURE_EMPTY: loan ${loanId} has no open balance`);
+    }
+    // Claim-first CAS on (status, updatedAt): a concurrent restructure or
+    // payment-driven close that moved the row loses here with a 409 BEFORE
+    // any installment is superseded. The claimed updatedAt is strictly
+    // greater than the read one (updatedAt is the CAS discriminator — two
+    // claims in the same wall-clock millisecond must still serialise).
+    const now = new Date(Math.max(Date.now(), Date.parse(loan.updatedAt) + 1)).toISOString();
+    const claimEvent = this.events.build(
+      'credit.loan.restructure_claimed',
+      { loanId, outstandingKobo, reason: input.reason },
+      actor.id
+    );
+    await this.loans.updateExpected(
+      loanId,
+      { updatedAt: now },
+      { status: 'repaying', updatedAt: loan.updatedAt },
+      claimEvent
+    );
+    if (this.loans.transactionalOutbox) {
+      this.events.emit(claimEvent);
+    } else {
+      await this.events.persist(claimEvent);
+    }
+    // The claim is held: supersede the old open schedule and pin the record.
+    for (const repayment of open) {
+      await this.repayments.update(repayment.id, { status: 'superseded' });
+    }
+    const version =
+      (await this.restructures.find({ loanId })).reduce(
+        (max, row) => Math.max(max, row.version),
+        0
+      ) + 1;
+    // Score-factor recompute hook (V-04): the borrower's score is recomputed
+    // against post-restructure state and pinned on the restructure record.
+    const assessment = await this.computeScore(loan.applicantUserId, loanId);
+    const restructure = await this.restructures.create({
+      id: newId('crst'),
+      loanId,
+      version,
+      reason: input.reason.trim(),
+      outstandingKobo,
+      supersededSchedule: open.map((repayment) => ({
+        repaymentId: repayment.id,
+        sequence: repayment.sequence,
+        dueAt: repayment.dueAt,
+        amountKobo: repayment.amountKobo,
+        paidAmountKobo: repayment.paidAmountKobo ?? 0
+      })),
+      newInstallmentCount: Math.max(1, Math.ceil(input.termDays / 30)),
+      scoreAfter: assessment.score,
+      createdBy: actor.id,
+      createdAt: now
+    });
+    const replacement = generateCreditSchedule({
+      loanId,
+      principalKobo: outstandingKobo,
+      interestBpsAnnual,
+      termDays: input.termDays,
+      startIso: now,
+      scheduleVersion: version + 1
+    });
+    for (const repayment of replacement) {
+      await this.repayments.create(repayment);
+    }
+    // Persist the recomputed score and clear a resolved crop-failure review.
+    await this.loans.update(loanId, {
+      creditScore: assessment.score,
+      scoreFactors: assessment.factors,
+      reviewFlag: undefined,
+      agingSuspendedAt: undefined,
+      updatedAt: new Date().toISOString()
+    });
+    await this.events.publish(
+      'credit.loan.restructured',
+      {
+        loanId,
+        restructureId: restructure.id,
+        version,
+        outstandingKobo,
+        newInstallmentCount: replacement.length,
+        scoreAfter: assessment.score
+      },
+      actor.id
+    );
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'credit.loan.restructured',
+      entityType: 'credit_loan_application',
+      entityId: loanId,
+      metadata: { version, outstandingKobo, reason: input.reason.trim() }
+    });
+    return { loan: await this.loans.getById(loanId), restructure };
+  }
+
+  /** Restructure history for a loan (party-visible, newest first). */
+  async listRestructures(loanId: string, actor: CreditActor): Promise<CreditLoanRestructure[]> {
+    const loan = await this.loans.getById(loanId);
+    await this.assertLoanParty(loan, actor);
+    return (await this.restructures.find({ loanId })).sort((a, b) => b.version - a.version);
+  }
+
+  /* --------------------------------------------------- guarantor demands -- */
+
+  /**
+   * V-28: the guarantor accepts a demand (called → liable). Accepting posts
+   * the liability leg — debit member:<guarantor>:guarantee_receivable /
+   * credit member:<borrower>:loans_receivable (the platform's claim moves
+   * from the borrower to the guarantor) — idempotent by the entity-derived
+   * key `credit-guarantor-liability:<guarantorId>`.
+   */
+  async acceptGuarantorDemand(guarantorId: string, actor: CreditActor): Promise<CreditGuarantor> {
+    const guarantor = await this.guarantors.getById(guarantorId);
+    if (guarantor.guarantorUserId !== actor.id) {
+      throw new ForbiddenException('Only the called guarantor may accept the liability');
+    }
+    if (guarantor.status === 'liable') {
+      return guarantor; // idempotent replay
+    }
+    if (guarantor.status !== 'called') {
+      throw new BadRequestException(
+        `GUARANTOR_DEMAND_STATE: guarantor ${guarantorId} is '${guarantor.status}'; only a called demand can be accepted`
+      );
+    }
+    if (!this.ledger) {
+      throw new ServiceUnavailableException(
+        'Ledger service is unavailable; liability acceptance refused'
+      );
+    }
+    const loan = await this.loans.getById(guarantor.loanId);
+    const demandKobo = guarantor.demandAmountKobo ?? 0;
+    if (demandKobo <= 0) {
+      throw new BadRequestException(`Guarantor demand ${guarantorId} carries no amount`);
+    }
+    const guaranteeReceivable = `member:${guarantor.guarantorUserId}:guarantee_receivable`;
+    const borrowerReceivable = `member:${loan.applicantUserId}:loans_receivable`;
+    await this.ledger.ensureAccount({
+      code: guaranteeReceivable,
+      type: 'asset',
+      ownerId: guarantor.guarantorUserId
+    });
+    await this.ledger.ensureAccount({
+      code: borrowerReceivable,
+      type: 'asset',
+      ownerId: loan.applicantUserId
+    });
+    await this.ledger.postEntry(
+      {
+        idempotencyKey: `credit-guarantor-liability:${guarantorId}`,
+        referenceType: 'credit_guarantor',
+        referenceId: guarantorId,
+        description: `Guarantor liability accepted for loan ${loan.id}`,
+        postings: [
+          { accountCode: guaranteeReceivable, direction: 'debit', amountKobo: demandKobo },
+          { accountCode: borrowerReceivable, direction: 'credit', amountKobo: demandKobo }
+        ]
+      },
+      actor.id
+    );
+    const now = new Date().toISOString();
+    const updated = await this.guarantors.updateExpected(
+      guarantorId,
+      { status: 'liable', liabilityAcceptedAt: now },
+      { status: 'called' }
+    );
+    await this.events.publish(
+      'credit.guarantor.liable',
+      { guarantorId, loanId: guarantor.loanId, demandAmountKobo: demandKobo },
+      actor.id
+    );
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'credit.guarantor.liable',
+      entityType: 'credit_guarantor',
+      entityId: guarantorId,
+      metadata: { loanId: guarantor.loanId, demandAmountKobo: demandKobo }
+    });
+    return updated;
+  }
+
+  /**
+   * V-28: settles an accepted demand (liable → settled). Posts the
+   * settlement leg — debit platform:cash / credit the guarantor's
+   * guarantee_receivable — idempotent by `credit-guarantor-settlement:<id>`.
+   *
+   * Savings debit is CONSENT-GATED: only when the caller passes a
+   * `consentRef` (the recorded consent reference) is the guarantor's
+   * savings account debited for the amount (ref `guarantor-settlement:<id>`,
+   * idempotent replay via the savings ref). Without a consent reference the
+   * settlement records cash received out-of-band — savings are never
+   * touched.
+   */
+  async settleGuarantorDemand(
+    guarantorId: string,
+    actor: CreditActor,
+    options: { consentRef?: string } = {}
+  ): Promise<CreditGuarantor> {
+    const guarantor = await this.guarantors.getById(guarantorId);
+    if (guarantor.guarantorUserId !== actor.id && !isCreditReviewer(actor)) {
+      throw new ForbiddenException('Only the guarantor or a reviewer may settle a demand');
+    }
+    if (guarantor.status === 'settled') {
+      return guarantor; // idempotent replay
+    }
+    if (guarantor.status !== 'liable') {
+      throw new BadRequestException(
+        `GUARANTOR_DEMAND_STATE: guarantor ${guarantorId} is '${guarantor.status}'; only a liable demand can be settled`
+      );
+    }
+    if (!this.ledger) {
+      throw new ServiceUnavailableException('Ledger service is unavailable; settlement refused');
+    }
+    const demandKobo = guarantor.demandAmountKobo ?? 0;
+    if (demandKobo <= 0) {
+      throw new BadRequestException(`Guarantor demand ${guarantorId} carries no amount`);
+    }
+    if (options.consentRef !== undefined) {
+      // Recorded consent required: without it the savings account is never
+      // debited (V-28 consent boundary).
+      if (!options.consentRef.trim()) {
+        throw new BadRequestException('consentRef must be a non-empty recorded consent reference');
+      }
+      await this.debitGuarantorSavings(guarantor, demandKobo);
+    }
+    const guaranteeReceivable = `member:${guarantor.guarantorUserId}:guarantee_receivable`;
+    await this.ledger.ensureAccount({ code: 'platform:cash', type: 'asset' });
+    await this.ledger.ensureAccount({
+      code: guaranteeReceivable,
+      type: 'asset',
+      ownerId: guarantor.guarantorUserId
+    });
+    await this.ledger.postEntry(
+      {
+        idempotencyKey: `credit-guarantor-settlement:${guarantorId}`,
+        referenceType: 'credit_guarantor',
+        referenceId: guarantorId,
+        description: `Guarantor demand settled for ${guarantorId}`,
+        postings: [
+          { accountCode: 'platform:cash', direction: 'debit', amountKobo: demandKobo },
+          { accountCode: guaranteeReceivable, direction: 'credit', amountKobo: demandKobo }
+        ]
+      },
+      actor.id
+    );
+    const now = new Date().toISOString();
+    const updated = await this.guarantors.updateExpected(
+      guarantorId,
+      { status: 'settled', settledAt: now, consentRef: options.consentRef },
+      { status: 'liable' }
+    );
+    await this.events.publish(
+      'credit.guarantor.settled',
+      {
+        guarantorId,
+        loanId: guarantor.loanId,
+        settledAmountKobo: demandKobo,
+        savingsDebited: options.consentRef !== undefined
+      },
+      actor.id
+    );
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'credit.guarantor.settled',
+      entityType: 'credit_guarantor',
+      entityId: guarantorId,
+      metadata: {
+        loanId: guarantor.loanId,
+        settledAmountKobo: demandKobo,
+        consentRef: options.consentRef
+      }
+    });
+    return updated;
+  }
+
+  /**
+   * Consent-gated guarantor savings debit (V-28): withdraws the demand
+   * amount from the guarantor's personal savings account through the
+   * guarded balance-CAS path (applyTransaction), idempotent by ref
+   * `guarantor-settlement:<guarantorId>`. Insufficient balance → 400, and
+   * the settlement is refused before any ledger posting.
+   */
+  private async debitGuarantorSavings(
+    guarantor: CreditGuarantor,
+    amountKobo: number
+  ): Promise<void> {
+    const account = await this.savingsAccounts.findOne({ userId: guarantor.guarantorUserId });
+    if (!account) {
+      throw new BadRequestException(
+        `Guarantor ${guarantor.guarantorUserId} has no savings account to debit`
+      );
+    }
+    const ref = `guarantor-settlement:${guarantor.id}`;
+    const existing = await this.savingsTransactions.findOne({ ref });
+    if (existing) {
+      return; // idempotent replay: the debit already happened for this demand
+    }
+    const current = await this.savingsAccounts.getById(account.id);
+    if (current.balanceKobo < amountKobo) {
+      throw new BadRequestException(
+        `Guarantor savings balance ${current.balanceKobo} kobo cannot cover the ${amountKobo} kobo demand`
+      );
+    }
+    const now = new Date().toISOString();
+    const event = this.events.build(
+      'credit.savings.withdrawn',
+      { accountId: account.id, amountKobo, ref, reason: 'guarantor_settlement' },
+      guarantor.guarantorUserId
+    );
+    await this.savingsAccounts.applyTransaction(
+      account.id,
+      { balanceKobo: current.balanceKobo },
+      { balanceKobo: current.balanceKobo - amountKobo, updatedAt: now },
+      {
+        id: newId('ctxn'),
+        accountId: account.id,
+        direction: 'withdrawal',
+        amountKobo,
+        balanceAfterKobo: current.balanceKobo - amountKobo,
+        ref,
+        createdAt: now
+      },
+      event
+    );
+    if (this.savingsAccounts.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
   }
 
   /* ---------------------------------------------------------- collateral -- */
@@ -719,6 +1697,8 @@ export class CreditService {
       kind: input.kind,
       description: input.description,
       estimatedValueKobo: input.estimatedValueKobo,
+      warehousePledgeId: input.warehousePledgeId,
+      warehouseReceiptId: input.warehouseReceiptId,
       status: 'pledged'
     };
     const created = await this.collateral.create(entry);
@@ -768,9 +1748,29 @@ export class CreditService {
       { status: to },
       { status: 'pledged' }
     );
+    /**
+     * Event contract (V-31) — `credit.collateral.claimed` payload:
+     *   { collateralId, loanId, to: 'claimed', kind, estimatedValueKobo,
+     *     warehousePledgeId?, warehouseReceiptId? }
+     * The warehouse references are present when the collateral row
+     * references a warehouse pledge/receipt (set at pledge time). The
+     * warehouse-module subscriber (pack W2-C3) consumes this event to drive
+     * the pledge release/liquidation path for receipt-backed collateral;
+     * collateral without warehouse references is credit-local and the
+     * subscriber ignores it. `credit.collateral.released` carries the same
+     * shape with to: 'released'.
+     */
     await this.events.publish(
       `credit.collateral.${to === 'released' ? 'released' : 'claimed'}`,
-      { collateralId, loanId: entry.loanId, to },
+      {
+        collateralId,
+        loanId: entry.loanId,
+        to,
+        kind: entry.kind,
+        estimatedValueKobo: entry.estimatedValueKobo,
+        warehousePledgeId: entry.warehousePledgeId,
+        warehouseReceiptId: entry.warehouseReceiptId
+      },
       actor.id
     );
     await this.audit?.record({
@@ -1027,6 +2027,109 @@ export class CreditService {
 
   private clampFactor(value: number): number {
     return Math.min(CREDIT_FACTOR_MAX, Math.max(0, value));
+  }
+
+  /* -------------------------------------- crop-failure grace (V-03) -- */
+
+  /**
+   * V-03: subscribe to the farms planting-failure event.
+   *
+   * Event contract (`farms.planting.status_changed` with payload.to === 'failed',
+   * emitted by farms.service.ts updatePlantingStatus — the emission is owned by
+   * the farms pack):
+   *   { plantingId: string; plotId: string; farmerId: string;
+   *     cropType: string; failureReason: string; occurredAt: string }
+   *
+   * Every ACTIVE loan (disbursed/repaying) linked to the failed planting or
+   * its plot (plotId/plantingId persisted at application time, V-03) is
+   * flagged for review and its installment aging is suspended: pending
+   * installments stop reading as 'late' until a reviewer resolves the flag
+   * (the restructure path, V-04, clears it). This is the GRACE trigger —
+   * the restructure itself stays a reviewer decision.
+   */
+  onModuleInit(): void {
+    this.events.on('farms.planting.status_changed', (event) => void this.onPlantingFailed(event));
+  }
+
+  /** Subscriber body; also directly callable (integration tests). */
+  async onPlantingFailed(event: DomainEvent): Promise<void> {
+    const payload = event.payload as {
+      plantingId?: string;
+      plotId?: string;
+      farmerId?: string;
+      ownerId?: string; // farms contract: ownerId IS the farmer identity
+      cropType?: string;
+      failureReason?: string;
+      occurredAt?: string;
+      to?: string; // status_changed envelope — only 'failed' transitions apply
+    };
+    if (payload.to !== 'failed') {
+      return; // not a failure transition
+    }
+    if (!payload.plantingId && !payload.plotId) {
+      return; // fail closed: no linkage keys, nothing to match
+    }
+    const candidates = new Map<string, CreditLoanApplication>();
+    for (const criteria of [
+      payload.plantingId ? { plantingId: payload.plantingId } : undefined,
+      payload.plotId ? { plotId: payload.plotId } : undefined
+    ]) {
+      if (!criteria) {
+        continue;
+      }
+      for (const loan of await this.loans.find(criteria)) {
+        candidates.set(loan.id, loan);
+      }
+    }
+    const now = new Date().toISOString();
+    for (const loan of candidates.values()) {
+      if (loan.status !== 'disbursed' && loan.status !== 'repaying') {
+        continue; // only live loans need the grace trigger
+      }
+      if (loan.reviewFlag === CREDIT_REVIEW_CROP_FAILURE) {
+        continue; // idempotent replay of the failure event
+      }
+      try {
+        await this.loans.updateExpected(
+          loan.id,
+          { reviewFlag: CREDIT_REVIEW_CROP_FAILURE, agingSuspendedAt: now, updatedAt: now },
+          { status: loan.status, updatedAt: loan.updatedAt }
+        );
+      } catch (error) {
+        // CAS race with a concurrent transition — adopt-on-conflict: re-read
+        // and skip if the loan moved on (the next event/review will re-flag).
+        if (error instanceof ConflictException) {
+          continue;
+        }
+        throw error;
+      }
+      await this.events.publish(
+        'credit.loan.flagged_for_review',
+        {
+          loanId: loan.id,
+          applicantUserId: loan.applicantUserId,
+          reviewFlag: CREDIT_REVIEW_CROP_FAILURE,
+          plantingId: payload.plantingId,
+          plotId: payload.plotId,
+          cropType: payload.cropType,
+          failureReason: payload.failureReason,
+          agingSuspendedAt: now
+        },
+        event.actorId
+      );
+      await this.audit?.record({
+        actorId: event.actorId ?? 'system',
+        action: 'credit.loan.flagged_for_review',
+        entityType: 'credit_loan_application',
+        entityId: loan.id,
+        metadata: {
+          reviewFlag: CREDIT_REVIEW_CROP_FAILURE,
+          plantingId: payload.plantingId,
+          plotId: payload.plotId,
+          failureReason: payload.failureReason
+        }
+      });
+    }
   }
 
   /* ----------------------------------------------------------- portfolio -- */
