@@ -12,6 +12,7 @@ import { creditScoreMapper } from '../pg/row-mappers.js';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type { CreditScoreRepository } from './credit-score.repository.js';
 import type {
+  DailyLimitCorrection,
   DailyLimitReservation,
   LedgerAccountRepository,
   LedgerEntryCriteria,
@@ -137,7 +138,8 @@ export async function postLedgerEntryTx(
   entry: LedgerJournalEntry,
   requireSolventAccounts?: readonly string[],
   outboxEvent?: DomainEvent,
-  dailyLimitReservation?: DailyLimitReservation
+  dailyLimitReservation?: DailyLimitReservation,
+  dailyLimitCorrection?: DailyLimitCorrection
 ): Promise<void> {
   // Lock the solvency-protected account rows up front (sorted, to keep a
   // single global lock order) so concurrent postings touching them
@@ -178,6 +180,18 @@ export async function postLedgerEntryTx(
         `Agent daily limit exceeded: ${dailyLimitReservation.amountKobo} kobo would pass the ${dailyLimitReservation.limitKobo} kobo daily limit`
       );
     }
+  }
+  // W2-C2 (V-08): reversal counterpart — release capacity on the REVERSED
+  // transaction's original business date inside the same posting transaction
+  // (rolls back with the posting). Floored at 0; a missing counter row is a
+  // no-op (e.g. reversing a voucher redemption, which never reserved).
+  if (dailyLimitCorrection) {
+    await client.query(
+      `UPDATE agent_banking.agent_daily_limits
+          SET used_amount_kobo = GREATEST(0, used_amount_kobo - $3::bigint), updated_at = now()
+        WHERE agent_id = $1 AND business_date = $2`,
+      [dailyLimitCorrection.agentId, dailyLimitCorrection.businessDate, dailyLimitCorrection.amountKobo]
+    );
   }
   try {
     await client.query(
@@ -330,12 +344,13 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
     outboxEvent?: DomainEvent,
-    dailyLimitReservation?: DailyLimitReservation
+    dailyLimitReservation?: DailyLimitReservation,
+    dailyLimitCorrection?: DailyLimitCorrection
   ): Promise<LedgerJournalEntry> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation);
+      const posted = await this.postEntryInTx(client, entry, requireSolventAccounts, outboxEvent, dailyLimitReservation, dailyLimitCorrection);
       await client.query('COMMIT');
       return posted;
     } catch (error) {
@@ -359,7 +374,8 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
     outboxEvent?: DomainEvent,
-    dailyLimitReservation?: DailyLimitReservation
+    dailyLimitReservation?: DailyLimitReservation,
+    dailyLimitCorrection?: DailyLimitCorrection
   ): Promise<LedgerJournalEntry> {
     // Single posting path (merge-resolution doctrine): all in-transaction
     // postings route through postLedgerEntryTx so the solvency guard, the
@@ -371,7 +387,8 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
       entry,
       requireSolventAccounts,
       outboxEvent,
-      dailyLimitReservation
+      dailyLimitReservation,
+      dailyLimitCorrection
     );
     return entry;
   }
