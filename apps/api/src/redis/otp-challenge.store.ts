@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import type { KeyValueStore } from './key-value-store.js';
 
 export interface OtpChallenge {
@@ -62,76 +63,109 @@ export interface OtpChallengeStore {
 export class KeyValueOtpChallengeStore implements OtpChallengeStore {
   constructor(private readonly kv: KeyValueStore) {}
 
+  /**
+   * FAIL-CLOSED (V-77): the OTP challenge store is a store of RECORD — a
+   * backing-store outage must never let a verification guess through, so
+   * backend errors surface as a retryable 503 (never fail open, never a
+   * raw 500). Contrast: the throttler's Redis cache tier fails OPEN.
+   */
+  private async guard<T>(op: () => Promise<T>): Promise<T> {
+    try {
+      return await op();
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(
+        `OTP store unavailable — authentication is temporarily fail-closed (${error instanceof Error ? error.message : String(error)})`
+      );
+    }
+  }
+
   async save(challenge: OtpChallenge, ttlMs: number): Promise<void> {
-    await this.kv.set(
-      `${CHALLENGE_PREFIX}${challenge.id}`,
-      JSON.stringify(challenge),
-      ttlMs
-    );
-    await this.kv.set(`${PHONE_PREFIX}${challenge.phone}`, challenge.id, ttlMs);
+    return this.guard(async () => {
+      await this.kv.set(
+        `${CHALLENGE_PREFIX}${challenge.id}`,
+        JSON.stringify(challenge),
+        ttlMs
+      );
+      await this.kv.set(`${PHONE_PREFIX}${challenge.phone}`, challenge.id, ttlMs);
+    });
   }
 
   async get(id: string): Promise<OtpChallenge | undefined> {
-    const raw = await this.kv.get(`${CHALLENGE_PREFIX}${id}`);
-    return raw === undefined ? undefined : (JSON.parse(raw) as OtpChallenge);
+    return this.guard(async () => {
+      const raw = await this.kv.get(`${CHALLENGE_PREFIX}${id}`);
+      return raw === undefined ? undefined : (JSON.parse(raw) as OtpChallenge);
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const challenge = await this.get(id);
-    await this.kv.delete(`${CHALLENGE_PREFIX}${id}`);
-    await this.kv.delete(`${ATTEMPTS_PREFIX}${id}`);
-    if (challenge) {
-      // Only clear the phone index when it still points at this challenge.
+    return this.guard(async () => {
+      const challenge = await this.get(id);
+      await this.kv.delete(`${CHALLENGE_PREFIX}${id}`);
+      await this.kv.delete(`${ATTEMPTS_PREFIX}${id}`);
+      if (challenge) {
+        // Only clear the phone index when it still points at this challenge.
+        const current = await this.kv.get(`${PHONE_PREFIX}${challenge.phone}`);
+        if (current === id) {
+          await this.kv.delete(`${PHONE_PREFIX}${challenge.phone}`);
+        }
+      }
+    });
+  }
+
+  async consume(id: string): Promise<OtpChallenge | undefined> {
+    return this.guard(async () => {
+      const raw = await this.kv.getdel(`${CHALLENGE_PREFIX}${id}`);
+      if (raw === undefined) {
+        return undefined;
+      }
+      const challenge = JSON.parse(raw) as OtpChallenge;
       const current = await this.kv.get(`${PHONE_PREFIX}${challenge.phone}`);
       if (current === id) {
         await this.kv.delete(`${PHONE_PREFIX}${challenge.phone}`);
       }
-    }
-  }
-
-  async consume(id: string): Promise<OtpChallenge | undefined> {
-    const raw = await this.kv.getdel(`${CHALLENGE_PREFIX}${id}`);
-    if (raw === undefined) {
-      return undefined;
-    }
-    const challenge = JSON.parse(raw) as OtpChallenge;
-    const current = await this.kv.get(`${PHONE_PREFIX}${challenge.phone}`);
-    if (current === id) {
-      await this.kv.delete(`${PHONE_PREFIX}${challenge.phone}`);
-    }
-    return challenge;
+      return challenge;
+    });
   }
 
   async invalidateForPhone(phone: string): Promise<void> {
-    const id = await this.kv.get(`${PHONE_PREFIX}${phone}`);
-    if (id !== undefined) {
-      await this.kv.delete(`${CHALLENGE_PREFIX}${id}`);
-      await this.kv.delete(`${PHONE_PREFIX}${phone}`);
-      await this.kv.delete(`${ATTEMPTS_PREFIX}${id}`);
-    }
+    return this.guard(async () => {
+      const id = await this.kv.get(`${PHONE_PREFIX}${phone}`);
+      if (id !== undefined) {
+        await this.kv.delete(`${CHALLENGE_PREFIX}${id}`);
+        await this.kv.delete(`${PHONE_PREFIX}${phone}`);
+        await this.kv.delete(`${ATTEMPTS_PREFIX}${id}`);
+      }
+    });
   }
 
   async registerAttempt(id: string, ttlMs: number): Promise<number> {
-    return this.kv.incr(`${ATTEMPTS_PREFIX}${id}`, ttlMs);
+    return this.guard(() => this.kv.incr(`${ATTEMPTS_PREFIX}${id}`, ttlMs));
   }
 
   async attemptCount(id: string): Promise<number> {
-    const raw = await this.kv.get(`${ATTEMPTS_PREFIX}${id}`);
-    const count = raw === undefined ? 0 : Number.parseInt(raw, 10);
-    return Number.isNaN(count) ? 0 : count;
+    return this.guard(async () => {
+      const raw = await this.kv.get(`${ATTEMPTS_PREFIX}${id}`);
+      const count = raw === undefined ? 0 : Number.parseInt(raw, 10);
+      return Number.isNaN(count) ? 0 : count;
+    });
   }
 
   async phoneFailureCount(phone: string): Promise<number> {
-    const raw = await this.kv.get(`${PHONE_FAILURE_PREFIX}${phone}`);
-    const count = raw === undefined ? 0 : Number.parseInt(raw, 10);
-    return Number.isNaN(count) ? 0 : count;
+    return this.guard(async () => {
+      const raw = await this.kv.get(`${PHONE_FAILURE_PREFIX}${phone}`);
+      const count = raw === undefined ? 0 : Number.parseInt(raw, 10);
+      return Number.isNaN(count) ? 0 : count;
+    });
   }
 
   async registerPhoneFailure(phone: string, windowMs: number): Promise<number> {
-    return this.kv.incr(`${PHONE_FAILURE_PREFIX}${phone}`, windowMs);
+    return this.guard(() => this.kv.incr(`${PHONE_FAILURE_PREFIX}${phone}`, windowMs));
   }
 
   async registerPhoneRequest(phone: string, windowMs: number): Promise<number> {
-    return this.kv.incr(`${PHONE_REQUEST_PREFIX}${windowMs}:${phone}`, windowMs);
+    return this.guard(() => this.kv.incr(`${PHONE_REQUEST_PREFIX}${windowMs}:${phone}`, windowMs));
   }
 }
