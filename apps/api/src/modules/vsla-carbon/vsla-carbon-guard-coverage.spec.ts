@@ -35,8 +35,8 @@ describe('VslaCarbonController guard coverage (A2-3 regression)', () => {
 
   it('exposes the expected surface (guards against scan drift)', () => {
     const all = routes();
-    expect(all.length).toBeGreaterThanOrEqual(27);
-    expect(all.filter((r) => r.method === RequestMethod.GET)).toHaveLength(17);
+    expect(all.length).toBeGreaterThanOrEqual(34);
+    expect(all.filter((r) => r.method === RequestMethod.GET)).toHaveLength(19);
   });
 
   it('EVERY route (reads included) resolves RolesGuard at method or class level', () => {
