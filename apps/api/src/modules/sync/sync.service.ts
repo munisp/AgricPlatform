@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -14,8 +14,11 @@ import type {
 } from '../../database/repositories/sync.repository.js';
 import { SyncEntityRegistry } from './sync-registry.js';
 import {
+  SYNC_PROTOCOL_VERSION,
   SYNC_PULL_LIMIT_DEFAULT,
   SYNC_PULL_LIMIT_MAX,
+  SYNC_RESYNC_REQUIRED_MESSAGE,
+  SyncVersionConflictError,
   type SyncPullPage,
   type SyncPushItem,
   type SyncPushItemResult,
@@ -23,23 +26,31 @@ import {
 } from './sync.types.js';
 
 /**
- * Sync protocol v1 engine (Wave SYNCSRV; docs/sync-protocol.md).
+ * Sync protocol v2 engine (Wave SYNCSRV + FP-4; docs/sync-protocol.md).
  *
- * Push semantics (server-wins for v1):
+ * Push semantics (server-wins):
  *   1. Idempotency first: a recorded (user, clientMutationId) replays its
- *      ORIGINAL outcome — applied and conflict results only; transient
- *      errors are never ledgered so retries can succeed later.
- *   2. Owner scoping: the caller must own the record (registry accessor) or
- *      be an admin; creating a record makes the caller its owner.
+ *      ORIGINAL outcome — applied results only; conflicts are recomputed on
+ *      retry (never ledgered, so a stale recorded payload can never
+ *      regress a fresher client cache) and transient errors are never
+ *      ledgered so retries can succeed later.
+ *   2. Owner scoping: the caller must own the record or be an admin.
+ *      Ownership resolves from the live source row OR, for deleted records,
+ *      from the version ledger's owner_id — a create-style push over a
+ *      FOREIGN tombstone is `forbidden` (no serverVersion oracle leaks).
  *   3. Optimistic concurrency: baseVersion must equal the current server
  *      version (0 for creates) or the item is a per-item CONFLICT carrying
  *      the server version + payload. Nothing is silently overwritten.
- *   4. Applied items bump sync.entity_versions atomically (bumpExpected) and
- *      emit audit + a domain event.
+ *   4. Applied items claim sync.entity_versions atomically AROUND the entity
+ *      write (applyGuarded): a concurrent claimant can never write the
+ *      source row; a lost claim surfaces as CONFLICT, not apply_failed.
  *
- * Pull semantics: owner-scoped, version-ordered pages out of
- * sync.entity_versions; the cursor is the max version returned (monotonic
- * per (user, entity)); deletes travel as tombstones (deleted + null payload).
+ * Pull semantics (v2): owner-scoped pages ordered by the GLOBAL monotonic
+ * change_seq; the cursor is the max change_seq returned (monotonic per
+ * (user, entity)); deletes travel as tombstones (deleted + null payload).
+ * Pulls with a non-zero `since` must declare protocol v=2 — a v1 cursor is
+ * answered 409 sync_resync_required so legacy devices resync loudly
+ * instead of silently diverging.
  */
 @Injectable()
 export class SyncService {
@@ -87,11 +98,11 @@ export class SyncService {
     }
 
     const result = await this.processPushItem(actor, item, descriptor.writable);
-    // Only deterministic data outcomes are ledgered; transient errors are
-    // recomputed on retry (authz/validation errors are deterministic too,
-    // but keeping the ledger to applied/conflict mirrors the
-    // events.processed_events "handled" semantics).
-    if (result.status === 'applied' || result.status === 'conflict') {
+    // Only `applied` outcomes are ledgered. Conflicts are RECOMPUTED on
+    // retry (v2): a ledgered conflict would replay its stale serverPayload
+    // verbatim forever, regressing client caches that have since pulled a
+    // fresher version (V-65). Transient errors are likewise never ledgered.
+    if (result.status === 'applied') {
       const ledgered = await this.mutations.record({
         userId: actor.id,
         clientMutationId: item.clientMutationId,
@@ -127,14 +138,19 @@ export class SyncService {
     }
 
     // Owner scoping: only the record owner (or an admin) may mutate.
-    const ownerId = await descriptor.getOwnerId(item.entityId);
-    const isCreate = ownerId === null;
-    if (!isCreate && ownerId !== actor.id && !actor.roles.includes('admin')) {
+    // Ownership resolves from the live source row; for DELETED records the
+    // live row is gone, so the version ledger's owner_id (captured at bump
+    // time) decides — a create-style push over a FOREIGN tombstone is
+    // forbidden (V-63: no entityId takeover), and it fails BEFORE the CAS
+    // check below so the response carries no serverVersion oracle.
+    const current = await this.versions.current(item.entity, item.entityId);
+    const liveOwnerId = await descriptor.getOwnerId(item.entityId);
+    const effectiveOwnerId = liveOwnerId ?? current?.ownerId ?? null;
+    if (effectiveOwnerId !== null && effectiveOwnerId !== actor.id && !actor.roles.includes('admin')) {
       return { ...base, status: 'error', error: 'forbidden' };
     }
 
     // Optimistic concurrency: baseVersion must match the server exactly.
-    const current = await this.versions.current(item.entity, item.entityId);
     const currentVersion = current?.version ?? 0;
     if (item.baseVersion !== currentVersion) {
       const payloads = await descriptor.getPayloads([item.entityId]);
@@ -169,6 +185,20 @@ export class SyncService {
       );
       return { ...base, status: 'applied', newVersion };
     } catch (error) {
+      if (error instanceof SyncVersionConflictError) {
+        // V-18: the atomic version-row claim was lost to a concurrent writer
+        // BETWEEN the pre-check above and the apply. The losing payload never
+        // touched the source row; answer with a fresh conflict (the same
+        // contract as a stale baseVersion), not a retryable apply_failed.
+        const raced = await this.versions.current(item.entity, item.entityId);
+        const payloads = await descriptor.getPayloads([item.entityId]);
+        return {
+          ...base,
+          status: 'conflict',
+          serverVersion: raced?.version ?? 0,
+          serverPayload: payloads.get(item.entityId) ?? null
+        };
+      }
       this.logger.warn(
         `sync push apply failed for ${item.entity}/${item.entityId}: ${
           error instanceof Error ? error.message : String(error)
@@ -178,13 +208,29 @@ export class SyncService {
     }
   }
 
-  async pull(actor: User, entity: string, since: number, limit?: number): Promise<SyncPullPage> {
+  async pull(
+    actor: User,
+    entity: string,
+    since: number,
+    limit?: number,
+    protocolVersion?: number
+  ): Promise<SyncPullPage> {
     const descriptor = this.registry.get(entity);
     if (!descriptor) {
       throw new BadRequestException(`Unknown sync entity '${entity}'`);
     }
     if (!Number.isInteger(since) || since < 0) {
       throw new BadRequestException('`since` must be a non-negative integer cursor');
+    }
+    if (since > 0 && protocolVersion !== SYNC_PROTOCOL_VERSION) {
+      // v2 guard: a non-zero cursor minted under v1 counts PER-RECORD
+      // versions; comparing it against change_seq would silently skip
+      // records forever. Fail loudly instead — the client resets to
+      // since=0 and performs a full resync (docs/sync-protocol.md §6).
+      throw new ConflictException({
+        message: SYNC_RESYNC_REQUIRED_MESSAGE,
+        error: 'sync_resync_required'
+      });
     }
     const pageSize = Math.min(Math.max(limit ?? SYNC_PULL_LIMIT_DEFAULT, 1), SYNC_PULL_LIMIT_MAX);
 
@@ -199,6 +245,7 @@ export class SyncService {
       return {
         entityId: row.entityId,
         version: row.version,
+        changeSeq: row.changeSeq,
         // A live version row whose source record is gone is served as a
         // tombstone so clients purge their stale copy (fail-closed).
         deleted: row.deleted || payload === undefined,
@@ -206,12 +253,12 @@ export class SyncService {
       };
     });
 
-    // Cursor = max version seen in this page; never regresses, even on an
-    // empty page (monotonic per (user, entity)).
-    const cursor = page.length > 0 ? page[page.length - 1].version : since;
+    // Cursor = max change_seq seen in this page; never regresses, even on
+    // an empty page (monotonic per (user, entity)).
+    const cursor = page.length > 0 ? page[page.length - 1].changeSeq : since;
     await this.cursors.set(actor.id, entity, cursor);
 
-    return { entity, items, cursor, hasMore };
+    return { entity, items, cursor, hasMore, protocol: SYNC_PROTOCOL_VERSION };
   }
 
   async status(actor: User): Promise<SyncStatusEntry[]> {
@@ -219,7 +266,7 @@ export class SyncService {
     for (const entity of this.registry.list()) {
       entries.push({
         entity,
-        serverMaxVersion: await this.versions.maxVersion(entity, actor.id),
+        serverMaxVersion: await this.versions.maxChangeSeq(entity, actor.id),
         cursor: await this.cursors.get(actor.id, entity)
       });
     }
