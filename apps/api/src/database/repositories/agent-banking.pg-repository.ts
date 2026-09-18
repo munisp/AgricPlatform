@@ -3,9 +3,14 @@ import type pg from 'pg';
 import type {
   AgentBankingAgentRepository,
   AgentCriteria,
+  AgentDeviceRecord,
+  AgentDeviceRepository,
   AgentFloatTopUpRecord,
   AgentFloatTopUpRepository,
   AgentRecord,
+  AgentReversalRecord,
+  AgentReversalRepository,
+  AgentReversalStatus,
   AgentTopUpCriteria,
   AgentTransactionCriteria,
   AgentTransactionRecord,
@@ -105,7 +110,11 @@ export class PgAgentBankingAgentRepository implements AgentBankingAgentRepositor
       status: 'status',
       dailyLimitKobo: 'daily_limit_kobo',
       lowFloatThresholdKobo: 'low_float_threshold_kobo',
-      updatedAt: 'updated_at'
+      updatedAt: 'updated_at',
+      // W2-C2 (V-40, migration 103): close-out bookkeeping
+      deregisteredAt: 'deregistered_at',
+      voucherGraceUntil: 'voucher_grace_until',
+      deregistrationReason: 'deregistration_reason'
     };
     for (const [key, column] of Object.entries(columns)) {
       if (key in patch) {
@@ -142,6 +151,9 @@ export class PgAgentBankingAgentRepository implements AgentBankingAgentRepositor
       commissionAccountCode: row.commission_account_code as string,
       dailyLimitKobo: Number(row.daily_limit_kobo),
       lowFloatThresholdKobo: Number(row.low_float_threshold_kobo),
+      deregisteredAt: toIso(row.deregistered_at),
+      voucherGraceUntil: toIso(row.voucher_grace_until),
+      deregistrationReason: (row.deregistration_reason as string) ?? undefined,
       createdAt: toIso(row.created_at) as string,
       updatedAt: toIso(row.updated_at) as string
     };
@@ -280,8 +292,9 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, ' +
-          'signature, status, redeemed_at, ledger_entry_id, idempotency_key, payload_hash, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+          'signature, status, redeemed_at, ledger_entry_id, idempotency_key, payload_hash, created_at, ' +
+          'issuance_ledger_entry_id) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
         [
           record.id,
           record.agentId,
@@ -295,7 +308,8 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
           record.ledgerEntryId ?? null,
           record.idempotencyKey ?? null,
           record.payloadHash ?? null,
-          record.createdAt
+          record.createdAt,
+          record.issuanceLedgerEntryId ?? null
         ]
       );
     } catch (error) {
@@ -350,7 +364,12 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
     const columns: Record<string, string> = {
       status: 'status',
       redeemedAt: 'redeemed_at',
-      ledgerEntryId: 'ledger_entry_id'
+      ledgerEntryId: 'ledger_entry_id',
+      // W2-C2 (V-33, migration 101): liability lifecycle
+      settleLedgerEntryId: 'settle_ledger_entry_id',
+      refundStatus: 'refund_status',
+      refundLedgerEntryId: 'refund_ledger_entry_id',
+      refundedAt: 'refunded_at'
     };
     const sets: string[] = [];
     const params: unknown[] = [id];
@@ -391,6 +410,11 @@ export class PgAgentVoucherRepository implements AgentVoucherRepository {
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
       idempotencyKey: (row.idempotency_key as string) ?? undefined,
       payloadHash: (row.payload_hash as string) ?? undefined,
+      issuanceLedgerEntryId: (row.issuance_ledger_entry_id as string) ?? undefined,
+      settleLedgerEntryId: (row.settle_ledger_entry_id as string) ?? undefined,
+      refundStatus: (row.refund_status as AgentVoucherRecord['refundStatus']) ?? undefined,
+      refundLedgerEntryId: (row.refund_ledger_entry_id as string) ?? undefined,
+      refundedAt: toIso(row.refunded_at),
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -403,8 +427,9 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
     try {
       await this.pool.query(
         'INSERT INTO agent_banking.transactions (id, agent_id, farmer_id, type, amount_kobo, ' +
-          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, otp_basis, payload_hash, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+          'commission_kobo, idempotency_key, ledger_entry_id, voucher_id, otp_basis, payload_hash, created_at, ' +
+          'reversal_of_transaction_id, fraud_case_id) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
         [
           record.id,
           record.agentId,
@@ -417,13 +442,20 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
           record.voucherId ?? null,
           record.otpBasis ?? null,
           record.payloadHash ?? null,
-          record.createdAt
+          record.createdAt,
+          record.reversalOfTransactionId ?? null,
+          record.fraudCaseId ?? null
         ]
       );
     } catch (error) {
       assertPgUnique(error, 'A record with these unique values already exists');
     }
     return record;
+  }
+
+  async findById(id: string): Promise<AgentTransactionRecord | undefined> {
+    const result = await this.pool.query('SELECT * FROM agent_banking.transactions WHERE id = $1', [id]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
   async findByIdempotencyKey(key: string): Promise<AgentTransactionRecord | undefined> {
@@ -482,6 +514,8 @@ export class PgAgentTransactionRepository implements AgentTransactionRepository 
       voucherId: (row.voucher_id as string) ?? undefined,
       otpBasis: (row.otp_basis as AgentTransactionRecord['otpBasis']) ?? undefined,
       payloadHash: (row.payload_hash as string) ?? undefined,
+      reversalOfTransactionId: (row.reversal_of_transaction_id as string) ?? undefined,
+      fraudCaseId: (row.fraud_case_id as string) ?? undefined,
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -501,4 +535,216 @@ export function createPgAgentVoucherRepository(pool: pg.Pool): PgAgentVoucherRep
 
 export function createPgAgentTransactionRepository(pool: pg.Pool): PgAgentTransactionRepository {
   return new PgAgentTransactionRepository(pool);
+}
+
+/** W2-C2 (V-41, migration 104): agent device bindings (hashed tokens only). */
+export class PgAgentDeviceRepository implements AgentDeviceRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: AgentDeviceRecord): Promise<AgentDeviceRecord> {
+    try {
+      await this.pool.query(
+        'INSERT INTO agent_banking.devices (id, agent_id, device_token_hash, label, status, bound_by, ' +
+          'revoked_by, revoked_at, revoke_reason, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+        [
+          record.id,
+          record.agentId,
+          record.deviceTokenHash,
+          record.label ?? null,
+          record.status,
+          record.boundBy,
+          record.revokedBy ?? null,
+          record.revokedAt ?? null,
+          record.revokeReason ?? null,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'This device is already bound to the agent');
+    }
+    return record;
+  }
+
+  async findByAgentAndHash(agentId: string, deviceTokenHash: string): Promise<AgentDeviceRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM agent_banking.devices WHERE agent_id = $1 AND device_token_hash = $2',
+      [agentId, deviceTokenHash]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findById(id: string): Promise<AgentDeviceRecord | undefined> {
+    const result = await this.pool.query('SELECT * FROM agent_banking.devices WHERE id = $1', [id]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByAgent(agentId: string): Promise<AgentDeviceRecord[]> {
+    const result = await this.pool.query(
+      'SELECT * FROM agent_banking.devices WHERE agent_id = $1 ORDER BY created_at',
+      [agentId]
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<AgentDeviceRecord>,
+    expected: { status: AgentDeviceRecord['status'] }
+  ): Promise<AgentDeviceRecord> {
+    const columns: Record<string, string> = {
+      status: 'status',
+      revokedBy: 'revoked_by',
+      revokedAt: 'revoked_at',
+      revokeReason: 'revoke_reason',
+      label: 'label'
+    };
+    const sets: string[] = [];
+    const params: unknown[] = [id, expected.status];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in patch) {
+        params.push(patch[key as keyof AgentDeviceRecord] ?? null);
+        sets.push(`${column} = $${params.length}`);
+      }
+    }
+    const result = await this.pool.query(
+      `UPDATE agent_banking.devices SET ${sets.join(', ')} WHERE id = $1 AND status = $2`,
+      params
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new ConflictException(`Device '${id}' changed concurrently; reload and retry`);
+    }
+    return (await this.findById(id)) as AgentDeviceRecord;
+  }
+
+  private fromRow(row: Record<string, unknown>): AgentDeviceRecord {
+    return {
+      id: row.id as string,
+      agentId: row.agent_id as string,
+      deviceTokenHash: row.device_token_hash as string,
+      label: (row.label as string) ?? undefined,
+      status: row.status as AgentDeviceRecord['status'],
+      boundBy: row.bound_by as string,
+      revokedBy: (row.revoked_by as string) ?? undefined,
+      revokedAt: toIso(row.revoked_at),
+      revokeReason: (row.revoke_reason as string) ?? undefined,
+      createdAt: toIso(row.created_at) as string
+    };
+  }
+}
+
+/** W2-C2 (V-08, migration 102): maker-checker reversal requests. */
+export class PgAgentReversalRepository implements AgentReversalRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: AgentReversalRecord): Promise<AgentReversalRecord> {
+    try {
+      await this.pool.query(
+        'INSERT INTO agent_banking.reversals (id, agent_id, transaction_id, amount_kobo, reason, fraud_case_id, ' +
+          'status, initiated_by, decided_by, decided_at, ledger_entry_id, reversal_transaction_id, idempotency_key, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
+        [
+          record.id,
+          record.agentId,
+          record.transactionId,
+          record.amountKobo,
+          record.reason,
+          record.fraudCaseId ?? null,
+          record.status,
+          record.initiatedBy,
+          record.decidedBy ?? null,
+          record.decidedAt ?? null,
+          record.ledgerEntryId ?? null,
+          record.reversalTransactionId ?? null,
+          record.idempotencyKey,
+          record.createdAt
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'A reversal for this transaction (or idempotency key) already exists');
+    }
+    return record;
+  }
+
+  async findById(id: string): Promise<AgentReversalRecord | undefined> {
+    const result = await this.pool.query('SELECT * FROM agent_banking.reversals WHERE id = $1', [id]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentReversalRecord | undefined> {
+    const result = await this.pool.query('SELECT * FROM agent_banking.reversals WHERE idempotency_key = $1', [key]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findLiveByTransaction(transactionId: string): Promise<AgentReversalRecord | undefined> {
+    const result = await this.pool.query(
+      "SELECT * FROM agent_banking.reversals WHERE transaction_id = $1 AND status IN ('PENDING', 'APPROVED', 'POSTED')",
+      [transactionId]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByAgent(agentId: string): Promise<AgentReversalRecord[]> {
+    const result = await this.pool.query(
+      'SELECT * FROM agent_banking.reversals WHERE agent_id = $1 ORDER BY created_at',
+      [agentId]
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<AgentReversalRecord>,
+    expected: { status: AgentReversalStatus }
+  ): Promise<AgentReversalRecord> {
+    const columns: Record<string, string> = {
+      status: 'status',
+      decidedBy: 'decided_by',
+      decidedAt: 'decided_at',
+      ledgerEntryId: 'ledger_entry_id',
+      reversalTransactionId: 'reversal_transaction_id'
+    };
+    const sets: string[] = [];
+    const params: unknown[] = [id, expected.status];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in patch) {
+        params.push(patch[key as keyof AgentReversalRecord] ?? null);
+        sets.push(`${column} = $${params.length}`);
+      }
+    }
+    const result = await this.pool.query(
+      `UPDATE agent_banking.reversals SET ${sets.join(', ')} WHERE id = $1 AND status = $2`,
+      params
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new ConflictException(`Reversal '${id}' changed concurrently; reload and retry`);
+    }
+    return (await this.findById(id)) as AgentReversalRecord;
+  }
+
+  private fromRow(row: Record<string, unknown>): AgentReversalRecord {
+    return {
+      id: row.id as string,
+      agentId: row.agent_id as string,
+      transactionId: row.transaction_id as string,
+      amountKobo: Number(row.amount_kobo),
+      reason: row.reason as string,
+      fraudCaseId: (row.fraud_case_id as string) ?? undefined,
+      status: row.status as AgentReversalRecord['status'],
+      initiatedBy: row.initiated_by as string,
+      decidedBy: (row.decided_by as string) ?? undefined,
+      decidedAt: toIso(row.decided_at),
+      ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
+      reversalTransactionId: (row.reversal_transaction_id as string) ?? undefined,
+      idempotencyKey: row.idempotency_key as string,
+      createdAt: toIso(row.created_at) as string
+    };
+  }
+}
+
+export function createPgAgentDeviceRepository(pool: pg.Pool): PgAgentDeviceRepository {
+  return new PgAgentDeviceRepository(pool);
+}
+
+export function createPgAgentReversalRepository(pool: pg.Pool): PgAgentReversalRepository {
+  return new PgAgentReversalRepository(pool);
 }
