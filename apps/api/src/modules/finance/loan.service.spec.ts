@@ -231,7 +231,7 @@ describe('LoanService', () => {
   });
 
   it('rejects repayment on loans that are not repaying', async () => {
-    const { service, ledger } = makeService();
+    const { service } = makeService();
     const loan = await approvedLoan(service);
     await expect(service.markInstallmentPaid(loan.id, 1, applicant.id)).rejects.toThrowError(
       /not repaying/
