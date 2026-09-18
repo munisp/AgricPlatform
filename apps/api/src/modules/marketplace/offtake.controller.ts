@@ -19,8 +19,21 @@ import { OFFTAKE_FLAG, type OfftakePriceBand } from './offtake.js';
 import {
   OfftakeService,
   type CreateOfftakeContractInput,
+  type ProposeAmendmentInput,
   type RecordDeliveryInput
 } from './offtake.service.js';
+
+/** V-34: one open-milestone due-date change inside an amendment proposal. */
+class MilestoneDueDateDto {
+  @IsInt()
+  @Min(1)
+  seq!: number;
+
+  /** ISO calendar date (yyyy-mm-dd) inside the (amended) contract window. */
+  @IsString()
+  @MaxLength(500)
+  dueDate!: string;
+}
 
 class PriceBandDto implements OfftakePriceBand {
   @IsInt()
@@ -30,6 +43,30 @@ class PriceBandDto implements OfftakePriceBand {
   @IsInt()
   @Min(1)
   capKoboPerKg!: number;
+}
+
+/** V-34: amendment proposal (at least one term must change). */
+class ProposeAmendmentDto implements ProposeAmendmentInput {
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => PriceBandDto)
+  priceBand?: PriceBandDto;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  windowEnd?: string;
+
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => MilestoneDueDateDto)
+  milestoneDueDates?: MilestoneDueDateDto[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  note?: string;
 }
 
 class MilestonePlanDto {
@@ -196,6 +233,47 @@ export class OfftakeController {
   })
   async settlementSweep(@CurrentUser() actor: User | null) {
     return { data: await this.offtake.settlementSweep(actor as User) };
+  }
+
+  /** V-34: propose amended terms (either party); lands only on counterparty accept. */
+  @Post(':id/amendments')
+  @Roles('chapter_lead', 'buyer', 'admin')
+  @ApiOperation({
+    summary:
+      'V-34 renegotiation: propose amended price band / window / milestone due dates (supersedes any open proposal)'
+  })
+  async proposeAmendment(
+    @Param('id') id: string,
+    @Body() dto: ProposeAmendmentDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.offtake.proposeAmendment(actor as User, id, dto) };
+  }
+
+  /** V-34: accept an open proposal (counterparty or admin; CAS + termsVersion bump). */
+  @Post(':id/amendments/:amendmentId/accept')
+  @Roles('chapter_lead', 'buyer', 'admin')
+  @ApiOperation({
+    summary: 'V-34: accept an amendment — the contract terms re-band at the new version (idempotent)'
+  })
+  async acceptAmendment(
+    @Param('id') id: string,
+    @Param('amendmentId') amendmentId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.offtake.acceptAmendment(actor as User, id, amendmentId) };
+  }
+
+  /** V-34: reject an open proposal (counterparty or admin). */
+  @Post(':id/amendments/:amendmentId/reject')
+  @Roles('chapter_lead', 'buyer', 'admin')
+  @ApiOperation({ summary: 'V-34: reject an amendment proposal (idempotent)' })
+  async rejectAmendment(
+    @Param('id') id: string,
+    @Param('amendmentId') amendmentId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.offtake.rejectAmendment(actor as User, id, amendmentId) };
   }
 }
 
