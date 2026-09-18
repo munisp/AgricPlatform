@@ -255,7 +255,7 @@ export function syncPush(
 /** Pull caller-scoped changes since a cursor (version-ordered, tombstoned). */
 export function syncPull(
   client: ApiClient,
-  params: { entity: string; since?: number; limit?: number }
+  params: { entity: string; since?: number; limit?: number; v?: number }
 ): Promise<{ data: SyncPullPage }> {
   return client.apiFetch('/sync/pull', { query: { ...params } });
 }
