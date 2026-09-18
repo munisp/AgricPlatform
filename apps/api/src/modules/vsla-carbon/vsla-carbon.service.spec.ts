@@ -20,6 +20,8 @@ import {
   createInMemoryVslaGroupRepository,
   createInMemoryVslaLoanRepository,
   createInMemoryVslaLoanRepaymentRepository,
+  createInMemoryVslaMeetingRepository,
+  createInMemoryVslaCashCountRepository,
   createInMemoryVslaMemberRepository,
   createInMemoryVslaShareOutPlanRepository,
   createInMemoryVslaShareOutRepository
@@ -31,7 +33,9 @@ import { CO2E_COEFFICIENT_VERSION } from './carbon-coefficients.js';
 import type { NdviProvider } from './ndvi.provider.js';
 import {
   ESTIMATE_DISCLAIMER,
+  groupBadDebtAccountCode,
   groupCashAccountCode,
+  groupCashShortageAccountCode,
   groupInterestIncomeAccountCode,
   groupLoansReceivableAccountCode,
   memberSavingsAccountCode,
@@ -94,7 +98,9 @@ function makeService(ndvi: NdviProvider = stubNdvi) {
     new H3Service(),
     events,
     ndvi,
-    chaptersStub as never
+    chaptersStub as never,
+    createInMemoryVslaMeetingRepository(),
+    createInMemoryVslaCashCountRepository()
   );
   return { service, ledger, events, shareOuts, shareOutPlan, loans, repayments };
 }
@@ -547,27 +553,275 @@ describe('deterministic share-out at cycle close', () => {
     ).toBe(0);
   });
 
-  it('leaves residual liability when a loan is outstanding against the pool', async () => {
+  it('V-10: defaults the open loan at close and nets the arrears from the borrower share', async () => {
     const { service, ledger } = makeService();
     const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
     await contributeBoth(service, cycle.id, leadMember.id, member2.id);
-    await service.issueLoan(lead, group.id, {
+    const loan = await service.issueLoan(lead, group.id, {
       memberId: member2.id,
       principalKobo: 100_000,
       interestRateBps: 0,
       idempotencyKey: 'issue-key-8'
     });
     const report = await service.closeCycle(lead, cycle.id);
+    // The loan was DEFAULTED at close (not silently socialised)…
+    expect(report.defaultedLoanIds).toEqual([loan.id]);
+    // …then the borrower's gross 225k share was netted by the 100k arrears:
+    // 100k recovered against the claim, 125k paid in cash.
+    expect(report.arrearsRecoveredKobo).toBe(100_000);
     expect(report.distributableKobo).toBe(300_000);
     const farmerPayout = report.payouts.find((p) => p.memberId === member2.id);
     const leadPayout = report.payouts.find((p) => p.memberId === leadMember.id);
-    expect(farmerPayout?.shareKobo).toBe(225_000);
+    expect(farmerPayout?.shareKobo).toBe(125_000);
+    expect(farmerPayout?.arrearsWithheldKobo).toBe(100_000);
     expect(farmerPayout?.residualKobo).toBe(75_000);
+    // The non-borrowing member is NOT touched — no socialised loss.
     expect(leadPayout?.shareKobo).toBe(75_000);
+    expect(leadPayout?.arrearsWithheldKobo).toBe(0);
     expect(leadPayout?.residualKobo).toBe(25_000);
+    // The recovery fully settled the loan (claim recorded, receivable cleared).
+    const settled = await service.getLoan(loan.id);
+    expect(settled.status).toBe('REPAID');
+    expect(settled.repaidKobo).toBe(100_000);
+    const recoveries = await service.listRepayments(admin, loan.id);
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0].idempotencyKey).toBe(`shareout-arrears:${cycle.id}:${loan.id}`);
     // Residual stays visible on the member liability account (deferred share).
     const liability = await ledger.balance(memberSavingsAccountCode(group.id, farmer.id));
     expect(liability.creditsKobo - liability.debitsKobo).toBe(75_000);
+    expect(
+      (await ledger.balance(groupLoansReceivableAccountCode(group.id))).balanceKobo
+    ).toBe(0);
+  });
+
+  it('V-10: arrears beyond the share stay DEFAULTED and carry the claim into the next cycle', async () => {
+    const { service } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id);
+    // Borrower (lead, 100k contributed) takes a 100k loan LARGER than their
+    // 75k gross share of the 300k post-loan pool.
+    const loan = await service.issueLoan(lead, group.id, {
+      memberId: leadMember.id,
+      principalKobo: 100_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-carry'
+    });
+    const first = await service.closeCycle(lead, cycle.id);
+    const leadPayout = first.payouts.find((p) => p.memberId === leadMember.id);
+    expect(leadPayout?.shareKobo).toBe(0);
+    expect(leadPayout?.arrearsWithheldKobo).toBe(75_000);
+    expect(first.arrearsRecoveredKobo).toBe(75_000);
+    // …the remaining 25k claim persists as DEFAULTED.
+    const afterFirst = await service.getLoan(loan.id);
+    expect(afterFirst.status).toBe('DEFAULTED');
+    expect(afterFirst.repaidKobo).toBe(75_000);
+
+    // Next cycle: the borrower keeps contributing; the carried claim is
+    // netted again at the next close (75k residual cash sits in the pool too).
+    const cycle2 = await service.openCycle(lead, group.id, 'Cycle 2');
+    await service.contribute(lead, cycle2.id, {
+      memberId: leadMember.id,
+      amountKobo: 200_000,
+      idempotencyKey: 'c2-lead'
+    });
+    const second = await service.closeCycle(lead, cycle2.id);
+    const secondPayout = second.payouts.find((p) => p.memberId === leadMember.id);
+    expect(secondPayout?.arrearsWithheldKobo).toBe(25_000);
+    expect(secondPayout?.shareKobo).toBe(250_000);
+    const settled = await service.getLoan(loan.id);
+    expect(settled.status).toBe('REPAID');
+    expect(settled.repaidKobo).toBe(100_000);
+  });
+
+  it('V-10: writeOffLoan books the loss as bad-debt expense and extinguishes the claim', async () => {
+    const { service, ledger } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id);
+    const loan = await service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 50_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-wo'
+    });
+    // Only DEFAULTED loans can be written off (ACTIVE is premature).
+    await expect(service.writeOffLoan(lead, loan.id)).rejects.toThrow(ConflictException);
+    await service.closeCycle(lead, cycle.id); // nets the 50k from member2's share → REPAID
+    expect((await service.getLoan(loan.id)).status).toBe('REPAID');
+
+    // Second cycle: the borrower (leadMember) has NO contribution, so no
+    // share exists to net — the loan defaults and stays defaulted.
+    const cycle2 = await service.openCycle(lead, group.id, 'Cycle 2');
+    await service.contribute(farmer, cycle2.id, {
+      memberId: member2.id,
+      amountKobo: 100_000,
+      idempotencyKey: 'c2-farmer'
+    });
+    const loan2 = await service.issueLoan(lead, group.id, {
+      memberId: leadMember.id,
+      principalKobo: 20_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-wo-2'
+    });
+    await service.closeCycle(lead, cycle2.id);
+    expect((await service.getLoan(loan2.id)).status).toBe('DEFAULTED');
+    const writtenOff = await service.writeOffLoan(lead, loan2.id);
+    expect(writtenOff.status).toBe('WRITTEN_OFF');
+    // The loss is explicit: bad_debt expense carries the outstanding claim.
+    expect((await ledger.balance(groupBadDebtAccountCode(group.id))).balanceKobo).toBe(20_000);
+    expect(
+      (await ledger.balance(groupLoansReceivableAccountCode(group.id))).balanceKobo
+    ).toBe(0);
+    // Replay-safe and terminal; no more repayments accepted.
+    expect((await service.writeOffLoan(lead, loan2.id)).status).toBe('WRITTEN_OFF');
+    await expect(
+      service.repayLoan(lead, loan2.id, { amountKobo: 1, idempotencyKey: 'r-wo' })
+    ).rejects.toThrow(ConflictException);
+    // A farmer cannot write off (group admin only).
+    await expect(service.writeOffLoan(farmer, loan2.id)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('V-47: dissolve is blocked by an open cycle, outstanding loans or pooled cash', async () => {
+    const { service } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    // Open cycle blocks dissolve.
+    await expect(service.dissolveGroup(lead, group.id)).rejects.toThrow(ConflictException);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id);
+    const loan = await service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 50_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-dis'
+    });
+    await service.closeCycle(lead, cycle.id); // nets 50k from member2's share → REPAID
+    expect((await service.getLoan(loan.id)).status).toBe('REPAID');
+    // Pooled cash remains (residual claims 25k + 75k) → still blocked.
+    await expect(service.dissolveGroup(lead, group.id)).rejects.toThrow(ConflictException);
+    // Settle both members via exit, then dissolve succeeds.
+    await service.exitGroup(lead, group.id);
+    await service.exitGroup(farmer, group.id);
+    const dissolved = await service.dissolveGroup(lead, group.id);
+    expect(dissolved.status).toBe('DISSOLVED');
+    // Replay-safe and terminal: no new cycles on a dissolved group.
+    expect((await service.dissolveGroup(lead, group.id)).status).toBe('DISSOLVED');
+    await expect(service.openCycle(lead, group.id, 'Nope')).rejects.toThrow(ConflictException);
+    // A non-admin member cannot dissolve.
+    await expect(service.dissolveGroup(farmer2, group.id)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('V-47: member exit is blocked by open cycle/outstanding loan and settles shares', async () => {
+    const { service, ledger } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id);
+    // Open cycle locks exit (contributions are in the pool).
+    await expect(service.exitGroup(farmer, group.id)).rejects.toThrow(ConflictException);
+    const loan = await service.issueLoan(lead, group.id, {
+      memberId: member2.id,
+      principalKobo: 50_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-exit'
+    });
+    await service.closeCycle(lead, cycle.id); // loan netted from member2's share
+    // member2 owes nothing (50k netted); their residual claim is 75k.
+    const exited = await service.exitGroup(farmer, group.id);
+    expect(exited.status).toBe('EXITED');
+    // Settlement drained the member liability account to zero…
+    const settled = await ledger.balance(memberSavingsAccountCode(group.id, farmer.id));
+    expect(settled.creditsKobo - settled.debitsKobo).toBe(0);
+    // …and replay is safe.
+    expect((await service.exitGroup(farmer, group.id)).status).toBe('EXITED');
+    // Non-members and cross-member exits fail closed (farmer2 is no admin).
+    await expect(service.exitGroup(farmer2, group.id)).rejects.toThrow(NotFoundException);
+    await expect(service.exitGroup(farmer2, group.id, member2.id)).rejects.toThrow(
+      ForbiddenException
+    );
+    // An admin may exit another member by id.
+    const leadExited = await service.exitGroup(admin, group.id, leadMember.id);
+    expect(leadExited.status).toBe('EXITED');
+    void loan;
+  });
+
+  it('V-47: a member with an outstanding DEFAULTED loan cannot exit until settled', async () => {
+    const { service } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    // Only member2 contributes; leadMember borrows → no share to net at close.
+    await service.contribute(farmer, cycle.id, {
+      memberId: member2.id,
+      amountKobo: 100_000,
+      idempotencyKey: 'c-exit-block'
+    });
+    const loan = await service.issueLoan(lead, group.id, {
+      memberId: leadMember.id,
+      principalKobo: 20_000,
+      interestRateBps: 0,
+      idempotencyKey: 'issue-exit-block'
+    });
+    await service.closeCycle(lead, cycle.id);
+    expect((await service.getLoan(loan.id)).status).toBe('DEFAULTED');
+    await expect(service.exitGroup(lead, group.id)).rejects.toThrow(ConflictException);
+    // Repay the claim (DEFAULTED loans stay repayable, V-10) → exit opens.
+    await service.repayLoan(lead, loan.id, { amountKobo: 20_000, idempotencyKey: 'r-exit' });
+    const exited = await service.exitGroup(lead, group.id);
+    expect(exited.status).toBe('EXITED');
+  });
+
+  it('V-48: dual-attested cash counts post audited variance adjustments', async () => {
+    const { service, ledger } = makeService();
+    const { group, cycle, leadMember, member2 } = await makeGroupWithCycle(service);
+    await contributeBoth(service, cycle.id, leadMember.id, member2.id); // 400k in the pool
+
+    // Meetings are member-scoped governance anchors.
+    const meeting = await service.recordMeeting(farmer, group.id, { notes: 'Weekly' });
+    expect(meeting.groupId).toBe(group.id);
+    await expect(service.recordMeeting(farmer2, group.id, {})).rejects.toThrow(ForbiddenException);
+
+    // Only the treasurer (group admin) declares; a member cannot.
+    await expect(
+      service.declareCashCount(farmer, group.id, { declaredKobo: 400_000, idempotencyKey: 'cc-0' })
+    ).rejects.toThrow(ForbiddenException);
+
+    // Exact count: attested, no adjustment entry.
+    const exact = await service.declareCashCount(lead, group.id, {
+      declaredKobo: 400_000,
+      meetingId: meeting.id,
+      idempotencyKey: 'cc-1'
+    });
+    expect(exact.status).toBe('PENDING');
+    // Idempotent declaration replay.
+    expect(
+      (await service.declareCashCount(lead, group.id, { declaredKobo: 400_000, idempotencyKey: 'cc-1' })).id
+    ).toBe(exact.id);
+    // Dual attestation: the declarer cannot self-attest.
+    await expect(service.attestCashCount(lead, exact.id)).rejects.toThrow(ForbiddenException);
+    const attestedExact = await service.attestCashCount(farmer, exact.id);
+    expect(attestedExact.status).toBe('ATTESTED');
+    expect(attestedExact.varianceKobo).toBe(0);
+    expect(attestedExact.ledgerEntryId).toBeUndefined();
+
+    // Shortage beyond the flag threshold (5% of 400k = 20k): FLAGGED + entry.
+    const short = await service.declareCashCount(lead, group.id, {
+      declaredKobo: 360_000,
+      idempotencyKey: 'cc-2'
+    });
+    const flagged = await service.attestCashCount(admin, short.id);
+    expect(flagged.status).toBe('FLAGGED');
+    expect(flagged.ledgerKobo).toBe(400_000);
+    expect(flagged.varianceKobo).toBe(-40_000);
+    expect(flagged.attestedBy).toBe(admin.id);
+    // Balanced adjustment: book cash reduced, loss expensed explicitly.
+    expect((await ledger.balance(groupCashAccountCode(group.id))).balanceKobo).toBe(360_000);
+    const shortageAccount = await ledger.balance(groupCashShortageAccountCode(group.id));
+    expect(shortageAccount.debitsKobo - shortageAccount.creditsKobo).toBe(40_000);
+    // Attestation replay: no second entry, same record.
+    const replay = await service.attestCashCount(farmer, short.id);
+    expect(replay.status).toBe('FLAGGED');
+    const entries = await ledger.listEntries({
+      referenceType: 'vsla_cash_count',
+      referenceId: short.id
+    });
+    expect(entries).toHaveLength(1);
+    // Reads are membership-scoped (V-13 pattern).
+    await expect(service.listCashCounts(farmer2, group.id)).rejects.toThrow(ForbiddenException);
+    await expect(service.listCashCounts(farmer, group.id)).resolves.toHaveLength(2);
   });
 
   it('distributes an interest surplus pro-rata and zeroes interest income', async () => {
