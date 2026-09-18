@@ -239,11 +239,18 @@ export class PgSyncCursorRepository implements SyncCursorRepository {
   }
 
   async set(userId: string, entity: string, cursor: number): Promise<void> {
+    // Monotonic GREATEST applies only between v2 rows. A stale protocol-1 row's
+    // cursor belongs to the per-record-version domain, so the first v2 write
+    // REPLACES it (CI db-contract failure, 2026-09-18) — otherwise the legacy
+    // value would poison every subsequent cursor read for that (user, entity).
     await this.pool.query(
       `INSERT INTO sync.sync_cursors (user_id, entity, cursor, protocol, updated_at)
        VALUES ($1, $2, $3, 2, now())
        ON CONFLICT (user_id, entity) DO UPDATE
-         SET cursor = GREATEST(sync.sync_cursors.cursor, EXCLUDED.cursor),
+         SET cursor = CASE WHEN sync.sync_cursors.protocol < 2
+                           THEN EXCLUDED.cursor
+                           ELSE GREATEST(sync.sync_cursors.cursor, EXCLUDED.cursor)
+                      END,
              protocol = 2,
              updated_at = now()`,
       [userId, entity, cursor]
