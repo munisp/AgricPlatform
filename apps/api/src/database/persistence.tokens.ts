@@ -161,6 +161,15 @@ export const SELLER_RATING_REPOSITORY = Symbol('SELLER_RATING_REPOSITORY');
 
 // Wave P: platform foundation (sessions, feature flags, consumer dedup).
 export const AUTH_SESSION_REPOSITORY = Symbol('AUTH_SESSION_REPOSITORY');
+// V-09 (deceased/succession): next-of-kin estate claims (migration 086).
+export const SUCCESSION_CLAIM_REPOSITORY = Symbol('SUCCESSION_CLAIM_REPOSITORY');
+// V-44 (shared-phone/assisted accounts): guardian/agent custody links (migration 087).
+export const GUARDIAN_LINK_REPOSITORY = Symbol('GUARDIAN_LINK_REPOSITORY');
+// V-45 (duplicate identity): global NIN anchors + merge audit (migration 088).
+export const NIN_ANCHOR_REPOSITORY = Symbol('NIN_ANCHOR_REPOSITORY');
+// V-25 (erasure fan-out): per-category DPO legal-hold sign-offs (migration 089).
+export const ERASURE_HOLD_REPOSITORY = Symbol('ERASURE_HOLD_REPOSITORY');
+export const ACCOUNT_MERGE_REPOSITORY = Symbol('ACCOUNT_MERGE_REPOSITORY');
 export const FEATURE_FLAG_REPOSITORY = Symbol('FEATURE_FLAG_REPOSITORY');
 export const PROCESSED_EVENT_REPOSITORY = Symbol('PROCESSED_EVENT_REPOSITORY');
 
@@ -181,6 +190,8 @@ export const FARM_PLOT_REPOSITORY = Symbol('FARM_PLOT_REPOSITORY');
 export const CROP_PLANTING_REPOSITORY = Symbol('CROP_PLANTING_REPOSITORY');
 export const HARVEST_RECORD_REPOSITORY = Symbol('HARVEST_RECORD_REPOSITORY');
 export const FARM_EXPENSE_REPOSITORY = Symbol('FARM_EXPENSE_REPOSITORY');
+// W2-FP4 (A4): intercrop expense allocation (farms.expense_allocations, migration 117).
+export const FARM_EXPENSE_ALLOCATION_REPOSITORY = Symbol('FARM_EXPENSE_ALLOCATION_REPOSITORY');
 // Wave AGENTS: field-agent (enumerator) assignments + activity trail
 // (agents schema, migration 023).
 export const AGENT_ASSIGNMENT_REPOSITORY = Symbol('AGENT_ASSIGNMENT_REPOSITORY');
@@ -207,6 +218,8 @@ export const CREDIT_GROUP_REPOSITORY = Symbol('CREDIT_GROUP_REPOSITORY');
 export const CREDIT_GROUP_MEMBER_REPOSITORY = Symbol('CREDIT_GROUP_MEMBER_REPOSITORY');
 export const CREDIT_SAVINGS_ACCOUNT_REPOSITORY = Symbol('CREDIT_SAVINGS_ACCOUNT_REPOSITORY');
 export const CREDIT_SAVINGS_TRANSACTION_REPOSITORY = Symbol('CREDIT_SAVINGS_TRANSACTION_REPOSITORY');
+// Wave-2 V-04: append-only loan restructure audit records.
+export const CREDIT_RESTRUCTURE_REPOSITORY = Symbol('CREDIT_RESTRUCTURE_REPOSITORY');
 
 // Wave EUDR: traceability passport — commodity lots, append-only custody
 // hash chain, immutable plot snapshots, shipments (traceability schema,
@@ -235,6 +248,9 @@ export const AGENT_BANKING_AGENT_REPOSITORY = Symbol('AGENT_BANKING_AGENT_REPOSI
 export const AGENT_FLOAT_TOPUP_REPOSITORY = Symbol('AGENT_FLOAT_TOPUP_REPOSITORY');
 export const AGENT_VOUCHER_REPOSITORY = Symbol('AGENT_VOUCHER_REPOSITORY');
 export const AGENT_TRANSACTION_REPOSITORY = Symbol('AGENT_TRANSACTION_REPOSITORY');
+// W2-C2 (V-08/V-41): reversal maker-checker queue + device bindings.
+export const AGENT_REVERSAL_REPOSITORY = Symbol('AGENT_REVERSAL_REPOSITORY');
+export const AGENT_DEVICE_REPOSITORY = Symbol('AGENT_DEVICE_REPOSITORY');
 // Stage 27 Innovation 15 (FLOAT FORECASTER, additive): deterministic agent
 // float forecasts + rebalancing alert queue — schema `agent_banking`,
 // migration 073. Forecasting is read-only on the finance ledger; these
@@ -281,6 +297,10 @@ export const VSLA_SHARE_OUT_REPOSITORY = Symbol('VSLA_SHARE_OUT_REPOSITORY');
 export const VSLA_SHARE_OUT_PLAN_REPOSITORY = Symbol('VSLA_SHARE_OUT_PLAN_REPOSITORY');
 export const VSLA_LOAN_REPOSITORY = Symbol('VSLA_LOAN_REPOSITORY');
 export const VSLA_LOAN_REPAYMENT_REPOSITORY = Symbol('VSLA_LOAN_REPAYMENT_REPOSITORY');
+// FP-2 W2 V-48: VSLA meetings + dual-attested cash-count declarations
+// (physical lockbox vs ledger reconciliation), schema vsla_carbon (091).
+export const VSLA_MEETING_REPOSITORY = Symbol('VSLA_MEETING_REPOSITORY');
+export const VSLA_CASH_COUNT_REPOSITORY = Symbol('VSLA_CASH_COUNT_REPOSITORY');
 export const CARBON_PLOT_REPOSITORY = Symbol('CARBON_PLOT_REPOSITORY');
 export const CARBON_EVIDENCE_REPOSITORY = Symbol('CARBON_EVIDENCE_REPOSITORY');
 export const CARBON_ESTIMATE_REPOSITORY = Symbol('CARBON_ESTIMATE_REPOSITORY');
