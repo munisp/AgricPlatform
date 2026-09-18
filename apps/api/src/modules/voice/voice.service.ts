@@ -60,6 +60,12 @@ import { createVoiceMenuStateStore, type VoiceMenuStateStore } from './voice-men
 
 /** Default SLA for a human-agent first response (env VOICE_CASE_SLA_HOURS). */
 export const VOICE_CASE_SLA_HOURS_DEFAULT = 24;
+
+/** Session TTL (env VOICE_SESSION_TTL_MS): stale sessions expire (V-69). */
+export const VOICE_SESSION_TTL_MS_DEFAULT = 24 * 60 * 60 * 1000;
+
+/** Transcript retention window (env VOICE_TRANSCRIPT_RETENTION_MS), NDPA 2023 (V-69). */
+export const VOICE_TRANSCRIPT_RETENTION_MS_DEFAULT = 30 * 24 * 60 * 60 * 1000;
 /** ASR transcriptions below this confidence are not trusted for advice. */
 export const ASR_MIN_CONFIDENCE = 0.35;
 /** USSD menu-state TTL between callbacks. */
@@ -74,6 +80,12 @@ export interface StartVoiceSessionInput {
   channel: VoiceChannel;
   phone: string;
   ninRef?: string;
+  /**
+   * Voice consent (V-69, NDPA 2023): true when the caller consented to
+   * recording + transcript retention (IVR consent prompt / gateway flag).
+   * Absent/false is recorded as NOT consented — fail closed.
+   */
+  consent?: boolean;
   locale?: LanguageCode;
 }
 
@@ -200,6 +212,41 @@ export class VoiceService {
     return Number.isFinite(raw) && raw > 0 ? raw : VOICE_CASE_SLA_HOURS_DEFAULT;
   }
 
+  /** Session TTL (V-69): stale sessions accept no new turns. Default 24h. */
+  private sessionTtlMs(): number {
+    const raw = Number(this.env.VOICE_SESSION_TTL_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : VOICE_SESSION_TTL_MS_DEFAULT;
+  }
+
+  /** Transcript retention (V-69, NDPA 2023). Default 30 days. */
+  private transcriptRetentionMs(): number {
+    const raw = Number(this.env.VOICE_TRANSCRIPT_RETENTION_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : VOICE_TRANSCRIPT_RETENTION_MS_DEFAULT;
+  }
+
+  /**
+   * Retention sweep (V-69): DELETE transcript turns older than the retention
+   * window. Returns the cutoff and the purged count; publishes an audit
+   * event so the sweep itself is observable. Idempotent by nature.
+   */
+  async sweepTranscriptRetention(
+    actor: User | null,
+    now: Date = new Date()
+  ): Promise<{ cutoff: string; purgedTurns: number }> {
+    const caller = requireUser(actor);
+    if (!caller.roles.includes('admin')) {
+      throw new ForbiddenException('Only an admin may run the transcript retention sweep');
+    }
+    const cutoff = new Date(now.getTime() - this.transcriptRetentionMs()).toISOString();
+    const purgedTurns = await this.turns.purgeOlderThan(cutoff);
+    await this.events.publish(
+      'voice.transcripts.purged',
+      { cutoff, purgedTurns },
+      caller.id
+    );
+    return { cutoff, purgedTurns };
+  }
+
   // -- Sessions ---------------------------------------------------------------
 
   async startSession(
@@ -236,6 +283,8 @@ export class VoiceService {
       // V-17: bind the session to its creator so an UNIDENTIFIED session is
       // not world-accessible to every authenticated user.
       createdByUserId: caller.id,
+      // V-69: record whether the caller consented to recording/retention.
+      consentCaptured: input.consent === true,
       locale,
       menuState: input.channel === 'ussd' ? { ...initialAgronomyUssdState() } : {},
       createdAt: now,
@@ -276,6 +325,11 @@ export class VoiceService {
     this.assertSessionAccess(caller, session);
     if (isTerminal(session.state)) {
       throw new ConflictException(`Voice session ${session.id} is resolved and accepts no turns`);
+    }
+    // V-69: sessions EXPIRE — a stale session accepts no new turns. Its
+    // transcript remains readable until the retention sweep purges it.
+    if (Date.now() - Date.parse(session.updatedAt) > this.sessionTtlMs()) {
+      throw new ConflictException(`Voice session ${session.id} has expired`);
     }
     if (session.channel === 'ussd') {
       return this.handleUssdTurn(caller, session, input);
