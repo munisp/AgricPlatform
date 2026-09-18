@@ -116,8 +116,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'VSLA group detail.' })
   async getGroup(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.getGroup(id) };
+    return { data: await this.service.readGroup(requireActor(actor), id) };
   }
 
   @Get('groups/:id/members')
@@ -125,8 +124,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Group membership roster.' })
   async listMembers(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listMembers(id) };
+    return { data: await this.service.listMembers(requireActor(actor), id) };
   }
 
   @Post('groups/:id/members')
@@ -160,8 +158,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'List savings cycles for a group.' })
   async listCycles(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listCycles(id) };
+    return { data: await this.service.listCycles(requireActor(actor), id) };
   }
 
   @Post('cycles/:id/contributions')
@@ -183,8 +180,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Contributions recorded in a cycle.' })
   async listContributions(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listContributions(id) };
+    return { data: await this.service.listContributions(requireActor(actor), id) };
   }
 
   @Post('cycles/:id/close')
@@ -202,8 +198,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Share-out payout rows recorded at cycle close.' })
   async getShareOut(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.getShareOut(id) };
+    return { data: await this.service.getShareOut(requireActor(actor), id) };
   }
 
   // ---------------------------------------------------------------- loans
@@ -228,8 +223,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Internal loans issued by the group.' })
   async listLoans(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listLoans(id) };
+    return { data: await this.service.listLoans(requireActor(actor), id) };
   }
 
   @Post('loans/:id/repayments')
@@ -249,8 +243,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Repayments recorded against a loan.' })
   async listRepayments(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listRepayments(id) };
+    return { data: await this.service.listRepayments(requireActor(actor), id) };
   }
 
   // ---------------------------------------------------------------- plots
@@ -270,8 +263,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'List carbon plots (optionally filtered by groupId).' })
   async listPlots(@Query('groupId') groupId: string | undefined, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listPlots(groupId) };
+    return { data: await this.service.listPlots(requireActor(actor), groupId) };
   }
 
   @Get('plots/:id')
@@ -279,8 +271,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Carbon plot detail.' })
   async getPlot(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.getPlot(id) };
+    return { data: await this.service.readPlot(requireActor(actor), id) };
   }
 
   // -------------------------------------------------------------- evidence
@@ -305,8 +296,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Seasonal evidence for a plot (basis flags stored verbatim).' })
   async listEvidence(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listEvidence(id) };
+    return { data: await this.service.listEvidence(requireActor(actor), id) };
   }
 
   // ------------------------------------------------------------- estimates
@@ -334,8 +324,7 @@ export class VslaCarbonController {
   @Authenticated()
   @ApiOperation({ summary: 'Persisted carbon estimates for a plot (basis: estimate).' })
   async listEstimates(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.service.listEstimates(id) };
+    return { data: await this.service.listEstimates(requireActor(actor), id) };
   }
 
   @Get('coefficients')
