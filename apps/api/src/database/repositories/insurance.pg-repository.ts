@@ -414,30 +414,57 @@ export function createPgParametricTriggerEventRepository(
 interface PayoutRow {
   id: string;
   policy_id: string;
-  trigger_event_id: string;
+  trigger_event_id: string | null;
   farmer_user_id: string;
   amount_kobo: string | number;
   status: ParametricPayoutStatus;
+  origin: 'parametric' | 'ex_gratia' | null;
   execution: 'stub';
   ledger_proposal_entry_id: string | null;
   ledger_settlement_entry_id: string | null;
   proposed_at: string;
   paid_at: string | null;
+  disputed_at: string | null;
+  dispute_reason: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+  appealed_at: string | null;
+  appeal_reason: string | null;
+  reevaluated_at: string | null;
+  settled_at: string | null;
+  settlement_reference: string | null;
+  settlement_failure_reason: string | null;
+  settlement_attempts: string | number | null;
 }
 
 function payoutFromRow(row: PayoutRow): ParametricPayout {
   return {
     id: row.id,
     policyId: row.policy_id,
-    triggerEventId: row.trigger_event_id,
+    triggerEventId: row.trigger_event_id ?? undefined,
     farmerUserId: row.farmer_user_id,
     amountKobo: Number(row.amount_kobo),
     status: row.status,
+    origin: row.origin ?? 'parametric',
     execution: row.execution,
     ledgerProposalEntryId: row.ledger_proposal_entry_id ?? undefined,
     ledgerSettlementEntryId: row.ledger_settlement_entry_id ?? undefined,
     proposedAt: ts(row.proposed_at),
-    paidAt: row.paid_at === null ? undefined : ts(row.paid_at)
+    paidAt: row.paid_at === null ? undefined : ts(row.paid_at),
+    disputedAt: row.disputed_at === null ? undefined : ts(row.disputed_at),
+    disputeReason: row.dispute_reason ?? undefined,
+    rejectedAt: row.rejected_at === null ? undefined : ts(row.rejected_at),
+    rejectionReason: row.rejection_reason ?? undefined,
+    appealedAt: row.appealed_at === null ? undefined : ts(row.appealed_at),
+    appealReason: row.appeal_reason ?? undefined,
+    reevaluatedAt: row.reevaluated_at === null ? undefined : ts(row.reevaluated_at),
+    settledAt: row.settled_at === null ? undefined : ts(row.settled_at),
+    settlementReference: row.settlement_reference ?? undefined,
+    settlementFailureReason: row.settlement_failure_reason ?? undefined,
+    settlementAttempts:
+      row.settlement_attempts === null || row.settlement_attempts === undefined
+        ? undefined
+        : Number(row.settlement_attempts)
   };
 }
 
@@ -448,23 +475,39 @@ export class PgParametricPayoutRepository implements ParametricPayoutRepository 
     try {
       const result = await this.pool.query<PayoutRow>(
         `INSERT INTO insurance.payouts
-           (id, policy_id, trigger_event_id, farmer_user_id, amount_kobo, status, execution,
-            ledger_proposal_entry_id, ledger_settlement_entry_id, proposed_at, paid_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         ON CONFLICT (trigger_event_id) DO NOTHING
+           (id, policy_id, trigger_event_id, farmer_user_id, amount_kobo, status, origin, execution,
+            ledger_proposal_entry_id, ledger_settlement_entry_id, proposed_at, paid_at,
+            disputed_at, dispute_reason, rejected_at, rejection_reason, appealed_at, appeal_reason,
+            reevaluated_at, settled_at, settlement_reference, settlement_failure_reason,
+            settlement_attempts)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                 $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+         ON CONFLICT (trigger_event_id) WHERE trigger_event_id IS NOT NULL DO NOTHING
          RETURNING *`,
         [
           record.id,
           record.policyId,
-          record.triggerEventId,
+          record.triggerEventId ?? null,
           record.farmerUserId,
           record.amountKobo,
           record.status,
+          record.origin ?? 'parametric',
           record.execution,
           record.ledgerProposalEntryId ?? null,
           record.ledgerSettlementEntryId ?? null,
           record.proposedAt,
-          record.paidAt ?? null
+          record.paidAt ?? null,
+          record.disputedAt ?? null,
+          record.disputeReason ?? null,
+          record.rejectedAt ?? null,
+          record.rejectionReason ?? null,
+          record.appealedAt ?? null,
+          record.appealReason ?? null,
+          record.reevaluatedAt ?? null,
+          record.settledAt ?? null,
+          record.settlementReference ?? null,
+          record.settlementFailureReason ?? null,
+          record.settlementAttempts ?? 0
         ]
       );
       if (result.rows[0]) {
@@ -473,7 +516,9 @@ export class PgParametricPayoutRepository implements ParametricPayoutRepository 
     } catch (error) {
       mapPgError(error);
     }
-    const existing = (await this.find({ triggerEventId: record.triggerEventId }))[0];
+    const existing = record.triggerEventId
+      ? (await this.find({ triggerEventId: record.triggerEventId }))[0]
+      : undefined;
     return { record: existing ?? record, created: false };
   }
 
@@ -481,16 +526,40 @@ export class PgParametricPayoutRepository implements ParametricPayoutRepository 
     await this.pool.query(
       `UPDATE insurance.payouts
          SET status = $2,
-             ledger_proposal_entry_id = $3,
-             ledger_settlement_entry_id = $4,
-             paid_at = $5
+             amount_kobo = $3,
+             ledger_proposal_entry_id = $4,
+             ledger_settlement_entry_id = $5,
+             paid_at = $6,
+             disputed_at = $7,
+             dispute_reason = $8,
+             rejected_at = $9,
+             rejection_reason = $10,
+             appealed_at = $11,
+             appeal_reason = $12,
+             reevaluated_at = $13,
+             settled_at = $14,
+             settlement_reference = $15,
+             settlement_failure_reason = $16,
+             settlement_attempts = $17
        WHERE id = $1`,
       [
         record.id,
         record.status,
+        record.amountKobo,
         record.ledgerProposalEntryId ?? null,
         record.ledgerSettlementEntryId ?? null,
-        record.paidAt ?? null
+        record.paidAt ?? null,
+        record.disputedAt ?? null,
+        record.disputeReason ?? null,
+        record.rejectedAt ?? null,
+        record.rejectionReason ?? null,
+        record.appealedAt ?? null,
+        record.appealReason ?? null,
+        record.reevaluatedAt ?? null,
+        record.settledAt ?? null,
+        record.settlementReference ?? null,
+        record.settlementFailureReason ?? null,
+        record.settlementAttempts ?? 0
       ]
     );
     return record;
