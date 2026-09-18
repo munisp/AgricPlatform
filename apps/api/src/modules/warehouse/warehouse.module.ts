@@ -10,8 +10,10 @@ import {
   COLLATERAL_REGISTRY,
   createCollateralRegistry
 } from './collateral-registry.driver.js';
+import { WarehouseCollateralClaimService } from './collateral-claim.service.js';
 import { LtvGuardianController } from './ltv-guardian.controller.js';
 import { LtvGuardianService } from './ltv-guardian.service.js';
+import { WarehouseBondService } from './warehouse-bond.service.js';
 import { WarehouseController } from './warehouse.controller.js';
 import { WarehouseService } from './warehouse.service.js';
 
@@ -37,6 +39,12 @@ import { WarehouseService } from './warehouse.service.js';
   providers: [
     WarehouseService,
     LtvGuardianService,
+    // V-39: operator bond ledger (fraud remedy) — E-08 external gate noted
+    // in the service doc-comment.
+    WarehouseBondService,
+    // V-31 (warehouse half): credit.collateral.claimed subscription driving
+    // pledge release + balanced settlement legs.
+    WarehouseCollateralClaimService,
     { provide: WAREHOUSE_CERTIFICATION_FEED, useFactory: () => createCertificationFeed(process.env) },
     { provide: COLLATERAL_REGISTRY, useFactory: () => createCollateralRegistry(process.env) }
   ],
