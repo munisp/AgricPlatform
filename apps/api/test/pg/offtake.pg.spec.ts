@@ -156,7 +156,7 @@ function sagaInput() {
 }
 
 describe('pg offtake delivery saga (query spy)', () => {
-  it('locks the contract, claims exactly once and accumulates with ONE guarded UPDATE', async () => {
+  it('locks the contract, claims exactly once and finalizes against the V-50 reservation', async () => {
     const { pool, calls } = fakePool(sagaBehavior);
     const repo = new PgOfftakeContractRepository(pool);
     const outcome = await repo.recordDeliveryTx(sagaInput());
@@ -169,12 +169,14 @@ describe('pg offtake delivery saga (query spy)', () => {
     // Exactly-once delivery claim on the idempotency key.
     const claim = texts.find((text) => text.includes('INSERT INTO marketplace.offtake_deliveries'));
     expect(claim).toContain('ON CONFLICT (idempotency_key) DO NOTHING');
-    // ONE accumulation UPDATE with the status precondition and overshoot guard.
+    // ONE finalize UPDATE that VERIFIES the caller's V-50 reservation
+    // (quantity was claimed by the guarded CAS before the payment rails
+    // ran; the transaction never adds quantity a second time).
     const accumulation = texts.filter((text) => text.includes('UPDATE marketplace.offtake_milestones'));
     expect(accumulation).toHaveLength(1);
-    expect(accumulation[0]).toContain('delivered_qty_kg + $2');
+    expect(accumulation[0]).toContain('delivered_qty_kg = $2');
     expect(accumulation[0]).toContain("status IN ('pending','partial')");
-    expect(accumulation[0]).toContain('delivered_qty_kg + $2 <= qty_kg');
+    expect(accumulation[0]).not.toContain('delivered_qty_kg + $2');
     // The balanced-journal invariant is checked in the same transaction.
     expect(texts.some((text) => text.includes('finance.transfer_is_balanced'))).toBe(true);
     // The outbox event is appended inside the transaction (before COMMIT).
