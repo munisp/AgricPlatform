@@ -159,10 +159,10 @@ export class VoucherStuckSweeperService {
   /** Drives one candidate; returns true only when a TERMINAL state was reached. */
   private async sweepOne(voucher: InputVoucherRecord): Promise<boolean> {
     switch (voucher.status) {
-      case 'ISSUED':
-      case 'EXPIRING':
       // W2-C2 (V-32): a partially redeemed voucher past expiry releases its
       // remaining balance through the same EXPIRING path.
+      case 'ISSUED':
+      case 'EXPIRING':
       case 'PARTIALLY_REDEEMED':
         await this.vouchers.expireVoucher(voucher.id, 'system');
         return true;
