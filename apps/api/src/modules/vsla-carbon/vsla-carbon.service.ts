@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   ServiceUnavailableException
 } from '@nestjs/common';
@@ -25,6 +26,8 @@ import {
   VSLA_GROUP_REPOSITORY,
   VSLA_LOAN_REPOSITORY,
   VSLA_LOAN_REPAYMENT_REPOSITORY,
+  VSLA_MEETING_REPOSITORY,
+  VSLA_CASH_COUNT_REPOSITORY,
   VSLA_MEMBER_REPOSITORY,
   VSLA_SHARE_OUT_PLAN_REPOSITORY,
   VSLA_SHARE_OUT_REPOSITORY
@@ -38,6 +41,8 @@ import type {
   CarbonPlotRepository,
   CarbonPracticeType,
   VslaCarbonPlotRecord,
+  VslaCashCountRecord,
+  VslaCashCountRepository,
   VslaContributionRecord,
   VslaContributionRepository,
   VslaCycleRecord,
@@ -48,6 +53,8 @@ import type {
   VslaLoanRepository,
   VslaLoanRepaymentRecord,
   VslaLoanRepaymentRepository,
+  VslaMeetingRecord,
+  VslaMeetingRepository,
   VslaMemberRecord,
   VslaMemberRepository,
   VslaMemberRole,
@@ -85,6 +92,20 @@ export function groupInterestIncomeAccountCode(groupId: string): string {
 /** Per-member savings liability (credit-normal): what the group owes the member. */
 export function memberSavingsAccountCode(groupId: string, userId: string): string {
   return `vsla:${groupId}:member:${userId}`;
+}
+
+/** Bad-debt expense (debit-normal): explicit loss recognition on write-off (V-10). */
+export function groupBadDebtAccountCode(groupId: string): string {
+  return `vsla:${groupId}:bad_debt`;
+}
+
+/** Cash-count shortage expense / overage revenue (V-48 reconciliation). */
+export function groupCashShortageAccountCode(groupId: string): string {
+  return `vsla:${groupId}:cash_shortage`;
+}
+
+export function groupCashOverageAccountCode(groupId: string): string {
+  return `vsla:${groupId}:cash_overage`;
 }
 
 export interface CreateGroupInput {
@@ -147,6 +168,10 @@ export interface ShareOutReport {
   groupId: string;
   distributableKobo: number;
   payouts: VslaShareOutRecord[];
+  /** Loans DEFAULTED at this close (V-10) — the claims persist and carry over. */
+  defaultedLoanIds: string[];
+  /** Arrears recovered by withholding from defaulters' shares (V-10). */
+  arrearsRecoveredKobo: number;
   closedAt: string;
   /** True when this call replayed an already-completed close. */
   replayed: boolean;
@@ -222,6 +247,21 @@ function isPrivilegedReader(actor: User): boolean {
 }
 
 /**
+ * V-48 audit threshold: a cash-count variance beyond max(5% of the ledger
+ * balance, ₦100) is FLAGGED for review instead of quietly attested.
+ */
+export const CASH_COUNT_FLAG_THRESHOLD_PCT = 5;
+export const CASH_COUNT_FLAG_MIN_KOBO = 10_000;
+
+function isFlaggedVariance(varianceKobo: number, ledgerKobo: number): boolean {
+  const threshold = Math.max(
+    Math.floor((Math.abs(ledgerKobo) * CASH_COUNT_FLAG_THRESHOLD_PCT) / 100),
+    CASH_COUNT_FLAG_MIN_KOBO
+  );
+  return Math.abs(varianceKobo) > threshold;
+}
+
+/**
  * VSLA groups + carbon MRV service (wave VSLACARBON).
  *
  * Money: ALL value movement posts through LedgerService — the group pool is
@@ -261,7 +301,10 @@ export class VslaCarbonService {
     private readonly h3: H3Service,
     private readonly events: DomainEventsService,
     @Inject(NDVI_PROVIDER_TOKEN) private readonly ndvi: NdviProvider,
-    @Inject(CHAPTER_REPOSITORY) private readonly chapters?: ChapterRepository
+    @Inject(CHAPTER_REPOSITORY) private readonly chapters?: ChapterRepository,
+    // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
+    @Inject(VSLA_MEETING_REPOSITORY) private readonly meetings?: VslaMeetingRepository,
+    @Inject(VSLA_CASH_COUNT_REPOSITORY) private readonly cashCounts?: VslaCashCountRepository
   ) {}
 
   // --------------------------------------------------------------- groups
@@ -390,6 +433,341 @@ export class VslaCarbonService {
   }
 
   // ------------------------------------------------------------ cycles
+
+  /**
+   * Group lifecycle exit (V-47): a group admin dissolves the group. Blocked
+   * while a cycle is OPEN or any loan claim is outstanding (ACTIVE/DEFAULTED)
+   * — close the cycle and settle/default-write-off loans first. Also blocked
+   * while pooled cash remains (members would silently lose residual claims;
+   * settle via exit/close first). CAS transition; replay-safe.
+   */
+  async dissolveGroup(actor: User, groupId: string): Promise<VslaGroupRecord> {
+    const group = await this.getGroup(groupId);
+    requireGroupAdmin(actor, group);
+    if (group.status === 'DISSOLVED') {
+      return group; // replay-safe
+    }
+    const openCycle = await this.cycles.findOpenByGroup(groupId);
+    if (openCycle) {
+      throw new ConflictException(
+        'Cannot dissolve with an open cycle — close the cycle (share-out) first'
+      );
+    }
+    const outstanding = await this.loans.find({ groupId });
+    const live = outstanding.filter(
+      (loan) =>
+        (loan.status === 'ACTIVE' || loan.status === 'DEFAULTED') &&
+        loan.repaidKobo < loan.totalDueKobo
+    );
+    if (live.length > 0) {
+      throw new ConflictException(
+        `Cannot dissolve with ${live.length} outstanding loan claim(s) — repay, net or write them off first`
+      );
+    }
+    const { balanceKobo: cashKobo } = await this.ledger.balance(groupCashAccountCode(groupId));
+    if (cashKobo > 0) {
+      throw new ConflictException(
+        'Cannot dissolve while pooled cash remains — settle member residuals (exit/share-out) first'
+      );
+    }
+    const dissolved = await this.groups.updateExpected(
+      groupId,
+      { status: 'DISSOLVED', updatedAt: new Date().toISOString() },
+      { status: 'ACTIVE' }
+    );
+    await this.events.publish('vslacarbon.group.dissolved', { groupId }, actor.id);
+    return dissolved;
+  }
+
+  /**
+   * Member lifecycle exit (V-47): the member themself or a group admin exits
+   * a member. Blocked while a cycle is OPEN (funds are locked in the pool)
+   * or the member holds an outstanding loan claim (ACTIVE/DEFAULTED). The
+   * member's remaining savings balance is settled to their wallet
+   * (DR member savings / CR group cash, solvency-guarded, entity-keyed) and
+   * the member row CAS-transitions to EXITED. Replay-safe.
+   */
+  async exitGroup(actor: User, groupId: string, memberId?: string): Promise<VslaMemberRecord> {
+    const group = await this.getGroup(groupId);
+    let member: VslaMemberRecord | undefined;
+    if (memberId) {
+      requireGroupAdmin(actor, group);
+      member = await this.members.findById(memberId);
+    } else {
+      member = await this.members.findByGroupAndUser(groupId, actor.id);
+    }
+    if (!member || member.groupId !== groupId) {
+      throw new NotFoundException(`VSLA member '${memberId ?? actor.id}' not found in group`);
+    }
+    if (member.status === 'EXITED') {
+      return member; // replay-safe
+    }
+    const openCycle = await this.cycles.findOpenByGroup(groupId);
+    if (openCycle) {
+      throw new ConflictException(
+        'Cannot exit during an open cycle — contributions are locked until share-out'
+      );
+    }
+    const loans = await this.loans.find({ groupId, memberId: member.id });
+    const live = loans.filter(
+      (loan) =>
+        (loan.status === 'ACTIVE' || loan.status === 'DEFAULTED') &&
+        loan.repaidKobo < loan.totalDueKobo
+    );
+    if (live.length > 0) {
+      throw new ConflictException(
+        'Cannot exit with an outstanding loan — repay, await arrears netting or write-off first'
+      );
+    }
+    // Share settlement: pay out whatever the group still owes the member.
+    const balance = await this.ledger.balance(
+      memberSavingsAccountCode(groupId, member.userId)
+    );
+    const claimKobo = balance.creditsKobo - balance.debitsKobo;
+    if (claimKobo > 0) {
+      await this.ledger.postEntry(
+        {
+          idempotencyKey: `vsla-member-exit:${member.id}`,
+          referenceType: 'vsla_member_exit',
+          referenceId: member.id,
+          description: `VSLA member exit settlement ${member.id} (group ${groupId})`,
+          postings: [
+            {
+              accountCode: memberSavingsAccountCode(groupId, member.userId),
+              direction: 'debit',
+              amountKobo: claimKobo
+            },
+            {
+              accountCode: groupCashAccountCode(groupId),
+              direction: 'credit',
+              amountKobo: claimKobo
+            }
+          ],
+          // Never-negative: the pool cannot pay cash it does not hold.
+          requireSolventAccounts: [groupCashAccountCode(groupId)]
+        },
+        actor.id
+      );
+    }
+    const exited = await this.members.updateExpected(
+      member.id,
+      { status: 'EXITED' },
+      { status: 'ACTIVE' }
+    );
+    await this.events.publish(
+      'vslacarbon.member.exited',
+      { groupId, memberId: member.id, settledKobo: Math.max(0, claimKobo) },
+      actor.id
+    );
+    return exited;
+  }
+
+  // ------------------------------------ meetings + cash reconciliation (V-48)
+
+  /** Fail closed when the V-48 repositories are not wired. */
+  private reconciliationRepos(): {
+    meetings: VslaMeetingRepository;
+    cashCounts: VslaCashCountRepository;
+  } {
+    if (!this.meetings || !this.cashCounts) {
+      throw new InternalServerErrorException(
+        'VSLA reconciliation repositories are not wired (VSLA_MEETING/CASH_COUNT_REPOSITORY)'
+      );
+    }
+    return { meetings: this.meetings, cashCounts: this.cashCounts };
+  }
+
+  /** Record a group meeting (the governance anchor for cash counts). */
+  async recordMeeting(
+    actor: User,
+    groupId: string,
+    input: { heldAt?: string; notes?: string }
+  ): Promise<VslaMeetingRecord> {
+    const group = await this.getGroup(groupId);
+    if (group.status !== 'ACTIVE') {
+      throw new ConflictException('Cannot record meetings for a dissolved group');
+    }
+    await this.assertGroupReader(actor, groupId); // active member/admin/regulator
+    const now = new Date().toISOString();
+    return this.reconciliationRepos().meetings.create({
+      id: newId('vslameet'),
+      groupId,
+      heldAt: input.heldAt ?? now,
+      notes: input.notes?.trim() || undefined,
+      createdBy: actor.id,
+      createdAt: now
+    });
+  }
+
+  async listMeetings(actor: User, groupId: string): Promise<VslaMeetingRecord[]> {
+    await this.assertGroupReader(actor, groupId);
+    return this.reconciliationRepos().meetings.find({ groupId });
+  }
+
+  /**
+   * Treasurer declares the physical lockbox count (PENDING). Dual attestation
+   * (attestCashCount) by a DIFFERENT active member settles it. Idempotent by
+   * client key.
+   */
+  async declareCashCount(
+    actor: User,
+    groupId: string,
+    input: { declaredKobo: number; meetingId?: string; idempotencyKey: string }
+  ): Promise<VslaCashCountRecord> {
+    const group = await this.getGroup(groupId);
+    requireGroupAdmin(actor, group); // the treasurer/lead declares
+    if (!Number.isSafeInteger(input.declaredKobo) || input.declaredKobo < 0) {
+      throw new BadRequestException('declaredKobo must be a non-negative integer');
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required');
+    }
+    if (group.status !== 'ACTIVE') {
+      throw new ConflictException('Cannot declare cash counts for a dissolved group');
+    }
+    const { meetings, cashCounts } = this.reconciliationRepos();
+    const replay = await cashCounts.findByIdempotencyKey(input.idempotencyKey);
+    if (replay) {
+      return replay;
+    }
+    if (input.meetingId) {
+      const meeting = await meetings.findById(input.meetingId);
+      if (!meeting || meeting.groupId !== groupId) {
+        throw new NotFoundException(`VSLA meeting '${input.meetingId}' not found in this group`);
+      }
+    }
+    return cashCounts.create({
+      id: newId('vslacashcount'),
+      groupId,
+      meetingId: input.meetingId,
+      declaredKobo: input.declaredKobo,
+      declaredBy: actor.id,
+      status: 'PENDING',
+      idempotencyKey: input.idempotencyKey,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  async listCashCounts(actor: User, groupId: string): Promise<VslaCashCountRecord[]> {
+    await this.assertGroupReader(actor, groupId);
+    return this.reconciliationRepos().cashCounts.find({ groupId });
+  }
+
+  /**
+   * Dual attestation (V-48): a DIFFERENT active member (or an admin who is
+   * not the declarer) attests the count. The ledger balance is captured, the
+   * variance (declared − ledger) posts as a balanced adjustment (shortage →
+   * DR cash_shortage expense / CR cash; overage → DR cash / CR cash_overage
+   * revenue) and the record lands ATTESTED, or FLAGGED when the variance
+   * exceeds the audit threshold. The adjustment entry is entity-keyed so a
+   * crash/replay resumes instead of double-posting.
+   */
+  async attestCashCount(actor: User, countId: string): Promise<VslaCashCountRecord> {
+    const { cashCounts } = this.reconciliationRepos();
+    const count = await cashCounts.findById(countId);
+    if (!count) {
+      throw new NotFoundException(`VSLA cash count '${countId}' not found`);
+    }
+    if (actor.id === count.declaredBy) {
+      // Dual attestation: the treasurer cannot attest their own count.
+      throw new ForbiddenException('The declarer cannot attest their own cash count');
+    }
+    if (!actor.roles.includes('admin')) {
+      await this.assertGroupReader(actor, count.groupId); // active member / regulator
+    }
+    if (count.status !== 'PENDING') {
+      // Crash-resume: the record settled but the adjustment entry may be
+      // missing (crash between CAS and post) — re-drive it idempotently.
+      if (!count.ledgerEntryId && (count.varianceKobo ?? 0) !== 0) {
+        const ledgerEntryId = await this.postCashCountAdjustment(
+          count.groupId,
+          count.id,
+          count.varianceKobo ?? 0,
+          actor.id
+        );
+        return cashCounts.updateExpected(count.id, { ledgerEntryId }, { status: count.status });
+      }
+      return count; // replay
+    }
+    const { balanceKobo: ledgerKobo } = await this.ledger.balance(
+      groupCashAccountCode(count.groupId)
+    );
+    const varianceKobo = count.declaredKobo - ledgerKobo;
+    const status = isFlaggedVariance(varianceKobo, ledgerKobo) ? 'FLAGGED' : 'ATTESTED';
+    const ledgerEntryId =
+      varianceKobo !== 0
+        ? await this.postCashCountAdjustment(count.groupId, count.id, varianceKobo, actor.id)
+        : undefined;
+    const updated = await cashCounts.updateExpected(
+      count.id,
+      {
+        ledgerKobo,
+        varianceKobo,
+        attestedBy: actor.id,
+        status,
+        ledgerEntryId,
+        attestedAt: new Date().toISOString()
+      },
+      { status: 'PENDING' }
+    );
+    await this.events.publish(
+      'vslacarbon.cashcount.attested',
+      {
+        groupId: count.groupId,
+        cashCountId: count.id,
+        ledgerKobo,
+        varianceKobo,
+        status,
+        attestedBy: actor.id
+      },
+      actor.id
+    );
+    return updated;
+  }
+
+  /**
+   * Balanced variance adjustment (V-48): shortage (variance &lt; 0, box holds
+   * LESS than the books) expenses the difference and reduces book cash;
+   * overage books the excess as revenue. Solvency-guarded on the cash leg.
+   */
+  private async postCashCountAdjustment(
+    groupId: string,
+    countId: string,
+    varianceKobo: number,
+    actorId: string
+  ): Promise<string> {
+    const amountKobo = Math.abs(varianceKobo);
+    const shortage = varianceKobo < 0;
+    const adjustmentAccount = shortage
+      ? groupCashShortageAccountCode(groupId)
+      : groupCashOverageAccountCode(groupId);
+    await this.ledger.ensureAccount({
+      code: adjustmentAccount,
+      type: shortage ? 'expense' : 'revenue',
+      ownerId: actorId
+    });
+    const entry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `vsla-cashcount:${countId}`,
+        referenceType: 'vsla_cash_count',
+        referenceId: countId,
+        description: `VSLA cash-count variance adjustment ${countId} (${shortage ? 'shortage' : 'overage'})`,
+        postings: shortage
+          ? [
+              { accountCode: adjustmentAccount, direction: 'debit', amountKobo },
+              { accountCode: groupCashAccountCode(groupId), direction: 'credit', amountKobo }
+            ]
+          : [
+              { accountCode: groupCashAccountCode(groupId), direction: 'debit', amountKobo },
+              { accountCode: adjustmentAccount, direction: 'credit', amountKobo }
+            ],
+        // Never-negative: a shortage cannot exceed the book cash balance.
+        requireSolventAccounts: shortage ? [groupCashAccountCode(groupId)] : []
+      },
+      actorId
+    );
+    return entry.id;
+  }
 
   async openCycle(actor: User, groupId: string, label: string): Promise<VslaCycleRecord> {
     const group = await this.getGroup(groupId);
@@ -558,6 +936,30 @@ export class VslaCarbonService {
     const cycle = await this.getCycle(cycleId);
     const group = await this.getGroup(cycle.groupId);
     requireGroupAdmin(actor, group);
+    // V-10: loans of the closing cycle that are still open are DEFAULTED
+    // BEFORE the close commits — the claim is explicit, never silently
+    // socialised. CAS-per-loan makes the loop crash/concurrency safe: an
+    // already-defaulted (or concurrently defaulted) loan is simply skipped,
+    // and a replay after a mid-loop crash re-enters here because the cycle
+    // is still OPEN.
+    const defaultedLoanIds: string[] = [];
+    if (cycle.status !== 'CLOSED') {
+      const openLoans = (await this.loans.find({ groupId: cycle.groupId, cycleId })).filter(
+        (loan) => loan.status === 'ACTIVE'
+      );
+      for (const loan of openLoans) {
+        if (loan.repaidKobo >= loan.totalDueKobo) continue;
+        try {
+          await this.loans.updateExpected(loan.id, { status: 'DEFAULTED' }, { status: 'ACTIVE' });
+          defaultedLoanIds.push(loan.id);
+        } catch (error) {
+          // A concurrent closer/repayment moved it first — re-read wins.
+          if (!(error instanceof ConflictException)) throw error;
+          const moved = await this.loans.findById(loan.id);
+          if (moved?.status === 'DEFAULTED') defaultedLoanIds.push(loan.id);
+        }
+      }
+    }
     let replayed = false;
     if (cycle.status === 'CLOSED') {
       replayed = true;
@@ -624,6 +1026,24 @@ export class VslaCarbonService {
         groupCashAccountCode(cycle.groupId)
       );
       const payouts = computeShareOut(memberRows, Math.max(0, distributableKobo));
+      // V-10: shares are NET OF ARREARS — a member's outstanding DEFAULTED
+      // loans (any cycle of this group, so arrears carry over) are withheld
+      // from their gross share and applied against the loans_receivable claim
+      // instead of being paid out as cash. The withheld amounts are frozen in
+      // the plan so crash-resume replays the identical netting.
+      const arrearsByMember = new Map<string, number>();
+      for (const payout of payouts) {
+        const defaulted = await this.loans.find({
+          groupId: cycle.groupId,
+          memberId: payout.memberId,
+          status: 'DEFAULTED'
+        });
+        const arrearsKobo = defaulted.reduce(
+          (sum, loan) => sum + (loan.totalDueKobo - loan.repaidKobo),
+          0
+        );
+        arrearsByMember.set(payout.memberId, Math.min(payout.shareKobo, arrearsKobo));
+      }
       const now = new Date().toISOString();
       // One atomic unit: partial rows are deleted, the FULL plan and its
       // completion marker commit together; a concurrent closer loses the
@@ -637,6 +1057,7 @@ export class VslaCarbonService {
           shareKobo: payout.shareKobo,
           contributedKobo: payout.contributedKobo,
           residualKobo: payout.residualKobo,
+          arrearsWithheldKobo: arrearsByMember.get(payout.memberId) ?? 0,
           createdAt: now
         })),
         {
@@ -664,10 +1085,23 @@ export class VslaCarbonService {
           `VSLA member '${planned.memberId}' from the persisted share-out plan not found`
         );
       }
+      // V-10: apply the plan-frozen arrears withholding against the member's
+      // DEFAULTED loans FIRST — the cash payout is the gross share minus what
+      // was actually recovered (a concurrent repayment between plan and
+      // payout shrinks the recovery, never double-claims).
+      const plannedWithheldKobo = planned.arrearsWithheldKobo ?? 0;
+      const arrearsRecoveredKobo =
+        plannedWithheldKobo > 0
+          ? await this.recoverArrearsFromShare(cycle, member, plannedWithheldKobo, actor)
+          : 0;
+      const cashShareKobo = planned.shareKobo - arrearsRecoveredKobo;
       let entryId = '';
-      if (planned.shareKobo > 0) {
-        const memberDebit = Math.min(planned.shareKobo, planned.contributedKobo);
-        const surplusDebit = planned.shareKobo - memberDebit;
+      if (cashShareKobo > 0) {
+        const memberDebit = Math.min(
+          cashShareKobo,
+          Math.max(0, planned.contributedKobo - arrearsRecoveredKobo)
+        );
+        const surplusDebit = cashShareKobo - memberDebit;
         const postings = [
           {
             accountCode: memberSavingsAccountCode(cycle.groupId, member.userId),
@@ -686,7 +1120,7 @@ export class VslaCarbonService {
           {
             accountCode: groupCashAccountCode(cycle.groupId),
             direction: 'credit' as const,
-            amountKobo: planned.shareKobo
+            amountKobo: cashShareKobo
           }
         ].filter((posting) => posting.amountKobo > 0);
         const entry = await this.ledger.postEntry(
@@ -716,9 +1150,10 @@ export class VslaCarbonService {
             id: newId('vslashareout'),
             cycleId,
             memberId: planned.memberId,
-            shareKobo: planned.shareKobo,
+            shareKobo: cashShareKobo,
             contributedKobo: planned.contributedKobo,
             residualKobo: planned.residualKobo,
+            arrearsWithheldKobo: arrearsRecoveredKobo,
             ledgerEntryId: entryId,
             createdAt: new Date().toISOString()
           })
@@ -733,14 +1168,32 @@ export class VslaCarbonService {
         throw error;
       }
     }
-    // Conservation: the persisted plan total always equals the paid-out
-    // total. On a crash-resume the live pool balance is already (partially)
-    // paid out, so the report total comes from the plan/recorded payouts —
-    // never from the reduced balance.
-    const reportedDistributable = records.reduce((sum, record) => sum + record.shareKobo, 0);
+    // Conservation: the recorded payouts (net cash + withheld arrears) always
+    // equal the persisted plan total. On a crash-resume the live pool balance
+    // is already (partially) paid out, so report totals come from the
+    // plan/recorded payouts — never from the reduced balance.
+    const reportedDistributable =
+      records.reduce((sum, record) => sum + record.shareKobo, 0) +
+      records.reduce((sum, record) => sum + (record.arrearsWithheldKobo ?? 0), 0);
+    const arrearsRecoveredKobo = records.reduce(
+      (sum, record) => sum + (record.arrearsWithheldKobo ?? 0),
+      0
+    );
+    // On replay, recover the defaulted-loan set from the loans themselves.
+    const reportedDefaulted = replayed
+      ? (await this.loans.find({ groupId: cycle.groupId, cycleId, status: 'DEFAULTED' })).map(
+          (loan) => loan.id
+        )
+      : defaultedLoanIds;
     await this.events.publish(
       'vslacarbon.cycle.closed',
-      { groupId: cycle.groupId, cycleId, distributableKobo: reportedDistributable },
+      {
+        groupId: cycle.groupId,
+        cycleId,
+        distributableKobo: reportedDistributable,
+        defaultedLoanIds: reportedDefaulted,
+        arrearsRecoveredKobo
+      },
       actor.id
     );
     return {
@@ -748,9 +1201,95 @@ export class VslaCarbonService {
       groupId: cycle.groupId,
       distributableKobo: reportedDistributable,
       payouts: records,
+      defaultedLoanIds: reportedDefaulted,
+      arrearsRecoveredKobo,
       closedAt: cycle.closedAt ?? new Date().toISOString(),
       replayed
     };
+  }
+
+  /**
+   * V-10: apply the plan-frozen arrears withholding against the member's
+   * DEFAULTED loans (oldest first). Each per-loan recovery is the repayLoan
+   * fold — claim-first CAS + balanced repayment entry (DR member savings /
+   * CR loans_receivable) + repayment row in ONE unit of work — keyed by
+   * `shareout-arrears:{cycleId}:{loanId}` so crash-resume and concurrent
+   * closers ADOPT the stored row instead of double-claiming, and the
+   * phantom-claim reconciler sees a committed entry backing every claim.
+   * Returns the total actually recovered (≤ withheldKobo when a concurrent
+   * repayment settled part of the arrears between plan and payout).
+   */
+  private async recoverArrearsFromShare(
+    cycle: VslaCycleRecord,
+    member: VslaMemberRecord,
+    withheldKobo: number,
+    actor: User
+  ): Promise<number> {
+    let remaining = withheldKobo;
+    let recovered = 0;
+    const defaulted = (
+      await this.loans.find({ groupId: cycle.groupId, memberId: member.id, status: 'DEFAULTED' })
+    ).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const loan of defaulted) {
+      if (remaining <= 0) break;
+      const recoveryKey = `shareout-arrears:${cycle.id}:${loan.id}`;
+      const existing = await this.repayments.findByIdempotencyKey(recoveryKey);
+      if (existing) {
+        // Crash-resume / concurrent closer: adopt the stored recovery row.
+        recovered += existing.amountKobo;
+        remaining -= existing.amountKobo;
+        continue;
+      }
+      const portion = Math.min(remaining, loan.totalDueKobo - loan.repaidKobo);
+      if (portion <= 0) continue;
+      const applied = await this.loans.withLoanTransaction(loan.id, async (tx) => {
+        const claim = await this.loans.claimRepayment(loan.id, portion, tx);
+        if (!claim) {
+          return 0; // raced: the loan was settled concurrently — move on
+        }
+        const posted = await this.ledger.postEntryInTx(
+          tx,
+          {
+            idempotencyKey: `vsla-loan-repayment:${recoveryKey}`,
+            referenceType: 'vsla_loan_repayment',
+            referenceId: loan.id,
+            description: `VSLA arrears recovery from share-out (cycle ${cycle.id}, loan ${loan.id})`,
+            postings: [
+              {
+                accountCode: memberSavingsAccountCode(cycle.groupId, member.userId),
+                direction: 'debit',
+                amountKobo: portion
+              },
+              {
+                accountCode: groupLoansReceivableAccountCode(cycle.groupId),
+                direction: 'credit',
+                amountKobo: portion
+              }
+            ],
+            // Never-negative: recovery cannot exceed the receivable balance.
+            requireSolventAccounts: [groupLoansReceivableAccountCode(cycle.groupId)]
+          },
+          actor.id
+        );
+        const amountKobo = this.entryAmountKobo(posted.entry);
+        await this.repayments.create(
+          {
+            id: newId('vslarepay'),
+            loanId: loan.id,
+            amountKobo,
+            idempotencyKey: recoveryKey,
+            ledgerEntryId: posted.entry.id,
+            payloadHash: hashIdempotencyPayload({ loanId: loan.id, amountKobo }),
+            createdAt: new Date().toISOString()
+          },
+          tx
+        );
+        return amountKobo;
+      });
+      recovered += applied;
+      remaining -= applied;
+    }
+    return recovered;
   }
 
   async getShareOut(actor: User, cycleId: string): Promise<VslaShareOutRecord[]> {
@@ -977,6 +1516,9 @@ export class VslaCarbonService {
     if (loan.status === 'REPAID') {
       throw new ConflictException('Loan is already fully repaid');
     }
+    if (loan.status === 'WRITTEN_OFF') {
+      throw new ConflictException('Loan has been written off and no longer accepts repayments');
+    }
 
     // V-57: never silently clamp an overpayment — the excess kobo would move
     // without a book entry. Reject so the caller resubmits the exact
@@ -1100,6 +1642,67 @@ export class VslaCarbonService {
    * the client key (crashed-saga resume). Adopts a racing twin's row on
    * conflict. Never claims: the claim matching this entry already stands.
    */
+  /**
+   * V-10: explicit loss recognition — a group admin writes off a DEFAULTED
+   * loan, moving the outstanding claim from loans_receivable to a bad-debt
+   * EXPENSE so the books stop pretending the money is recoverable. The entry
+   * is entity-keyed (`vsla-writeoff:{loanId}`) so a replay adopts it; the
+   * DEFAULTED→WRITTEN_OFF transition is a CAS. Written-off loans are excluded
+   * from share-out arrears netting (the claim is extinguished).
+   */
+  async writeOffLoan(actor: User, loanId: string): Promise<VslaLoanRecord> {
+    const loan = await this.getLoan(loanId);
+    const group = await this.getGroup(loan.groupId);
+    requireGroupAdmin(actor, group);
+    if (loan.status === 'WRITTEN_OFF') {
+      return loan; // replay-safe
+    }
+    if (loan.status !== 'DEFAULTED') {
+      throw new ConflictException('Only a DEFAULTED loan can be written off');
+    }
+    const outstandingKobo = loan.totalDueKobo - loan.repaidKobo;
+    if (outstandingKobo > 0) {
+      await this.ledger.ensureAccount({
+        code: groupBadDebtAccountCode(loan.groupId),
+        type: 'expense',
+        ownerId: actor.id
+      });
+      await this.ledger.postEntry(
+        {
+          idempotencyKey: `vsla-writeoff:${loanId}`,
+          referenceType: 'vsla_loan_writeoff',
+          referenceId: loanId,
+          description: `VSLA loan write-off ${loanId} (bad debt)`,
+          postings: [
+            {
+              accountCode: groupBadDebtAccountCode(loan.groupId),
+              direction: 'debit',
+              amountKobo: outstandingKobo
+            },
+            {
+              accountCode: groupLoansReceivableAccountCode(loan.groupId),
+              direction: 'credit',
+              amountKobo: outstandingKobo
+            }
+          ],
+          requireSolventAccounts: [groupLoansReceivableAccountCode(loan.groupId)]
+        },
+        actor.id
+      );
+    }
+    const writtenOff = await this.loans.updateExpected(
+      loanId,
+      { status: 'WRITTEN_OFF' },
+      { status: 'DEFAULTED' }
+    );
+    await this.events.publish(
+      'vslacarbon.loan.written_off',
+      { groupId: loan.groupId, loanId, outstandingKobo },
+      actor.id
+    );
+    return writtenOff;
+  }
+
   private async materialiseRepaymentRow(
     loanId: string,
     idempotencyKey: string,
