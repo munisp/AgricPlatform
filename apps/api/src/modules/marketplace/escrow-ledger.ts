@@ -41,7 +41,14 @@ export const ESCROW_HOLDS_LIABILITY_ACCOUNT = 'marketplace:escrow:holds_liabilit
 export const ESCROW_LEDGER_REFERENCE_TYPES = {
   hold: 'marketplace_escrow_hold',
   released: 'marketplace_escrow_release',
-  refunded: 'marketplace_escrow_refund'
+  refunded: 'marketplace_escrow_refund',
+  // V-06 split settlement: a disputed/partially-fulfilled escrow settles in
+  // TWO legs (a seller release part + a buyer refund part) that sum EXACTLY
+  // to the held amount. Each leg settles its partial amount out of the
+  // holds liability, so the reconciliation invariant still holds: Σ open
+  // escrow amounts === outstanding holds_liability.
+  split_release: 'marketplace_escrow_split_release',
+  split_refund: 'marketplace_escrow_split_refund'
 } as const;
 
 export type EscrowLedgerLeg = keyof typeof ESCROW_LEDGER_REFERENCE_TYPES;
@@ -60,6 +67,18 @@ export function escrowMoneyOutLedgerKey(
   return `escrow-ledger:${status}:${escrowId}`;
 }
 
+/**
+ * V-06: idempotency key for one split leg. Per (escrow, leg-part) so a
+ * replayed/duplicated split resolution can never double-post a part, and
+ * the two parts are independently re-ensurable.
+ */
+export function escrowSplitLegLedgerKey(
+  leg: 'split_release' | 'split_refund',
+  escrowId: string
+): string {
+  return `escrow-ledger:${leg}:${escrowId}`;
+}
+
 /** Hold legs: DR provider float, CR holds liability. */
 export function buildEscrowHoldPostings(amountKobo: number): LedgerPosting[] {
   return [
@@ -76,10 +95,37 @@ export function buildEscrowSettlementPostings(amountKobo: number): LedgerPosting
   ];
 }
 
-/** Full posting descriptor for one escrow leg (service + reconciler share it). */
+/**
+ * V-06: full posting descriptor for ONE split-settlement leg (partial
+ * release to the seller or partial refund to the buyer). The pair posted for
+ * one settlement sums exactly to the escrow's held amountKobo.
+ */
+export function escrowSplitLegPostingInput(
+  record: { id: string; orderId: string },
+  leg: 'split_release' | 'split_refund',
+  amountKobo: number
+): {
+  idempotencyKey: string;
+  referenceType: string;
+  referenceId: string;
+  description: string;
+  postings: LedgerPosting[];
+} {
+  const side = leg === 'split_release' ? 'release' : 'refund';
+  return {
+    idempotencyKey: escrowSplitLegLedgerKey(leg, record.id),
+    referenceType: ESCROW_LEDGER_REFERENCE_TYPES[leg],
+    referenceId: record.id,
+    description: `Escrow split ${side} ${record.id} (${amountKobo} kobo partial settlement)`,
+    postings: buildEscrowSettlementPostings(amountKobo)
+  };
+}
+
+/** Full posting descriptor for one WHOLE-AMOUNT escrow leg (service + reconciler share it).
+ *  V-06 split legs are partial-amount and use escrowSplitLegPostingInput instead. */
 export function escrowLegPostingInput(
   record: { id: string; orderId: string; amountKobo: number },
-  leg: EscrowLedgerLeg
+  leg: 'hold' | 'released' | 'refunded'
 ): {
   idempotencyKey: string;
   referenceType: string;
