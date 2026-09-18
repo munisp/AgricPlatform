@@ -9,6 +9,7 @@ import type {
   CreditGuarantor,
   CreditLoanApplication,
   CreditLoanProduct,
+  CreditLoanRestructure,
   CreditRepayment,
   CreditSavingsAccount,
   CreditSavingsTransaction,
@@ -38,6 +39,8 @@ import type {
   CreditProductRepository,
   CreditRepaymentCriteria,
   CreditRepaymentRepository,
+  CreditRestructureCriteria,
+  CreditRestructureRepository,
   CreditSavingsAccountCriteria,
   CreditSavingsAccountRepository,
   CreditSavingsTransactionCriteria,
@@ -138,6 +141,13 @@ export const creditLoanMapper: RowMapper<CreditLoanApplication> = {
     'score_factors',
     'purpose',
     'group_id',
+    'plot_id',
+    'planting_id',
+    'review_flag',
+    'aging_suspended_at',
+    'consolidates_loan_id',
+    'settled_amount_kobo',
+    'write_down_kobo',
     'created_at',
     'updated_at',
     'decided_at',
@@ -153,6 +163,14 @@ export const creditLoanMapper: RowMapper<CreditLoanApplication> = {
     scoreFactors: (row.score_factors as CreditScoreFactors | null) ?? undefined,
     purpose: (row.purpose as string | null) ?? undefined,
     groupId: (row.group_id as string | null) ?? undefined,
+    plotId: (row.plot_id as string | null) ?? undefined,
+    plantingId: (row.planting_id as string | null) ?? undefined,
+    reviewFlag: (row.review_flag as string | null) ?? undefined,
+    agingSuspendedAt: row.aging_suspended_at ? ts(row.aging_suspended_at) : undefined,
+    consolidatesLoanId: (row.consolidates_loan_id as string | null) ?? undefined,
+    settledAmountKobo:
+      row.settled_amount_kobo === null ? undefined : num(row.settled_amount_kobo),
+    writeDownKobo: row.write_down_kobo === null ? undefined : num(row.write_down_kobo),
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
     decidedAt: row.decided_at ? ts(row.decided_at) : undefined,
@@ -169,6 +187,13 @@ export const creditLoanMapper: RowMapper<CreditLoanApplication> = {
       score_factors: 'scoreFactors',
       purpose: 'purpose',
       group_id: 'groupId',
+      plot_id: 'plotId',
+      planting_id: 'plantingId',
+      review_flag: 'reviewFlag',
+      aging_suspended_at: 'agingSuspendedAt',
+      consolidates_loan_id: 'consolidatesLoanId',
+      settled_amount_kobo: 'settledAmountKobo',
+      write_down_kobo: 'writeDownKobo',
       created_at: 'createdAt',
       updated_at: 'updatedAt',
       decided_at: 'decidedAt',
@@ -181,7 +206,10 @@ export function creditLoanCriteriaSql(criteria: CreditLoanCriteria): WhereClause
     eq('applicant_user_id', criteria.applicantUserId),
     eq('product_id', criteria.productId),
     eq('status', criteria.status),
-    eq('group_id', criteria.groupId)
+    eq('group_id', criteria.groupId),
+    eq('plot_id', criteria.plotId),
+    eq('planting_id', criteria.plantingId),
+    eq('consolidates_loan_id', criteria.consolidatesLoanId)
   );
 }
 
@@ -213,6 +241,7 @@ export const creditRepaymentMapper: RowMapper<CreditRepayment> = {
     'amount_kobo',
     'paid_at',
     'paid_amount_kobo',
+    'schedule_version',
     'status'
   ],
   fromRow: (row) => ({
@@ -223,6 +252,7 @@ export const creditRepaymentMapper: RowMapper<CreditRepayment> = {
     amountKobo: num(row.amount_kobo),
     paidAt: row.paid_at ? ts(row.paid_at) : undefined,
     paidAmountKobo: row.paid_amount_kobo === null ? undefined : num(row.paid_amount_kobo),
+    scheduleVersion: row.schedule_version === null ? undefined : num(row.schedule_version),
     status: row.status as CreditRepayment['status']
   }),
   toRow: (item) =>
@@ -234,6 +264,7 @@ export const creditRepaymentMapper: RowMapper<CreditRepayment> = {
       amount_kobo: 'amountKobo',
       paid_at: 'paidAt',
       paid_amount_kobo: 'paidAmountKobo',
+      schedule_version: 'scheduleVersion',
       status: 'status'
     })
 };
@@ -263,13 +294,24 @@ export function createPgCreditRepaymentRepository(pool: pg.Pool): PgCreditRepaym
 /* ----------------------------------------------------------- collateral -- */
 
 export const creditCollateralMapper: RowMapper<CreditCollateral> = {
-  columns: ['id', 'loan_id', 'kind', 'description', 'estimated_value_kobo', 'status'],
+  columns: [
+    'id',
+    'loan_id',
+    'kind',
+    'description',
+    'estimated_value_kobo',
+    'warehouse_pledge_id',
+    'warehouse_receipt_id',
+    'status'
+  ],
   fromRow: (row) => ({
     id: row.id as string,
     loanId: row.loan_id as string,
     kind: row.kind as string,
     description: row.description as string,
     estimatedValueKobo: num(row.estimated_value_kobo),
+    warehousePledgeId: (row.warehouse_pledge_id as string | null) ?? undefined,
+    warehouseReceiptId: (row.warehouse_receipt_id as string | null) ?? undefined,
     status: row.status as CreditCollateral['status']
   }),
   toRow: (item) =>
@@ -279,6 +321,8 @@ export const creditCollateralMapper: RowMapper<CreditCollateral> = {
       kind: 'kind',
       description: 'description',
       estimated_value_kobo: 'estimatedValueKobo',
+      warehouse_pledge_id: 'warehousePledgeId',
+      warehouse_receipt_id: 'warehouseReceiptId',
       status: 'status'
     })
 };
@@ -307,11 +351,27 @@ export function createPgCreditCollateralRepository(pool: pg.Pool): PgCreditColla
 /* ----------------------------------------------------------- guarantors -- */
 
 export const creditGuarantorMapper: RowMapper<CreditGuarantor> = {
-  columns: ['id', 'loan_id', 'guarantor_user_id', 'status'],
+  columns: [
+    'id',
+    'loan_id',
+    'guarantor_user_id',
+    'demand_amount_kobo',
+    'demanded_at',
+    'liability_accepted_at',
+    'settled_at',
+    'consent_ref',
+    'status'
+  ],
   fromRow: (row) => ({
     id: row.id as string,
     loanId: row.loan_id as string,
     guarantorUserId: row.guarantor_user_id as string,
+    demandAmountKobo:
+      row.demand_amount_kobo === null ? undefined : num(row.demand_amount_kobo),
+    demandedAt: row.demanded_at ? ts(row.demanded_at) : undefined,
+    liabilityAcceptedAt: row.liability_accepted_at ? ts(row.liability_accepted_at) : undefined,
+    settledAt: row.settled_at ? ts(row.settled_at) : undefined,
+    consentRef: (row.consent_ref as string | null) ?? undefined,
     status: row.status as CreditGuarantor['status']
   }),
   toRow: (item) =>
@@ -319,6 +379,11 @@ export const creditGuarantorMapper: RowMapper<CreditGuarantor> = {
       id: 'id',
       loan_id: 'loanId',
       guarantor_user_id: 'guarantorUserId',
+      demand_amount_kobo: 'demandAmountKobo',
+      demanded_at: 'demandedAt',
+      liability_accepted_at: 'liabilityAcceptedAt',
+      settled_at: 'settledAt',
+      consent_ref: 'consentRef',
       status: 'status'
     })
 };
@@ -351,13 +416,15 @@ export function createPgCreditGuarantorRepository(pool: pg.Pool): PgCreditGuaran
 /* ---------------------------------------------------------------- groups -- */
 
 export const creditGroupMapper: RowMapper<CreditGroup> = {
-  columns: ['id', 'name', 'chapter_id', 'created_by', 'created_at'],
+  columns: ['id', 'name', 'chapter_id', 'created_by', 'created_at', 'status', 'dissolved_at'],
   fromRow: (row) => ({
     id: row.id as string,
     name: row.name as string,
     chapterId: (row.chapter_id as string | null) ?? undefined,
     createdBy: row.created_by as string,
-    createdAt: ts(row.created_at)
+    createdAt: ts(row.created_at),
+    status: row.status as CreditGroup['status'],
+    dissolvedAt: row.dissolved_at ? ts(row.dissolved_at) : undefined
   }),
   toRow: (item) =>
     present(item, {
@@ -365,7 +432,9 @@ export const creditGroupMapper: RowMapper<CreditGroup> = {
       name: 'name',
       chapter_id: 'chapterId',
       created_by: 'createdBy',
-      created_at: 'createdAt'
+      created_at: 'createdAt',
+      status: 'status',
+      dissolved_at: 'dissolvedAt'
     })
 };
 
@@ -644,4 +713,69 @@ export function createPgCreditSavingsTransactionRepository(
   pool: pg.Pool
 ): PgCreditSavingsTransactionRepository {
   return new PgCreditSavingsTransactionRepository(pool);
+}
+
+/* ----------------------------------------------------- restructures (V-04) -- */
+
+export const creditRestructureMapper: RowMapper<CreditLoanRestructure> = {
+  columns: [
+    'id',
+    'loan_id',
+    'version',
+    'reason',
+    'outstanding_kobo',
+    'superseded_schedule',
+    'new_installment_count',
+    'score_after',
+    'created_by',
+    'created_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    loanId: row.loan_id as string,
+    version: num(row.version),
+    reason: row.reason as string,
+    outstandingKobo: num(row.outstanding_kobo),
+    supersededSchedule:
+      (row.superseded_schedule as CreditLoanRestructure['supersededSchedule'] | null) ?? [],
+    newInstallmentCount: num(row.new_installment_count),
+    scoreAfter: row.score_after === null ? undefined : num(row.score_after),
+    createdBy: row.created_by as string,
+    createdAt: ts(row.created_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      loan_id: 'loanId',
+      version: 'version',
+      reason: 'reason',
+      outstanding_kobo: 'outstandingKobo',
+      superseded_schedule: 'supersededSchedule',
+      new_installment_count: 'newInstallmentCount',
+      score_after: 'scoreAfter',
+      created_by: 'createdBy',
+      created_at: 'createdAt'
+    })
+};
+
+export function creditRestructureCriteriaSql(criteria: CreditRestructureCriteria): WhereClause {
+  return composeWhere(eq('loan_id', criteria.loanId));
+}
+
+export class PgCreditRestructureRepository
+  extends PgRepositoryBase<CreditLoanRestructure, CreditRestructureCriteria>
+  implements CreditRestructureRepository
+{
+  constructor(pool: pg.Pool) {
+    super(pool, {
+      table: 'credit.loan_restructures',
+      mapper: creditRestructureMapper,
+      criteria: creditRestructureCriteriaSql,
+      orderBy: 'loan_id, version'
+    });
+  }
+}
+
+export function createPgCreditRestructureRepository(pool: pg.Pool): PgCreditRestructureRepository {
+  return new PgCreditRestructureRepository(pool);
 }
