@@ -26,7 +26,8 @@ import type {
   LedgerAccountRepository,
   LedgerEntryCriteria,
   LedgerEntryRepository,
-  LedgerPostingTx
+  LedgerPostingTx,
+  DailyLimitCorrection
 } from '../../database/repositories/ledger.repository.js';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 
@@ -51,6 +52,12 @@ export interface PostEntryInput {
    * posting rolls counter and money movement back together.
    */
   dailyLimitReservation?: DailyLimitReservation;
+  /**
+   * W2-C2 (V-08): posted with a reversal entry — releases the reversed
+   * transaction's daily-limit counter on its ORIGINAL business date inside
+   * the same posting transaction.
+   */
+  dailyLimitCorrection?: DailyLimitCorrection;
 }
 
 /**
@@ -176,7 +183,8 @@ export class LedgerService {
         entry,
         input.requireSolventAccounts,
         event,
-        input.dailyLimitReservation
+        input.dailyLimitReservation,
+        input.dailyLimitCorrection
       );
     } catch (error) {
       // Adopt-on-conflict: the persistence layer enforces UNIQUE on
