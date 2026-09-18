@@ -42,7 +42,10 @@ export const escrowRecordMapper: RowMapper<EscrowRecord> = {
     'deposit_verified_at',
     'delivery_point_h3',
     'geofence_radius_cells',
-    'delivery_confirm_until'
+    'delivery_confirm_until',
+    // V-06: split-settlement award parts (105_escrow_split_settlement.sql).
+    'released_kobo',
+    'refunded_kobo'
   ],
   fromRow: (row) => ({
     ...escrowMapper.fromRow(row),
@@ -53,7 +56,15 @@ export const escrowRecordMapper: RowMapper<EscrowRecord> = {
       row.geofence_radius_cells === null || row.geofence_radius_cells === undefined
         ? undefined
         : num(row.geofence_radius_cells),
-    deliveryConfirmUntil: row.delivery_confirm_until ? ts(row.delivery_confirm_until) : undefined
+    deliveryConfirmUntil: row.delivery_confirm_until ? ts(row.delivery_confirm_until) : undefined,
+    releasedKobo:
+      row.released_kobo === null || row.released_kobo === undefined
+        ? undefined
+        : num(row.released_kobo),
+    refundedKobo:
+      row.refunded_kobo === null || row.refunded_kobo === undefined
+        ? undefined
+        : num(row.refunded_kobo)
   }),
   toRow: (item) => {
     const row = escrowMapper.toRow(item);
@@ -71,6 +82,12 @@ export const escrowRecordMapper: RowMapper<EscrowRecord> = {
     }
     if ('deliveryConfirmUntil' in item) {
       row.delivery_confirm_until = item.deliveryConfirmUntil ?? null;
+    }
+    if ('releasedKobo' in item) {
+      row.released_kobo = item.releasedKobo ?? null;
+    }
+    if ('refundedKobo' in item) {
+      row.refunded_kobo = item.refundedKobo ?? null;
     }
     return row;
   }
