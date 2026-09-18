@@ -24,6 +24,6 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS orders_listing_id_idx
     ON marketplace.orders (listing_id);
 
 -- livestock.lot_animals.animal_id — the PK (lot_id, animal_id) covers
--- lot→animals; the reverse animal→lots lookup was unindexed.
+-- lot→animals — the reverse animal→lots lookup was unindexed.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS lot_animals_animal_id_idx
     ON livestock.lot_animals (animal_id);
