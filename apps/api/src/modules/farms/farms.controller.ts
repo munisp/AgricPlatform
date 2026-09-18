@@ -10,12 +10,26 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsISO8601, IsIn, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsISO8601,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateNested
+} from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import {
   FARM_EXPENSE_CATEGORIES,
   HARVEST_QUALITY_GRADES,
   HARVEST_UNITS,
+  PLANTING_FAILURE_REASONS,
   PLANTING_STATUSES,
   SOIL_TYPES
 } from '@agric-platform/shared';
@@ -115,6 +129,17 @@ class ListPlotsQuery {
   state?: string;
 }
 
+class ExpenseAllocationDto {
+  @IsString()
+  @MaxLength(100)
+  plantingId!: string;
+
+  /** Percentage of the expense attributed to this planting; shares must total exactly 100. */
+  @IsNumber()
+  @Min(0.0001)
+  sharePercent!: number;
+}
+
 class CreatePlantingDto implements CreatePlantingInput {
   @IsString()
   @MaxLength(100)
@@ -136,6 +161,15 @@ class CreatePlantingDto implements CreatePlantingInput {
   @IsISO8601()
   expectedHarvestAt?: string;
 
+  /**
+   * A2: replant linkage — when set, must reference a FAILED planting on
+   * the same plot (validated fail-closed in the service).
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  replantOfId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)
@@ -145,6 +179,11 @@ class CreatePlantingDto implements CreatePlantingInput {
 class UpdatePlantingStatusDto {
   @IsIn([...PLANTING_STATUSES])
   status!: (typeof PLANTING_STATUSES)[number];
+
+  /** Required when status = 'failed' (V-03 event contract input); rejected otherwise. */
+  @IsOptional()
+  @IsIn([...PLANTING_FAILURE_REASONS])
+  failureReason?: (typeof PLANTING_FAILURE_REASONS)[number];
 }
 
 class RecordHarvestDto implements RecordHarvestInput {
@@ -166,6 +205,18 @@ class RecordHarvestDto implements RecordHarvestInput {
 class CreateExpenseDto implements CreateExpenseInput {
   @IsIn([...FARM_EXPENSE_CATEGORIES])
   category!: CreateExpenseInput['category'];
+
+  /**
+   * A4 intercrop allocation: explicit per-planting percentage shares
+   * (must reference plantings on this plot and total exactly 100).
+   * Omit for a plot-level (shared) expense.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ExpenseAllocationDto)
+  allocations?: ExpenseAllocationDto[];
 
   /** Minor units (kobo); integer, never a float. */
   @IsInt()
@@ -287,14 +338,14 @@ export class FarmsController {
   @Authenticated()
   @ApiOperation({
     summary:
-      "Transition a planting's status (growing → harvested | failed; both terminal). Owner or admin."
+      "Transition a planting's status (growing → partially_harvested | harvested | failed; partially_harvested → harvested | failed; harvested/failed terminal). 'failed' requires failureReason. Owner or admin."
   })
   async updatePlantingStatus(
     @Param('id') id: string,
     @Body() dto: UpdatePlantingStatusDto,
     @CurrentUser() actor: User | null
   ) {
-    return { data: await this.farms.updatePlantingStatus(actor, id, dto.status) };
+    return { data: await this.farms.updatePlantingStatus(actor, id, dto.status, { failureReason: dto.failureReason }) };
   }
 
   /* ------------------------------ harvests ----------------------------- */
@@ -303,7 +354,7 @@ export class FarmsController {
   @Authenticated()
   @ApiOperation({
     summary:
-      'Record a harvest against a planting; flips a growing planting to harvested. Idempotency-Key supported.'
+      'Record a harvest pick against a planting; the first pick flips a growing planting to partially_harvested (A3). Idempotency-Key supported.'
   })
   async recordHarvest(
     @Param('plantingId') plantingId: string,
