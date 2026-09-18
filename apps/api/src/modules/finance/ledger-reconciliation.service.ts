@@ -16,6 +16,8 @@ import {
   escrowHoldLedgerKey,
   escrowLegPostingInput,
   escrowMoneyOutLedgerKey,
+  escrowSplitLegLedgerKey,
+  escrowSplitLegPostingInput,
   type EscrowLedgerLeg
 } from '../marketplace/escrow-ledger.js';
 import { LedgerService } from './ledger.service.js';
@@ -128,6 +130,16 @@ export class LedgerReconciliationService {
         const settlementRepaired = await this.checkLeg(record, record.status, repair, drift);
         if (settlementRepaired) repairedCount += 1;
       }
+      if (record.status === 'settled') {
+        // V-06: a split-settled escrow has TWO partial legs, each checked
+        // against its award part (releasedKobo / refundedKobo).
+        if ((record.releasedKobo ?? 0) > 0) {
+          if (await this.checkLeg(record, 'split_release', repair, drift)) repairedCount += 1;
+        }
+        if ((record.refundedKobo ?? 0) > 0) {
+          if (await this.checkLeg(record, 'split_refund', repair, drift)) repairedCount += 1;
+        }
+      }
     }
     // Orphan alert: an escrow ledger entry whose escrow no longer exists.
     const escrowIds = new Set(escrows.map((record) => record.id));
@@ -209,7 +221,16 @@ export class LedgerReconciliationService {
     const key =
       leg === 'hold'
         ? escrowHoldLedgerKey(record.orderId) // hold legs are order-keyed (V-49)
-        : escrowMoneyOutLedgerKey(leg, record.id);
+        : leg === 'split_release' || leg === 'split_refund'
+          ? escrowSplitLegLedgerKey(leg, record.id) // V-06: per-part keys
+          : escrowMoneyOutLedgerKey(leg, record.id);
+    // V-06: split legs carry their PARTIAL award part, not the full amount.
+    const expectedKobo =
+      leg === 'split_release'
+        ? (record.releasedKobo ?? 0)
+        : leg === 'split_refund'
+          ? (record.refundedKobo ?? 0)
+          : record.amountKobo;
     const entry = await this.ledger.findEntryByIdempotencyKey(key);
     if (!entry) {
       if (!repair) {
@@ -237,7 +258,7 @@ export class LedgerReconciliationService {
       return true;
     }
     const postedTotal = entry.postings.reduce((sum, posting) => sum + posting.amountKobo, 0) / 2;
-    if (postedTotal !== record.amountKobo) {
+    if (postedTotal !== expectedKobo) {
       drift.push({
         escrowId: record.id,
         orderId: record.orderId,
@@ -245,8 +266,8 @@ export class LedgerReconciliationService {
         amountKobo: record.amountKobo,
         issue: 'leg_amount_mismatch',
         detail:
-          `Escrow '${record.id}' ${leg} leg posted ${postedTotal} kobo but the record holds ` +
-          `${record.amountKobo} kobo — alert only, never auto-repaired`,
+          `Escrow '${record.id}' ${leg} leg posted ${postedTotal} kobo but the expected part is ` +
+          `${expectedKobo} kobo — alert only, never auto-repaired`,
         repaired: false
       });
     }
@@ -257,6 +278,11 @@ export class LedgerReconciliationService {
   private async postMissingLeg(record: EscrowRecord, leg: EscrowLedgerLeg): Promise<void> {
     await this.ledger.ensureAccount({ code: ESCROW_PROVIDER_FLOAT_ACCOUNT, type: 'asset' });
     await this.ledger.ensureAccount({ code: ESCROW_HOLDS_LIABILITY_ACCOUNT, type: 'liability' });
+    if (leg === 'split_release' || leg === 'split_refund') {
+      const partKobo = leg === 'split_release' ? (record.releasedKobo ?? 0) : (record.refundedKobo ?? 0);
+      await this.ledger.postEntry(escrowSplitLegPostingInput(record, leg, partKobo), 'system');
+      return;
+    }
     await this.ledger.postEntry(escrowLegPostingInput(record, leg), 'system');
   }
 
