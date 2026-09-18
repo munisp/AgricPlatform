@@ -117,7 +117,10 @@ export interface RetentionPolicyRepository {
 export const DEFAULT_RETENTION_POLICIES: ReadonlyArray<Omit<RetentionPolicy, 'updatedAt'>> = [
   { entity: 'compliance.consent_records', retainDays: 730, anonymizeNotDelete: true },
   { entity: 'compliance.data_subject_requests', retainDays: 1095, anonymizeNotDelete: true },
-  { entity: 'notifications.messages', retainDays: 365, anonymizeNotDelete: false }
+  { entity: 'notifications.messages', retainDays: 365, anonymizeNotDelete: false },
+  // V-27 (migration 118): PII-bearing webhook/outbox payloads.
+  { entity: 'integrations.inbound_events', retainDays: 90, anonymizeNotDelete: true },
+  { entity: 'events.outbox', retainDays: 90, anonymizeNotDelete: false }
 ];
 
 // ---------------------------------------------------------------------------
