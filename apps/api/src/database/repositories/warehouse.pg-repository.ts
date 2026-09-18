@@ -77,7 +77,8 @@ export function warehouseReceiptCriteriaSql(criteria: WarehouseReceiptCriteria):
     eq('warehouse_id', criteria.warehouseId),
     eq('owner_id', criteria.ownerId),
     eq('status', criteria.status),
-    eq('receipt_number', criteria.receiptNumber)
+    eq('receipt_number', criteria.receiptNumber),
+    eq('parent_receipt_id', criteria.parentReceiptId)
   );
 }
 
