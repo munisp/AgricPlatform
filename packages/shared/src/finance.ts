@@ -8,6 +8,14 @@
 /** Nigeria VAT rate in basis points (7.5%). */
 export const VAT_RATE_BPS = 750;
 
+/**
+ * Business ceiling for loan terms (10 years). Enforced at the DTO, the
+ * loan service AND inside generateAmortisationSchedule so an unbounded
+ * term can never reach the BigInt exponentiation / schedule loop
+ * (event-loop DoS via `(d+b)^n` with attacker-controlled n).
+ */
+export const MAX_LOAN_TERM_MONTHS = 120;
+
 /** VAT on a kobo subtotal, rounded to the nearest kobo (integer math). */
 export function computeVatKobo(subtotalKobo: number): number {
   assertKobo(subtotalKobo, 'subtotalKobo');
@@ -65,6 +73,11 @@ export function generateAmortisationSchedule(input: AmortisationInput): Amortisa
   assertKobo(input.annualRateBps, 'annualRateBps');
   if (!Number.isSafeInteger(input.termMonths) || input.termMonths < 1) {
     throw new Error('termMonths must be a positive integer');
+  }
+  if (input.termMonths > MAX_LOAN_TERM_MONTHS) {
+    // Fail fast BEFORE the BigInt exponentiation below: an unbounded term
+    // wedges the event loop computing (d+b)^n and building n installments.
+    throw new Error(`termMonths must not exceed ${MAX_LOAN_TERM_MONTHS}`);
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.firstDueDate)) {
     throw new Error('firstDueDate must be an ISO date (YYYY-MM-DD)');
