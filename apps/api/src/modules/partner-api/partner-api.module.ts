@@ -11,7 +11,11 @@ import { PartnerAuthGuard } from './partner-auth.guard.js';
 import { PartnerAuthService } from './partner-auth.service.js';
 import { PartnerOAuthController } from './partner-oauth.controller.js';
 import { PartnerRateService } from './partner-rate.service.js';
-import { WebhookDispatchService } from './webhook-dispatch.service.js';
+import {
+  defaultWebhookDnsLookup,
+  WEBHOOK_DNS_LOOKUP,
+  WebhookDispatchService
+} from './webhook-dispatch.service.js';
 
 /**
  * Partner API wave P5d: client-credentials OAuth surface, scoped consented
@@ -26,7 +30,10 @@ import { WebhookDispatchService } from './webhook-dispatch.service.js';
     PartnerAuthGuard,
     PartnerRateService,
     PartnerApiService,
-    WebhookDispatchService
+    WebhookDispatchService,
+    // V-59: shared DNS resolver for the delivery-time SSRF guard (overridable
+    // in tests / hardened deployments via the WEBHOOK_DNS_LOOKUP token).
+    { provide: WEBHOOK_DNS_LOOKUP, useValue: defaultWebhookDnsLookup }
   ],
   // Exported so feature modules hosting partner-scoped controllers (e.g.
   // traceability's exporter surface, wave-insurance's insurer read API) can
