@@ -20,18 +20,52 @@ export const CREDIT_LOAN_STATUSES = [
   'repaying',
   'repaid',
   'defaulted',
-  'written_off'
+  'written_off',
+  /**
+   * Terminal: the loan's open schedule was folded into a top-up
+   * consolidation loan (V-30). No further payments are recorded against a
+   * consolidated loan; its repayment history still counts in scoring.
+   */
+  'consolidated'
 ] as const;
 export type CreditLoanStatus = (typeof CREDIT_LOAN_STATUSES)[number];
 
-export const CREDIT_REPAYMENT_STATUSES = ['pending', 'paid', 'late', 'missed'] as const;
+export const CREDIT_REPAYMENT_STATUSES = [
+  'pending',
+  'paid',
+  'late',
+  'missed',
+  /**
+   * The installment belonged to a schedule that a restructure (V-04) or a
+   * top-up consolidation (V-30) replaced. Superseded rows are immutable
+   * audit history — they never accept payments and never count as open.
+   */
+  'superseded'
+] as const;
 export type CreditRepaymentStatus = (typeof CREDIT_REPAYMENT_STATUSES)[number];
 
 export const CREDIT_COLLATERAL_STATUSES = ['pledged', 'released', 'claimed'] as const;
 export type CreditCollateralStatus = (typeof CREDIT_COLLATERAL_STATUSES)[number];
 
-export const CREDIT_GUARANTOR_STATUSES = ['invited', 'accepted', 'declined'] as const;
+export const CREDIT_GUARANTOR_STATUSES = [
+  'invited',
+  'accepted',
+  'declined',
+  /**
+   * Guarantor demand lifecycle (V-28): when a guaranteed loan defaults,
+   * every accepted guarantor is CALLED with a computed demand share.
+   * called → liable (guarantor accepted the liability; a balanced
+   * receivable leg is posted) → settled (demand paid, optionally by a
+   * consent-gated savings debit).
+   */
+  'called',
+  'liable',
+  'settled'
+] as const;
 export type CreditGuarantorStatus = (typeof CREDIT_GUARANTOR_STATUSES)[number];
+
+export const CREDIT_GROUP_STATUSES = ['active', 'dissolved'] as const;
+export type CreditGroupStatus = (typeof CREDIT_GROUP_STATUSES)[number];
 
 export const CREDIT_GROUP_ROLES = ['member', 'leader'] as const;
 export type CreditGroupRole = (typeof CREDIT_GROUP_ROLES)[number];
@@ -100,6 +134,27 @@ export interface CreditLoanApplication {
   purpose?: string;
   /** Set for VSLA/chama group loan applications. */
   groupId?: string;
+  /**
+   * Optional link to the financed plot / planting (V-03). Persisted at
+   * application time so a farms planting-failure event can find the loan
+   * and trigger the grace path (aging suspension + review flag).
+   */
+  plotId?: string;
+  plantingId?: string;
+  /**
+   * Review flag set by automated triggers. Currently only 'crop_failure'
+   * (V-03): set together with agingSuspendedAt; cleared when a reviewer
+   * resolves the review (e.g. by restructuring the loan, V-04).
+   */
+  reviewFlag?: string;
+  /** When set, pending installments do not age into 'late' at read time. */
+  agingSuspendedAt?: string;
+  /** V-30 top-up: this application consolidates the named repaying loan. */
+  consolidatesLoanId?: string;
+  /** V-05 settlement-for-less: cash actually received at settlement. */
+  settledAmountKobo?: number;
+  /** V-05 settlement-for-less: outstanding balance written down. */
+  writeDownKobo?: number;
   createdAt: string;
   updatedAt: string;
   decidedAt?: string;
@@ -114,11 +169,24 @@ export interface CreditRepayment {
   dueAt: string;
   amountKobo: number;
   paidAt?: string;
+  /**
+   * Cumulative amount paid against this installment (V-29 partial
+   * payments). Rows created after migration 094 always carry a value
+   * (0 when unpaid); pre-094 rows may read undefined — treat as 0.
+   * The installment is fully covered when paidAmountKobo >= amountKobo.
+   */
   paidAmountKobo?: number;
+  /**
+   * 1-based schedule generation (V-04 restructure): the original schedule
+   * is version 1; each restructure/consolidation appends rows with the
+   * next version and supersedes the open rows of the previous one.
+   */
+  scheduleVersion?: number;
   /**
    * Stored status. 'late' is computed at read time (due_at < now && still
    * pending) — no timers mutate this row; 'missed' is set explicitly by a
-   * reviewer when the loan is defaulted.
+   * reviewer when the loan is defaulted; 'superseded' marks rows replaced
+   * by a restructure/consolidation (immutable audit history).
    */
   status: CreditRepaymentStatus;
 }
@@ -130,6 +198,44 @@ export interface CreditCollateral {
   description: string;
   estimatedValueKobo: number;
   status: CreditCollateralStatus;
+  /**
+   * V-31: when the collateral is a warehouse-pledged receipt, the pledge /
+   * receipt references are recorded here so a claim can drive the
+   * warehouse liquidation path (the `credit.collateral.claimed` event
+   * carries them; the warehouse subscriber lives outside this module).
+   */
+  warehousePledgeId?: string;
+  warehouseReceiptId?: string;
+}
+
+/**
+ * V-04: immutable audit record of a loan restructure. One row per
+ * restructure; `version` increments per loan. `supersededSchedule` is the
+ * pinned snapshot of the replaced open installments (sequence, dueAt,
+ * amountKobo, paidAmountKobo) so the old terms survive replacement.
+ */
+export interface CreditLoanRestructure {
+  id: string;
+  loanId: string;
+  /** 1-based per-loan restructure version (append-only). */
+  version: number;
+  reason: string;
+  /** Outstanding balance (unpaid installment remainder) carried forward. */
+  outstandingKobo: number;
+  /** Snapshot of the superseded open installments. */
+  supersededSchedule: {
+    repaymentId: string;
+    sequence: number;
+    dueAt: string;
+    amountKobo: number;
+    paidAmountKobo: number;
+  }[];
+  /** Installment count of the replacement schedule. */
+  newInstallmentCount: number;
+  /** Credit score recomputed at restructure time (factor hook, V-04). */
+  scoreAfter?: number;
+  createdBy: string;
+  createdAt: string;
 }
 
 /* ----------------------------------------- seasonal schedules (SeasonSync) -- */
@@ -184,6 +290,21 @@ export interface CreditGuarantor {
   loanId: string;
   guarantorUserId: string;
   status: CreditGuarantorStatus;
+  /**
+   * V-28 demand lifecycle: the guarantor's computed share of the defaulted
+   * loan's outstanding balance, set when the demand is issued (called).
+   */
+  demandAmountKobo?: number;
+  demandedAt?: string;
+  /** Set when the guarantor accepts the liability (called → liable). */
+  liabilityAcceptedAt?: string;
+  /** Set when the demand is settled (liable → settled). */
+  settledAt?: string;
+  /**
+   * Recorded consent reference when the settlement debited the guarantor's
+   * savings account (V-28: savings debit ONLY with recorded consent).
+   */
+  consentRef?: string;
 }
 
 /* ------------------------------------------------- groups (chama/VSLA) -- */
@@ -194,6 +315,13 @@ export interface CreditGroup {
   chapterId?: string;
   createdBy: string;
   createdAt: string;
+  /**
+   * V-46: 'active' groups accept membership changes and loan applications;
+   * 'dissolved' is terminal. Dissolution is blocked while the group has
+   * open liabilities (live group loans or unsettled guarantor demands).
+   */
+  status: CreditGroupStatus;
+  dissolvedAt?: string;
 }
 
 export interface CreditGroupMember {
