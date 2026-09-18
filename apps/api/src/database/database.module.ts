@@ -19,6 +19,11 @@ import {
   COURSE_REPOSITORY,
   CREDIT_PROFILE_REPOSITORY,
   DELETION_REQUEST_REPOSITORY,
+  SUCCESSION_CLAIM_REPOSITORY,
+  GUARDIAN_LINK_REPOSITORY,
+  NIN_ANCHOR_REPOSITORY,
+  ACCOUNT_MERGE_REPOSITORY,
+  ERASURE_HOLD_REPOSITORY,
   DELIVERY_LOG_REPOSITORY,
   DOCUMENT_REPOSITORY,
   ENROLMENT_REPOSITORY,
@@ -139,6 +144,20 @@ import {
   createPgConsentRepository,
   createPgDeletionRequestRepository
 } from './repositories/privacy.pg-repository.js';
+import { createInMemorySuccessionClaimRepository } from './repositories/succession.repository.js';
+import { createPgSuccessionClaimRepository } from './repositories/succession.pg-repository.js';
+import { createInMemoryGuardianLinkRepository } from './repositories/guardian-link.repository.js';
+import { createPgGuardianLinkRepository } from './repositories/guardian-link.pg-repository.js';
+import {
+  createInMemoryAccountMergeRepository,
+  createInMemoryNinAnchorRepository
+} from './repositories/nin-anchor.repository.js';
+import {
+  createPgAccountMergeRepository,
+  createPgNinAnchorRepository
+} from './repositories/nin-anchor.pg-repository.js';
+import { createInMemoryErasureHoldRepository } from './repositories/erasure-hold.repository.js';
+import { createPgErasureHoldRepository } from './repositories/erasure-hold.pg-repository.js';
 import {
   createPgAuditRepository,
   createPgOutboxRepository
@@ -521,18 +540,21 @@ import {
 // Wave FARMS: farms & crop-production persistence (additive).
 import {
   CROP_PLANTING_REPOSITORY,
+  FARM_EXPENSE_ALLOCATION_REPOSITORY,
   FARM_EXPENSE_REPOSITORY,
   FARM_PLOT_REPOSITORY,
   HARVEST_RECORD_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryCropPlantingRepository,
+  createInMemoryFarmExpenseAllocationRepository,
   createInMemoryFarmExpenseRepository,
   createInMemoryFarmPlotRepository,
   createInMemoryHarvestRecordRepository
 } from './repositories/farms.repository.js';
 import {
   createPgCropPlantingRepository,
+  createPgFarmExpenseAllocationRepository,
   createPgFarmExpenseRepository,
   createPgFarmPlotRepository,
   createPgHarvestRecordRepository
@@ -572,6 +594,7 @@ import {
   CREDIT_LOAN_REPOSITORY,
   CREDIT_PRODUCT_REPOSITORY,
   CREDIT_REPAYMENT_REPOSITORY,
+  CREDIT_RESTRUCTURE_REPOSITORY,
   CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
   CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
   GEO_CREDIT_SHADOW_REPOSITORY,
@@ -595,6 +618,8 @@ import {
   VSLA_SHARE_OUT_PLAN_REPOSITORY,
   VSLA_LOAN_REPOSITORY,
   VSLA_LOAN_REPAYMENT_REPOSITORY,
+  VSLA_MEETING_REPOSITORY,
+  VSLA_CASH_COUNT_REPOSITORY,
   CARBON_PLOT_REPOSITORY,
   CARBON_EVIDENCE_REPOSITORY,
   CARBON_ESTIMATE_REPOSITORY,
@@ -611,6 +636,7 @@ import {
   createInMemoryCreditLoanRepository,
   createInMemoryCreditProductRepository,
   createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditRestructureRepository,
   createInMemoryCreditSavingsAccountRepository,
   createInMemoryCreditSavingsTransactionRepository
 } from './repositories/credit-suite.repository.js';
@@ -622,6 +648,7 @@ import {
   createPgCreditLoanRepository,
   createPgCreditProductRepository,
   createPgCreditRepaymentRepository,
+  createPgCreditRestructureRepository,
   createPgCreditSavingsAccountRepository,
   createPgCreditSavingsTransactionRepository
 } from './repositories/credit-suite.pg-repository.js';
@@ -654,7 +681,9 @@ import { createPgCoopScoreRepository } from './repositories/coop-score.pg-reposi
 // Wave AGENTBANK: agent banking persistence (additive).
 import {
   AGENT_BANKING_AGENT_REPOSITORY,
+  AGENT_DEVICE_REPOSITORY,
   AGENT_FLOAT_TOPUP_REPOSITORY,
+  AGENT_REVERSAL_REPOSITORY,
   AGENT_TRANSACTION_REPOSITORY,
   AGENT_VOUCHER_REPOSITORY,
   FLOAT_FORECAST_REPOSITORY,
@@ -663,13 +692,17 @@ import {
 } from './persistence.tokens.js';
 import {
   createInMemoryAgentBankingAgentRepository,
+  createInMemoryAgentDeviceRepository,
   createInMemoryAgentFloatTopUpRepository,
+  createInMemoryAgentReversalRepository,
   createInMemoryAgentTransactionRepository,
   createInMemoryAgentVoucherRepository
 } from './repositories/agent-banking.repository.js';
 import {
   createPgAgentBankingAgentRepository,
+  createPgAgentDeviceRepository,
   createPgAgentFloatTopUpRepository,
+  createPgAgentReversalRepository,
   createPgAgentTransactionRepository,
   createPgAgentVoucherRepository
 } from './repositories/agent-banking.pg-repository.js';
@@ -712,6 +745,8 @@ import {
   createInMemoryVslaShareOutPlanRepository,
   createInMemoryVslaLoanRepository,
   createInMemoryVslaLoanRepaymentRepository,
+  createInMemoryVslaMeetingRepository,
+  createInMemoryVslaCashCountRepository,
   createInMemoryCarbonPlotRepository,
   createInMemoryCarbonEvidenceRepository,
   createInMemoryCarbonEstimateRepository
@@ -725,6 +760,8 @@ import {
   createPgVslaShareOutPlanRepository,
   createPgVslaLoanRepository,
   createPgVslaLoanRepaymentRepository,
+  createPgVslaMeetingRepository,
+  createPgVslaCashCountRepository,
   createPgCarbonPlotRepository,
   createPgCarbonEvidenceRepository,
   createPgCarbonEstimateRepository
@@ -865,6 +902,36 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: DELETION_REQUEST_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgDeletionRequestRepository(pool) : createInMemoryDeletionRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SUCCESSION_CLAIM_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSuccessionClaimRepository(pool) : createInMemorySuccessionClaimRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: GUARDIAN_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGuardianLinkRepository(pool) : createInMemoryGuardianLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: NIN_ANCHOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgNinAnchorRepository(pool) : createInMemoryNinAnchorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ACCOUNT_MERGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAccountMergeRepository(pool) : createInMemoryAccountMergeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ERASURE_HOLD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgErasureHoldRepository(pool) : createInMemoryErasureHoldRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1646,6 +1713,14 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
       inject: [PG_POOL]
     },
+    {
+      provide: FARM_EXPENSE_ALLOCATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgFarmExpenseAllocationRepository(pool)
+          : createInMemoryFarmExpenseAllocationRepository(),
+      inject: [PG_POOL]
+    },
     // Wave AGENTS: field-agent (enumerator) providers (additive).
     {
       provide: AGENT_ASSIGNMENT_REPOSITORY,
@@ -1691,6 +1766,15 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: CREDIT_REPAYMENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgCreditRepaymentRepository(pool) : createInMemoryCreditRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave-2 V-04: loan restructure audit trail (append-only).
+    {
+      provide: CREDIT_RESTRUCTURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditRestructureRepository(pool)
+          : createInMemoryCreditRestructureRepository(),
       inject: [PG_POOL]
     },
     {
@@ -1834,6 +1918,19 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
         pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
       inject: [PG_POOL]
     },
+    // W2-C2 (V-08/V-41, migrations 102/104): reversal queue + device bindings.
+    {
+      provide: AGENT_REVERSAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentReversalRepository(pool) : createInMemoryAgentReversalRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_DEVICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentDeviceRepository(pool) : createInMemoryAgentDeviceRepository(),
+      inject: [PG_POOL]
+    },
     // Stage 27 Innovation 15 (FLOAT FORECASTER, additive): float forecasts +
     // rebalancing alert queue (migration 073).
     {
@@ -1956,6 +2053,19 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: VSLA_LOAN_REPAYMENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgVslaLoanRepaymentRepository(pool) : createInMemoryVslaLoanRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
+      provide: VSLA_MEETING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaMeetingRepository(pool) : createInMemoryVslaMeetingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CASH_COUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaCashCountRepository(pool) : createInMemoryVslaCashCountRepository(),
       inject: [PG_POOL]
     },
     {
@@ -2119,6 +2229,11 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     PROFILE_REPOSITORY,
     CONSENT_REPOSITORY,
     DELETION_REQUEST_REPOSITORY,
+  SUCCESSION_CLAIM_REPOSITORY,
+  GUARDIAN_LINK_REPOSITORY,
+  NIN_ANCHOR_REPOSITORY,
+  ACCOUNT_MERGE_REPOSITORY,
+  ERASURE_HOLD_REPOSITORY,
     COURSE_REPOSITORY,
     ENROLMENT_REPOSITORY,
     CERTIFICATE_REPOSITORY,
@@ -2248,7 +2363,9 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     CREDIT_PRODUCT_REPOSITORY,
     CREDIT_LOAN_REPOSITORY,
     CREDIT_REPAYMENT_REPOSITORY,
+    CREDIT_RESTRUCTURE_REPOSITORY,
     CREDIT_COLLATERAL_REPOSITORY,
+    CREDIT_GUARANTOR_REPOSITORY,
     CREDIT_GROUP_REPOSITORY,
     CREDIT_GROUP_MEMBER_REPOSITORY,
     CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
@@ -2267,6 +2384,8 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     AGENT_FLOAT_TOPUP_REPOSITORY,
     AGENT_VOUCHER_REPOSITORY,
     AGENT_TRANSACTION_REPOSITORY,
+    AGENT_REVERSAL_REPOSITORY,
+    AGENT_DEVICE_REPOSITORY,
     FLOAT_FORECAST_REPOSITORY,
     REBALANCE_ALERT_REPOSITORY,
     REBALANCE_RUN_REPOSITORY,
@@ -2288,6 +2407,9 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     VSLA_SHARE_OUT_PLAN_REPOSITORY,
     VSLA_LOAN_REPOSITORY,
     VSLA_LOAN_REPAYMENT_REPOSITORY,
+    // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
+    VSLA_MEETING_REPOSITORY,
+    VSLA_CASH_COUNT_REPOSITORY,
     CARBON_PLOT_REPOSITORY,
     CARBON_EVIDENCE_REPOSITORY,
     CARBON_ESTIMATE_REPOSITORY,
