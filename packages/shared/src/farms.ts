@@ -6,8 +6,30 @@
  * text PKs, owner scoping, offline-sync metadata (version + clientId).
  */
 
-export const PLANTING_STATUSES = ['growing', 'harvested', 'failed'] as const;
+export const PLANTING_STATUSES = [
+  'growing',
+  /** One or more picks recorded, more expected (A3) — still an active crop. */
+  'partially_harvested',
+  'harvested',
+  'failed'
+] as const;
 export type PlantingStatus = (typeof PLANTING_STATUSES)[number];
+
+/**
+ * Why a planting failed (V-03 contract input). Recorded on the planting row
+ * and carried by the `farms.planting.status_changed` (→ failed) event so
+ * downstream subscribers (e.g. crop-failure→loan grace) can act without
+ * re-querying the farms module.
+ */
+export const PLANTING_FAILURE_REASONS = [
+  'drought',
+  'flood',
+  'pests',
+  'disease',
+  'input_failure',
+  'other'
+] as const;
+export type PlantingFailureReason = (typeof PLANTING_FAILURE_REASONS)[number];
 
 export const HARVEST_UNITS = ['kg', 'tonnes', 'bags', 'crates', 'bunches'] as const;
 export type HarvestUnit = (typeof HARVEST_UNITS)[number];
@@ -69,6 +91,14 @@ export interface CropPlanting {
   plantedAt: string;
   expectedHarvestAt?: string;
   status: PlantingStatus;
+  /**
+   * Replant linkage (A2): when this planting replaces a FAILED predecessor
+   * on the same plot, the predecessor's id — failure → replant history is
+   * traceable instead of the two plantings looking unrelated.
+   */
+  replantOfId?: string;
+  /** Set when status transitions to 'failed' (see PLANTING_FAILURE_REASONS). */
+  failureReason?: PlantingFailureReason;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -85,6 +115,16 @@ export interface HarvestRecord {
   createdAt: string;
 }
 
+/**
+ * Intercrop expense allocation (A4): an explicit per-planting share of a
+ * plot expense. `sharePercent` is a percentage of `amountKobo`; a fully
+ * allocated expense's shares sum to exactly 100.
+ */
+export interface FarmExpenseAllocation {
+  plantingId: string;
+  sharePercent: number;
+}
+
 export interface FarmExpense {
   id: string;
   plotId: string;
@@ -93,6 +133,13 @@ export interface FarmExpense {
   amountKobo: number;
   incurredAt: string;
   note?: string;
+  /**
+   * Explicit per-planting allocation (A4) for intercropped plots. Absent =
+   * PLOT-LEVEL expense: it is NOT attributed to any single crop; per-crop
+   * P&L must treat it as shared across the plot (the documented default
+   * rule — never silently full-attribute to one planting).
+   */
+  allocations?: FarmExpenseAllocation[];
   createdAt: string;
 }
 
