@@ -30,6 +30,9 @@ export const IVR_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Default sweep cadence for the expired-call sweeper. */
 export const IVR_SWEEP_INTERVAL_MS = 60_000;
 
+/** DTMF history retention (env IVR_DTMF_RETENTION_MS): default 1 hour (V-69). */
+export const IVR_DTMF_RETENTION_MS_DEFAULT = 60 * 60 * 1000;
+
 const IVR_PROVIDER = 'africastalking-voice';
 
 export type IvrDriverMode = 'stub' | 'sandbox' | 'live';
@@ -135,6 +138,17 @@ export class IvrService {
   /** Outbound call expiry sweeper: deletes rows past their 10-minute TTL. */
   async sweepExpiredCalls(now: Date = new Date()): Promise<number> {
     return this.calls.deleteExpired(now.toISOString());
+  }
+
+  /**
+   * DTMF retention purge (V-69, NDPA 2023): blanks the cumulative keypress
+   * history on calls idle past IVR_DTMF_RETENTION_MS (default 1h). The call
+   * record itself lives until its expiry sweep. Returns the purged count.
+   */
+  async purgeDtmfRetention(now: Date = new Date()): Promise<number> {
+    const raw = Number(this.env.IVR_DTMF_RETENTION_MS);
+    const retentionMs = Number.isFinite(raw) && raw > 0 ? raw : IVR_DTMF_RETENTION_MS_DEFAULT;
+    return this.calls.purgeDtmfHistory(new Date(now.getTime() - retentionMs).toISOString());
   }
 
   /**
