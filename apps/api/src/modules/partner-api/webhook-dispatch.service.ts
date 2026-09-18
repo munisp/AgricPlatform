@@ -1,4 +1,6 @@
 import { createHmac } from 'node:crypto';
+import { promises as dns } from 'node:dns';
+import { isIP } from 'node:net';
 import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import { EventDedupService } from '../../core/event-dedup.service.js';
@@ -51,8 +53,32 @@ export type WebhookFetch = (
     headers: Record<string, string>;
     body: string;
     signal?: AbortSignal;
+    /**
+     * Always 'manual' from the dispatcher (V-59): redirects are never
+     * followed automatically — a 3xx fails the delivery closed.
+     */
+    redirect?: 'manual' | 'follow' | 'error';
   }
-) => Promise<{ status: number }>;
+) => Promise<{
+  status: number;
+  /** Fetch-style header access; optional so simple stubs keep type-checking. */
+  headers?: { get(name: string): string | null };
+}>;
+
+/**
+ * DNS resolver shape injected for the delivery-time SSRF guard (V-59).
+ * Mirrors `dns.promises.lookup(hostname, { all: true })`.
+ */
+export type WebhookDnsLookup = (
+  hostname: string
+) => Promise<Array<{ address: string; family: number }>>;
+
+/** DI token overriding the resolver in tests / hardened deployments. */
+export const WEBHOOK_DNS_LOOKUP = Symbol('WEBHOOK_DNS_LOOKUP');
+
+/** Production resolver: system DNS, all records, no reordering. */
+export const defaultWebhookDnsLookup: WebhookDnsLookup = (hostname) =>
+  dns.lookup(hostname, { all: true, verbatim: true });
 
 /** Default outbound delivery timeout; override via WEBHOOK_FETCH_TIMEOUT_MS. */
 export const DEFAULT_WEBHOOK_FETCH_TIMEOUT_MS = 10_000;
@@ -136,6 +162,55 @@ export function webhookUrlBlockReason(
 }
 
 /**
+ * V-59 delivery-time SSRF guard (DNS-rebinding hardening). Runs the cheap
+ * synchronous check first, then resolves non-literal hostnames and blocks
+ * when ANY resolved address is private/loopback/link-local — a hostname
+ * that answers 203.0.113.7 at registration but 169.254.169.254 at delivery
+ * time is refused at delivery time. DNS errors and empty answers fail
+ * closed.
+ *
+ * Honest residual TOCTOU caveat: without an egress proxy that enforces the
+ * denied ranges at connect time, a rebinding attacker can still flip the
+ * answer between this check and the socket connect. Re-validating on every
+ * delivery attempt (including sweeper re-drives) shrinks the window to one
+ * TTL/round-trip; closing it fully requires connect-time IP pinning or an
+ * egress proxy with denied private ranges.
+ */
+export async function webhookDeliveryBlockReason(
+  targetUrl: string,
+  env: NodeJS.ProcessEnv = process.env,
+  lookup: WebhookDnsLookup = defaultWebhookDnsLookup
+): Promise<string | null> {
+  const syncReason = webhookUrlBlockReason(targetUrl, env);
+  if (syncReason) {
+    return syncReason;
+  }
+  // webhookUrlBlockReason already parsed the URL successfully.
+  const hostname = new URL(targetUrl).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  // Literal public IPs need no resolution (private literals were blocked above).
+  if (isIP(hostname) !== 0) {
+    return null;
+  }
+  let addresses: Array<{ address: string; family: number }>;
+  try {
+    addresses = await lookup(hostname);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return `DNS resolution failed for '${hostname}' (fail closed): ${detail}`;
+  }
+  if (!addresses || addresses.length === 0) {
+    return `DNS resolution for '${hostname}' returned no addresses (fail closed)`;
+  }
+  for (const { address } of addresses) {
+    const normalised = address.toLowerCase();
+    if (isPrivateIpv4(normalised) || isPrivateIpv6(normalised)) {
+      return `hostname '${hostname}' resolves to private/loopback/link-local address '${address}'`;
+    }
+  }
+  return null;
+}
+
+/**
  * Owning partner for a domain event, when the payload carries one. Events
  * without a partnerId (e.g. learning.*) are platform-scoped.
  */
@@ -184,7 +259,12 @@ export class WebhookDispatchService implements OnModuleInit {
     @Optional()
     private readonly dedup: EventDedupService = new EventDedupService(
       createInMemoryProcessedEventRepository()
-    )
+    ),
+    // V-59: appended last so existing positional constructor calls keep
+    // working; Nest injects WEBHOOK_DNS_LOOKUP, unit specs stub it.
+    @Optional()
+    @Inject(WEBHOOK_DNS_LOOKUP)
+    private readonly lookup: WebhookDnsLookup = defaultWebhookDnsLookup
   ) {
     this.fetchImpl = fetchImpl ?? (globalThis.fetch as unknown as WebhookFetch);
   }
@@ -266,16 +346,24 @@ export class WebhookDispatchService implements OnModuleInit {
 
   /**
    * Signs and POSTs a single delivery. Returns true on a 2xx response.
-   * Fail-closed (Stage 27 WP-G3): SSRF-guard rejections, transport errors
-   * and timeouts are recorded as delivery failures (warn log + false → the
-   * event stays unprocessed for the sweeper) and never silently skipped.
+   * Fail-closed (Stage 27 WP-G3, V-59): SSRF-guard rejections, transport
+   * errors and timeouts are recorded as delivery failures (warn log + false
+   * → the event stays unprocessed for the sweeper) and never silently
+   * skipped.
+   *
+   * V-59: the DNS-resolving guard runs on EVERY attempt — initial dispatch
+   * and every sweeper re-drive each re-resolve the hostname, so a record
+   * rebound to a private range after registration is refused here. Redirects
+   * are never followed (`redirect: 'manual'`): any 3xx fails the delivery
+   * closed rather than re-validating a Location target, which is the safer
+   * of the two documented options (no redirect-chasing code path at all).
    */
   async deliver(
     subscription: WebhookSubscription,
     delivery: WebhookDelivery,
     body = JSON.stringify(delivery)
   ): Promise<boolean> {
-    const blockReason = webhookUrlBlockReason(subscription.targetUrl);
+    const blockReason = await webhookDeliveryBlockReason(subscription.targetUrl, process.env, this.lookup);
     if (blockReason) {
       this.logger.warn(
         `webhook ${delivery.id} to ${subscription.targetUrl} blocked by SSRF guard: ${blockReason}`
@@ -297,8 +385,20 @@ export class WebhookDispatchService implements OnModuleInit {
           'x-agric-delivery': delivery.id
         },
         body,
-        signal: controller.signal
+        signal: controller.signal,
+        redirect: 'manual'
       });
+      if (response.status >= 300 && response.status < 400) {
+        // V-59: never chase redirects — the Location target is not followed
+        // and not fetch()ed, so a redirect into a private range cannot
+        // bypass the delivery-time guard. Recorded as a delivery failure.
+        const location = response.headers?.get('location') ?? '(no Location header)';
+        this.logger.warn(
+          `webhook ${delivery.id} to ${subscription.targetUrl} returned redirect ${response.status} ` +
+            `(Location: ${location}) — redirects are not followed`
+        );
+        return false;
+      }
       if (response.status < 200 || response.status >= 300) {
         this.logger.warn(
           `webhook ${delivery.id} to ${subscription.targetUrl} returned ${response.status}`
