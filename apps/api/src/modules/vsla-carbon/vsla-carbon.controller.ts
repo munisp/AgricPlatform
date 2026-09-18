@@ -139,6 +139,88 @@ export class VslaCarbonController {
     return { data: await this.service.addMember(requireActor(actor), id, body) };
   }
 
+  @Post('groups/:id/exit')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'Exit the group (V-47): self, or a group admin passing memberId. Blocked with an open cycle or outstanding loan; remaining savings are settled to the member.'
+  })
+  async exitGroup(
+    @Param('id') id: string,
+    @Body() body: { memberId?: string } | undefined,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.service.exitGroup(requireActor(actor), id, body?.memberId) };
+  }
+
+  @Post('groups/:id/dissolve')
+  @UseGuards(RolesGuard)
+  @Roles('chapter_lead', 'admin')
+  @ApiOperation({
+    summary:
+      'Dissolve the group (V-47): blocked with an open cycle, outstanding loan claims or pooled cash remaining.'
+  })
+  async dissolveGroup(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.service.dissolveGroup(requireActor(actor), id) };
+  }
+
+  // ------------------------------------- meetings + cash reconciliation (V-48)
+
+  @Post('groups/:id/meetings')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Record a group meeting (active member/admin/regulator).' })
+  async recordMeeting(
+    @Param('id') id: string,
+    @Body() body: { heldAt?: string; notes?: string } | undefined,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.service.recordMeeting(requireActor(actor), id, body ?? {}) };
+  }
+
+  @Get('groups/:id/meetings')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List group meetings (membership-scoped).' })
+  async listMeetings(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.service.listMeetings(requireActor(actor), id) };
+  }
+
+  @Post('groups/:id/cash-counts')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'Treasurer declares the physical lockbox count (V-48; group admin only; idempotent by key). Settles by dual attestation.'
+  })
+  async declareCashCount(
+    @Param('id') id: string,
+    @Body() body: { declaredKobo: number; meetingId?: string; idempotencyKey: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.service.declareCashCount(requireActor(actor), id, body) };
+  }
+
+  @Get('groups/:id/cash-counts')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'List cash-count declarations (membership-scoped).' })
+  async listCashCounts(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.service.listCashCounts(requireActor(actor), id) };
+  }
+
+  @Post('cash-counts/:id/attest')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'Attest a cash count (V-48 dual attestation — declarer excluded). Posts the variance adjustment; FLAGGED beyond the audit threshold.'
+  })
+  async attestCashCount(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.service.attestCashCount(requireActor(actor), id) };
+  }
+
   // --------------------------------------------------------------- cycles
 
   @Post('groups/:id/cycles')
@@ -229,7 +311,7 @@ export class VslaCarbonController {
   @Post('loans/:id/repayments')
   @UseGuards(RolesGuard)
   @Roles('farmer', 'chapter_lead', 'admin')
-  @ApiOperation({ summary: 'Record a loan repayment (idempotent by key; overpay clamps to outstanding).' })
+  @ApiOperation({ summary: 'Record a loan repayment (idempotent by key; overpay is rejected 400).' })
   async repayLoan(
     @Param('id') id: string,
     @Body() body: RepaymentInput,
@@ -244,6 +326,17 @@ export class VslaCarbonController {
   @ApiOperation({ summary: 'Repayments recorded against a loan.' })
   async listRepayments(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.service.listRepayments(requireActor(actor), id) };
+  }
+
+  @Post('loans/:id/write-off')
+  @UseGuards(RolesGuard)
+  @Roles('chapter_lead', 'admin')
+  @ApiOperation({
+    summary:
+      'Write off a DEFAULTED loan (V-10): the outstanding claim moves from loans_receivable to a bad-debt expense — explicit loss recognition, replay-safe.'
+  })
+  async writeOffLoan(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.service.writeOffLoan(requireActor(actor), id) };
   }
 
   // ---------------------------------------------------------------- plots
