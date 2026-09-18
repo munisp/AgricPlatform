@@ -10,14 +10,21 @@ import {
 import type {
   CropPlanting,
   FarmExpense,
+  FarmExpenseAllocation,
   FarmPlot,
   FarmSummary,
   HarvestRecord,
+  PlantingFailureReason,
   PlantingStatus,
   SoilType,
   User
 } from '@agric-platform/shared';
-import { isValidBoundaryGeojson, NIGERIAN_STATES, SOIL_TYPES } from '@agric-platform/shared';
+import {
+  isValidBoundaryGeojson,
+  NIGERIAN_STATES,
+  PLANTING_FAILURE_REASONS,
+  SOIL_TYPES
+} from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -25,12 +32,14 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CROP_PLANTING_REPOSITORY,
   ENTITY_VERSION_REPOSITORY,
+  FARM_EXPENSE_ALLOCATION_REPOSITORY,
   FARM_EXPENSE_REPOSITORY,
   FARM_PLOT_REPOSITORY,
   HARVEST_RECORD_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
   CropPlantingRepository,
+  FarmExpenseAllocationRepository,
   FarmExpenseRepository,
   FarmPlotRepository,
   HarvestRecordRepository
@@ -71,6 +80,12 @@ export interface CreatePlantingInput {
   season: string;
   plantedAt: string;
   expectedHarvestAt?: string;
+  /**
+   * Replant linkage (A2): when set, this planting is the replant of a
+   * FAILED predecessor ON THE SAME PLOT — validated fail-closed at create
+   * time so failure → replant history stays traceable.
+   */
+  replantOfId?: string;
   clientId?: string;
 }
 
@@ -86,15 +101,30 @@ export interface CreateExpenseInput {
   amountKobo: number;
   incurredAt: string;
   note?: string;
+  /**
+   * Intercrop allocation (A4): explicit per-planting percentage shares of
+   * this expense. When supplied the shares must cover distinct plantings
+   * ON THIS PLOT and sum to exactly 100. When omitted the expense is
+   * PLOT-LEVEL — the documented default rule: shared across the plot, never
+   * silently full-attributed to one crop.
+   */
+  allocations?: FarmExpenseAllocation[];
 }
 
 /**
- * Planting status lifecycle: growing → harvested | failed; both terminal.
- * Recording a harvest flips the planting to 'harvested' at the service
- * layer.
+ * Planting status lifecycle (v2, W2-FP4/A3):
+ *   growing → partially_harvested | harvested | failed
+ *   partially_harvested → harvested | failed
+ *   harvested / failed are terminal.
+ * Recording a harvest flips a growing planting to 'partially_harvested'
+ * (NOT terminal 'harvested') at the service layer; the farmer closes the
+ * season with an explicit partially_harvested → harvested transition, so
+ * downstream "still growing" logic (advisory pulses, expected-harvest
+ * windows) stays correct across staggered picks.
  */
 export const PLANTING_STATUS_TRANSITIONS: Record<PlantingStatus, readonly PlantingStatus[]> = {
-  growing: ['harvested', 'failed'],
+  growing: ['partially_harvested', 'harvested', 'failed'],
+  partially_harvested: ['harvested', 'failed'],
   harvested: [],
   failed: []
 };
@@ -167,7 +197,13 @@ export class FarmsService {
     @Optional() private readonly syncVersioning?: SyncVersioningService,
     @Optional()
     @Inject(ENTITY_VERSION_REPOSITORY)
-    private readonly entityVersions?: EntityVersionRepository
+    private readonly entityVersions?: EntityVersionRepository,
+    // W2-FP4 (A4): intercrop expense allocation ledger. Optional so bare
+    // unit constructions keep working; supplying allocations without the
+    // repo wired fails closed.
+    @Optional()
+    @Inject(FARM_EXPENSE_ALLOCATION_REPOSITORY)
+    private readonly expenseAllocations?: FarmExpenseAllocationRepository
   ) {}
 
   private assertValidPlot(input: CreatePlotInput | UpdatePlotInput): void {
@@ -526,6 +562,24 @@ export class FarmsService {
     input: CreatePlantingInput
   ): Promise<CropPlanting> {
     const plot = await this.assertPlotAccess(actor, plotId);
+    // A2: replant linkage — the predecessor must exist, live on the SAME
+    // plot, and be terminal 'failed' (a replant is by definition a
+    // replacement of a failed crop; linking a live one is a data bug and
+    // fails closed).
+    let replantOf: CropPlanting | undefined;
+    if (input.replantOfId !== undefined) {
+      replantOf = await this.plantings.getById(input.replantOfId);
+      if (replantOf.plotId !== plot.id) {
+        throw new BadRequestException(
+          `replantOfId '${input.replantOfId}' belongs to a different plot — a replant must stay on the failed planting's plot`
+        );
+      }
+      if (replantOf.status !== 'failed') {
+        throw new BadRequestException(
+          `replantOfId '${input.replantOfId}' is '${replantOf.status}', not 'failed' — only a failed planting can be replanted`
+        );
+      }
+    }
     const now = new Date().toISOString();
     const planting: CropPlanting = {
       id: newId('planting'),
@@ -536,6 +590,7 @@ export class FarmsService {
       plantedAt: input.plantedAt,
       expectedHarvestAt: input.expectedHarvestAt,
       status: 'growing',
+      replantOfId: replantOf?.id,
       createdAt: now,
       updatedAt: now,
       version: 1,
@@ -547,11 +602,21 @@ export class FarmsService {
       action: 'farms.planting_created',
       entityType: 'crop_planting',
       entityId: created.id,
-      metadata: { plotId: plot.id, crop: created.crop, season: created.season }
+      metadata: {
+        plotId: plot.id,
+        crop: created.crop,
+        season: created.season,
+        replantOfId: created.replantOfId
+      }
     });
     await this.events.publish(
       'farms.planting.created',
-      { plantingId: created.id, plotId: plot.id, crop: created.crop },
+      {
+        plantingId: created.id,
+        plotId: plot.id,
+        crop: created.crop,
+        replantOfId: created.replantOfId
+      },
       actor!.id
     );
     return created;
@@ -566,10 +631,11 @@ export class FarmsService {
   async updatePlantingStatus(
     actor: User | null,
     plantingId: string,
-    status: PlantingStatus
+    status: PlantingStatus,
+    options?: { failureReason?: PlantingFailureReason }
   ): Promise<CropPlanting> {
     const planting = await this.plantings.getById(plantingId);
-    await this.assertPlotAccess(actor, planting.plotId);
+    const plot = await this.assertPlotAccess(actor, planting.plotId);
     if (planting.status === status) {
       return planting; // idempotent replay of a retry
     }
@@ -579,9 +645,23 @@ export class FarmsService {
         `Invalid planting status transition from '${planting.status}' to '${status}'`
       );
     }
+    // Fail-closed contract input: a failure transition MUST carry a reason
+    // (the V-03 crop-failure→loan subscriber keys on it), and a reason on a
+    // non-failure transition is a caller bug.
+    if (status === 'failed') {
+      if (!options?.failureReason || !PLANTING_FAILURE_REASONS.includes(options.failureReason)) {
+        throw new BadRequestException(
+          `failureReason is required when marking a planting failed (${PLANTING_FAILURE_REASONS.join(' | ')})`
+        );
+      }
+    } else if (options?.failureReason !== undefined) {
+      throw new BadRequestException('failureReason only applies to the failed transition');
+    }
+    const occurredAt = new Date().toISOString();
     const updated = await this.plantings.update(plantingId, {
       status,
-      updatedAt: new Date().toISOString(),
+      failureReason: status === 'failed' ? options!.failureReason : planting.failureReason,
+      updatedAt: occurredAt,
       version: planting.version + 1
     });
     await this.audit.record({
@@ -589,11 +669,37 @@ export class FarmsService {
       action: 'farms.planting_status_changed',
       entityType: 'crop_planting',
       entityId: plantingId,
-      metadata: { from: planting.status, to: status }
+      metadata: {
+        from: planting.status,
+        to: status,
+        failureReason: updated.failureReason
+      }
     });
+    /**
+     * EVENT CONTRACT (V-03 — consumed by the crop-failure→loan grace
+     * subscriber owned by another pack; do NOT rename/remove fields without
+     * coordinating):
+     * on a transition to 'failed' the payload RELIABLY carries
+     *   plantingId, plotId, ownerId (the farmer), cropType, failureReason,
+     *   occurredAt (ISO-8601), plus the legacy from/to.
+     * The subscriber MUST treat ownerId as the farmer identity and
+     * occurredAt as the failure timestamp; both are stamped server-side
+     * here, never caller-supplied.
+     */
     await this.events.publish(
       'farms.planting.status_changed',
-      { plantingId, plotId: planting.plotId, from: planting.status, to: status },
+      status === 'failed'
+        ? {
+            plantingId,
+            plotId: planting.plotId,
+            ownerId: plot.ownerUserId,
+            cropType: planting.crop,
+            failureReason: updated.failureReason,
+            occurredAt,
+            from: planting.status,
+            to: status
+          }
+        : { plantingId, plotId: planting.plotId, from: planting.status, to: status },
       actor!.id
     );
     return updated;
@@ -602,9 +708,13 @@ export class FarmsService {
   /* ------------------------------ harvests ----------------------------- */
 
   /**
-   * Records a harvest against a planting and flips a growing planting to
-   * 'harvested' — the planting → harvest lifecycle. Failed plantings
-   * cannot be harvested.
+   * Records a harvest pick against a planting (A3: staggered harvests).
+   * The FIRST pick flips a growing planting to 'partially_harvested' — the
+   * crop is still active, so advisory/expected-harvest logic stays correct
+   * for the remaining picks. Further picks accumulate while the planting is
+   * 'partially_harvested'; the farmer closes the season explicitly
+   * (partially_harvested → harvested via updatePlantingStatus). Failed and
+   * fully-harvested plantings cannot be harvested.
    */
   async recordHarvest(
     actor: User | null,
@@ -615,6 +725,11 @@ export class FarmsService {
     await this.assertPlotAccess(actor, planting.plotId);
     if (planting.status === 'failed') {
       throw new BadRequestException(`Planting '${plantingId}' failed; it cannot be harvested`);
+    }
+    if (planting.status === 'harvested') {
+      throw new BadRequestException(
+        `Planting '${plantingId}' is fully harvested; reopen the season with a new planting instead`
+      );
     }
     if (input.quantity < 0) {
       throw new BadRequestException('quantity must not be negative');
@@ -630,11 +745,25 @@ export class FarmsService {
     };
     const created = await this.harvests.create(harvest);
     if (planting.status === 'growing') {
+      const occurredAt = new Date().toISOString();
       await this.plantings.update(planting.id, {
-        status: 'harvested',
-        updatedAt: new Date().toISOString(),
+        status: 'partially_harvested',
+        updatedAt: occurredAt,
         version: planting.version + 1
       });
+      // Lifecycle parity with updatePlantingStatus: downstream consumers
+      // (advisory pulses) key on status_changed, so the first pick must
+      // announce the state change just like a manual transition.
+      await this.events.publish(
+        'farms.planting.status_changed',
+        {
+          plantingId: planting.id,
+          plotId: planting.plotId,
+          from: 'growing',
+          to: 'partially_harvested'
+        },
+        actor!.id
+      );
     }
     await this.audit.record({
       actorId: actor!.id,
@@ -678,6 +807,20 @@ export class FarmsService {
     if (input.amountKobo < 0 || !Number.isInteger(input.amountKobo)) {
       throw new BadRequestException('amountKobo must be a non-negative integer (kobo)');
     }
+    // A4: intercrop allocation — explicit shares or nothing. An expense
+    // without allocations is PLOT-LEVEL (shared across the plot by the
+    // documented default rule); it is NEVER silently full-attributed to one
+    // planting. When allocations are supplied they must cover distinct
+    // plantings on THIS plot and sum to exactly 100%.
+    if (input.allocations !== undefined) {
+      if (!this.expenseAllocations) {
+        // Fail closed BEFORE any write: never record an expense whose
+        // allocation cannot be persisted — that would silently revert to
+        // plot-level attribution.
+        throw new Error('Expense allocation persistence is not configured');
+      }
+      await this.assertValidExpenseAllocations(plot.id, input.allocations);
+    }
     const expense: FarmExpense = {
       id: newId('expense'),
       plotId: plot.id,
@@ -688,24 +831,95 @@ export class FarmsService {
       createdAt: new Date().toISOString()
     };
     const created = await this.expenses.create(expense);
+    if (input.allocations !== undefined) {
+      await this.expenseAllocations!.record(created.id, input.allocations);
+    }
+    const allocations =
+      input.allocations !== undefined ? input.allocations.map((a) => ({ ...a })) : undefined;
     await this.audit.record({
       actorId: actor!.id,
       action: 'farms.expense_recorded',
       entityType: 'farm_expense',
       entityId: created.id,
-      metadata: { plotId: plot.id, category: created.category, amountKobo: created.amountKobo }
+      metadata: {
+        plotId: plot.id,
+        category: created.category,
+        amountKobo: created.amountKobo,
+        allocations
+      }
     });
     await this.events.publish(
       'farms.expense.recorded',
-      { expenseId: created.id, plotId: plot.id, amountKobo: created.amountKobo },
+      {
+        expenseId: created.id,
+        plotId: plot.id,
+        amountKobo: created.amountKobo,
+        allocations
+      },
       actor!.id
     );
-    return created;
+    return { ...created, allocations };
+  }
+
+  /** A4: allocation shares must reference distinct plantings on the plot and total exactly 100%. */
+  private async assertValidExpenseAllocations(
+    plotId: string,
+    allocations: FarmExpenseAllocation[]
+  ): Promise<void> {
+    if (allocations.length === 0) {
+      throw new BadRequestException(
+        'allocations must be omitted entirely (plot-level expense) or cover at least one planting'
+      );
+    }
+    const seen = new Set<string>();
+    let total = 0;
+    for (const allocation of allocations) {
+      if (
+        typeof allocation.sharePercent !== 'number' ||
+        !Number.isFinite(allocation.sharePercent) ||
+        allocation.sharePercent <= 0 ||
+        allocation.sharePercent > 100
+      ) {
+        throw new BadRequestException('sharePercent must be a number in (0, 100]');
+      }
+      if (seen.has(allocation.plantingId)) {
+        throw new BadRequestException(
+          `Duplicate allocation for planting '${allocation.plantingId}' — merge the shares`
+        );
+      }
+      seen.add(allocation.plantingId);
+      total += allocation.sharePercent;
+      const planting = await this.plantings.getById(allocation.plantingId);
+      if (planting.plotId !== plotId) {
+        throw new BadRequestException(
+          `Allocation planting '${allocation.plantingId}' belongs to a different plot`
+        );
+      }
+    }
+    if (Math.abs(total - 100) > 1e-9) {
+      throw new BadRequestException(
+        `Allocation shares must sum to exactly 100 (got ${total}) — a partial allocation would under-attribute the expense`
+      );
+    }
   }
 
   async listExpenses(actor: User | null, plotId: string): Promise<FarmExpense[]> {
     await this.assertPlotAccess(actor, plotId);
-    return this.expenses.find({ plotId });
+    const expenses = await this.expenses.find({ plotId });
+    if (!this.expenseAllocations || expenses.length === 0) {
+      return expenses;
+    }
+    const rows = await this.expenseAllocations.listForExpenses(expenses.map((e) => e.id));
+    const byExpense = new Map<string, FarmExpenseAllocation[]>();
+    for (const row of rows) {
+      const list = byExpense.get(row.expenseId) ?? [];
+      list.push({ plantingId: row.plantingId, sharePercent: row.sharePercent });
+      byExpense.set(row.expenseId, list);
+    }
+    return expenses.map((expense) => {
+      const allocations = byExpense.get(expense.id);
+      return allocations ? { ...expense, allocations } : expense;
+    });
   }
 
   /* ------------------------------ summary ------------------------------ */
@@ -724,7 +938,9 @@ export class FarmsService {
     for (const plot of ownerPlots) {
       const plotPlantings = await this.plantings.find({ plotId: plot.id });
       for (const planting of plotPlantings) {
-        if (planting.status === 'growing') {
+        // 'partially_harvested' plantings still have picks outstanding
+        // (A3) — they are active for summary purposes.
+        if (planting.status === 'growing' || planting.status === 'partially_harvested') {
           activePlantings += 1;
         }
         const plantingHarvests = await this.harvests.find({ plantingId: planting.id });
