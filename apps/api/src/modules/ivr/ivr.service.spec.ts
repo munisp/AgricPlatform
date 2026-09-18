@@ -507,3 +507,25 @@ describe('latestAdvisory (scoping)', () => {
     expect(latestAdvisory([], 'Kano')).toBeUndefined();
   });
 });
+
+describe('V-69: dtmf history retention purge', () => {
+  it('blanks keypress history on calls idle past retention, keeps active calls', async () => {
+    const { service, calls } = build();
+    // An old, idle call with a keypress trail.
+    await service.handleCallback({ sessionId: 's-old', callerNumber: '+234815' });
+    await service.handleCallback({ sessionId: 's-old', callerNumber: '+234815', dtmfDigits: '1' });
+    const oldCall = (await calls.findById('s-old'))!;
+    expect(oldCall.dtmfHistory).not.toBe('');
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h idle
+    await calls.save({ ...oldCall, updatedAt: stale });
+    // A fresh call must keep its history.
+    await service.handleCallback({ sessionId: 's-new', callerNumber: '+234816' });
+    await service.handleCallback({ sessionId: 's-new', callerNumber: '+234816', dtmfDigits: '1' });
+
+    expect(await service.purgeDtmfRetention()).toBe(1);
+    expect((await calls.findById('s-old'))?.dtmfHistory).toBe('');
+    expect((await calls.findById('s-new'))?.dtmfHistory).not.toBe('');
+    // Idempotent: nothing left to purge.
+    expect(await service.purgeDtmfRetention()).toBe(0);
+  });
+});
