@@ -879,6 +879,7 @@ export function fetchCampusClub(id: string): Promise<{ data: CampusClub }> {
 
 export function joinCampusClub(
   clubId: string,
+  userId: string,
   idempotencyKey?: string
 ): Promise<{ data: CampusClubMembership }> {
   return apiFetch(`/campus-clubs/${encodeURIComponent(clubId)}/members`, {
@@ -1080,7 +1081,7 @@ export function fetchRelatedItems(params: {
   type: SearchResult['type'];
   id: string;
   limit?: number;
-} = {}): Promise<{ data: SearchResult[] }> {
+}): Promise<{ data: SearchResult[] }> {
   return apiFetch('/search/related', { query: { ...params } });
 }
 
@@ -2505,7 +2506,7 @@ export interface LakehouseExportStatus {
   /** Present when enabled=false: why the exporter is off. */
   reason?: string;
   bucket?: string;
-  prefix?: string;
+  prefix: string;
   manifest: LakehouseManifest | null;
 }
 
@@ -3240,7 +3241,7 @@ export function fetchCreditScoreAssessment(
 }
 
 /* ------------------------- voice agronomist (wave-voice) ---------------- */
-/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T } */
+/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T }` */
 /* envelopes throughout. Agent-assist console endpoints are role-gated        */
 /* (agronomist/admin) server-side.                                            */
 
