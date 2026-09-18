@@ -417,8 +417,15 @@ export function InsuranceTriggerMonitorSection() {
 
 export function InsurancePayoutLedgerSection() {
   const { t } = useT();
-  const statusLabel = useMemo(
-    () => ({ proposed: t('insurance.statusPayoutProposed'), paid: t('insurance.statusPaid') }),
+  const statusLabel = useMemo<Record<string, string>>(
+    () => ({
+      proposed: t('insurance.statusPayoutProposed'),
+      disputed: t('insurance.statusPayoutDisputed'),
+      rejected: t('insurance.statusPayoutRejected'),
+      appealed: t('insurance.statusPayoutAppealed'),
+      paid: t('insurance.statusPaid'),
+      settled: t('insurance.statusPayoutSettled')
+    }),
     [t]
   );
   const query = useApiQuery('insurance:payouts', () =>
