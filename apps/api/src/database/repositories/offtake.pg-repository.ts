@@ -3,6 +3,7 @@ import type pg from 'pg';
 import type { LedgerJournalEntry } from '@agric-platform/shared';
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import type {
+  OfftakeAmendment,
   OfftakeContract,
   OfftakeDelivery,
   OfftakeMilestone
@@ -84,6 +85,10 @@ export const offtakeContractMapper: RowMapper<OfftakeContract> = {
     'idempotency_key',
     'created_by',
     'accepted_at',
+    // V-34/V-35 (109_offtake_amendments.sql): versioned terms + default remedy.
+    'terms_version',
+    'default_penalty_kobo',
+    'remarketed_listing_id',
     'created_at',
     'updated_at'
   ],
@@ -101,6 +106,15 @@ export const offtakeContractMapper: RowMapper<OfftakeContract> = {
     idempotencyKey: (row.idempotency_key as string) ?? undefined,
     createdBy: row.created_by as string,
     acceptedAt: row.accepted_at ? ts(row.accepted_at) : undefined,
+    termsVersion:
+      row.terms_version === null || row.terms_version === undefined
+        ? undefined
+        : num(row.terms_version),
+    defaultPenaltyKobo:
+      row.default_penalty_kobo === null || row.default_penalty_kobo === undefined
+        ? undefined
+        : num(row.default_penalty_kobo),
+    remarketedListingId: (row.remarketed_listing_id as string) ?? undefined,
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at)
   }),
@@ -119,10 +133,60 @@ export const offtakeContractMapper: RowMapper<OfftakeContract> = {
       idempotency_key: 'idempotencyKey',
       created_by: 'createdBy',
       accepted_at: 'acceptedAt',
+      terms_version: 'termsVersion',
+      default_penalty_kobo: 'defaultPenaltyKobo',
+      remarketed_listing_id: 'remarketedListingId',
       created_at: 'createdAt',
       updated_at: 'updatedAt'
     })
 };
+
+/** V-34: amendment row mapper (marketplace.offtake_amendments, migration 109). */
+export const offtakeAmendmentMapper: RowMapper<OfftakeAmendment> = {
+  columns: [
+    'id',
+    'contract_id',
+    'seq',
+    'status',
+    'price_band',
+    'window_end',
+    'milestone_due_dates',
+    'note',
+    'proposed_by',
+    'created_at',
+    'decided_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    contractId: row.contract_id as string,
+    seq: num(row.seq),
+    status: row.status as OfftakeAmendment['status'],
+    priceBand: (row.price_band as OfftakeAmendment['priceBand']) ?? undefined,
+    windowEnd: row.window_end ? dt(row.window_end) : undefined,
+    milestoneDueDates:
+      (row.milestone_due_dates as OfftakeAmendment['milestoneDueDates']) ?? undefined,
+    note: (row.note as string) ?? undefined,
+    proposedBy: row.proposed_by as string,
+    createdAt: ts(row.created_at),
+    decidedAt: row.decided_at ? ts(row.decided_at) : undefined
+  }),
+  toRow: (item) =>
+    present(item, {
+      id: 'id',
+      contract_id: 'contractId',
+      seq: 'seq',
+      status: 'status',
+      price_band: 'priceBand',
+      window_end: 'windowEnd',
+      milestone_due_dates: 'milestoneDueDates',
+      note: 'note',
+      proposed_by: 'proposedBy',
+      created_at: 'createdAt',
+      decided_at: 'decidedAt'
+    })
+};
+
+const AMENDMENT_COLUMNS = offtakeAmendmentMapper.columns.join(', ');
 
 export const offtakeMilestoneMapper: RowMapper<OfftakeMilestone> = {
   columns: [
@@ -418,6 +482,72 @@ export class PgOfftakeContractRepository
       );
     }
     return offtakeMilestoneMapper.fromRow(result.rows[0]);
+  }
+
+  /* ---------------------------- V-34: amendments ------------------------- */
+
+  async addAmendment(amendment: OfftakeAmendment): Promise<OfftakeAmendment> {
+    const row = offtakeAmendmentMapper.toRow(amendment);
+    const columns = Object.keys(row);
+    try {
+      await this.pool.query(
+        `INSERT INTO marketplace.offtake_amendments (${columns.join(', ')})
+         VALUES (${columns.map((_, index) => `$${index + 1}`).join(', ')})`,
+        columns.map((column) => row[column])
+      );
+    } catch (error) {
+      mapPgError(error); // 23505 (contract_id, seq) → 409
+    }
+    return amendment;
+  }
+
+  async listAmendments(contractId: string): Promise<OfftakeAmendment[]> {
+    const result = await this.pool.query(
+      `SELECT ${AMENDMENT_COLUMNS} FROM marketplace.offtake_amendments
+        WHERE contract_id = $1 ORDER BY seq`,
+      [contractId]
+    );
+    return result.rows.map((row) => offtakeAmendmentMapper.fromRow(row));
+  }
+
+  async amendmentById(id: string): Promise<OfftakeAmendment | undefined> {
+    const result = await this.pool.query(
+      `SELECT ${AMENDMENT_COLUMNS} FROM marketplace.offtake_amendments WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] ? offtakeAmendmentMapper.fromRow(result.rows[0]) : undefined;
+  }
+
+  async updateAmendmentExpected(
+    id: string,
+    patch: Partial<OfftakeAmendment>,
+    expected: Partial<OfftakeAmendment>
+  ): Promise<OfftakeAmendment> {
+    const row = offtakeAmendmentMapper.toRow(patch as OfftakeAmendment);
+    const columns = Object.keys(row).filter((column) => column !== 'id');
+    const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+    const expectedRow = offtakeAmendmentMapper.toRow(expected as OfftakeAmendment);
+    const expectedColumns = Object.keys(expectedRow).filter((column) => column !== 'id');
+    const offset = columns.length + 1;
+    const preconditions = expectedColumns
+      .map((column, index) => `${column} = $${offset + index + 1}`)
+      .join(' AND ');
+    const result = await this.pool.query(
+      `UPDATE marketplace.offtake_amendments SET ${assignments}
+        WHERE id = $1${preconditions ? ` AND ${preconditions}` : ''}
+        RETURNING ${AMENDMENT_COLUMNS}`,
+      [
+        id,
+        ...columns.map((column) => row[column]),
+        ...expectedColumns.map((column) => expectedRow[column])
+      ]
+    );
+    if (!result.rows[0]) {
+      throw new ConflictException(
+        `Concurrent state change on offtake amendment '${id}'; re-read and retry the operation`
+      );
+    }
+    return offtakeAmendmentMapper.fromRow(result.rows[0]);
   }
 
   /**
