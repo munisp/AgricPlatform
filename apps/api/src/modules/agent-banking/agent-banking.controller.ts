@@ -503,7 +503,7 @@ export class AgentUssdController {
   @ApiOperation({
     summary:
       "Africa's Talking agent-banking USSD callback (CON/END plain text, ≤182 chars). " +
-      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME. ' +
+      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY/AT_USERNAME. ' +
       'Requires the AT_CALLBACK_TOKEN secret (?token= or x-at-callback-token) once configured.'
   })
   async callback(
