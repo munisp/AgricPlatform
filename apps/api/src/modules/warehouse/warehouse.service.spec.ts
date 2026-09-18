@@ -881,9 +881,12 @@ describe('access control and oversight', () => {
 
 describe('state machine', () => {
   it('documents the intended transitions', () => {
-    expect(WHR_TRANSITIONS.active).toEqual(['pledged', 'redeemed']);
+    // V-37: 'split' edges from active/released; a split parent is terminal
+    // (its claim moved wholly into the child receipts).
+    expect(WHR_TRANSITIONS.active).toEqual(['pledged', 'redeemed', 'split']);
     expect(WHR_TRANSITIONS.pledged).toEqual(['released']);
-    expect(WHR_TRANSITIONS.released).toEqual(['pledged', 'redeemed']);
+    expect(WHR_TRANSITIONS.released).toEqual(['pledged', 'redeemed', 'split']);
     expect(WHR_TRANSITIONS.redeemed).toEqual([]);
+    expect(WHR_TRANSITIONS.split).toEqual([]);
   });
 });
