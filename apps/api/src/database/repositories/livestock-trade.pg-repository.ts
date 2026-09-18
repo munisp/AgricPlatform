@@ -212,7 +212,15 @@ export class PgLienRepository
     subjectType: LivestockSubjectType,
     subjectId: string
   ): Promise<LivestockLien | undefined> {
-    return this.findOne({ subjectType, subjectId, status: 'active' });
+    // 'margin_call' (V-11) is a live lien: still enforced, still holds the
+    // one-lien-per-subject slot.
+    const result = await this.pool.query(
+      `SELECT * FROM livestock.liens
+       WHERE subject_type = $1 AND subject_id = $2 AND status IN ('active','margin_call')
+       LIMIT 1`,
+      [subjectType, subjectId]
+    );
+    return result.rows[0] ? lienMapper.fromRow(result.rows[0]) : undefined;
   }
 }
 
