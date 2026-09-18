@@ -15,13 +15,20 @@ import type {
   WarehouseDeposit,
   WarehouseGrade,
   WarehouseGrading,
+  WarehouseLossKind,
   WarehousePledge,
   WarehouseReceipt,
   WarehouseReceiptStatus,
   WarehouseReceiptTransfer,
   WarehouseRegistryExport
 } from '@agric-platform/shared';
-import { WAREHOUSE_GRADES } from '@agric-platform/shared';
+import {
+  WAREHOUSE_GRADES,
+  WAREHOUSE_LOSS_KINDS,
+  effectiveReceiptBagCount,
+  effectiveReceiptGrade,
+  effectiveReceiptWeightKg
+} from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -61,7 +68,9 @@ import {
 import {
   canonicalReceiptPayload,
   resolveReceiptSecret,
+  signChildReceipt,
   signReceipt,
+  verifyChildReceiptSignature,
   verifyReceiptSignature
 } from './receipt-crypto.js';
 
@@ -70,12 +79,16 @@ export const WAREHOUSE_H3_RESOLUTION = 5;
 
 type Actor = Pick<User, 'id' | 'roles'>;
 
-/** Receipt state machine. Terminal: redeemed. */
+/** Receipt state machine. Terminal: redeemed, split. */
 export const WHR_TRANSITIONS: Readonly<Record<WarehouseReceiptStatus, readonly WarehouseReceiptStatus[]>> = {
-  active: ['pledged', 'redeemed'],
+  active: ['pledged', 'redeemed', 'split'],
   pledged: ['released'],
-  released: ['pledged', 'redeemed'],
-  redeemed: []
+  released: ['pledged', 'redeemed', 'split'],
+  redeemed: [],
+  // V-37: a split parent is terminal — its claim lives in the child receipts.
+  // 'split' has NO outbound edges, so a parent is non-pledgeable,
+  // non-transferable and non-redeemable after the split.
+  split: []
 };
 
 export interface RegisterWarehouseInput {
@@ -111,6 +124,27 @@ export interface GradeDepositInput {
 export interface PledgeReceiptInput {
   principalKobo: number;
   terms?: string;
+}
+
+/** V-07: spoilage/condition loss report against an issued receipt. */
+export interface ReportLossInput {
+  kind: WarehouseLossKind;
+  /** Weight lost in THIS report (kg, ≥ 0); accumulates on the receipt. */
+  lostWeightKg?: number;
+  /** Bags lost in THIS report (integer, ≥ 0). */
+  lostBagCount?: number;
+  /** Optional re-grade (condition adjustment) superseding the signed grade. */
+  newGrade?: WarehouseGrade;
+  /** Evidence note (mandatory). */
+  reason: string;
+}
+
+/** V-37: one part of a receipt split. */
+export interface SplitReceiptPartInput {
+  weightKg: number;
+  bagCount: number;
+  /** Optional different owner for this child (partial off-platform sale). */
+  toOwnerId?: string;
 }
 
 export interface WarehouseIntegrationStatus {
@@ -557,6 +591,283 @@ export class WarehouseService {
     throw new ForbiddenException('Only a receipt party may view this receipt');
   }
 
+  // -- V-07: spoilage / condition loss -----------------------------------------
+
+  /**
+   * Records a spoilage/condition loss (or re-grade) against an ISSUED
+   * receipt (warehouse operator action — admin role). The signed issuance
+   * fields are NEVER rewritten (tamper evidence); the loss accumulates in
+   * the cumulative lostWeightKg/lostBagCount/regradedTo columns, so the
+   * effective claim quantity drops while the signature stays valid.
+   *
+   * The append-only evidence trail is the transactional outbox event
+   * `warehouse.receipt.loss_reported` (one event per report, carrying the
+   * event delta AND the resulting cumulative/effective quantities).
+   * Downstream propagation: the LTV guardian subscribes and writes down
+   * collateral positions (a write-down can raise a margin call), and a
+   * collateral claim on the spoiled receipt applies the loss haircut
+   * (collateral-claim.service.ts, V-31 warehouse half).
+   *
+   * CAS-guarded on (status, updatedAt): concurrent reports conflict instead
+   * of silently losing one write-down.
+   */
+  async reportLoss(
+    id: string,
+    input: ReportLossInput,
+    actor: Actor
+  ): Promise<WarehouseReceipt> {
+    if (!actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only a warehouse operator (admin) may report a loss');
+    }
+    if (!WAREHOUSE_LOSS_KINDS.includes(input.kind)) {
+      throw new BadRequestException(`kind must be one of ${WAREHOUSE_LOSS_KINDS.join(', ')}`);
+    }
+    if (!input.reason?.trim()) {
+      throw new BadRequestException('A loss report requires a reason (evidence note)');
+    }
+    const lostWeightKg = input.lostWeightKg ?? 0;
+    const lostBagCount = input.lostBagCount ?? 0;
+    if (!Number.isFinite(lostWeightKg) || lostWeightKg < 0) {
+      throw new BadRequestException('lostWeightKg must be a non-negative number');
+    }
+    if (!Number.isSafeInteger(lostBagCount) || lostBagCount < 0) {
+      throw new BadRequestException('lostBagCount must be a non-negative integer');
+    }
+    if (input.newGrade !== undefined && !WAREHOUSE_GRADES.includes(input.newGrade)) {
+      throw new BadRequestException(`newGrade must be one of ${WAREHOUSE_GRADES.join(', ')}`);
+    }
+    if (lostWeightKg === 0 && lostBagCount === 0 && input.newGrade === undefined) {
+      throw new BadRequestException('A loss report must write down quantity or re-grade');
+    }
+    const receipt = await this.receipts.getById(id);
+    if (receipt.status === 'redeemed' || receipt.status === 'split') {
+      throw new BadRequestException(
+        `Cannot report a loss on a '${receipt.status}' receipt — the claim no longer exists here`
+      );
+    }
+    const totalLostWeightKg = (receipt.lostWeightKg ?? 0) + lostWeightKg;
+    const totalLostBagCount = (receipt.lostBagCount ?? 0) + lostBagCount;
+    if (totalLostWeightKg > receipt.weightKg || totalLostBagCount > receipt.bagCount) {
+      throw new BadRequestException(
+        `Loss exceeds the receipt quantity (weight ${receipt.weightKg} kg / ${receipt.bagCount} bags; ` +
+          `already lost ${receipt.lostWeightKg ?? 0} kg / ${receipt.lostBagCount ?? 0} bags)`
+      );
+    }
+    const now = new Date().toISOString();
+    const patch: Partial<WarehouseReceipt> = {
+      lostWeightKg: totalLostWeightKg,
+      lostBagCount: totalLostBagCount,
+      regradedTo: input.newGrade ?? receipt.regradedTo,
+      updatedAt: now
+    };
+    const event = this.events.build(
+      'warehouse.receipt.loss_reported',
+      {
+        receiptId: receipt.id,
+        warehouseId: receipt.warehouseId,
+        kind: input.kind,
+        lostWeightKg,
+        lostBagCount,
+        totalLostWeightKg,
+        totalLostBagCount,
+        effectiveWeightKg: receipt.weightKg - totalLostWeightKg,
+        effectiveBagCount: receipt.bagCount - totalLostBagCount,
+        newGrade: input.newGrade,
+        reason: input.reason.trim()
+      },
+      actor.id
+    );
+    const updated = await this.receipts.updateExpected(
+      id,
+      patch,
+      { status: receipt.status, updatedAt: receipt.updatedAt },
+      event
+    );
+    if (this.receipts.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'warehouse.receipt.loss_reported',
+      entityType: 'warehouse_receipt',
+      entityId: id,
+      metadata: {
+        kind: input.kind,
+        lostWeightKg,
+        lostBagCount,
+        totalLostWeightKg,
+        effectiveWeightKg: receipt.weightKg - totalLostWeightKg,
+        newGrade: input.newGrade
+      }
+    });
+    return updated;
+  }
+
+  // -- V-37: receipt split -------------------------------------------------------
+
+  /**
+   * Splits a receipt into N child receipts with quantity conservation:
+   * Σ child weightKg === the parent's EFFECTIVE (loss-adjusted) weight and
+   * Σ child bagCount === the effective bag count. The parent CAS-transitions
+   * to the terminal 'split' status (non-pledgeable, non-transferable,
+   * non-redeemable); each child is a fresh HMAC-signed receipt whose
+   * signature CHAINS the parent's receipt number + signature
+   * (receipt-crypto.ts), so a child cannot be re-parented or retro-fitted.
+   *
+   * A pledged receipt cannot be split (the lien must be released first).
+   * Replay: re-splitting an already-split parent returns the existing
+   * children instead of minting duplicates.
+   */
+  async splitReceipt(
+    id: string,
+    parts: SplitReceiptPartInput[],
+    actor: Actor
+  ): Promise<{ parent: WarehouseReceipt; children: WarehouseReceipt[] }> {
+    const receipt = await this.receipts.getById(id);
+    if (receipt.ownerId !== actor.id && !actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only the receipt owner may split it');
+    }
+    if (receipt.status === 'split') {
+      const children = await this.receipts.find({ parentReceiptId: receipt.id });
+      if (children.length > 0) {
+        return { parent: receipt, children }; // idempotent replay
+      }
+      throw new ConflictException(
+        `Receipt '${id}' is split but its children are not visible; retry the operation`
+      );
+    }
+    if (receipt.status === 'pledged') {
+      throw new ConflictException(
+        'A pledged receipt cannot be split until the lien is released'
+      );
+    }
+    if (receipt.status === 'redeemed') {
+      throw new BadRequestException('A redeemed receipt cannot be split');
+    }
+    if (!Array.isArray(parts) || parts.length < 2) {
+      throw new BadRequestException('A split requires at least two parts');
+    }
+    const effectiveWeight = effectiveReceiptWeightKg(receipt);
+    const effectiveBags = effectiveReceiptBagCount(receipt);
+    let sumWeight = 0;
+    let sumBags = 0;
+    for (const part of parts) {
+      if (!Number.isFinite(part.weightKg) || part.weightKg <= 0) {
+        throw new BadRequestException('Each split part needs a positive weightKg');
+      }
+      if (!Number.isSafeInteger(part.bagCount) || part.bagCount <= 0) {
+        throw new BadRequestException('Each split part needs a positive integer bagCount');
+      }
+      sumWeight += part.weightKg;
+      sumBags += part.bagCount;
+    }
+    // Quantity conservation, exact (integer-kg arithmetic in practice; the
+    // epsilon only absorbs binary float dust, never a real discrepancy).
+    if (Math.abs(sumWeight - effectiveWeight) > 1e-6 || sumBags !== effectiveBags) {
+      throw new BadRequestException(
+        `Split parts must conserve the effective quantity exactly: ` +
+          `${sumWeight} kg / ${sumBags} bags ≠ effective ${effectiveWeight} kg / ${effectiveBags} bags`
+      );
+    }
+    // CAS claim the parent FIRST (active/released → split): exactly one
+    // concurrent split wins, so children can never be minted twice.
+    const parent = await this.transitionReceipt(receipt, 'split', actor.id);
+    const secret = resolveReceiptSecret();
+    const children: WarehouseReceipt[] = [];
+    const now = new Date().toISOString();
+    for (const [index, part] of parts.entries()) {
+      const nonce = randomUUID();
+      const suffix = createHash('sha256')
+        .update(`warehouse-receipt-split:${receipt.receiptNumber}:${index + 1}:${nonce}`)
+        .digest('hex')
+        .slice(0, 8)
+        .toUpperCase();
+      const receiptNumber = `WHR-${new Date().getUTCFullYear()}-${suffix}`;
+      const payload = {
+        receiptNumber,
+        depositId: receipt.depositId,
+        warehouseId: receipt.warehouseId,
+        ownerId: part.toOwnerId ?? receipt.ownerId,
+        crop: receipt.crop,
+        grade: effectiveReceiptGrade(receipt),
+        bagCount: part.bagCount,
+        weightKg: part.weightKg,
+        issuedAt: now,
+        nonce
+      };
+      const child: WarehouseReceipt = {
+        id: newId('whr'),
+        receiptNumber,
+        depositId: receipt.depositId,
+        warehouseId: receipt.warehouseId,
+        ownerId: payload.ownerId,
+        crop: receipt.crop,
+        grade: payload.grade,
+        bagCount: part.bagCount,
+        weightKg: part.weightKg,
+        status: 'active',
+        nonce,
+        signature: signChildReceipt(payload, receipt, secret),
+        issuedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        parentReceiptId: receipt.id,
+        splitSeq: index + 1
+      };
+      children.push(await this.receipts.create(child));
+    }
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'warehouse.receipt.split',
+      entityType: 'warehouse_receipt',
+      entityId: receipt.id,
+      metadata: {
+        childReceiptIds: children.map((child) => child.id),
+        conservedWeightKg: effectiveWeight,
+        conservedBagCount: effectiveBags
+      }
+    });
+    await this.events.publish(
+      'warehouse.receipt.split',
+      {
+        receiptId: receipt.id,
+        childReceiptIds: children.map((child) => child.id),
+        conservedWeightKg: effectiveWeight,
+        conservedBagCount: effectiveBags
+      },
+      actor.id
+    );
+    return { parent, children };
+  }
+
+  /**
+   * V-37: verifies a receipt's signature, chaining through the parent when
+   * this is a split child. A child's signature is only valid against the
+   * CURRENT parent record — re-parenting breaks verification.
+   */
+  async verifyReceiptDeep(receipt: WarehouseReceipt): Promise<boolean> {
+    const payload = {
+      receiptNumber: receipt.receiptNumber,
+      depositId: receipt.depositId,
+      warehouseId: receipt.warehouseId,
+      ownerId: receipt.ownerId,
+      crop: receipt.crop,
+      grade: receipt.grade,
+      bagCount: receipt.bagCount,
+      weightKg: receipt.weightKg,
+      issuedAt: receipt.issuedAt,
+      nonce: receipt.nonce
+    };
+    const secret = resolveReceiptSecret();
+    if (!receipt.parentReceiptId) {
+      return verifyReceiptSignature(payload, receipt.signature, secret);
+    }
+    const parent = await this.receipts.getById(receipt.parentReceiptId);
+    return verifyChildReceiptSignature(payload, parent, receipt.signature, secret);
+  }
+
   // -- Pledge / lien (lender) -----------------------------------------------------
 
   /**
@@ -828,6 +1139,13 @@ export class WarehouseService {
     }
     if (receipt.status === 'redeemed') {
       throw new BadRequestException('A redeemed receipt cannot be transferred');
+    }
+    if (receipt.status === 'split') {
+      // V-37: a split parent is a tombstone — its claim lives in the child
+      // receipts; transfer/redeem/pledge operate on the children.
+      throw new BadRequestException(
+        'A split receipt cannot be transferred; transfer the child receipts instead'
+      );
     }
     const now = new Date().toISOString();
     const event = this.events.build(
