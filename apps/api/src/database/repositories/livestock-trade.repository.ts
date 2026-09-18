@@ -225,7 +225,12 @@ export interface LienCriteria {
 }
 
 export interface LienRepository extends AsyncRepository<LivestockLien, LienCriteria> {
-  /** The active lien on a subject, when one exists (at most one allowed). */
+  /**
+   * The LIVE lien on a subject, when one exists (at most one allowed).
+   * 'active' and 'margin_call' (V-11: collateral died/stolen, lender
+   * margin-called) are both live — the lien still blocks transfers and
+   * still holds the one-lien-per-subject slot.
+   */
   findActiveForSubject(
     subjectType: LivestockSubjectType,
     subjectId: string
@@ -253,12 +258,13 @@ export class InMemoryLienRepository
     subjectType: LivestockSubjectType,
     subjectId: string
   ): Promise<LivestockLien | undefined> {
-    return this.findOne({ subjectType, subjectId, status: 'active' });
+    const liens = await this.find({ subjectType, subjectId });
+    return liens.find((lien) => lien.status === 'active' || lien.status === 'margin_call');
   }
 
   override async create(item: LivestockLien): Promise<LivestockLien> {
     if (
-      item.status === 'active' &&
+      (item.status === 'active' || item.status === 'margin_call') &&
       (await this.findActiveForSubject(item.subjectType, item.subjectId))
     ) {
       throw new ConflictException(
