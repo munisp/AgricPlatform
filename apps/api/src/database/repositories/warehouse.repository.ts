@@ -116,6 +116,8 @@ export interface WarehouseReceiptCriteria {
   ownerId?: string;
   status?: WarehouseReceiptStatus;
   receiptNumber?: string;
+  /** V-37: children of a split parent receipt. */
+  parentReceiptId?: string;
 }
 
 export type WarehouseReceiptRepository = AsyncRepository<
@@ -131,7 +133,8 @@ export function warehouseReceiptMatcher(
     (!criteria.warehouseId || receipt.warehouseId === criteria.warehouseId) &&
     (!criteria.ownerId || receipt.ownerId === criteria.ownerId) &&
     (!criteria.status || receipt.status === criteria.status) &&
-    (!criteria.receiptNumber || receipt.receiptNumber === criteria.receiptNumber);
+    (!criteria.receiptNumber || receipt.receiptNumber === criteria.receiptNumber) &&
+    (!criteria.parentReceiptId || receipt.parentReceiptId === criteria.parentReceiptId);
 }
 
 export class InMemoryWarehouseReceiptRepository
@@ -145,15 +148,21 @@ export class InMemoryWarehouseReceiptRepository
   /**
    * Mirror the pg UNIQUE index `warehouse_receipts_deposit_idx ON
    * warehouse.receipts (deposit_id)` (034_warehouse.sql): one receipt per
-   * deposit. Synchronous check-and-set so concurrent issuance serialises
+   * deposit. V-37: the index becomes PARTIAL in migration 108
+   * (WHERE parent_receipt_id IS NULL) so split children — which share the
+   * parent's deposit — do not collide with it; the mirror only enforces the
+   * uniqueness for root (issuance) receipts.
+   * Synchronous check-and-set so concurrent issuance serialises
    * (second claim → 409 → service adopts the winner's receipt).
    */
   override async create(receipt: WarehouseReceipt): Promise<WarehouseReceipt> {
-    for (const existing of this.items.values()) {
-      if (existing.depositId === receipt.depositId) {
-        throw new ConflictException(
-          `Deposit '${receipt.depositId}' already has a warehouse receipt`
-        );
+    if (receipt.parentReceiptId === undefined) {
+      for (const existing of this.items.values()) {
+        if (existing.depositId === receipt.depositId && existing.parentReceiptId === undefined) {
+          throw new ConflictException(
+            `Deposit '${receipt.depositId}' already has a warehouse receipt`
+          );
+        }
       }
     }
     return super.create(receipt);
