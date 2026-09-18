@@ -13,6 +13,7 @@ import { ORDER_REPOSITORY, SHIPMENT_REPOSITORY } from '../../database/persistenc
 import type { OrderRepository } from '../../database/repositories/order.repository.js';
 import type { ShipmentRepository } from '../../database/repositories/shipment.repository.js';
 import { EscrowService } from './escrow.service.js';
+import { MarketplaceService } from './marketplace.service.js';
 
 type ShipmentActor = 'buyer' | 'seller';
 
@@ -53,6 +54,10 @@ export class LogisticsService {
     @Inject(SHIPMENT_REPOSITORY) private readonly shipments: ShipmentRepository,
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
     private readonly escrow: EscrowService,
+    // V-36: order cancellation for the shipment-failure fast-track. Optional
+    // so bare service constructions in tests keep working; always wired in
+    // the Nest module (same module, no import cycle).
+    @Optional() private readonly marketplace?: MarketplaceService,
     @Optional() private readonly audit?: AuditService
   ) {}
 
@@ -137,6 +142,47 @@ export class LogisticsService {
     return this.applyTransition(shipment, status, actor.id, {
       failureReason: status === 'failed' ? (failureReason ?? 'unspecified') : undefined
     });
+  }
+
+  /**
+   * V-36 shipment-failure fast-track: marks the shipment FAILED and unwinds
+   * the order immediately — the escrow refunds through the same guarded
+   * transition machinery (payout rail, verify-before-credit, CAS) and the
+   * invoice cancels — instead of the buyer waiting out the 14-day escrow
+   * expiry. Use this for TERMINAL failures (goods lost/destroyed, carrier
+   * cancelled); a recoverable failure stays a plain 'failed' transition and
+   * may be rescheduled (failed → pickup_scheduled).
+   *
+   * The order cancel runs as the system-mediated admin path (ORDER_TRANSITIONS
+   * deposit_paid/in_fulfilment → cancelled have empty actor lists). If the
+   * order already moved on (delivered/completed/cancelled) the shipment is
+   * still marked failed and the order is left alone. Payout-rail failures
+   * propagate honestly (503/BadGateway) so a retry converges.
+   */
+  async failAndRefund(
+    id: string,
+    actor: Pick<User, 'id' | 'roles'>,
+    failureReason: string
+  ): Promise<Shipment> {
+    const shipment = await this.transition(id, 'failed', actor, failureReason);
+    const order = await this.orders.getById(shipment.orderId);
+    if (
+      this.marketplace &&
+      (order.status === 'deposit_paid' || order.status === 'in_fulfilment')
+    ) {
+      await this.marketplace.setOrderStatus(shipment.orderId, 'cancelled', {
+        id: 'system',
+        roles: ['admin']
+      });
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'marketplace.shipment.failed_refunded',
+        entityType: 'shipment',
+        entityId: shipment.id,
+        metadata: { orderId: shipment.orderId, failureReason }
+      });
+    }
+    return shipment;
   }
 
   private async applyTransition(
