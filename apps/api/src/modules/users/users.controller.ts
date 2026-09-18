@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { LANGUAGE_CODES, USER_ROLES, type LanguageCode, type User, type UserRole } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -17,16 +17,19 @@ class ListUsersQuery extends ListQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   q?: string;
 }
 
 class UpdateUserDto {
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   fullName?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(320)
   email?: string;
 
   @IsOptional()
