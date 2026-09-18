@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConsentRecord } from '@agric-platform/shared';
 import { createInMemoryWebhookSubscriptionRepository } from '../../database/repositories/partner-api.repository.js';
@@ -49,6 +49,9 @@ interface TestProgramme {
   partnerId?: string;
 }
 
+/** V-59: default resolver stub — every hostname answers a public IP. */
+const PUBLIC_LOOKUP = async () => [{ address: '93.184.216.34', family: 4 }];
+
 const DEFAULT_APPLICATIONS: TestApplication[] = [
   { id: 'app-1', userId: 'user-a', partnerId: 'partner-1', status: 'submitted' },
   { id: 'app-2', userId: 'user-b', partnerId: 'partner-1', status: 'successful' },
@@ -66,6 +69,7 @@ function makeService(
     links?: ExternalAccountLink[];
     applications?: TestApplication[];
     programmes?: TestProgramme[];
+    webhookLookup?: typeof PUBLIC_LOOKUP;
   } = {}
 ) {
   const applications = options.applications ?? DEFAULT_APPLICATIONS;
@@ -119,7 +123,8 @@ function makeService(
     subscriptions,
     accountLinks,
     farmRecords,
-    inboundEvents
+    inboundEvents,
+    options.webhookLookup ?? PUBLIC_LOOKUP
   );
   return { service, events, audit, subscriptions, accountLinks, farmRecords, inboundEvents };
 }
@@ -560,5 +565,47 @@ describe('PartnerApiService', () => {
       ForbiddenException
     );
     expect(await service.removeWebhookSubscription(created.id, 'pc_test')).toBe(true);
+  });
+
+  it('rejects target URLs that resolve to private ranges at registration (V-59)', async () => {
+    const { service, subscriptions } = makeService({
+      webhookLookup: async () => [{ address: '169.254.169.254', family: 4 }]
+    });
+    await expect(
+      service.createWebhookSubscription('pc_test', {
+        eventTypes: ['disbursement.recorded'],
+        targetUrl: 'https://rebinding.attacker.example/hook',
+        secret: 'sixteen-char-secret'
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(await subscriptions.find({})).toHaveLength(0);
+  });
+
+  it('rejects target URLs whose DNS fails at registration (fail closed, V-59)', async () => {
+    const { service } = makeService({
+      webhookLookup: async () => {
+        throw new Error('getaddrinfo ENOTFOUND ghost.example');
+      }
+    });
+    await expect(
+      service.createWebhookSubscription('pc_test', {
+        eventTypes: ['disbursement.recorded'],
+        targetUrl: 'https://ghost.example/hook',
+        secret: 'sixteen-char-secret'
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects literal private-IP target URLs at registration without DNS (V-59)', async () => {
+    const lookup = vi.fn(PUBLIC_LOOKUP);
+    const { service } = makeService({ webhookLookup: lookup });
+    await expect(
+      service.createWebhookSubscription('pc_test', {
+        eventTypes: ['disbursement.recorded'],
+        targetUrl: 'https://169.254.169.254/latest/meta-data',
+        secret: 'sixteen-char-secret'
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(lookup).not.toHaveBeenCalled();
   });
 });
