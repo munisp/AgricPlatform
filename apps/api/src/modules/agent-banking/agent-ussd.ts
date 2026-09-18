@@ -26,7 +26,7 @@ export interface AgentUssdMenuData {
   lowFloat?: boolean;
   /** Up to 5 most recent transactions for the "last 5" screen. */
   recentTransactions?: Array<{
-    type: 'cash_in' | 'cash_out' | 'voucher_redemption';
+    type: 'cash_in' | 'cash_out' | 'voucher_redemption' | 'reversal';
     amountNaira: number;
     day: string; // YYYY-MM-DD
   }>;
@@ -65,7 +65,7 @@ function formatNaira(value: number): string {
   return `NGN ${Math.round(value).toLocaleString('en-NG')}`;
 }
 
-function txTypeLabel(type: 'cash_in' | 'cash_out' | 'voucher_redemption'): string {
+function txTypeLabel(type: 'cash_in' | 'cash_out' | 'voucher_redemption' | 'reversal'): string {
   switch (type) {
     case 'cash_in':
       return 'Cash-in';
@@ -73,6 +73,8 @@ function txTypeLabel(type: 'cash_in' | 'cash_out' | 'voucher_redemption'): strin
       return 'Cash-out';
     case 'voucher_redemption':
       return 'Voucher';
+    case 'reversal':
+      return 'Reversal';
   }
 }
 
