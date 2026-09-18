@@ -20,14 +20,21 @@ export type ProgrammeStatus = (typeof PROGRAMME_STATUSES)[number];
 // BEFORE the ledger posting so only the CAS winner ever posts — a redeem vs
 // expire/void race can no longer double-debit the programme liability. A
 // retry that finds a pending state resumes finalization instead of reposting.
+// W2-C2 (V-32/V-02): PARTIALLY_REDEEMED is the balance-bearing steady state
+// between redemption parts; REFUNDING/REFUNDED mirror the claim-then-finalize
+// doctrine for the refund reversal (REDEEMED/PARTIALLY_REDEEMED → REFUNDING →
+// REFUNDED) so a refund and a redeem/expire can never interleave.
 export const INPUT_VOUCHER_STATUSES = [
   'ISSUED',
   'REDEEMING',
+  'PARTIALLY_REDEEMED',
   'REDEEMED',
   'EXPIRING',
   'EXPIRED',
   'VOIDING',
-  'VOIDED'
+  'VOIDED',
+  'REFUNDING',
+  'REFUNDED'
 ] as const;
 export type InputVoucherStatus = (typeof INPUT_VOUCHER_STATUSES)[number];
 
@@ -99,6 +106,26 @@ export interface InputVoucherRecord {
   distributedAt?: string;
   redeemedAt?: string;
   voidedAt?: string;
+  /**
+   * W2-C2 (V-32): face value redeemed so far across all parts
+   * (Σ redemptions rows). Undefined/zero on pre-100 rows. Invariant:
+   * redeemedAmountKobo <= amountKobo (CHECK vouchers_redeemed_lte_face).
+   */
+  redeemedAmountKobo?: number;
+  /**
+   * W2-C2 (V-32): amount of the in-flight redemption part while status is
+   * REDEEMING; set by the claim CAS so a crash-resume finalizes with the
+   * claimed amount. Undefined when no claim is held.
+   */
+  pendingAmountKobo?: number;
+  /** V-02: refund terminal marker (REDEEMED/PARTIALLY_REDEEMED → REFUNDED). */
+  refundedAt?: string;
+  /** V-02: total amount returned to the programme budget by the refund. */
+  refundedAmountKobo?: number;
+  /** V-02: operator reason recorded on the refund (audit trail). */
+  refundReason?: string;
+  /** V-02: complaint/dispute case the refund resolves (linkage field). */
+  complaintCaseId?: string;
   /** Redemption ledger entry id (set on REDEEMED). */
   ledgerEntryId?: string;
   createdAt: string;
@@ -134,8 +161,14 @@ export interface InputVoucherCriteria {
 
 export interface RedemptionRecord {
   id: string;
-  /** UNIQUE — hard anti-double-spend constraint behind the status machine. */
+  /**
+   * W2-C2 (V-32): redemptions are PER-PART rows; the hard anti-double-spend
+   * constraint is UNIQUE (voucher_id, part_seq) (migration 100). part 1 keeps
+   * the legacy idempotency key input-voucher-redemption:<voucherId>.
+   */
   voucherId: string;
+  /** 1-based redemption part sequence within the voucher (default 1). */
+  partSeq?: number;
   programmeId: string;
   supplierId: string;
   invoiceRef: string;
@@ -169,7 +202,7 @@ export interface ProgrammeFundingRecord {
   updatedAt: string;
 }
 
-export const FUNDING_EVENT_KINDS = ['top_up', 'settle', 'release'] as const;
+export const FUNDING_EVENT_KINDS = ['top_up', 'settle', 'release', 'refund'] as const;
 export type FundingEventKind = (typeof FUNDING_EVENT_KINDS)[number];
 
 export interface FundingEventRecord {
@@ -236,6 +269,13 @@ export interface ProgrammeFundingRepository {
    * voucher. Same no-op semantics as settleReserved.
    */
   releaseReserved(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void>;
+  /**
+   * W2-C2 (V-02): exactly-once settled → available move on refund,
+   * marker-keyed per voucher (`input-voucher-funding-refund:<voucherId>`) so
+   * a crash-resume or retry never double-returns settled money. No-op when
+   * the marker exists or no settled amount backs the voucher (legacy rows).
+   */
+  refundSettled(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void>;
 }
 
 export interface SubsidyProgrammeRepository {
@@ -462,12 +502,12 @@ export class InMemoryInputVoucherRepository implements InputVoucherRepository {
     return [...this.items.values()]
       .filter((item) => {
         if (
-          (item.status === 'ISSUED' || item.status === 'EXPIRING') &&
+          (item.status === 'ISSUED' || item.status === 'EXPIRING' || item.status === 'PARTIALLY_REDEEMED') &&
           item.expiresAt <= criteria.nowIso
         ) {
           return true;
         }
-        if (item.status === 'VOIDING' || item.status === 'REDEEMING') {
+        if (item.status === 'VOIDING' || item.status === 'REDEEMING' || item.status === 'REFUNDING') {
           return (item.updatedAt ?? item.createdAt) <= criteria.stuckBeforeIso;
         }
         return false;
@@ -482,9 +522,12 @@ export class InMemoryRedemptionRepository implements RedemptionRepository {
   private readonly items = new Map<string, RedemptionRecord>();
 
   async create(record: RedemptionRecord): Promise<RedemptionRecord> {
+    const partSeq = record.partSeq ?? 1;
     for (const existing of this.items.values()) {
-      if (existing.voucherId === record.voucherId) {
-        throw new ConflictException(`Voucher '${record.voucherId}' has already been redeemed`);
+      // W2-C2 (V-32): anti-double-spend is per (voucher, part) — a voucher
+      // may carry several redemption parts, never the same part twice.
+      if (existing.voucherId === record.voucherId && (existing.partSeq ?? 1) === partSeq) {
+        throw new ConflictException(`Voucher '${record.voucherId}' redemption part ${partSeq} already exists`);
       }
       if (existing.idempotencyKey === record.idempotencyKey) {
         throw new ConflictException('A record with these unique values already exists');
@@ -613,12 +656,16 @@ export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepos
     this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'release');
   }
 
+  async refundSettled(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'refund');
+  }
+
   private applyMarker(
     programmeId: string,
     amountKobo: number,
     markerKey: string,
     actorId: string,
-    kind: 'settle' | 'release'
+    kind: 'settle' | 'release' | 'refund'
   ): void {
     if (this.events.has(markerKey)) {
       return; // exactly-once: the marker proves the move already happened
@@ -638,6 +685,20 @@ export class InMemoryProgrammeFundingRepository implements ProgrammeFundingRepos
       createdBy: actorId,
       createdAt: new Date().toISOString()
     });
+    if (kind === 'refund') {
+      // W2-C2 (V-02): refund moves SETTLED money back to available — the
+      // source bucket is settledKobo, not the reservation. Fail closed (no
+      // negative settled float) when nothing settled backs the refund.
+      if (!current || current.settledKobo < amountKobo) {
+        return;
+      }
+      this.funding.set(programmeId, {
+        ...current,
+        settledKobo: current.settledKobo - amountKobo,
+        updatedAt: new Date().toISOString()
+      });
+      return;
+    }
     if (!current || current.reservedKobo < amountKobo) {
       return; // no backing reservation (legacy voucher) — fail closed, no negative float
     }
