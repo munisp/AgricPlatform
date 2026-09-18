@@ -95,7 +95,11 @@ describe('VoiceService.startSession', () => {
       ninRef: 'NIN-1234'
     });
     expect(session.farmerUserId).toBe(registered.id);
-    expect(session.ninRef).toBe('NIN-1234');
+    // V-17: the raw NIN ref is NEVER persisted — only its salted HMAC.
+    expect(session.ninRef).toBeUndefined();
+    expect(session.ninRefHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(session.ninRefHash).not.toContain('NIN-1234');
+    expect(session.createdByUserId).toBe(farmer.id);
     expect(session.state).toBe('intake');
   });
 
