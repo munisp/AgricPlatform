@@ -124,6 +124,7 @@ function makeService(plots: FarmPlot[] = [plot()]) {
     createInMemoryLedgerAccountRepository(),
     createInMemoryLedgerEntryRepository()
   );
+  const audit = { record: vi.fn().mockResolvedValue(undefined) };
   const service = new InsuranceService(
     products,
     policies,
@@ -132,9 +133,10 @@ function makeService(plots: FarmPlot[] = [plot()]) {
     plotRepo,
     h3,
     ledger,
-    events
+    events,
+    audit as never
   );
-  return { service, products, policies, triggerEvents, payouts, plotRepo, outbox, ledger };
+  return { service, products, policies, triggerEvents, payouts, plotRepo, outbox, ledger, audit };
 }
 
 async function activeRainPolicy(
@@ -702,5 +704,316 @@ describe('insurer portfolio', () => {
     expect(portfolio.totalPremiumKobo).toBeGreaterThan(0);
     expect(portfolio.payoutsByStatus.proposed).toBe(1);
     expect(portfolio.totalPayoutKobo).toBeGreaterThan(0);
+  });
+});
+
+
+describe('payout disputes, rejection and appeals (V-42)', () => {
+  /** Total-failure cell (≤20 mm → breach ratio ≥ 0.5 → 100% band). */
+  async function proposedRainPayout(
+    context: ReturnType<typeof makeService>
+  ): Promise<{ payoutId: string; amountKobo: number }> {
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 20);
+    await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    const [payout] = await context.payouts.all();
+    return { payoutId: payout.id, amountKobo: payout.amountKobo };
+  }
+
+  it('lets the policy holder dispute a proposed payout and freezes confirmation', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    const disputed = await context.service.disputePayout(farmer, payoutId, 'Rainfall gauge misread');
+    expect(disputed.status).toBe('disputed');
+    expect(disputed.disputeReason).toBe('Rainfall gauge misread');
+    expect(disputed.disputedAt).toBeTruthy();
+    // Frozen: a disputed payout cannot be confirmed PAID.
+    await expect(context.service.confirmPayout(admin, payoutId)).rejects.toBeInstanceOf(
+      ConflictException
+    );
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).toContain('insurance.payout.disputed');
+  });
+
+  it('rejects disputes from other farmers and on non-proposed payouts', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    await expect(
+      context.service.disputePayout(otherFarmer, payoutId, 'not mine')
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await context.service.confirmPayout(admin, payoutId);
+    await expect(
+      context.service.disputePayout(farmer, payoutId, 'too late — already paid')
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('enforces the appeal window on disputes', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60 * 1000);
+      await expect(
+        context.service.disputePayout(farmer, payoutId, 'late dispute')
+      ).rejects.toBeInstanceOf(BadRequestException);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects an erroneous proposal with an auditable record', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    const rejected = await context.service.rejectPayout(admin, payoutId, 'Trigger event evidence corrupted');
+    expect(rejected.status).toBe('rejected');
+    expect(rejected.rejectionReason).toBe('Trigger event evidence corrupted');
+    expect(rejected.rejectedAt).toBeTruthy();
+    const auditCall = context.audit.record.mock.calls.find(
+      (call) => call[0]?.action === 'insurance.payout.rejected'
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0]?.metadata?.reason).toBe('Trigger event evidence corrupted');
+    const stored = await context.payouts.findById(payoutId);
+    expect(stored?.status).toBe('rejected'); // row retained, not deleted
+    await expect(
+      context.service.rejectPayout(farmer, payoutId, 'farmer cannot reject')
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('allows appeal of a rejected payout within the window, rejects late appeals', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    await context.service.rejectPayout(admin, payoutId, 'bad evidence');
+    const appealed = await context.service.appealPayout(farmer, payoutId, 'corrected gauge data attached');
+    expect(appealed.status).toBe('appealed');
+    expect(appealed.appealedAt).toBeTruthy();
+
+    const context2 = makeService();
+    const { payoutId: payout2 } = await proposedRainPayout(context2);
+    await context2.service.rejectPayout(admin, payout2, 'bad evidence');
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60 * 1000);
+      await expect(
+        context2.service.appealPayout(farmer, payout2, 'late appeal')
+      ).rejects.toBeInstanceOf(BadRequestException);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-evaluates a disputed payout with corrected evidence and posts a balanced correcting leg', async () => {
+    const context = makeService();
+    // Total rainfall failure (0 mm) → 100% band → 1,000,000 kobo proposed.
+    const { payoutId, amountKobo } = await proposedRainPayout(context);
+    expect(amountKobo).toBe(1_000_000);
+    await context.service.disputePayout(farmer, payoutId, 'gauge missed 30 mm');
+
+    // Corrected evidence: 30 mm observed → breach ratio 0.25 → 60% band.
+    const reproposed = await context.service.reevaluatePayout(admin, payoutId, {
+      observedValue: 30,
+      notes: 'NPWC corrected gauge dump'
+    });
+    expect(reproposed.status).toBe('proposed');
+    expect(reproposed.amountKobo).toBe(600_000);
+    expect(reproposed.reevaluatedAt).toBeTruthy();
+    // Balanced clawback leg: 400,000 kobo back off claims payable/expense.
+    const entries = await context.ledger.entriesForAccount('insurer:claims_payable');
+    const correction = entries.find(
+      (entry) => entry.referenceType === 'insurance_payout_reevaluation'
+    );
+    expect(correction).toBeDefined();
+    const debits = correction!.postings.filter((p) => p.direction === 'debit');
+    const credits = correction!.postings.filter((p) => p.direction === 'credit');
+    expect(debits.reduce((sum, p) => sum + p.amountKobo, 0)).toBe(400_000);
+    expect(credits.reduce((sum, p) => sum + p.amountKobo, 0)).toBe(400_000);
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).toContain('insurance.payout.reproposed');
+    // The re-proposed payout is confirmable again at the corrected amount.
+    const paid = await context.service.confirmPayout(admin, payoutId);
+    expect(paid.amountKobo).toBe(600_000);
+  });
+
+  it('rejects the payout when corrected evidence clears the breach', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    await context.service.disputePayout(farmer, payoutId, 'gauge wrong');
+    const rejected = await context.service.reevaluatePayout(admin, payoutId, {
+      observedValue: 55 // above the 40 mm deficit threshold → no breach
+    });
+    expect(rejected.status).toBe('rejected');
+    expect(rejected.rejectionReason).toContain('trigger conditions not met');
+    expect(rejected.reevaluatedAt).toBeTruthy();
+  });
+
+  it('restricts re-evaluation to admins and to disputed/appealed payouts', async () => {
+    const context = makeService();
+    const { payoutId } = await proposedRainPayout(context);
+    await expect(
+      context.service.reevaluatePayout(farmer, payoutId, { observedValue: 30 })
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      context.service.reevaluatePayout(admin, payoutId, { observedValue: 30 })
+    ).rejects.toBeInstanceOf(ConflictException); // still 'proposed', not disputed
+  });
+
+  it('proposes an ex-gratia payout for a loss the trigger missed (basis-risk valve)', async () => {
+    const context = makeService();
+    // Clear-weather policy: trigger never fires, but the crop still failed.
+    const coords = await scanRainfallCell((totalMm) => totalMm > 40);
+    await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    expect(await context.payouts.all()).toHaveLength(0);
+    const [policy] = await context.policies.all();
+
+    const payout = await context.service.proposeExGratiaPayout(admin, {
+      policyId: policy.id,
+      amountKobo: 200_000,
+      reason: 'Field-verified crop failure with no trigger breach (basis risk)'
+    });
+    expect(payout.status).toBe('proposed');
+    expect(payout.origin).toBe('ex_gratia');
+    expect(payout.triggerEventId).toBeUndefined();
+    expect(payout.ledgerProposalEntryId).toBeTruthy();
+    // It walks the same rail as parametric payouts.
+    const paid = await context.service.confirmPayout(admin, payout.id);
+    expect(paid.status).toBe('paid');
+    const auditCall = context.audit.record.mock.calls.find(
+      (call) => call[0]?.action === 'insurance.payout.ex_gratia_proposed'
+    );
+    expect(auditCall).toBeDefined();
+  });
+
+  it('bounds ex-gratia payouts by the sum insured and requires admin + reason', async () => {
+    const context = makeService();
+    const coords = await scanRainfallCell((totalMm) => totalMm > 40);
+    await activeRainPolicy(context, coords); // sumInsured 1,000,000
+    const [policy] = await context.policies.all();
+    await expect(
+      context.service.proposeExGratiaPayout(admin, {
+        policyId: policy.id,
+        amountKobo: 1_000_001,
+        reason: 'too much'
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      context.service.proposeExGratiaPayout(farmer, {
+        policyId: policy.id,
+        amountKobo: 10_000,
+        reason: 'farmer cannot'
+      })
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      context.service.proposeExGratiaPayout(admin, {
+        policyId: policy.id,
+        amountKobo: 10_000,
+        reason: '  '
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('payout settlement confirmation (V-43)', () => {
+  async function paidPayout(context: ReturnType<typeof makeService>) {
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    const [payout] = await context.payouts.all();
+    await context.service.confirmPayout(admin, payout.id);
+    return context.payouts.findById(payout.id);
+  }
+
+  it('keeps a paid payout UNSETTLED until rail confirmation arrives', async () => {
+    const context = makeService();
+    const payout = (await paidPayout(context))!;
+    expect(payout.status).toBe('paid');
+    expect(payout.settledAt).toBeUndefined();
+
+    // Solvency tracking: the paid-but-unsettled obligation is visible.
+    const before = await context.service.insurerPortfolio();
+    expect(before.unsettledPayoutKobo).toBe(payout.amountKobo);
+
+    const settled = await context.service.confirmSettlement(admin, payout.id, 'rail-ref-001');
+    expect(settled.status).toBe('settled');
+    expect(settled.settlementReference).toBe('rail-ref-001');
+    expect(settled.settledAt).toBeTruthy();
+
+    const after = await context.service.insurerPortfolio();
+    expect(after.unsettledPayoutKobo).toBe(0);
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).toContain('insurance.payout.settled');
+  });
+
+  it('never settles from the ledger posting alone: proposed/paid guards + reference required', async () => {
+    const context = makeService();
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    const [payout] = await context.payouts.all();
+    // Proposed payouts cannot settle (no settlement leg booked yet).
+    await expect(
+      context.service.confirmSettlement(admin, payout.id, 'rail-ref-x')
+    ).rejects.toBeInstanceOf(ConflictException);
+    await context.service.confirmPayout(admin, payout.id);
+    // A rail confirmation reference is mandatory.
+    await expect(
+      context.service.confirmSettlement(admin, payout.id, ' ')
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('fails closed in production: the stub rail cannot produce a confirmation (503)', async () => {
+    const context = makeService();
+    const payout = (await paidPayout(context))!;
+    vi.stubEnv('NODE_ENV', 'production');
+    await expect(
+      context.service.confirmSettlement(admin, payout.id, 'rail-ref-prod')
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    // Nothing persisted: payout remains paid-unsettled, no settled event.
+    expect((await context.payouts.findById(payout.id))?.status).toBe('paid');
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).not.toContain('insurance.payout.settled');
+  });
+
+  it('reverses the settlement leg and re-queues on rail failure; retry posts a FRESH leg', async () => {
+    const context = makeService();
+    const payout = (await paidPayout(context))!;
+    const farmerAccount = `farmer:${farmer.id}:insurance_payouts`;
+    const paidBalance = await context.ledger.balance(farmerAccount);
+    expect(paidBalance.creditsKobo - paidBalance.debitsKobo).toBe(payout.amountKobo);
+
+    const requeued = await context.service.recordSettlementFailure(
+      admin,
+      payout.id,
+      'rail returned INSUFFICIENT_FUNDS'
+    );
+    expect(requeued.status).toBe('proposed');
+    expect(requeued.settlementAttempts).toBe(1);
+    expect(requeued.settlementFailureReason).toBe('rail returned INSUFFICIENT_FUNDS');
+    // The reversal zeroes the farmer-facing credit.
+    const reversedBalance = await context.ledger.balance(farmerAccount);
+    expect(reversedBalance.creditsKobo - reversedBalance.debitsKobo).toBe(0);
+    const names = (await context.outbox.list()).map((entry) => entry.name);
+    expect(names).toContain('insurance.payout.settlement_failed');
+
+    // Retry: a fresh settlement entry lands (no replay of the reversed one).
+    const repaid = await context.service.confirmPayout(admin, payout.id);
+    expect(repaid.status).toBe('paid');
+    expect(repaid.ledgerSettlementEntryId).not.toBe(payout.ledgerSettlementEntryId);
+    const repaidBalance = await context.ledger.balance(farmerAccount);
+    expect(repaidBalance.creditsKobo - repaidBalance.debitsKobo).toBe(payout.amountKobo);
+
+    const settled = await context.service.confirmSettlement(admin, payout.id, 'rail-ref-retry');
+    expect(settled.status).toBe('settled');
+  });
+
+  it('rejects settlement-failure recording on non-paid payouts', async () => {
+    const context = makeService();
+    const coords = await scanRainfallCell((totalMm) => totalMm <= 40);
+    await activeRainPolicy(context, coords);
+    await context.service.evaluateTriggers(admin);
+    const [payout] = await context.payouts.all();
+    await expect(
+      context.service.recordSettlementFailure(admin, payout.id, 'too early')
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 });
