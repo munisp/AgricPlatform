@@ -5,6 +5,10 @@
 #   agric_outbox_backlog_records{state}, agric_outbox_oldest_pending_age_seconds
 #   agric_notifications_queued, agric_notification_dlq_depth
 #   agric_escrow_locked_amount_kobo{status}
+#   agric_voucher_redemptions_total{result}, agric_agent_payouts_total{result} (V-78)
+# Backup freshness references agric_backup_last_success_timestamp_seconds,
+# pushed by the backup job (scripts/backup-postgres.sh → pushgateway or
+# node-exporter textfile) — see docs/runbooks/dr.md.
 # Thresholds are starting recommendations — tune against real traffic before
 # tightening paging policies. Runbook: docs/runbooks/ops.md#on-call-alerts.
 
@@ -174,3 +178,67 @@ groups:
           action: >-
             A client is retrying in a tight loop. Identify the route via the
             http_requests_total by-route panel and contact the integrator.
+
+  - name: agric-money-flows
+    rules:
+      - alert: AgricVoucherRedemptionFailures
+        # SLO: voucher redemptions succeed; a failure storm means farmers
+        # cannot redeem inputs or the redemption path is broken.
+        expr: rate(agric_voucher_redemptions_total{result="failure"}[15m]) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Voucher redemption failures climbing
+          action: >-
+            Break down failures in the API logs (409 double-redeem vs 410
+            expired vs 5xx). If 5xx-dominated, check ledger health and the
+            stuck-voucher sweeper (POST /admin/sweeps/voucher-stuck) per
+            docs/runbooks/ops.md.
+
+      - alert: AgricAgentPayoutFailures
+        # SLO: agent cash-out payouts succeed; failures strand farmer cash
+        # at agent points.
+        expr: rate(agric_agent_payouts_total{result="failure"}[15m]) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Agent-banking payout failures climbing
+          action: >-
+            Check OTP verification health (agric_otp_verifications_total),
+            agent float balances and ledger posting errors in the API logs;
+            verify daily-limit counters before forcing retries.
+
+  - name: agric-backup-deadman
+    rules:
+      - alert: AgricBackupStale
+        # Dead-man switch (docs/runbooks/dr.md): page when no successful
+        # backup dump has been observed for over 26 hours (nightly cadence
+        # + 2h grace). A silently dead backup cron is otherwise discovered
+        # at restore time.
+        expr: time() - max(agric_backup_last_success_timestamp_seconds) > 93600
+        for: 1h
+        labels:
+          severity: page
+        annotations:
+          summary: No successful database backup in over 26h
+          action: >-
+            Check the backup CronJob and scripts/backup-postgres.sh logs;
+            run one manual backup and verify the dump manifest + checksum,
+            then confirm agric_backup_last_success_timestamp_seconds is
+            being pushed (pushgateway/textfile) per docs/runbooks/dr.md.
+
+      - alert: AgricBackupMetricAbsent
+        # Dead-man switch for the dead-man switch: if the freshness metric
+        # itself is absent, the stale-backup alert above can never fire.
+        expr: absent(agric_backup_last_success_timestamp_seconds)
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: Backup freshness metric missing — dead-man switch blind
+          action: >-
+            The backup job is not pushing agric_backup_last_success_timestamp_seconds
+            (or the pushgateway/textfile scrape is down). Restore the metric
+            path first, then verify a recent dump exists per docs/runbooks/dr.md.
