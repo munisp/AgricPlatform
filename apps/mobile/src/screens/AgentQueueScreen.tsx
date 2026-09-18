@@ -50,7 +50,10 @@ export function AgentQueueScreen({ queue }: { queue?: OfflineQueue }) {
           method: 'POST',
           path: `/field-agents/assignments/${assignment.id}/progress`,
           payload: { count: 1 },
-          idempotencyKey
+          idempotencyKey,
+          // Progress increments on one assignment form a dependency chain:
+          // a failed replay blocks later increments until the next flush.
+          chainKey: `field-agents.assignment:${assignment.id}`
         });
         const result = await queue.flush((request) =>
           client.apiFetch(request.path, {
