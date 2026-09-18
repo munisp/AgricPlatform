@@ -9,6 +9,9 @@ import type {
   CarbonEstimateRecord,
   CarbonEstimateRepository,
   CarbonPlotRepository,
+  VslaCashCountCriteria,
+  VslaCashCountRecord,
+  VslaCashCountRepository,
   VslaCarbonPlotCriteria,
   VslaCarbonPlotRecord,
   VslaContributionCriteria,
@@ -25,6 +28,10 @@ import type {
   VslaLoanRepository,
   VslaLoanRepaymentRecord,
   VslaLoanRepaymentRepository,
+  VslaLoanStatus,
+  VslaMeetingCriteria,
+  VslaMeetingRecord,
+  VslaMeetingRepository,
   VslaMemberCriteria,
   VslaMemberRecord,
   VslaMemberRepository,
@@ -442,7 +449,8 @@ export class PgVslaShareOutRepository implements VslaShareOutRepository {
     try {
       await this.pool.query(
         'INSERT INTO vsla_carbon.vsla_share_outs (id, cycle_id, member_id, share_kobo, contributed_kobo, ' +
-          'residual_kobo, ledger_entry_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+          'residual_kobo, arrears_withheld_kobo, ledger_entry_id, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         [
           record.id,
           record.cycleId,
@@ -450,6 +458,7 @@ export class PgVslaShareOutRepository implements VslaShareOutRepository {
           record.shareKobo,
           record.contributedKobo,
           record.residualKobo,
+          record.arrearsWithheldKobo ?? 0,
           record.ledgerEntryId,
           record.createdAt
         ]
@@ -487,6 +496,7 @@ export class PgVslaShareOutRepository implements VslaShareOutRepository {
       shareKobo: Number(row.share_kobo),
       contributedKobo: Number(row.contributed_kobo),
       residualKobo: Number(row.residual_kobo),
+      arrearsWithheldKobo: Number(row.arrears_withheld_kobo ?? 0),
       ledgerEntryId: row.ledger_entry_id as string,
       createdAt: toIso(row.created_at) as string
     };
@@ -506,7 +516,8 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
     try {
       await this.pool.query(
         'INSERT INTO vsla_carbon.vsla_share_out_plan (id, cycle_id, member_id, share_kobo, ' +
-          'contributed_kobo, residual_kobo, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          'contributed_kobo, residual_kobo, arrears_withheld_kobo, created_at) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
         [
           record.id,
           record.cycleId,
@@ -514,6 +525,7 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
           record.shareKobo,
           record.contributedKobo,
           record.residualKobo,
+          record.arrearsWithheldKobo ?? 0,
           record.createdAt
         ]
       );
@@ -583,7 +595,8 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
       for (const row of rows) {
         await client.query(
           'INSERT INTO vsla_carbon.vsla_share_out_plan (id, cycle_id, member_id, share_kobo, ' +
-            'contributed_kobo, residual_kobo, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+            'contributed_kobo, residual_kobo, arrears_withheld_kobo, created_at) ' +
+            'VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
           [
             row.id,
             row.cycleId,
@@ -591,6 +604,7 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
             row.shareKobo,
             row.contributedKobo,
             row.residualKobo,
+            row.arrearsWithheldKobo ?? 0,
             row.createdAt
           ]
         );
@@ -622,6 +636,7 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
       shareKobo: Number(row.share_kobo),
       contributedKobo: Number(row.contributed_kobo),
       residualKobo: Number(row.residual_kobo),
+      arrearsWithheldKobo: Number(row.arrears_withheld_kobo ?? 0),
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -797,7 +812,8 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
              ELSE repaid_at
            END
        WHERE id = $2
-         AND status = 'ACTIVE'
+         -- V-10: DEFAULTED loans remain repayable — the claim survives close.
+         AND status IN ('ACTIVE', 'DEFAULTED')
          AND repaid_kobo + $1 <= total_due_kobo
        RETURNING *`,
       [amountKobo, id]
@@ -806,14 +822,25 @@ export class PgVslaLoanRepository implements VslaLoanRepository {
   }
 
   /** Compensating release for a claim whose posting failed (guarded). */
-  async rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void> {
+  async rollbackRepaymentClaim(
+    id: string,
+    amountKobo: number,
+    priorStatus: VslaLoanStatus = 'ACTIVE'
+  ): Promise<void> {
     await this.pool.query(
       `UPDATE vsla_carbon.vsla_loans
        SET repaid_kobo = repaid_kobo - $1,
-           status = 'ACTIVE',
-           repaid_at = NULL
+           -- V-10: restore the pre-claim state (DEFAULTED stays DEFAULTED).
+           status = CASE
+             WHEN repaid_kobo - $1 >= total_due_kobo THEN 'REPAID'
+             ELSE $3
+           END,
+           repaid_at = CASE
+             WHEN repaid_kobo - $1 >= total_due_kobo THEN repaid_at
+             ELSE NULL
+           END
        WHERE id = $2 AND repaid_kobo >= $1`,
-      [amountKobo, id]
+      [amountKobo, id, priorStatus]
     );
   }
 
@@ -1204,4 +1231,189 @@ export function createPgCarbonEvidenceRepository(pool: pg.Pool): PgCarbonEvidenc
 
 export function createPgCarbonEstimateRepository(pool: pg.Pool): PgCarbonEstimateRepository {
   return new PgCarbonEstimateRepository(pool);
+}
+
+/**
+ * VSLA meetings + dual-attested cash counts (V-48, migration 091): physical
+ * lockbox reconciliation against the ledger.
+ */
+export class PgVslaMeetingRepository implements VslaMeetingRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: VslaMeetingRecord): Promise<VslaMeetingRecord> {
+    await this.pool.query(
+      'INSERT INTO vsla_carbon.meetings (id, group_id, held_at, notes, created_by, created_at) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6)',
+      [record.id, record.groupId, record.heldAt, record.notes ?? null, record.createdBy, record.createdAt]
+    );
+    return record;
+  }
+
+  async findById(id: string): Promise<VslaMeetingRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.meetings WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async find(criteria: VslaMeetingCriteria): Promise<VslaMeetingRecord[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (criteria.groupId) {
+      params.push(criteria.groupId);
+      where.push(`group_id = $${params.length}`);
+    }
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.meetings' +
+        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+        ' ORDER BY created_at',
+      params
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  private fromRow(row: Record<string, unknown>): VslaMeetingRecord {
+    return {
+      id: row.id as string,
+      groupId: row.group_id as string,
+      heldAt: toIso(row.held_at) as string,
+      notes: (row.notes as string | null) ?? undefined,
+      createdBy: row.created_by as string,
+      createdAt: toIso(row.created_at) as string
+    };
+  }
+}
+
+export class PgVslaCashCountRepository implements VslaCashCountRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async create(record: VslaCashCountRecord): Promise<VslaCashCountRecord> {
+    try {
+      await this.pool.query(
+        'INSERT INTO vsla_carbon.cash_counts (id, group_id, meeting_id, declared_kobo, ledger_kobo, ' +
+          'variance_kobo, declared_by, attested_by, status, idempotency_key, ledger_entry_id, ' +
+          'created_at, attested_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+        [
+          record.id,
+          record.groupId,
+          record.meetingId ?? null,
+          record.declaredKobo,
+          record.ledgerKobo ?? null,
+          record.varianceKobo ?? null,
+          record.declaredBy,
+          record.attestedBy ?? null,
+          record.status,
+          record.idempotencyKey,
+          record.ledgerEntryId ?? null,
+          record.createdAt,
+          record.attestedAt ?? null
+        ]
+      );
+    } catch (error) {
+      assertPgUnique(error, 'A cash-count declaration with this idempotency key already exists');
+    }
+    return record;
+  }
+
+  async findById(id: string): Promise<VslaCashCountRecord | undefined> {
+    const result = await this.pool.query('SELECT * FROM vsla_carbon.cash_counts WHERE id = $1', [
+      id
+    ]);
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<VslaCashCountRecord | undefined> {
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.cash_counts WHERE idempotency_key = $1',
+      [key]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async find(criteria: VslaCashCountCriteria): Promise<VslaCashCountRecord[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (criteria.groupId) {
+      params.push(criteria.groupId);
+      where.push(`group_id = $${params.length}`);
+    }
+    if (criteria.meetingId) {
+      params.push(criteria.meetingId);
+      where.push(`meeting_id = $${params.length}`);
+    }
+    const result = await this.pool.query(
+      'SELECT * FROM vsla_carbon.cash_counts' +
+        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+        ' ORDER BY created_at',
+      params
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<VslaCashCountRecord>,
+    expected: Partial<VslaCashCountRecord>
+  ): Promise<VslaCashCountRecord> {
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    const column: Record<string, string> = {
+      ledgerKobo: 'ledger_kobo',
+      varianceKobo: 'variance_kobo',
+      attestedBy: 'attested_by',
+      status: 'status',
+      ledgerEntryId: 'ledger_entry_id',
+      attestedAt: 'attested_at'
+    };
+    for (const [field, col] of Object.entries(column)) {
+      if (field in patch) {
+        params.push(patch[field as keyof VslaCashCountRecord] ?? null);
+        sets.push(`${col} = $${params.length}`);
+      }
+    }
+    const guards: string[] = [];
+    for (const [field, col] of Object.entries(column)) {
+      if (field in expected) {
+        params.push(expected[field as keyof VslaCashCountRecord] ?? null);
+        guards.push(`${col} IS NOT DISTINCT FROM $${params.length}`);
+      }
+    }
+    const result = (await this.pool.query(
+      `UPDATE vsla_carbon.cash_counts SET ${sets.join(', ')} WHERE id = $1` +
+        (guards.length > 0 ? ` AND ${guards.join(' AND ')}` : '') +
+        ' RETURNING *',
+      params
+    )) as { rows: Record<string, unknown>[] };
+    if (!result.rows[0]) {
+      throw new ConflictException(`VSLA cash count '${id}' changed concurrently; reload and retry`);
+    }
+    return this.fromRow(result.rows[0]);
+  }
+
+  private fromRow(row: Record<string, unknown>): VslaCashCountRecord {
+    return {
+      id: row.id as string,
+      groupId: row.group_id as string,
+      meetingId: (row.meeting_id as string | null) ?? undefined,
+      declaredKobo: Number(row.declared_kobo),
+      ledgerKobo: row.ledger_kobo === null ? undefined : Number(row.ledger_kobo),
+      varianceKobo: row.variance_kobo === null ? undefined : Number(row.variance_kobo),
+      declaredBy: row.declared_by as string,
+      attestedBy: (row.attested_by as string | null) ?? undefined,
+      status: row.status as VslaCashCountRecord['status'],
+      idempotencyKey: row.idempotency_key as string,
+      ledgerEntryId: (row.ledger_entry_id as string | null) ?? undefined,
+      createdAt: toIso(row.created_at) as string,
+      attestedAt: toIso(row.attested_at)
+    };
+  }
+}
+
+export function createPgVslaMeetingRepository(pool: pg.Pool): PgVslaMeetingRepository {
+  return new PgVslaMeetingRepository(pool);
+}
+
+export function createPgVslaCashCountRepository(pool: pg.Pool): PgVslaCashCountRepository {
+  return new PgVslaCashCountRepository(pool);
 }
