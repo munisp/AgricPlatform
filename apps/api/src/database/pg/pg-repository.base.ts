@@ -4,9 +4,18 @@ import {
   NotFoundException
 } from '@nestjs/common';
 import type pg from 'pg';
+import { types as pgTypes } from 'pg';
 import type { ApiListResponse } from '@agric-platform/shared';
 import { pageSlice } from '../../common/pagination.js';
 import type { DomainEvent } from '../../core/domain-events.service.js';
+
+// DATE (OID 1082) is timezone-less, but node-pg's default parser builds a
+// local-midnight Date — east-of-UTC deployments (this platform's own market,
+// Africa/Lagos, is UTC+1) then read every DATE back one day early when the
+// value passes through toISOString() (pg contract failure class surfaced on a
+// UTC+8 host, 2026-09-18). Return the raw 'YYYY-MM-DD' string instead; DATE
+// mappers treat the value as a string and never round-trip through Date.
+pgTypes.setTypeParser(pgTypes.builtins.DATE, (value: string) => value);
 
 /** snake_case row ↔ camelCase entity mapping, explicit per entity. */
 export interface RowMapper<T> {
