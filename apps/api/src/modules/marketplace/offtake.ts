@@ -54,6 +54,54 @@ export interface OfftakeContract {
   acceptedAt?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * V-34: version of the currently agreed terms (price band / window /
+   * milestone due dates). 1 at creation; each ACCEPTED amendment increments
+   * it. Undefined on rows predating 109_offtake_amendments.sql (= version 1).
+   */
+  termsVersion?: number;
+  /**
+   * V-35: the penalty receivable (integer kobo) booked against the buyer
+   * when the contract defaults. Set by the missed/defaulted sweep.
+   */
+  defaultPenaltyKobo?: number;
+  /** V-35: the assisted re-marketing listing created for the stranded lot. */
+  remarketedListingId?: string;
+}
+
+/* ------------------------------------------------------------------ V-34 -- */
+
+export const OFFTAKE_AMENDMENT_STATUSES = [
+  'proposed',
+  'accepted',
+  'rejected',
+  'superseded'
+] as const;
+export type OfftakeAmendmentStatus = (typeof OFFTAKE_AMENDMENT_STATUSES)[number];
+
+/**
+ * V-34 renegotiation: a versioned amendment proposal against an active
+ * contract. The contract row only changes when a proposal is ACCEPTED by
+ * the OTHER party (propose → counterparty accept), so the 'renegotiation
+ * required' signal finally has a state to land in. Milestone due-date
+ * changes apply only to still-open (pending/partial) milestones.
+ */
+export interface OfftakeAmendment {
+  id: string;
+  contractId: string;
+  /** 1-based amendment sequence within the contract (evidence order). */
+  seq: number;
+  status: OfftakeAmendmentStatus;
+  /** Amended price band (absent = band unchanged). */
+  priceBand?: OfftakePriceBand;
+  /** Amended delivery window end, ISO date (absent = unchanged). */
+  windowEnd?: string;
+  /** Amended due dates for open milestones, by milestone seq. */
+  milestoneDueDates?: { seq: number; dueDate: string }[];
+  note?: string;
+  proposedBy: string;
+  createdAt: string;
+  decidedAt?: string;
 }
 
 export interface OfftakeMilestone {
@@ -265,4 +313,42 @@ export function deliveryLedgerIdempotencyKey(idempotencyKey: string): string {
 /** Deterministic ledger idempotency key for a delivery's settlement posting. */
 export function settlementLedgerIdempotencyKey(escrowId: string): string {
   return `offtake-settle:${escrowId}`;
+}
+
+/* ------------------------------------------------------------------ V-35 -- */
+
+/**
+ * Buyer-default penalty rate: 10% of the undelivered contract value at the
+ * band floor (basis points). The penalty is a RECEIVABLE record only — the
+ * actual collection rides the payout rail, which stays behind the existing
+ * fail-closed stubs until the E-01 external gate lands.
+ */
+export const OFFTAKE_DEFAULT_PENALTY_BPS = 1000;
+
+/**
+ * V-35: penalty receivable in integer kobo for the undelivered quantity at
+ * the band floor — floor-truncated, never rounded up against the buyer.
+ */
+export function defaultPenaltyKobo(
+  contract: Pick<OfftakeContract, 'priceBand'>,
+  undeliveredQtyKg: number
+): number {
+  return Math.floor(
+    (undeliveredQtyKg * contract.priceBand.floorKoboPerKg * OFFTAKE_DEFAULT_PENALTY_BPS) / 10_000
+  );
+}
+
+/** Cooperative-side asset: penalty owed BY the defaulting buyer. */
+export function coopPenaltyReceivableAccountCode(cooperativeId: string): string {
+  return `coop:${cooperativeId}:default_penalty_receivable`;
+}
+
+/** Buyer-side liability: penalty owed TO the cooperative. */
+export function buyerPenaltyPayableAccountCode(buyerOrgId: string): string {
+  return `org:${buyerOrgId}:default_penalty_payable`;
+}
+
+/** Deterministic ledger idempotency key for a default penalty journal. */
+export function defaultPenaltyLedgerKey(contractId: string): string {
+  return `offtake-default-penalty:${contractId}`;
 }
