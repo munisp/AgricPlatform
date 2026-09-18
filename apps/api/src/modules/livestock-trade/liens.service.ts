@@ -1,14 +1,19 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
-  Injectable
+  Injectable,
+  Logger,
+  type OnModuleInit
 } from '@nestjs/common';
 import type {
+  LivestockAnimalStatusChangedPayload,
   LivestockLien,
   LivestockSubjectType,
   User
 } from '@agric-platform/shared';
+import { LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -44,7 +49,9 @@ export interface RegisterLienInput {
  * the livestock-trade module.
  */
 @Injectable()
-export class LiensService {
+export class LiensService implements OnModuleInit {
+  private readonly logger = new Logger(LiensService.name);
+
   constructor(
     private readonly audit: AuditService,
     private readonly events: DomainEventsService,
@@ -52,6 +59,93 @@ export class LiensService {
     @Inject(LOT_REPOSITORY) private readonly lots: LotRepository,
     @Inject(LIEN_REPOSITORY) private readonly liens: LienRepository
   ) {}
+
+  onModuleInit(): void {
+    // V-11: collateral loss must reach the lien holder without waiting for a
+    // manual markDefaulted. Death/theft of the animal margin-calls the live
+    // lien (the insurance subscriber drafts the mortality claim off the same
+    // event). Fail-closed: a handler error is logged, never swallowed, so the
+    // outbox row remains available for the sweeper/re-drive.
+    this.events.on(LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT, (event) => {
+      void this.handleAnimalStatusChanged(event.payload as LivestockAnimalStatusChangedPayload).catch(
+        (error: unknown) =>
+          this.logger.warn(
+            `lien collateral-loss handling failed: ${error instanceof Error ? error.message : String(error)}`
+          )
+      );
+    });
+  }
+
+  /**
+   * V-11 reaction: animal → dead|stolen flags the live lien as margin_call.
+   * Claim-first CAS ({status:'active'} precondition): a concurrent discharge
+   * or a duplicate event delivery converges instead of double-flagging, and
+   * the margin-call outbox event commits with the state change on pg
+   * (transactionalOutbox). The lien stays enforced — the transfer guard and
+   * the one-lien-per-subject rule treat margin_call as live.
+   */
+  async handleAnimalStatusChanged(
+    payload: LivestockAnimalStatusChangedPayload
+  ): Promise<LivestockLien | undefined> {
+    if (!payload || typeof payload.animalId !== 'string') {
+      this.logger.warn('ignoring malformed livestock.animal.status_changed payload');
+      return undefined;
+    }
+    if (payload.to !== 'dead' && payload.to !== 'stolen') {
+      return undefined;
+    }
+    const lien = await this.liens.findActiveForSubject('animal', payload.animalId);
+    if (!lien || lien.status !== 'active') {
+      return undefined; // no live lien, or already margin-called/discharged
+    }
+    const now = new Date().toISOString();
+    const event = this.events.build(
+      'livestock_trade.lien.margin_called',
+      {
+        lienId: lien.id,
+        subjectType: lien.subjectType,
+        subjectId: lien.subjectId,
+        lenderUserId: lien.lenderUserId,
+        borrowerUserId: lien.borrowerUserId,
+        principalKobo: lien.principalKobo,
+        cause: payload.to,
+        animalId: payload.animalId
+      },
+      lien.lenderUserId
+    );
+    let updated: LivestockLien;
+    try {
+      updated = await this.liens.updateExpected(
+        lien.id,
+        { status: 'margin_call', updatedAt: now },
+        { status: 'active' },
+        event
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        return undefined; // concurrent discharge/default won the race — stand down
+      }
+      throw error;
+    }
+    if (this.liens.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
+    await this.audit.record({
+      actorId: lien.lenderUserId,
+      action: 'livestock_trade.lien_margin_called',
+      entityType: 'lien',
+      entityId: lien.id,
+      metadata: {
+        subjectId: lien.subjectId,
+        animalId: payload.animalId,
+        cause: payload.to,
+        principalKobo: lien.principalKobo
+      }
+    });
+    return updated;
+  }
 
   /** Registers an active lien. Lender-role callers only (or admin); the
    * subject owner becomes the borrower of record. At most one active lien
@@ -98,13 +192,13 @@ export class LiensService {
     return created;
   }
 
-  /** active → discharged (lender of record or admin). */
+  /** active|margin_call → discharged (lender of record or admin). */
   async discharge(actor: User | null, id: string): Promise<LivestockLien> {
     const caller = requireActor(actor);
     const lien = await this.liens.getById(id);
     this.assertLienParty(caller, lien);
-    if (lien.status !== 'active') {
-      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only active liens can be discharged`);
+    if (lien.status !== 'active' && lien.status !== 'margin_call') {
+      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only live liens can be discharged`);
     }
     const now = new Date().toISOString();
     const updated = await this.liens.update(id, {
@@ -127,13 +221,13 @@ export class LiensService {
     return updated;
   }
 
-  /** active → defaulted (lender of record or admin). */
+  /** active|margin_call → defaulted (lender of record or admin). */
   async markDefaulted(actor: User | null, id: string): Promise<LivestockLien> {
     const caller = requireActor(actor);
     const lien = await this.liens.getById(id);
     this.assertLienParty(caller, lien);
-    if (lien.status !== 'active') {
-      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only active liens can default`);
+    if (lien.status !== 'active' && lien.status !== 'margin_call') {
+      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only live liens can default`);
     }
     const updated = await this.liens.update(id, {
       status: 'defaulted',
