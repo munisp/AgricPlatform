@@ -15,6 +15,17 @@
  * idempotency/rate limits). The flush stops immediately and parks the
  * current and all later entries for the next flush after re-login.
  *
+ * Staleness & ordering (V-64):
+ * - Every entry carries `enqueuedAt`; entries older than their kind's TTL
+ *   are EXPIRED, not replayed — a month-old sale must not apply month-old
+ *   prices as current truth. Expired entries drop out of the queue and are
+ *   surfaced in the flush result (and via `expired()` for the outbox UI).
+ * - Stop-on-error per chain: when a replay fails, later entries sharing the
+ *   failed entry's explicit `chainKey` are blocked for this flush — a
+ *   dependent mutation never replays against a parent whose own replay
+ *   just failed. Blocked entries stay queued for the next flush. Entries
+ *   without a chainKey are independent and never block each other.
+ *
  * Storage backend: any AsyncStorage-compatible key/value store. Production
  * builds pass `@react-native-async-storage/async-storage` directly (its
  * getItem/setItem/removeItem signatures match `KeyValueStorage`); tests and
@@ -53,6 +64,13 @@ export interface QueuedRequest {
   payload?: unknown;
   idempotencyKey: string;
   enqueuedAt: string;
+  /**
+   * Dependency chain for stop-on-error ordering (V-64): entries that must
+   * not replay after a sibling failed share a chain key, e.g.
+   * `farm_plot:plot-1` for a create→update chain on one record. Omit it for
+   * independent mutations — chains are opt-in.
+   */
+  chainKey?: string;
 }
 
 export interface FlushResult {
@@ -60,6 +78,10 @@ export interface FlushResult {
   failed: number;
   /** Entries not attempted because a replay failed with 401 (auth park). */
   parked: number;
+  /** Entries not attempted because an earlier entry in their chain failed. */
+  blocked: number;
+  /** Expired entries dropped WITHOUT replaying (surface them in the UI). */
+  expired: QueuedRequest[];
 }
 
 export type QueueSender = (request: QueuedRequest) => Promise<unknown>;
@@ -67,8 +89,31 @@ export type QueueSender = (request: QueuedRequest) => Promise<unknown>;
 export interface OfflineQueue {
   enqueue(request: Omit<QueuedRequest, 'id' | 'enqueuedAt'>): Promise<QueuedRequest>;
   pending(): Promise<QueuedRequest[]>;
+  /** Currently-queued entries past their TTL (outbox UI surfacing; V-64). */
+  expired(): Promise<QueuedRequest[]>;
   clear(): Promise<void>;
   flush(sender: QueueSender): Promise<FlushResult>;
+}
+
+/** Default staleness window for queued mutations (7 days). */
+export const DEFAULT_OFFLINE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Per-kind TTL overrides (V-64): price/availability-bearing mutations age
+ * out fast — replaying them late applies stale terms as current truth.
+ */
+export const OFFLINE_KIND_TTL_MS: Record<string, number> = {
+  'services.booking.created': 24 * 60 * 60 * 1000,
+  'marketplace.order.created': 24 * 60 * 60 * 1000
+};
+
+export interface OfflineQueueOptions {
+  /** Fallback TTL for kinds without an override (default 7 days). */
+  defaultTtlMs?: number;
+  /** Per-kind TTL overrides (merged over OFFLINE_KIND_TTL_MS). */
+  kindTtlMs?: Record<string, number>;
+  /** Clock seam for tests. */
+  now?: () => Date;
 }
 
 const STORAGE_KEY = 'nyfn.offline-queue.v1';
@@ -89,7 +134,34 @@ export function isAuthFailure(error: unknown): boolean {
   );
 }
 
-export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
+/**
+ * Chain identity for stop-on-error ordering (V-64). Chains are OPT-IN: an
+ * entry without an explicit chainKey is independent — a sibling's failure
+ * never blocks it (same-kind mutations are usually unrelated records).
+ */
+function chainOf(request: QueuedRequest): string | undefined {
+  return request.chainKey;
+}
+
+export function createOfflineQueue(
+  storage: KeyValueStorage,
+  options: OfflineQueueOptions = {}
+): OfflineQueue {
+  const now = options.now ?? (() => new Date());
+  const kindTtl: Record<string, number> = { ...OFFLINE_KIND_TTL_MS, ...options.kindTtlMs };
+  const defaultTtl = options.defaultTtlMs ?? DEFAULT_OFFLINE_TTL_MS;
+
+  function ttlFor(kind: string): number {
+    return kindTtl[kind] ?? defaultTtl;
+  }
+
+  function isExpired(request: QueuedRequest): boolean {
+    const enqueued = Date.parse(request.enqueuedAt);
+    if (Number.isNaN(enqueued)) {
+      return false; // unparseable timestamp: replay rather than drop silently
+    }
+    return now().getTime() - enqueued > ttlFor(request.kind);
+  }
   async function read(): Promise<QueuedRequest[]> {
     const raw = await storage.getItem(STORAGE_KEY);
     if (!raw) return [];
@@ -115,7 +187,7 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
       const queued: QueuedRequest = {
         ...request,
         id: randomId(),
-        enqueuedAt: new Date().toISOString()
+        enqueuedAt: now().toISOString()
       };
       await write([...current, queued]);
       return queued;
@@ -123,14 +195,21 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
 
     pending: read,
 
+    async expired() {
+      return (await read()).filter(isExpired);
+    },
+
     async clear() {
       await write([]);
     },
 
     async flush(sender) {
       const remaining: QueuedRequest[] = [];
+      const expiredEntries: QueuedRequest[] = [];
+      const failedChains = new Set<string>();
       let sent = 0;
       let parked = 0;
+      let blocked = 0;
       let authParked = false;
       for (const request of await read()) {
         if (authParked) {
@@ -139,11 +218,28 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
           parked += 1;
           continue;
         }
+        if (isExpired(request)) {
+          // Stale mutation (V-64): never replayed — surface it instead of
+          // applying aged prices/availability as current truth.
+          expiredEntries.push(request);
+          continue;
+        }
+        const chain = chainOf(request);
+        if (chain !== undefined && failedChains.has(chain)) {
+          // An earlier entry in this chain failed: dependents wait for the
+          // next flush instead of replaying against a missing parent.
+          remaining.push(request);
+          blocked += 1;
+          continue;
+        }
         try {
           await sender(request);
           sent += 1;
         } catch (error) {
           remaining.push(request);
+          if (chain !== undefined) {
+            failedChains.add(chain);
+          }
           if (isAuthFailure(error)) {
             // Session is dead — park this and every later entry unattempted.
             authParked = true;
@@ -152,7 +248,13 @@ export function createOfflineQueue(storage: KeyValueStorage): OfflineQueue {
         }
       }
       await write(remaining);
-      return { sent, failed: remaining.length - parked, parked };
+      return {
+        sent,
+        failed: remaining.length - parked - blocked,
+        parked,
+        blocked,
+        expired: expiredEntries
+      };
     }
   };
 }
