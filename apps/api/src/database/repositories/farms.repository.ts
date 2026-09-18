@@ -1,6 +1,7 @@
 import type {
   CropPlanting,
   FarmExpense,
+  FarmExpenseAllocation,
   FarmPlot,
   HarvestRecord,
   PlantingStatus
@@ -141,4 +142,49 @@ export function createInMemoryFarmExpenseRepository(
   seed: readonly FarmExpense[] = []
 ): InMemoryFarmExpenseRepository {
   return new InMemoryFarmExpenseRepository(seed);
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Intercrop expense allocation port (W2-FP4 A4; migration
+ * 117_farms_expense_allocations.sql). Allocations are write-once: they are
+ * recorded atomically with the expense's creation and never updated (a
+ * corrected expense is a new expense). Rows keyed by (expenseId,
+ * plantingId) on pg.
+ */
+export interface ExpenseAllocationRow extends FarmExpenseAllocation {
+  expenseId: string;
+}
+
+export interface FarmExpenseAllocationRepository {
+  /** Persists the explicit shares for one expense (write-once). */
+  record(expenseId: string, allocations: readonly FarmExpenseAllocation[]): Promise<void>;
+  /** All allocation rows for the given expenses (read-side join). */
+  listForExpenses(expenseIds: readonly string[]): Promise<ExpenseAllocationRow[]>;
+  /** All allocation rows touching one planting (per-crop P&L reads). */
+  listForPlanting(plantingId: string): Promise<ExpenseAllocationRow[]>;
+}
+
+export class InMemoryFarmExpenseAllocationRepository implements FarmExpenseAllocationRepository {
+  private readonly rows: ExpenseAllocationRow[] = [];
+
+  async record(expenseId: string, allocations: readonly FarmExpenseAllocation[]): Promise<void> {
+    for (const allocation of allocations) {
+      this.rows.push({ expenseId, ...allocation });
+    }
+  }
+
+  async listForExpenses(expenseIds: readonly string[]): Promise<ExpenseAllocationRow[]> {
+    const wanted = new Set(expenseIds);
+    return this.rows.filter((row) => wanted.has(row.expenseId)).map((row) => ({ ...row }));
+  }
+
+  async listForPlanting(plantingId: string): Promise<ExpenseAllocationRow[]> {
+    return this.rows.filter((row) => row.plantingId === plantingId).map((row) => ({ ...row }));
+  }
+}
+
+export function createInMemoryFarmExpenseAllocationRepository(): InMemoryFarmExpenseAllocationRepository {
+  return new InMemoryFarmExpenseAllocationRepository();
 }
