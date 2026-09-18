@@ -8,15 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsArray,
-  IsISO8601,
-  IsIn,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Min
-} from 'class-validator';
+import { ArrayMaxSize, IsArray, IsISO8601, IsIn, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -32,10 +24,12 @@ import { CUSTODY_EVENT_TYPES } from './traceability.types.js';
 
 class CreateLotDto implements CreateLotInput {
   @IsString()
+  @MaxLength(100)
   crop!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   variety?: string;
 
   @IsISO8601()
@@ -49,6 +43,7 @@ class CreateLotDto implements CreateLotInput {
   quantity!: number;
 
   @IsString()
+  @MaxLength(500)
   unit!: string;
 }
 
@@ -67,6 +62,7 @@ class AddCustodyEventDto implements AddCustodyEventInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   h3Cell?: string;
 
   @IsOptional()
@@ -76,15 +72,18 @@ class AddCustodyEventDto implements AddCustodyEventInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   unit?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
 class LinkPlotDto {
   @IsString()
+  @MaxLength(100)
   plotId!: string;
 }
 
@@ -104,19 +103,24 @@ class SplitLotDto implements SplitLotInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   h3Cell?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
 class AggregateLotsDto implements AggregateLotsInput {
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   parentLotIds!: string[];
 
   @IsString()
+  @MaxLength(100)
   crop!: string;
 
   @IsNumber()
@@ -124,6 +128,7 @@ class AggregateLotsDto implements AggregateLotsInput {
   quantity!: number;
 
   @IsString()
+  @MaxLength(500)
   unit!: string;
 
   @IsISO8601()
@@ -137,26 +142,32 @@ class AggregateLotsDto implements AggregateLotsInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   h3Cell?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
 class CreateShipmentDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   lotIds!: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   reference?: string;
 }
 
 class ListLotsQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   ownerUserId?: string;
 }
 
