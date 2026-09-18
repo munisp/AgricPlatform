@@ -92,6 +92,12 @@ export const VOUCHER_INSURANCE_RIDER_FLAG = 'voucher-insurance-rider';
 /** Options for redemption: the planted plot the bundled cover attaches to. */
 export interface RedeemVoucherOptions {
   plotId?: string;
+  /**
+   * W2-C2 (V-32): partial redemption amount. Defaults to the FULL remaining
+   * balance (pre-W2 behaviour). Must be a positive integer ≤ the remaining
+   * balance; an overshoot is rejected 422 and nothing is claimed.
+   */
+  amountKobo?: number;
 }
 
 /** Resolved cover plan for a redemption under an active rider. */
@@ -180,6 +186,9 @@ export interface ProgrammeReconciliation {
     outstandingKobo: number;
     redeemedCount: number;
     redeemedKobo: number;
+    /** W2-C2 (V-02): vouchers refunded (REDEEMED→REFUNDED) and kobo returned. */
+    refundedCount: number;
+    refundedKobo: number;
     expiredCount: number;
     expiredKobo: number;
     voidedCount: number;
@@ -861,6 +870,9 @@ export class InputVouchersService {
     if (voucher.status === 'REDEEMED') {
       throw new ConflictException(`Voucher '${id}' has already been redeemed`);
     }
+    if (voucher.status === 'REFUNDED' || voucher.status === 'REFUNDING') {
+      throw new ConflictException(`Voucher '${id}' has been refunded (status is ${voucher.status})`);
+    }
     if (voucher.status === 'VOIDED' || voucher.status === 'VOIDING') {
       throw new ConflictException(`Voucher '${id}' was voided`);
     }
@@ -870,7 +882,10 @@ export class InputVouchersService {
       }
       throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
     }
-    if (voucher.status === 'ISSUED' && Date.parse(voucher.expiresAt) <= Date.now()) {
+    if (
+      (voucher.status === 'ISSUED' || voucher.status === 'PARTIALLY_REDEEMED') &&
+      Date.parse(voucher.expiresAt) <= Date.now()
+    ) {
       await this.expireIssuedVoucher(voucher, actor.id);
       throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
     }
@@ -879,6 +894,24 @@ export class InputVouchersService {
     if (!voucher.distributedAt) {
       throw new BadRequestException(`Voucher '${id}' has not been distributed to the farmer yet`);
     }
+    // W2-C2 (V-32): balance-bearing redemption. The remaining balance is the
+    // face value minus the sum of committed parts (stored on the row); the
+    // part amount defaults to the FULL remaining balance (pre-W2 behaviour).
+    // A REDEEMING resume always uses the amount captured by the claim CAS —
+    // never a freshly-computed one — so a crash mid-part cannot resize it.
+    const redeemedSoFar = voucher.redeemedAmountKobo ?? 0;
+    const remainingKobo = voucher.amountKobo - redeemedSoFar;
+    const partAmountKobo =
+      voucher.status === 'REDEEMING'
+        ? (voucher.pendingAmountKobo ?? remainingKobo)
+        : (options.amountKobo ?? remainingKobo);
+    assertPositiveKobo(partAmountKobo);
+    if (voucher.status !== 'REDEEMING' && partAmountKobo > remainingKobo) {
+      throw new UnprocessableEntityException(
+        `Voucher '${id}' remaining balance is ${remainingKobo} kobo — a ${partAmountKobo} kobo redemption overshoots the face value`
+      );
+    }
+    const { seq: partSeq, key: redemptionKey } = await this.nextRedemptionPart(voucher);
     // Stage 27 (Insurance-in-the-Bag): resolve the programme's insurance
     // rider BEFORE the claim CAS, so a validation failure (no plot, premium
     // not covered by the face value) rejects the redemption while the
@@ -886,14 +919,28 @@ export class InputVouchersService {
     // redemption" doctrine. Post-claim failures are crash-class and resume
     // through the REDEEMING path below. Flag OFF (default) => no rider
     // consult, redemption behaves exactly as before.
+    // W2-C2 (V-32): a programme insurance rider binds the WHOLE envelope in
+    // one envelope-split entry — partial redemptions are incompatible with
+    // the single-premium bind, so rider programmes require full-amount
+    // redemption (fail closed 422 BEFORE any claim).
     const coverPlan = await this.resolveCoverPlan(voucher, options.plotId, actor);
-    if (voucher.status === 'ISSUED') {
+    if (coverPlan && partAmountKobo !== remainingKobo) {
+      throw new UnprocessableEntityException(
+        `Voucher '${id}' is under a programme insurance rider — the envelope (including the bundled premium) must be redeemed in full`
+      );
+    }
+    if (voucher.status === 'ISSUED' || voucher.status === 'PARTIALLY_REDEEMED') {
       // Claim the redemption FIRST: after this write only this caller (or a
       // retry resuming the claim) can reach the ledger posting; a concurrent
-      // redeem/expire/void loses the CAS and surfaces as a 409.
-      voucher = await this.vouchers.updateExpected(id, { status: 'REDEEMING' }, { status: 'ISSUED' });
+      // redeem/expire/void loses the CAS and surfaces as a 409. The claimed
+      // PART amount rides the claim (pending_amount_kobo) so a crash-resume
+      // finalizes exactly the claimed amount — never a recomputed one.
+      voucher = await this.vouchers.updateExpected(
+        id,
+        { status: 'REDEEMING', pendingAmountKobo: partAmountKobo },
+        { status: voucher.status }
+      );
     }
-    const redemptionKey = `input-voucher-redemption:${voucher.id}`;
     let redemption = await this.redemptions.findByIdempotencyKey(redemptionKey);
     let cover: VoucherCoverRecord | undefined;
     if (!redemption) {
@@ -914,17 +961,17 @@ export class InputVouchersService {
       }
       const postings = coverPlan
         ? [
-            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: voucher.amountKobo },
+            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: partAmountKobo },
             {
               accountCode: supplierReceivableAccountCode(actor.id),
               direction: 'credit' as const,
-              amountKobo: voucher.amountKobo - coverPlan.premiumKobo
+              amountKobo: partAmountKobo - coverPlan.premiumKobo
             },
             { accountCode: coverPlan.insurerAccountCode, direction: 'credit' as const, amountKobo: coverPlan.premiumKobo }
           ]
         : [
-            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: voucher.amountKobo },
-            { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit' as const, amountKobo: voucher.amountKobo }
+            { accountCode: programme.liabilityAccountCode, direction: 'debit' as const, amountKobo: partAmountKobo },
+            { accountCode: supplierReceivableAccountCode(actor.id), direction: 'credit' as const, amountKobo: partAmountKobo }
           ];
       try {
         const entry = await this.ledger.postEntry(
@@ -933,7 +980,7 @@ export class InputVouchersService {
             referenceType: 'input_voucher_redemption',
             referenceId: voucher.id,
             description:
-              `Subsidy voucher ${voucher.id} redeemed by supplier ${actor.id} (invoice ${invoiceRef.trim()})` +
+              `Subsidy voucher ${voucher.id} redemption part ${partSeq} (${partAmountKobo} kobo) by supplier ${actor.id} (invoice ${invoiceRef.trim()})` +
               (coverPlan ? ` — bundled insurance premium ${coverPlan.premiumKobo} kobo (envelope split)` : ''),
             postings
           },
@@ -953,10 +1000,11 @@ export class InputVouchersService {
         redemption = await this.redemptions.create({
           id: newId('ired'),
           voucherId: voucher.id,
+          partSeq,
           programmeId: voucher.programmeId,
           supplierId: actor.id,
           invoiceRef: invoiceRef.trim(),
-          amountKobo: voucher.amountKobo,
+          amountKobo: partAmountKobo,
           idempotencyKey: redemptionKey,
           ledgerEntryId: entry.id,
           createdAt: new Date().toISOString()
@@ -982,21 +1030,33 @@ export class InputVouchersService {
         }
       }
     }
-    // Move the float reservation to settled (stage 23, audit C3). Marker-
-    // keyed per voucher, so a crash-resume or concurrent retry replays as a
-    // no-op instead of double-settling; runs BEFORE the finalize CAS so a
-    // REDEEMED voucher always implies its reservation was settled.
+    // Move the claimed part of the float reservation to settled (stage 23,
+    // audit C3; W2-C2 per-part). Marker-keyed per voucher PART, so a
+    // crash-resume or concurrent retry replays as a no-op instead of
+    // double-settling; runs BEFORE the finalize CAS so a settled part always
+    // implies its reservation moved.
     await this.funding.settleReserved(
       voucher.programmeId,
-      voucher.amountKobo,
-      `input-voucher-funding-settle:${voucher.id}`,
+      partAmountKobo,
+      partSeq === 1
+        ? `input-voucher-funding-settle:${voucher.id}`
+        : `input-voucher-funding-settle:${voucher.id}:part-${partSeq}`,
       actor.id
     );
-    // Finalize: REDEEMING→REDEEMED. A twin that already finalized loses this
-    // CAS and surfaces as a 409 — the voucher pays out exactly once.
+    // Finalize: REDEEMING→REDEEMED (balance exhausted) or →PARTIALLY_REDEEMED
+    // (balance remains). A twin that already finalized loses this CAS and
+    // surfaces as a 409 — the voucher pays out each part exactly once.
+    const newRedeemedKobo = (voucher.redeemedAmountKobo ?? 0) + partAmountKobo;
+    const fullyRedeemed = newRedeemedKobo >= voucher.amountKobo;
     const redeemed = await this.vouchers.updateExpected(
       id,
-      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: redemption.ledgerEntryId },
+      {
+        status: fullyRedeemed ? 'REDEEMED' : 'PARTIALLY_REDEEMED',
+        redeemedAmountKobo: newRedeemedKobo,
+        pendingAmountKobo: undefined,
+        ...(fullyRedeemed ? { redeemedAt: new Date().toISOString() } : {}),
+        ledgerEntryId: redemption.ledgerEntryId
+      },
       { status: 'REDEEMING' }
     );
     await this.events.publish(
@@ -1006,7 +1066,10 @@ export class InputVouchersService {
         programmeId: voucher.programmeId,
         farmerId: voucher.farmerId,
         supplierId: actor.id,
-        amountKobo: voucher.amountKobo
+        amountKobo: partAmountKobo,
+        partSeq,
+        redeemedAmountKobo: newRedeemedKobo,
+        remainingKobo: voucher.amountKobo - newRedeemedKobo
       },
       actor.id
     );
@@ -1015,7 +1078,13 @@ export class InputVouchersService {
       action: 'inputvouchers.voucher.redeemed',
       entityType: 'input_vouchers_vouchers',
       entityId: voucher.id,
-      metadata: { programmeId: voucher.programmeId, amountKobo: voucher.amountKobo, invoiceRef: invoiceRef.trim() }
+      metadata: {
+        programmeId: voucher.programmeId,
+        amountKobo: partAmountKobo,
+        partSeq,
+        redeemedAmountKobo: newRedeemedKobo,
+        invoiceRef: invoiceRef.trim()
+      }
     });
     if (cover) {
       // Policy issuance event AFTER the redemption committed (outbox), per
@@ -1240,7 +1309,7 @@ export class InputVouchersService {
       voucher = await this.vouchers.updateExpected(id, { status: 'VOIDING' }, { status: 'ISSUED' });
     }
     try {
-      await this.releaseEncumbrance(voucher, actorId, 'void');
+      await this.releaseEncumbrance(voucher, actorId, 'void', voucher.amountKobo);
       // Release the float reservation exactly once (stage 23, audit C3) —
       // marker-keyed so a retry resuming VOIDING never double-releases.
       await this.funding.releaseReserved(
@@ -1298,24 +1367,35 @@ export class InputVouchersService {
         `Only REDEEMING vouchers need stuck-claim recovery (status is ${voucher.status})`
       );
     }
-    const redemptionKey = `input-voucher-redemption:${voucher.id}`;
+    // W2-C2 (V-32): the in-flight part is recomputed exactly as the claim
+    // took it (nextRedemptionPart reuses the in-flight row's key), and the
+    // amount comes from pending_amount_kobo captured by the claim CAS.
+    const { seq: partSeq, key: redemptionKey } = await this.nextRedemptionPart(voucher);
+    const partAmountKobo =
+      voucher.pendingAmountKobo ?? voucher.amountKobo - (voucher.redeemedAmountKobo ?? 0);
     const redemption =
       (await this.redemptions.findByIdempotencyKey(redemptionKey)) ??
       (await this.probeRedemptionRow(redemptionKey));
     if (redemption) {
       // Resume the redeem tail: settle the reservation BEFORE the finalize
-      // CAS so a REDEEMED voucher always implies its reservation settled.
+      // CAS so a settled part always implies its reservation moved.
       await this.funding.settleReserved(
         voucher.programmeId,
-        voucher.amountKobo,
-        `input-voucher-funding-settle:${voucher.id}`,
+        redemption.amountKobo,
+        partSeq === 1
+          ? `input-voucher-funding-settle:${voucher.id}`
+          : `input-voucher-funding-settle:${voucher.id}:part-${partSeq}`,
         actorId
       );
+      const newRedeemedKobo = (voucher.redeemedAmountKobo ?? 0) + redemption.amountKobo;
+      const fullyRedeemed = newRedeemedKobo >= voucher.amountKobo;
       const redeemed = await this.vouchers.updateExpected(
         id,
         {
-          status: 'REDEEMED',
-          redeemedAt: new Date().toISOString(),
+          status: fullyRedeemed ? 'REDEEMED' : 'PARTIALLY_REDEEMED',
+          redeemedAmountKobo: newRedeemedKobo,
+          pendingAmountKobo: undefined,
+          ...(fullyRedeemed ? { redeemedAt: new Date().toISOString() } : {}),
           ledgerEntryId: redemption.ledgerEntryId
         },
         { status: 'REDEEMING' }
@@ -1327,7 +1407,9 @@ export class InputVouchersService {
           programmeId: voucher.programmeId,
           farmerId: voucher.farmerId,
           supplierId: redemption.supplierId,
-          amountKobo: voucher.amountKobo,
+          amountKobo: redemption.amountKobo,
+          partSeq,
+          redeemedAmountKobo: newRedeemedKobo,
           resumedBy: 'sweeper'
         },
         actorId
@@ -1337,17 +1419,20 @@ export class InputVouchersService {
         action: 'inputvouchers.voucher.redemption_resumed',
         entityType: 'input_vouchers_vouchers',
         entityId: id,
-        metadata: { programmeId: voucher.programmeId, amountKobo: voucher.amountKobo }
+        metadata: { programmeId: voucher.programmeId, amountKobo: redemption.amountKobo, partSeq }
       });
       return redeemed;
     }
+    void partAmountKobo; // amount already cross-checked via the redemption row above
     const probe = await this.probeLedgerEntry(redemptionKey);
     if (probe.state === 'absent') {
       // Proven: nothing posted under this key — safe to re-open the voucher;
-      // the normal expire/redeem paths take it from here.
+      // the normal expire/redeem paths take it from here. The rollback target
+      // preserves earlier committed parts (V-32): a voucher with redeemed
+      // balance returns to PARTIALLY_REDEEMED, not ISSUED.
       const rolledBack = await this.vouchers.updateExpected(
         id,
-        { status: 'ISSUED' },
+        { status: (voucher.redeemedAmountKobo ?? 0) > 0 ? 'PARTIALLY_REDEEMED' : 'ISSUED', pendingAmountKobo: undefined },
         { status: 'REDEEMING' }
       );
       await this.audit?.record({
@@ -1365,11 +1450,168 @@ export class InputVouchersService {
     );
   }
 
-  /** ISSUED→EXPIRING→EXPIRED for a voucher past its expiry (admin-triggered sweep step). */
+  /**
+   * W2-C2 (V-32): the in-flight redemption part for a voucher. Rows whose
+   * amounts are already reflected in redeemed_amount_kobo are COMMITTED; the
+   * first row beyond the committed sum is the in-flight part (crash between
+   * the ledger posting/row insert and the finalize CAS) and its key MUST be
+   * reused so a resume adopts it instead of reposting under a fresh key.
+   * Part 1 keeps the legacy key (input-voucher-redemption:<id>) so pre-W2
+   * stuck claims resume unchanged; later parts derive per-part keys.
+   */
+  private async nextRedemptionPart(voucher: InputVoucherRecord): Promise<{ seq: number; key: string }> {
+    const rows = (await this.redemptions.find({ voucherId: voucher.id }))
+      .slice()
+      .sort((a, b) => (a.partSeq ?? 1) - (b.partSeq ?? 1) || a.createdAt.localeCompare(b.createdAt));
+    let committedKobo = voucher.redeemedAmountKobo ?? 0;
+    let seq = rows.length + 1;
+    for (let i = 0; i < rows.length; i += 1) {
+      if (committedKobo >= rows[i].amountKobo) {
+        committedKobo -= rows[i].amountKobo;
+      } else {
+        seq = rows[i].partSeq ?? i + 1;
+        break;
+      }
+    }
+    const key =
+      seq === 1 ? `input-voucher-redemption:${voucher.id}` : `input-voucher-redemption:${voucher.id}:part-${seq}`;
+    return { seq, key };
+  }
+
+  /**
+   * W2-C2 (V-02) — refund/reversal of a redeemed subsidy voucher
+   * (admin-triggered; e.g. counterfeit-input discovery on a complaint case).
+   * REDEEMED/PARTIALLY_REDEEMED → REFUNDING → REFUNDED through the same
+   * claim-then-finalize CAS doctrine as redeem/expire:
+   *   1. CAS into REFUNDING (stores reason + complaintCaseId on the row so a
+   *      crash-resume or the sweeper completes with the SAME parameters);
+   *   2. reverse every redemption part's ledger entry — exact inverse,
+   *      balanced counter-postings (DR supplier receivable / CR programme
+   *      liability [+ DR insurer premium when a rider split the envelope]),
+   *      idempotent per entry via reverseEntry (`reversal:<entryId>`). This
+   *      is the dealer-settlement clawback: the supplier receivable is
+   *      debited back;
+   *   3. return the settled float to available (marker-keyed
+   *      `input-voucher-funding-refund:<id>`) and, for a partially redeemed
+   *      voucher, release the REMAINING encumbrance exactly like expiry
+   *      (`input-voucher-release:<id>`);
+   *   4. finalize REFUNDING → REFUNDED with refundedAt/refundedAmountKobo.
+   * Every posting is idempotent, so a REFUNDING voucher is resumable forever
+   * (retry here or via the stuck-voucher sweeper) and NEVER rolls back —
+   * rolling back would re-open a voucher whose reversal already paid out.
+   */
+  async refundVoucher(
+    id: string,
+    actorId: string,
+    input: { reason?: string; complaintCaseId?: string } = {}
+  ): Promise<InputVoucherRecord> {
+    let voucher = await this.getVoucher(id);
+    if (voucher.status === 'REFUNDED') {
+      return voucher; // idempotent replay of a completed refund
+    }
+    if (
+      voucher.status !== 'REDEEMED' &&
+      voucher.status !== 'PARTIALLY_REDEEMED' &&
+      voucher.status !== 'REFUNDING'
+    ) {
+      throw new ConflictException(
+        `Only REDEEMED or PARTIALLY_REDEEMED vouchers can be refunded (status is ${voucher.status})`
+      );
+    }
+    if (voucher.status !== 'REFUNDING') {
+      // Claim the refund FIRST: a concurrent redeem-resume/expire/void loses
+      // this CAS and surfaces 409 — the reversal below is the only writer.
+      voucher = await this.vouchers.updateExpected(
+        id,
+        {
+          status: 'REFUNDING',
+          refundReason: input.reason?.trim() || undefined,
+          complaintCaseId: input.complaintCaseId?.trim() || undefined,
+          pendingAmountKobo: undefined
+        },
+        { status: voucher.status }
+      );
+    }
+    const parts = await this.redemptions.find({ voucherId: id });
+    const refundedKobo = parts.reduce((sum, part) => sum + part.amountKobo, 0);
+    if (refundedKobo <= 0) {
+      throw new ConflictException(`Voucher '${id}' has no settled redemption to refund`);
+    }
+    // Compensating balanced entries: exact inverse of each redemption part.
+    for (const part of parts) {
+      await this.ledger.reverseEntry(part.ledgerEntryId, actorId);
+    }
+    // Return the settled float to the programme's available headroom exactly
+    // once (marker-keyed; replay-no-op).
+    await this.funding.refundSettled(
+      voucher.programmeId,
+      refundedKobo,
+      `input-voucher-funding-refund:${voucher.id}`,
+      actorId
+    );
+    // The voucher is terminally REFUNDED: the reversal restored the redeemed
+    // money to the programme liability, so now release the FULL face value to
+    // the budget — exactly like an expiry release (same idempotency key,
+    // same legs), leaving no dead obligation on the liability account.
+    // The funding side releases only the still-RESERVED remainder (parts
+    // settled individually were already returned by refundSettled above).
+    const remainingKobo = voucher.amountKobo - refundedKobo;
+    await this.releaseEncumbrance(voucher, actorId, 'refund', voucher.amountKobo);
+    if (remainingKobo > 0) {
+      await this.funding.releaseReserved(
+        voucher.programmeId,
+        remainingKobo,
+        `input-voucher-funding-release:${voucher.id}`,
+        actorId
+      );
+    }
+    const refunded = await this.vouchers.updateExpected(
+      id,
+      {
+        status: 'REFUNDED',
+        refundedAt: new Date().toISOString(),
+        refundedAmountKobo: refundedKobo
+      },
+      { status: 'REFUNDING' }
+    );
+    await this.events.publish(
+      'inputvouchers.voucher.refunded',
+      {
+        voucherId: voucher.id,
+        programmeId: voucher.programmeId,
+        farmerId: voucher.farmerId,
+        refundedAmountKobo: refundedKobo,
+        complaintCaseId: voucher.complaintCaseId,
+        reason: voucher.refundReason
+      },
+      actorId
+    );
+    await this.audit?.record({
+      actorId,
+      action: 'inputvouchers.voucher.refunded',
+      entityType: 'input_vouchers_vouchers',
+      entityId: id,
+      metadata: {
+        programmeId: voucher.programmeId,
+        refundedAmountKobo: refundedKobo,
+        complaintCaseId: voucher.complaintCaseId,
+        reason: voucher.refundReason
+      }
+    });
+    return refunded;
+  }
+
+  /**
+   * ISSUED/PARTIALLY_REDEEMED→EXPIRING→EXPIRED for a voucher past its expiry
+   * (admin-triggered sweep step). W2-C2 (V-32): a partially redeemed voucher
+   * expires its REMAINING balance — committed parts stay settled.
+   */
   async expireVoucher(id: string, actorId: string): Promise<InputVoucherRecord> {
     const voucher = await this.getVoucher(id);
-    if (voucher.status !== 'ISSUED' && voucher.status !== 'EXPIRING') {
-      throw new ConflictException(`Only ISSUED vouchers can expire (status is ${voucher.status})`);
+    if (voucher.status !== 'ISSUED' && voucher.status !== 'EXPIRING' && voucher.status !== 'PARTIALLY_REDEEMED') {
+      throw new ConflictException(
+        `Only ISSUED or PARTIALLY_REDEEMED vouchers can expire (status is ${voucher.status})`
+      );
     }
     if (Date.parse(voucher.expiresAt) > Date.now()) {
       throw new BadRequestException(`Voucher '${id}' has not expired yet (expires ${voucher.expiresAt})`);
@@ -1388,21 +1630,27 @@ export class InputVouchersService {
    */
   private async expireIssuedVoucher(voucher: InputVoucherRecord, actorId: string): Promise<InputVoucherRecord> {
     // Stage 24 (audit A1-3): never release on top of a committed redemption
-    // posting — that debits the liability twice.
+    // posting whose finalize never landed (crash window) — the release would
+    // debit the liability on top of the redemption posting.
     await this.assertNoRedemptionPosting(voucher);
-    if (voucher.status === 'ISSUED') {
-      await this.vouchers.updateExpected(voucher.id, { status: 'EXPIRING' }, { status: 'ISSUED' });
+    // W2-C2 (V-32): expiry releases the REMAINING balance only; committed
+    // redemption parts were already settled by their own postings.
+    const remainingKobo = voucher.amountKobo - (voucher.redeemedAmountKobo ?? 0);
+    if (voucher.status === 'ISSUED' || voucher.status === 'PARTIALLY_REDEEMED') {
+      await this.vouchers.updateExpected(voucher.id, { status: 'EXPIRING' }, { status: voucher.status });
     }
     try {
-      await this.releaseEncumbrance(voucher, actorId, 'expiry');
-      // Release the float reservation exactly once (stage 23, audit C3) —
-      // marker-keyed so a retry resuming EXPIRING never double-releases.
-      await this.funding.releaseReserved(
-        voucher.programmeId,
-        voucher.amountKobo,
-        `input-voucher-funding-release:${voucher.id}`,
-        actorId
-      );
+      if (remainingKobo > 0) {
+        await this.releaseEncumbrance(voucher, actorId, 'expiry', remainingKobo);
+        // Release the float reservation exactly once (stage 23, audit C3) —
+        // marker-keyed so a retry resuming EXPIRING never double-releases.
+        await this.funding.releaseReserved(
+          voucher.programmeId,
+          remainingKobo,
+          `input-voucher-funding-release:${voucher.id}`,
+          actorId
+        );
+      }
     } catch (error) {
       // Stage 24 (audit A4-1): roll back ONLY with proof that no release
       // entry exists; otherwise leave EXPIRING for resume and surface 409.
@@ -1426,11 +1674,17 @@ export class InputVouchersService {
     return updated;
   }
 
-  /** Releases the encumbrance: DR programme liability / CR platform budget expense. */
+  /**
+   * Releases the encumbrance: DR programme liability / CR platform budget
+   * expense. W2-C2 (V-32/V-02): the release amount is explicit — expiry of a
+   * partially redeemed voucher (or the refund of one) releases only the
+   * REMAINING balance; void releases the full face value.
+   */
   private async releaseEncumbrance(
     voucher: InputVoucherRecord,
     actorId: string,
-    reason: 'void' | 'expiry'
+    reason: 'void' | 'expiry' | 'refund',
+    amountKobo: number
   ): Promise<void> {
     const programme = await this.getProgramme(voucher.programmeId);
     await this.ledger.ensureAccount({ code: PLATFORM_SUBSIDY_BUDGET_ACCOUNT, type: 'expense' });
@@ -1439,10 +1693,10 @@ export class InputVouchersService {
         idempotencyKey: `input-voucher-release:${voucher.id}`,
         referenceType: `input_voucher_${reason}_release`,
         referenceId: voucher.id,
-        description: `Subsidy encumbrance release (${reason}) for voucher ${voucher.id}`,
+        description: `Subsidy encumbrance release (${reason}) for voucher ${voucher.id} (${amountKobo} kobo)`,
         postings: [
-          { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo: voucher.amountKobo },
-          { accountCode: PLATFORM_SUBSIDY_BUDGET_ACCOUNT, direction: 'credit', amountKobo: voucher.amountKobo }
+          { accountCode: programme.liabilityAccountCode, direction: 'debit', amountKobo },
+          { accountCode: PLATFORM_SUBSIDY_BUDGET_ACCOUNT, direction: 'credit', amountKobo }
         ]
       },
       actorId
@@ -1522,8 +1776,15 @@ export class InputVouchersService {
     const probe = await this.probeLedgerEntry(ledgerKey);
     if (probe.state === 'absent') {
       // Proven: nothing posted under this key — safe to re-open for retry.
+      // W2-C2 (V-32): the rollback target preserves committed redemption
+      // parts — a voucher with redeemed balance returns to
+      // PARTIALLY_REDEEMED, not ISSUED, and the in-flight claim amount is
+      // cleared so the next attempt reclaims from the stored balance.
+      const current = await this.vouchers.findById(voucherId).catch(() => undefined);
+      const rollbackTo =
+        pending === 'VOIDING' || (current?.redeemedAmountKobo ?? 0) === 0 ? 'ISSUED' : 'PARTIALLY_REDEEMED';
       await this.vouchers
-        .updateExpected(voucherId, { status: 'ISSUED' }, { status: pending })
+        .updateExpected(voucherId, { status: rollbackTo, pendingAmountKobo: undefined }, { status: pending })
         .catch(() => undefined);
       throw error;
     }
@@ -1542,15 +1803,29 @@ export class InputVouchersService {
    * exactly once.
    */
   private async assertNoRedemptionPosting(voucher: InputVoucherRecord): Promise<void> {
-    const redemption = await this.probeLedgerEntry(`input-voucher-redemption:${voucher.id}`);
+    // W2-C2 (V-32): committed parts are accounted in redeemed_amount_kobo and
+    // excluded from the release amount; the guard probes only the IN-FLIGHT
+    // part (a committed posting whose finalize never landed).
+    const { key } = await this.nextRedemptionPart(voucher);
+    const redemption = await this.probeLedgerEntry(key);
     if (redemption.state !== 'found') {
       return;
     }
     if (voucher.status === 'VOIDING' || voucher.status === 'EXPIRING') {
       const release = await this.probeLedgerEntry(`input-voucher-release:${voucher.id}`);
       if (release.state === 'absent') {
+        // W2-C2 (V-32): hand the stale claim back to the state its committed
+        // parts imply — PARTIALLY_REDEEMED when a balance was already
+        // redeemed, ISSUED otherwise.
         await this.vouchers
-          .updateExpected(voucher.id, { status: 'ISSUED' }, { status: voucher.status })
+          .updateExpected(
+            voucher.id,
+            {
+              status: (voucher.redeemedAmountKobo ?? 0) > 0 ? 'PARTIALLY_REDEEMED' : 'ISSUED',
+              pendingAmountKobo: undefined
+            },
+            { status: voucher.status }
+          )
           .catch(() => undefined);
       }
     }
@@ -1565,7 +1840,10 @@ export class InputVouchersService {
    * Settlement reconciliation for regulators/donors: operational totals by
    * programme and beneficiary state, cross-checked against the ledger. The
    * double-entry tie is asserted as
-   *   liability balance == budget - redeemed - released (expired + voided)
+   *   liability balance == budget - redeemed + refunded - released
+   *     (redeemed = Σ redemption PARTS, V-32; refunded = reversal credits
+   *     returning money to the envelope, V-02; released = never-redeemed
+   *     remainders of expired/voided/refunded vouchers)
    * and a non-zero discrepancy flags an integrity breach loudly.
    */
   async reconciliation(programmeId: string): Promise<ProgrammeReconciliation> {
@@ -1576,30 +1854,52 @@ export class InputVouchersService {
     const stateOf = new Map(beneficiaries.map((item) => [item.farmerId, item.state ?? 'unspecified']));
 
     const sum = (rows: InputVoucherRecord[]) => rows.reduce((acc, row) => acc + row.amountKobo, 0);
-    const outstanding = all.filter((voucher) => voucher.status === 'ISSUED');
+    const outstanding = all.filter(
+      (voucher) => voucher.status === 'ISSUED' || voucher.status === 'PARTIALLY_REDEEMED'
+    );
     const redeemed = all.filter((voucher) => voucher.status === 'REDEEMED');
+    const refunded = all.filter((voucher) => voucher.status === 'REFUNDED');
     const expired = all.filter((voucher) => voucher.status === 'EXPIRED');
     const voided = all.filter((voucher) => voucher.status === 'VOIDED');
+    // W2-C2 (V-32): redemption parts, not vouchers — redeemedKobo sums ALL
+    // part rows; a PARTIALLY_REDEEMED voucher contributes its redeemed share.
     const redeemedKobo = redemptions.reduce((acc, row) => acc + row.amountKobo, 0);
-    const releasedKobo = sum(expired) + sum(voided);
+    const redeemedByVoucher = new Map<string, number>();
+    for (const row of redemptions) {
+      redeemedByVoucher.set(row.voucherId, (redeemedByVoucher.get(row.voucherId) ?? 0) + row.amountKobo);
+    }
+    // W2-C2 (V-02): refund reversals credit the liability back, so refunded
+    // money re-joins the expected liability; releases on terminal vouchers
+    // cover only the NEVER-redeemed remainder (expired/voided full face on
+    // untouched vouchers, remaining balance on partial ones, zero on fully
+    // refunded ones).
+    const refundedKobo = refunded.reduce((acc, row) => acc + (row.refundedAmountKobo ?? 0), 0);
+    // Expired/voided vouchers release their never-redeemed remainder; a
+    // REFUNDED voucher releases its FULL face (the reversal restored the
+    // redeemed parts to the liability first, then the whole encumbrance is
+    // released to the budget).
+    const releasedKobo =
+      [...expired, ...voided].reduce(
+        (acc, row) => acc + (row.amountKobo - (redeemedByVoucher.get(row.id) ?? 0)),
+        0
+      ) + sum(refunded);
 
     const byStateMap = new Map<string, ProgrammeStateTotals>();
     for (const voucher of all) {
       const state = stateOf.get(voucher.farmerId) ?? 'unspecified';
       const row = byStateMap.get(state) ?? { state, vouchersIssued: 0, outstandingKobo: 0, redeemedKobo: 0 };
       row.vouchersIssued += 1;
-      if (voucher.status === 'ISSUED') {
-        row.outstandingKobo += voucher.amountKobo;
+      if (voucher.status === 'ISSUED' || voucher.status === 'PARTIALLY_REDEEMED') {
+        row.outstandingKobo += voucher.amountKobo - (redeemedByVoucher.get(voucher.id) ?? 0);
       }
-      if (voucher.status === 'REDEEMED') {
-        row.redeemedKobo += voucher.amountKobo;
-      }
+      row.redeemedKobo += redeemedByVoucher.get(voucher.id) ?? 0;
       byStateMap.set(state, row);
     }
 
     const balance = await this.ledger.balance(programme.liabilityAccountCode);
     const liabilityKobo = balance.creditsKobo - balance.debitsKobo;
-    const expectedLiabilityKobo = programme.budgetKobo - redeemedKobo - releasedKobo;
+    // Double-entry tie: liability == budget - redeemed + refunded - released.
+    const expectedLiabilityKobo = programme.budgetKobo - redeemedKobo + refundedKobo - releasedKobo;
     const funding = await this.funding.getFunding(programmeId);
     // Stage 27 (Insurance-in-the-Bag): bundled-cover tie — the insurer
     // premium payable balance must equal the sum of bound cover premiums
@@ -1630,11 +1930,19 @@ export class InputVouchersService {
         vouchersIssued: all.length,
         allocatedKobo: sum(all),
         outstandingCount: outstanding.length,
-        outstandingKobo: sum(outstanding),
+        outstandingKobo: outstanding.reduce(
+          (acc, row) => acc + (row.amountKobo - (redeemedByVoucher.get(row.id) ?? 0)),
+          0
+        ),
         redeemedCount: redeemed.length,
         redeemedKobo,
+        refundedCount: refunded.length,
+        refundedKobo,
         expiredCount: expired.length,
-        expiredKobo: sum(expired),
+        expiredKobo: expired.reduce(
+          (acc, row) => acc + (row.amountKobo - (redeemedByVoucher.get(row.id) ?? 0)),
+          0
+        ),
         voidedCount: voided.length,
         voidedKobo: sum(voided),
         beneficiariesVerified: beneficiaries.length
