@@ -54,6 +54,14 @@ export class PgUssdSessionRepository implements UssdSessionRepository {
     return result.rowCount ?? 0;
   }
 
+  async pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number> {
+    const result = await this.pool.query(
+      'UPDATE channels.ussd_sessions SET phone = $1, msisdn = $1 WHERE phone = $2 OR msisdn = $2',
+      [pseudonym, phone]
+    );
+    return result.rowCount ?? 0;
+  }
+
   private fromRow(row: Record<string, unknown>): UssdSessionRecord {
     return {
       sessionId: row.session_id as string,
