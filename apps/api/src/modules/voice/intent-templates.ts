@@ -38,38 +38,50 @@ const VOUCHER_STATUS_SPEECH: Readonly<Record<VoiceIntentLocale, Readonly<Record<
   en: {
     ISSUED: 'issued and waiting to be distributed',
     REDEEMING: 'being redeemed right now',
+    PARTIALLY_REDEEMED: 'partly redeemed, with a remaining balance',
     REDEEMED: 'already redeemed',
     EXPIRING: 'being expired',
     EXPIRED: 'expired',
     VOIDING: 'being voided',
-    VOIDED: 'voided'
+    VOIDED: 'voided',
+    REFUNDING: 'being refunded',
+    REFUNDED: 'refunded'
   },
   ha: {
     ISSUED: 'an fitar da ita, ana jiran rarrabawa',
     REDEEMING: 'ana karbar ta yanzu',
+    PARTIALLY_REDEEMED: 'an karbi wani sashe, sauran kudin yana ciki',
     REDEEMED: 'an riga an karbe ta',
     EXPIRING: 'tana karewa',
     EXPIRED: 'ta kare',
     VOIDING: 'ana soke ta',
-    VOIDED: 'an soke ta'
+    VOIDED: 'an soke ta',
+    REFUNDING: 'ana mayar da kudin',
+    REFUNDED: 'an mayar da kudin'
   },
   yo: {
     ISSUED: 'ti a ti jade, n duro de pinpin',
     REDEEMING: 'a n gba a lowolowo',
+    PARTIALLY_REDEEMED: 'a ti gba apakan, oku iyokù wa',
     REDEEMED: 'a ti gba a tan',
     EXPIRING: 'o n pari',
     EXPIRED: 'o ti pari',
     VOIDING: 'a n fagilee',
-    VOIDED: 'a ti fagilee'
+    VOIDED: 'a ti fagilee',
+    REFUNDING: 'a n da owo pada',
+    REFUNDED: 'a ti da owo pada'
   },
   ig: {
     ISSUED: 'eweputala ya, na-echekesa',
     REDEEMING: 'ana akporo ya ugbu a',
+    PARTIALLY_REDEEMED: 'ekporola akụkụ ya, ndị ole fọdụrụ',
     REDEEMED: 'ekporola ya',
     EXPIRING: 'o na-agwu',
     EXPIRED: 'o gwula',
     VOIDING: 'ana akaghari ya',
-    VOIDED: 'akagharila ya'
+    VOIDED: 'akagharila ya',
+    REFUNDING: 'ana akwaghachị ego',
+    REFUNDED: 'akwaghachịla ego'
   }
 };
 
