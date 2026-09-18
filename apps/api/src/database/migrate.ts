@@ -144,13 +144,21 @@ export function splitNonTransactionalStatements(sql: string, file: string): stri
       `${file}: non-transactional migrations must not contain BEGIN/COMMIT/ROLLBACK — the runner applies each statement individually`
     );
   }
-  return sql
+  // Strip line comments BEFORE splitting on ';' — a semicolon inside a
+  // `-- …` comment (e.g. "lot→animals; the reverse lookup…" in 082) would
+  // otherwise split the comment mid-line and leak the remainder into the
+  // next statement as bare text (CI db-contract failure, 2026-09-18).
+  const withoutComments = sql
+    .split('\n')
+    .map((line) => {
+      const commentAt = line.indexOf('--');
+      return commentAt === -1 ? line : line.slice(0, commentAt);
+    })
+    .join('\n');
+  return withoutComments
     .split(';')
     .map((statement) => statement.trim())
-    // Keep statements that carry real SQL (strip leading comment lines for
-    // the emptiness check; pg would accept comment-only queries, but
-    // skipping them keeps the apply log honest).
-    .filter((statement) => statement.replace(/--[^\n]*/g, '').trim().length > 0);
+    .filter((statement) => statement.length > 0);
 }
 
 async function main(): Promise<void> {
