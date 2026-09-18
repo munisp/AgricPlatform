@@ -9,16 +9,105 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ArrayMinSize, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import type { User, WarehouseCertificationStatus, WarehouseGrade } from '@agric-platform/shared';
-import { WAREHOUSE_CERTIFICATION_STATUSES, WAREHOUSE_GRADES } from '@agric-platform/shared';
+import { WAREHOUSE_CERTIFICATION_STATUSES, WAREHOUSE_GRADES, WAREHOUSE_LOSS_KINDS } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
+import { WarehouseBondService } from './warehouse-bond.service.js';
 import {
   WarehouseService,
-  type RegisterWarehouseInput
+  type RegisterWarehouseInput,
+  type ReportLossInput,
+  type SplitReceiptPartInput
 } from './warehouse.service.js';
+
+/** V-07: spoilage/condition loss report (warehouse operator = admin). */
+class ReportLossDto implements ReportLossInput {
+  @IsIn(WAREHOUSE_LOSS_KINDS)
+  kind!: ReportLossInput['kind'];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  lostWeightKg?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  lostBagCount?: number;
+
+  @IsOptional()
+  @IsIn(WAREHOUSE_GRADES)
+  newGrade?: WarehouseGrade;
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+}
+
+/** V-37: one part of a receipt split. */
+class SplitPartDto implements SplitReceiptPartInput {
+  @IsNumber()
+  @Min(0.000001)
+  weightKg!: number;
+
+  @IsInt()
+  @Min(1)
+  bagCount!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  toOwnerId?: string;
+}
+
+class SplitReceiptDto {
+  @ValidateNested({ each: true })
+  @Type(() => SplitPartDto)
+  @ArrayMinSize(2)
+  parts!: SplitPartDto[];
+}
+
+/** V-39: operator bond posting (admin). */
+class PostBondDto {
+  @IsInt()
+  @Min(1)
+  amountKobo!: number;
+}
+
+/** V-39: one adjudicated write-down inside a fraud case. */
+class FraudWriteDownDto {
+  @IsString()
+  @MaxLength(100)
+  receiptId!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  lostWeightKg?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  lostBagCount?: number;
+}
+
+class ResolveFraudCaseDto {
+  @IsString()
+  @MaxLength(200)
+  caseId!: string;
+
+  @IsInt()
+  @Min(1)
+  compensationKobo!: number;
+
+  @ValidateNested({ each: true })
+  @Type(() => FraudWriteDownDto)
+  writeDowns!: FraudWriteDownDto[];
+}
 
 class RegisterWarehouseDto implements RegisterWarehouseInput {
   @IsString()
@@ -130,7 +219,10 @@ function requireActor(actor: User | null): User {
 @ApiTags('warehouse')
 @Controller('warehouse')
 export class WarehouseController {
-  constructor(private readonly warehouse: WarehouseService) {}
+  constructor(
+    private readonly warehouse: WarehouseService,
+    private readonly bond: WarehouseBondService
+  ) {}
 
   /* ------------------------- warehouse registry (admin) ------------------ */
 
@@ -311,6 +403,69 @@ export class WarehouseController {
   @ApiOperation({ summary: 'Withdraw the grain — the receipt is REDEEMED (owner; not while pledged)' })
   async redeemReceipt(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.warehouse.redeemReceipt(id, requireActor(actor)) };
+  }
+
+  /** V-07: record a spoilage/condition loss (warehouse operator = admin). */
+  @Post('receipts/:id/loss')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'V-07: report a spoilage/condition loss or re-grade — cumulative write-down, propagates to LTV (margin call) and claims (haircut)'
+  })
+  async reportLoss(
+    @Param('id') id: string,
+    @Body() dto: ReportLossDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.warehouse.reportLoss(id, dto, requireActor(actor)) };
+  }
+
+  /** V-37: split a receipt into quantity-conserved, signature-chained children. */
+  @Post('receipts/:id/split')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'V-37: split a receipt into child receipts (owner; exact quantity conservation; parent becomes non-pledgeable)'
+  })
+  async splitReceipt(
+    @Param('id') id: string,
+    @Body() dto: SplitReceiptDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.warehouse.splitReceipt(id, dto.parts, requireActor(actor)) };
+  }
+
+  /** V-39: post the operator performance bond (ledger-backed; admin). */
+  @Post('warehouses/:id/bond')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'V-39: post the operator bond (balanced legs; idempotent per warehouse; E-08 external gate)'
+  })
+  async postBond(
+    @Param('id') warehouseId: string,
+    @Body() dto: PostBondDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.bond.postBond(warehouseId, dto.amountKobo, requireActor(actor)) };
+  }
+
+  /** V-39: resolve an operator fraud case — write-downs + balanced bond draw. */
+  @Post('warehouses/:id/fraud-cases')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'V-39: resolve an operator fraud case — pro-rata receipt write-downs + bond draw (capped at the bond, fail closed)'
+  })
+  async resolveFraudCase(
+    @Param('id') warehouseId: string,
+    @Body() dto: ResolveFraudCaseDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.bond.resolveFraudCase(warehouseId, dto, requireActor(actor)) };
   }
 
   /* ------------------------------ lender desk ----------------------------- */
