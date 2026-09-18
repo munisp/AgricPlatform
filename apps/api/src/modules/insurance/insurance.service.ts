@@ -75,6 +75,29 @@ import type { RegenDiscountRecord } from '../../database/repositories/insurance.
 export const INSURER_CLAIMS_EXPENSE_ACCOUNT = 'insurer:claims_expense';
 export const INSURER_CLAIMS_PAYABLE_ACCOUNT = 'insurer:claims_payable';
 
+/**
+ * V-42: window in which a farmer may dispute a proposed payout or appeal a
+ * rejection, counted from proposedAt / rejectedAt respectively.
+ */
+export const PAYOUT_APPEAL_WINDOW_DAYS = 30;
+const APPEAL_WINDOW_MS = PAYOUT_APPEAL_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+/** Corrected observation submitted with a dispute/appeal re-evaluation (V-42). */
+export interface CorrectedEvidenceInput {
+  /** Replacement aggregate observation (mm of rain, heat-day count, flood rank). */
+  observedValue: number;
+  dailyValues?: number[];
+  /** Provenance note recorded on the audit trail (who corrected what, why). */
+  notes?: string;
+}
+
+export interface ExGratiaPayoutInput {
+  policyId: string;
+  amountKobo: number;
+  /** Why the parametric trigger missed a real loss (basis-risk narrative). */
+  reason: string;
+}
+
 /** Fixed catalog seed timestamp — deterministic across re-seeds. */
 const CATALOG_SEEDED_AT = '2026-01-01T00:00:00.000Z';
 
@@ -185,6 +208,17 @@ export interface InsurerPortfolio {
   payoutsByStatus: Record<string, number>;
   totalPayoutKobo: number;
   triggerEventCount: number;
+  /**
+   * V-43 solvency tracking: payouts whose settlement leg is ledger-booked
+   * but NOT rail-confirmed ('paid' awaiting 'settled') — the insurer's live
+   * unsettled obligation to farmers.
+   */
+  unsettledPayoutKobo: number;
+  /**
+   * V-43: balance of the insurer claims-payable ledger account (credit
+   * balance = outstanding claim obligations booked but not yet settled).
+   */
+  claimsPayableBalanceKobo: number;
 }
 
 function requireAdmin(actor: User): void {
@@ -728,6 +762,7 @@ export class InsuranceService {
       farmerUserId: policy.farmerUserId,
       amountKobo: event.payoutKobo,
       status: 'proposed',
+      origin: 'parametric',
       execution: 'stub',
       proposedAt: report.evaluatedAt
     };
@@ -789,6 +824,11 @@ export class InsuranceService {
    * the ledger; no real disbursement happens (external gates: insurer MOU +
    * payment rail activation).
    *
+   * V-43: PAID means "settlement leg booked, awaiting rail confirmation" —
+   * it NEVER means the farmer received money. Only confirmSettlement()
+   * (rail confirmation reference) moves a payout to SETTLED, and a rail
+   * failure reverses the leg and re-queues the payout to PROPOSED.
+   *
    * FAIL-CLOSED (WP-G15, mirrors the Stage 23 escrow payout rail): stub
    * execution is the ONLY execution mode wired in this build, so in
    * production this endpoint refuses with 503 BEFORE anything is persisted
@@ -827,7 +867,10 @@ export class InsuranceService {
     });
     const entry = await this.ledger.postEntry(
       {
-        idempotencyKey: `insurance-payout-settlement:${payout.id}`,
+        // V-43: keyed per settlement ATTEMPT — a re-queued payout (settlement
+        // failure reversed the previous leg) must post a fresh entry, never
+        // replay the reversed one.
+        idempotencyKey: `insurance-payout-settlement:${payout.id}:${payout.settlementAttempts ?? 0}`,
         referenceType: 'insurance_payout',
         referenceId: payout.id,
         description: `Parametric payout settlement for policy ${payout.policyId} (stub execution — no real disbursement)`,
@@ -865,6 +908,518 @@ export class InsuranceService {
     return paid;
   }
 
+  /* --------------------- V-42: disputes, appeals, ex-gratia --------------------- */
+
+  private async getPayout(payoutId: string): Promise<ParametricPayout> {
+    const payout = await this.payouts.findById(payoutId);
+    if (!payout) {
+      throw new NotFoundException(`Insurance payout '${payoutId}' not found`);
+    }
+    return payout;
+  }
+
+  /** Appeal window guard (V-42): counted from the disputed/rejected-at timestamp. */
+  private assertWithinAppealWindow(fromIso: string, action: string): void {
+    const deadline = new Date(fromIso).getTime() + APPEAL_WINDOW_MS;
+    if (Date.now() > deadline) {
+      throw new BadRequestException(
+        `The ${PAYOUT_APPEAL_WINDOW_DAYS}-day window to ${action} closed at ${new Date(deadline).toISOString()}`
+      );
+    }
+  }
+
+  /**
+   * proposed → disputed (V-42). The policy holder flags a wrong/missed
+   * trigger evaluation within the appeal window; the payout is frozen (it
+   * can no longer be confirmed PAID) pending admin re-evaluation.
+   */
+  async disputePayout(actor: User, payoutId: string, reason: string): Promise<ParametricPayout> {
+    const payout = await this.getPayout(payoutId);
+    if (payout.farmerUserId !== actor.id && !actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only the policy holder can dispute a payout');
+    }
+    if (payout.status !== 'proposed') {
+      throw new ConflictException(`Only proposed payouts can be disputed (payout is '${payout.status}')`);
+    }
+    if (!reason?.trim()) {
+      throw new BadRequestException('A dispute reason is required (auditable record)');
+    }
+    this.assertWithinAppealWindow(payout.proposedAt, 'dispute this payout');
+    const disputed: ParametricPayout = {
+      ...payout,
+      status: 'disputed',
+      disputedAt: new Date().toISOString(),
+      disputeReason: reason.trim()
+    };
+    await this.payouts.update(disputed);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.disputed',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: { policyId: payout.policyId, reason: disputed.disputeReason }
+    });
+    await this.events.publish(
+      'insurance.payout.disputed',
+      { policyId: payout.policyId, payoutId: payout.id, reason: disputed.disputeReason },
+      actor.id
+    );
+    return disputed;
+  }
+
+  /**
+   * proposed|disputed → rejected (V-42, admin). Rejection is a first-class
+   * auditable terminal state for erroneous proposals — the row, the reason
+   * and the audit entry are all retained, and the farmer may appeal within
+   * the window.
+   */
+  async rejectPayout(actor: User, payoutId: string, reason: string): Promise<ParametricPayout> {
+    requireAdmin(actor);
+    const payout = await this.getPayout(payoutId);
+    if (payout.status !== 'proposed' && payout.status !== 'disputed') {
+      throw new ConflictException(
+        `Only proposed or disputed payouts can be rejected (payout is '${payout.status}')`
+      );
+    }
+    if (!reason?.trim()) {
+      throw new BadRequestException('A rejection reason is required (auditable record)');
+    }
+    const rejected: ParametricPayout = {
+      ...payout,
+      status: 'rejected',
+      rejectedAt: new Date().toISOString(),
+      rejectionReason: reason.trim()
+    };
+    await this.payouts.update(rejected);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.rejected',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: {
+        policyId: payout.policyId,
+        fromStatus: payout.status,
+        reason: rejected.rejectionReason,
+        triggerEventId: payout.triggerEventId
+      }
+    });
+    await this.events.publish(
+      'insurance.payout.rejected',
+      { policyId: payout.policyId, payoutId: payout.id, reason: rejected.rejectionReason },
+      actor.id
+    );
+    return rejected;
+  }
+
+  /**
+   * rejected → appealed (V-42). The policy holder appeals a rejection
+   * within the appeal window; the payout becomes eligible for admin
+   * re-evaluation with corrected evidence.
+   */
+  async appealPayout(actor: User, payoutId: string, reason: string): Promise<ParametricPayout> {
+    const payout = await this.getPayout(payoutId);
+    if (payout.farmerUserId !== actor.id && !actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only the policy holder can appeal a rejected payout');
+    }
+    if (payout.status !== 'rejected') {
+      throw new ConflictException(`Only rejected payouts can be appealed (payout is '${payout.status}')`);
+    }
+    if (!reason?.trim()) {
+      throw new BadRequestException('An appeal reason is required (auditable record)');
+    }
+    this.assertWithinAppealWindow(payout.rejectedAt ?? payout.proposedAt, 'appeal this payout');
+    const appealed: ParametricPayout = {
+      ...payout,
+      status: 'appealed',
+      appealedAt: new Date().toISOString(),
+      appealReason: reason.trim()
+    };
+    await this.payouts.update(appealed);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.appealed',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: { policyId: payout.policyId, reason: appealed.appealReason }
+    });
+    await this.events.publish(
+      'insurance.payout.appealed',
+      { policyId: payout.policyId, payoutId: payout.id, reason: appealed.appealReason },
+      actor.id
+    );
+    return appealed;
+  }
+
+  /**
+   * Re-evaluates a disputed or appealed payout against CORRECTED evidence
+   * (V-42). Deterministic: the corrected observed value is run through the
+   * SAME product trigger + graduated payout table as the original
+   * evaluation. Two outcomes:
+   *   - corrected evidence still breaches → payout is re-proposed with the
+   *     recomputed amount; when the amount changed, a balanced correcting
+   *     leg (claims expense ↔ claims payable) is posted, idempotency-keyed
+   *     to the corrected-evidence fingerprint so replays never double-post;
+   *   - corrected evidence does not breach → the payout is rejected with
+   *     the evaluation outcome recorded as the rejection reason.
+   */
+  async reevaluatePayout(
+    actor: User,
+    payoutId: string,
+    corrected: CorrectedEvidenceInput
+  ): Promise<ParametricPayout> {
+    requireAdmin(actor);
+    const payout = await this.getPayout(payoutId);
+    if (payout.status !== 'disputed' && payout.status !== 'appealed') {
+      throw new ConflictException(
+        `Only disputed or appealed payouts can be re-evaluated (payout is '${payout.status}')`
+      );
+    }
+    if (!Number.isFinite(corrected.observedValue)) {
+      throw new BadRequestException('corrected.observedValue must be a finite number');
+    }
+    const policy = await this.getPolicy(payout.policyId);
+    const product = await this.products.findById(policy.productId);
+    if (!product) {
+      throw new NotFoundException(`Insurance product '${policy.productId}' not found`);
+    }
+    const now = new Date().toISOString();
+    const evaluation = evaluateTrigger(product.trigger, corrected.observedValue);
+    const band = evaluation.triggered
+      ? payoutBandFor(product.payoutTable, evaluation.breachRatio)
+      : undefined;
+    if (!evaluation.triggered || !band) {
+      // Corrected evidence clears the breach → reject (auditable).
+      const rejected: ParametricPayout = {
+        ...payout,
+        status: 'rejected',
+        reevaluatedAt: now,
+        rejectedAt: payout.status === 'appealed' ? payout.rejectedAt : now,
+        rejectionReason:
+          `Re-evaluation on corrected evidence (observed ${corrected.observedValue} ` +
+          `${product.trigger.metric} vs ${product.trigger.operator} ${product.trigger.threshold}): ` +
+          `trigger conditions not met.${corrected.notes ? ` ${corrected.notes}` : ''}`
+      };
+      await this.payouts.update(rejected);
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'insurance.payout.reevaluated',
+        entityType: 'insurance_payout',
+        entityId: payout.id,
+        metadata: {
+          policyId: payout.policyId,
+          outcome: 'rejected',
+          correctedObservedValue: corrected.observedValue,
+          notes: corrected.notes
+        }
+      });
+      await this.events.publish(
+        'insurance.payout.rejected',
+        { policyId: payout.policyId, payoutId: payout.id, reason: rejected.rejectionReason },
+        actor.id
+      );
+      return rejected;
+    }
+    const newAmountKobo = payoutKoboFor(policy.sumInsuredKobo, band.payoutPercent);
+    if (newAmountKobo !== payout.amountKobo) {
+      // Correcting leg keeps the books balanced and traceable: top-up when
+      // the recomputed band is higher, claw back the excess when lower.
+      const diff = newAmountKobo - payout.amountKobo;
+      const fingerprint = computeEvidenceFingerprint([
+        payout.id,
+        policy.id,
+        product.trigger.metric,
+        corrected.observedValue,
+        newAmountKobo
+      ]);
+      await this.ledger.ensureAccount({
+        code: INSURER_CLAIMS_EXPENSE_ACCOUNT,
+        type: 'expense'
+      });
+      await this.ledger.ensureAccount({
+        code: INSURER_CLAIMS_PAYABLE_ACCOUNT,
+        type: 'liability'
+      });
+      await this.ledger.postEntry(
+        {
+          idempotencyKey: `insurance-payout-reevaluation:${fingerprint}`,
+          referenceType: 'insurance_payout_reevaluation',
+          referenceId: payout.id,
+          description:
+            `Payout re-evaluation correction for policy ${policy.id}: ` +
+            `${payout.amountKobo} → ${newAmountKobo} kobo (corrected evidence)`,
+          postings:
+            diff > 0
+              ? [
+                  { accountCode: INSURER_CLAIMS_EXPENSE_ACCOUNT, direction: 'debit', amountKobo: diff },
+                  { accountCode: INSURER_CLAIMS_PAYABLE_ACCOUNT, direction: 'credit', amountKobo: diff }
+                ]
+              : [
+                  { accountCode: INSURER_CLAIMS_PAYABLE_ACCOUNT, direction: 'debit', amountKobo: -diff },
+                  { accountCode: INSURER_CLAIMS_EXPENSE_ACCOUNT, direction: 'credit', amountKobo: -diff }
+                ]
+        },
+        actor.id
+      );
+    }
+    const reproposed: ParametricPayout = {
+      ...payout,
+      status: 'proposed',
+      amountKobo: newAmountKobo,
+      reevaluatedAt: now
+    };
+    await this.payouts.update(reproposed);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.reevaluated',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: {
+        policyId: payout.policyId,
+        outcome: 'reproposed',
+        previousAmountKobo: payout.amountKobo,
+        amountKobo: newAmountKobo,
+        payoutPercent: band.payoutPercent,
+        correctedObservedValue: corrected.observedValue,
+        notes: corrected.notes
+      }
+    });
+    await this.events.publish(
+      'insurance.payout.reproposed',
+      {
+        policyId: payout.policyId,
+        payoutId: payout.id,
+        previousAmountKobo: payout.amountKobo,
+        amountKobo: newAmountKobo,
+        payoutPercent: band.payoutPercent
+      },
+      actor.id
+    );
+    return reproposed;
+  }
+
+  /**
+   * Ex-gratia payout proposal (V-42 basis-risk safety valve): a crop loss
+   * the parametric trigger missed can still be compensated through a
+   * documented, admin-approved ex-gratia instrument. The payout carries no
+   * trigger event (origin 'ex_gratia'), is bounded by the sum insured, and
+   * walks the SAME proposed → paid → settled rail as parametric payouts —
+   * it never bypasses the settlement confirmation gate (V-43).
+   */
+  async proposeExGratiaPayout(actor: User, input: ExGratiaPayoutInput): Promise<ParametricPayout> {
+    requireAdmin(actor);
+    if (!Number.isSafeInteger(input.amountKobo) || input.amountKobo <= 0) {
+      throw new BadRequestException('amountKobo must be a positive integer kobo amount');
+    }
+    if (!input.reason?.trim()) {
+      throw new BadRequestException('An ex-gratia reason is required (auditable basis-risk record)');
+    }
+    const policy = await this.getPolicy(input.policyId);
+    if (input.amountKobo > policy.sumInsuredKobo) {
+      throw new BadRequestException(
+        `Ex-gratia amount exceeds the sum insured (${policy.sumInsuredKobo} kobo)`
+      );
+    }
+    await this.ledger.ensureAccount({
+      code: INSURER_CLAIMS_EXPENSE_ACCOUNT,
+      type: 'expense'
+    });
+    await this.ledger.ensureAccount({
+      code: INSURER_CLAIMS_PAYABLE_ACCOUNT,
+      type: 'liability'
+    });
+    const payout: ParametricPayout = {
+      id: newId('inspay'),
+      policyId: policy.id,
+      farmerUserId: policy.farmerUserId,
+      amountKobo: input.amountKobo,
+      status: 'proposed',
+      origin: 'ex_gratia',
+      execution: 'stub',
+      proposedAt: new Date().toISOString()
+    };
+    const entry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `insurance-payout-ex-gratia:${payout.id}`,
+        referenceType: 'insurance_payout',
+        referenceId: payout.id,
+        description:
+          `Ex-gratia payout proposal for policy ${policy.id} (${policy.productCode}): ` +
+          `${input.reason.trim()} (stub execution)`,
+        postings: [
+          {
+            accountCode: INSURER_CLAIMS_EXPENSE_ACCOUNT,
+            direction: 'debit',
+            amountKobo: payout.amountKobo
+          },
+          {
+            accountCode: INSURER_CLAIMS_PAYABLE_ACCOUNT,
+            direction: 'credit',
+            amountKobo: payout.amountKobo
+          }
+        ]
+      },
+      actor.id
+    );
+    payout.ledgerProposalEntryId = entry.id;
+    await this.payouts.upsert(payout);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.ex_gratia_proposed',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: {
+        policyId: policy.id,
+        amountKobo: payout.amountKobo,
+        reason: input.reason.trim()
+      }
+    });
+    await this.events.publish(
+      'insurance.payout.proposed',
+      {
+        policyId: policy.id,
+        payoutId: payout.id,
+        amountKobo: payout.amountKobo,
+        origin: 'ex_gratia',
+        execution: 'stub'
+      },
+      actor.id
+    );
+    return payout;
+  }
+
+  /* --------------- V-43: settlement confirmation + failure reversal --------------- */
+
+  /**
+   * paid → settled (V-43). Settlement is triggered ONLY by a confirmation
+   * reference from the insurer's payout rail — never by the ledger posting
+   * (confirmPayout books the leg; this endpoint records that real money
+   * actually reached the farmer).
+   *
+   * FAIL-CLOSED: the only execution mode wired in this build is the stub
+   * rail, which cannot produce a real confirmation — in production this
+   * refuses with 503 before persisting anything (E-02 gate, same doctrine
+   * as confirmPayout).
+   */
+  async confirmSettlement(
+    actor: User,
+    payoutId: string,
+    railReference: string
+  ): Promise<ParametricPayout> {
+    requireAdmin(actor);
+    if (isProduction()) {
+      await this.audit?.record({
+        actorId: actor.id,
+        action: 'insurance.payout.unavailable',
+        entityType: 'insurance_payout',
+        entityId: payoutId,
+        metadata: { operation: 'confirmSettlement', execution: 'stub', production: true }
+      });
+      throw new ServiceUnavailableException(
+        'Insurance payout settlement requires a confirmation from an insurer-approved live payout ' +
+          'rail (not yet wired); the stub rail cannot produce one. Refusing to settle — nothing was recorded.'
+      );
+    }
+    const payout = await this.getPayout(payoutId);
+    if (payout.status !== 'paid') {
+      throw new ConflictException(
+        `Only paid payouts can be settled (payout is '${payout.status}')`
+      );
+    }
+    if (!railReference?.trim()) {
+      throw new BadRequestException('A rail confirmation reference is required to settle a payout');
+    }
+    const settled: ParametricPayout = {
+      ...payout,
+      status: 'settled',
+      settledAt: new Date().toISOString(),
+      settlementReference: railReference.trim()
+    };
+    await this.payouts.update(settled);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.settled',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: { policyId: payout.policyId, railReference: settled.settlementReference }
+    });
+    await this.events.publish(
+      'insurance.payout.settled',
+      {
+        policyId: payout.policyId,
+        payoutId: payout.id,
+        amountKobo: payout.amountKobo,
+        railReference: settled.settlementReference
+      },
+      actor.id
+    );
+    return settled;
+  }
+
+  /**
+   * paid → proposed (V-43 failed-settlement reversal). When the rail reports
+   * the disbursement failed, the settlement leg is reversed (balanced
+   * counter-entry via LedgerService.reverseEntry — idempotent, the original
+   * entry stays untouched) and the payout is RE-QUEUED to 'proposed' for a
+   * fresh confirmation attempt. The proposal leg (claims expense/payable)
+   * intentionally stays booked: the obligation to the farmer still stands.
+   */
+  async recordSettlementFailure(
+    actor: User,
+    payoutId: string,
+    reason: string
+  ): Promise<ParametricPayout> {
+    requireAdmin(actor);
+    const payout = await this.getPayout(payoutId);
+    if (payout.status !== 'paid') {
+      throw new ConflictException(
+        `Only paid payouts can record a settlement failure (payout is '${payout.status}')`
+      );
+    }
+    if (!reason?.trim()) {
+      throw new BadRequestException('A settlement failure reason is required (auditable record)');
+    }
+    if (!payout.ledgerSettlementEntryId) {
+      throw new ConflictException(
+        `Payout '${payoutId}' has no settlement ledger entry to reverse`
+      );
+    }
+    const reversal = await this.ledger.reverseEntry(payout.ledgerSettlementEntryId, actor.id);
+    const requeued: ParametricPayout = {
+      ...payout,
+      status: 'proposed',
+      ledgerSettlementEntryId: undefined,
+      paidAt: undefined,
+      settlementFailureReason: reason.trim(),
+      // Next confirmation posts a fresh settlement leg (new idempotency key).
+      settlementAttempts: (payout.settlementAttempts ?? 0) + 1
+    };
+    await this.payouts.update(requeued);
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'insurance.payout.settlement_failed',
+      entityType: 'insurance_payout',
+      entityId: payout.id,
+      metadata: {
+        policyId: payout.policyId,
+        reason: requeued.settlementFailureReason,
+        reversedEntryId: payout.ledgerSettlementEntryId,
+        reversalEntryId: reversal.id
+      }
+    });
+    await this.events.publish(
+      'insurance.payout.settlement_failed',
+      {
+        policyId: payout.policyId,
+        payoutId: payout.id,
+        amountKobo: payout.amountKobo,
+        reason: requeued.settlementFailureReason,
+        reversalEntryId: reversal.id
+      },
+      actor.id
+    );
+    return requeued;
+  }
+
   /** Aggregated portfolio view for the insurer read API (insurance:read scope). */
   async insurerPortfolio(): Promise<InsurerPortfolio> {
     const [policies, payouts, events] = await Promise.all([
@@ -882,9 +1437,25 @@ export class InsuranceService {
     }
     const payoutsByStatus: Record<string, number> = {};
     let totalPayoutKobo = 0;
+    let unsettledPayoutKobo = 0;
     for (const payout of payouts) {
       payoutsByStatus[payout.status] = (payoutsByStatus[payout.status] ?? 0) + 1;
       totalPayoutKobo += payout.amountKobo;
+      if (payout.status === 'paid') {
+        // V-43: ledger-booked but not rail-confirmed — live farmer-facing obligation.
+        unsettledPayoutKobo += payout.amountKobo;
+      }
+    }
+    // V-43 solvency tracking: the claims-payable ledger balance is the
+    // booked-but-unsettled claim obligation (credit-normal account).
+    let claimsPayableBalanceKobo = 0;
+    try {
+      const payable = await this.ledger.balance(INSURER_CLAIMS_PAYABLE_ACCOUNT);
+      claimsPayableBalanceKobo = -payable.balanceKobo; // debit-positive convention → credit balance
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        throw error; // account absent = no proposals yet; a store failure must surface
+      }
     }
     return {
       policiesByStatus,
@@ -892,7 +1463,9 @@ export class InsuranceService {
       totalPremiumKobo,
       payoutsByStatus,
       totalPayoutKobo,
-      triggerEventCount: events.length
+      triggerEventCount: events.length,
+      unsettledPayoutKobo,
+      claimsPayableBalanceKobo
     };
   }
 
