@@ -358,6 +358,35 @@ export class PgInboundEventRepository
   async markProcessed(id: string, processedAt: string): Promise<InboundEvent> {
     return this.update(id, { processedAt });
   }
+
+  async countProcessedBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT count(*)::int AS n FROM integrations.inbound_events
+       WHERE processed_at IS NOT NULL AND processed_at < $1`,
+      [cutoff]
+    );
+    return result.rows[0].n as number;
+  }
+
+  async anonymizeProcessedBefore(cutoff: string): Promise<number> {
+    // payload is jsonb NOT NULL, so the tombstone is '{}', never NULL; the
+    // payload <> '{}' guard keeps repeated sweeps no-ops (idempotent).
+    const result = await this.pool.query(
+      `UPDATE integrations.inbound_events SET payload = '{}'::jsonb
+       WHERE processed_at IS NOT NULL AND processed_at < $1 AND payload <> '{}'::jsonb`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async purgeProcessedBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM integrations.inbound_events
+       WHERE processed_at IS NOT NULL AND processed_at < $1`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
 }
 
 export function createPgInboundEventRepository(pool: pg.Pool): PgInboundEventRepository {
