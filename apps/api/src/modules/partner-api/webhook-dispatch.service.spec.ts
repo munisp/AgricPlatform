@@ -8,7 +8,9 @@ import {
   signWebhookPayload,
   subscriptionInScope,
   WebhookDispatchService,
+  webhookDeliveryBlockReason,
   webhookUrlBlockReason,
+  type WebhookDnsLookup,
   type WebhookFetch
 } from './webhook-dispatch.service.js';
 
@@ -16,9 +18,13 @@ function event(name: string, payload: unknown): DomainEvent {
   return { id: 'event-1', name, payload, occurredAt: new Date().toISOString() };
 }
 
+/** V-59: default resolver stub — every hostname answers a public IP. */
+const PUBLIC_LOOKUP: WebhookDnsLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+
 function makeService(
   subscriptions: Array<Partial<import('../../database/repositories/partner-api.repository.js').WebhookSubscription>>,
-  fetchImpl: WebhookFetch
+  fetchImpl: WebhookFetch,
+  lookup: WebhookDnsLookup = PUBLIC_LOOKUP
 ) {
   const repo = createInMemoryWebhookSubscriptionRepository(
     subscriptions.map((sub, index) => ({
@@ -37,7 +43,9 @@ function makeService(
   const service = new WebhookDispatchService(
     events as never,
     repo,
-    fetchImpl
+    fetchImpl,
+    undefined,
+    lookup
   );
   return { service, events };
 }
@@ -398,5 +406,106 @@ describe('WebhookDispatchService', () => {
         await service.dispatch('enrolment.created', event('learning.enrolment.created', {}))
       ).toBe(1);
     });
+  });
+});
+
+describe('V-59 DNS-rebinding delivery guard', () => {
+  const target = (url: string) => [{ eventTypes: ['disbursement.recorded'], targetUrl: url }];
+  const disbEvent = () => event('partner.disbursement.recorded', { id: 'disb-1' });
+
+  it('blocks a hostname resolving to 169.254.169.254 at delivery time', async () => {
+    const fetchImpl = vi.fn(async () => ({ status: 200 }));
+    const lookup: WebhookDnsLookup = async () => [{ address: '169.254.169.254', family: 4 }];
+    const { service } = makeService(target('https://rebinding.attacker.example/hook'), fetchImpl, lookup);
+    const delivered = await service.dispatch('disbursement.recorded', disbEvent());
+    expect(delivered).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(
+      webhookDeliveryBlockReason('https://rebinding.attacker.example/hook', process.env, lookup)
+    ).resolves.toContain('169.254.169.254');
+  });
+
+  it('delivers when the hostname resolves to a public IP', async () => {
+    const fetchImpl = vi.fn(async () => ({ status: 200 }));
+    const lookup = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const { service } = makeService(target('https://partner.example/hook'), fetchImpl, lookup);
+    const delivered = await service.dispatch('disbursement.recorded', disbEvent());
+    expect(delivered).toBe(1);
+    expect(lookup).toHaveBeenCalledWith('partner.example');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when DNS resolution errors', async () => {
+    const fetchImpl = vi.fn(async () => ({ status: 200 }));
+    const lookup: WebhookDnsLookup = async () => {
+      throw new Error('getaddrinfo ENOTFOUND ghost.example');
+    };
+    const { service } = makeService(target('https://ghost.example/hook'), fetchImpl, lookup);
+    const delivered = await service.dispatch('disbursement.recorded', disbEvent());
+    expect(delivered).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('re-validates per attempt: a record rebound after a successful delivery is refused', async () => {
+    const fetchImpl = vi.fn(async () => ({ status: 200 }));
+    let answer = '93.184.216.34';
+    const lookup: WebhookDnsLookup = async () => [{ address: answer, family: 4 }];
+    const { service } = makeService(target('https://rebinding.attacker.example/hook'), fetchImpl, lookup);
+
+    // First attempt: public answer, delivered.
+    expect(await service.dispatch('disbursement.recorded', disbEvent())).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Rebinding: the same hostname now answers the cloud-metadata address.
+    answer = '169.254.169.254';
+    expect(await service.dispatch('disbursement.recorded', disbEvent())).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // no fetch on the rebound attempt
+  });
+
+  it('never follows redirects: 3xx with a private-range Location fails closed after one fetch', async () => {
+    const fetchImpl = vi.fn<WebhookFetch>(async () => ({
+      status: 302,
+      headers: { get: (name: string) => (name.toLowerCase() === 'location' ? 'http://169.254.169.254/latest/meta-data' : null) }
+    }));
+    const { service } = makeService(target('https://partner.example/hook'), fetchImpl);
+    const delivered = await service.dispatch('disbursement.recorded', disbEvent());
+    expect(delivered).toBe(0);
+    // Exactly one request — the Location target is never fetched.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://partner.example/hook');
+    // Redirects disabled at the fetch layer too.
+    expect(fetchImpl.mock.calls[0]?.[1].redirect).toBe('manual');
+  });
+
+  it('blocks literal private IPs synchronously without touching DNS', async () => {
+    const fetchImpl = vi.fn(async () => ({ status: 200 }));
+    const lookup = vi.fn(PUBLIC_LOOKUP);
+    const { service } = makeService(target('https://169.254.169.254/latest/meta-data'), fetchImpl, lookup);
+    const delivered = await service.dispatch('disbursement.recorded', disbEvent());
+    expect(delivered).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('blocks when ANY resolved address is private (multi-record answer)', async () => {
+    const lookup: WebhookDnsLookup = async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '10.0.0.8', family: 4 }
+    ];
+    await expect(
+      webhookDeliveryBlockReason('https://multi.attacker.example/hook', process.env, lookup)
+    ).resolves.toContain('10.0.0.8');
+  });
+
+  it('blocks on an empty DNS answer and still allows public literals without DNS', async () => {
+    const emptyLookup: WebhookDnsLookup = async () => [];
+    await expect(
+      webhookDeliveryBlockReason('https://noanswer.example/hook', process.env, emptyLookup)
+    ).resolves.toContain('no addresses');
+    const lookup = vi.fn(PUBLIC_LOOKUP);
+    await expect(
+      webhookDeliveryBlockReason('https://93.184.216.34/hook', process.env, lookup)
+    ).resolves.toBeNull();
+    expect(lookup).not.toHaveBeenCalled();
   });
 });
