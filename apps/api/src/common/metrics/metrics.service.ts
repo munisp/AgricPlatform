@@ -96,8 +96,18 @@ export class MetricsService {
     ['entity']
   );
 
+  private readonly throttleRedisErrors = getOrCreateCounter(
+    'agric_throttle_redis_errors_total',
+    'Redis errors in the throttler storage (rate limiting is running fail-open)'
+  );
+
   recordSyncVersionBumpFailure(entity: string): void {
     this.syncVersionBumpFailures.inc({ entity });
+  }
+
+  /** V-77: redis throttler storage failure (rate limiting runs fail-open). */
+  throttleRedisError(): void {
+    this.throttleRedisErrors.inc();
   }
 
   recordHttpRequest(method: string, route: string, status: number, durationSeconds: number): void {
