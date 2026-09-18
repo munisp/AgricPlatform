@@ -41,6 +41,7 @@ const CORPUS: CorpusChunk[] = [
 const farmer = { id: 'user-farmer-1', roles: ['farmer'], phone: '+2348011111111' } as User;
 const otherFarmer = { id: 'user-farmer-2', roles: ['farmer'], phone: '+2348022222222' } as User;
 const agent = { id: 'user-agent-1', roles: ['agronomist'], phone: '+2348099999999' } as User;
+const admin = { id: 'user-admin-1', roles: ['admin'], phone: '+2348055555555' } as User;
 
 function build(env: NodeJS.ProcessEnv = {} as NodeJS.ProcessEnv) {
   const users = new UsersService(createInMemoryUserRepository());
@@ -379,5 +380,60 @@ describe('VoiceService — escalation + agent queue', () => {
     const { service, session, agentCase } = await escalatedSession();
     await service.respondToCase(agent, agentCase.id, { response: 'done', resolve: true });
     await expect(service.escalate(farmer, session.id)).rejects.toBeInstanceOf(ConflictException);
+  });
+});
+
+describe('V-69: consent capture, session expiry and transcript retention', () => {
+  it('records the consent flag at session start (absent = NOT consented)', async () => {
+    const { service } = build();
+    const consented = await service.startSession(farmer, {
+      channel: 'ivr',
+      phone: '+2348077777777',
+      consent: true
+    });
+    expect(consented.session.consentCaptured).toBe(true);
+    const unconsented = await service.startSession(farmer, {
+      channel: 'ivr',
+      phone: '+2348077777778'
+    });
+    expect(unconsented.session.consentCaptured).toBe(false);
+  });
+
+  it('an expired session accepts no new turns', async () => {
+    const { service, sessions } = build();
+    const { session } = await service.startSession(farmer, {
+      channel: 'ivr',
+      phone: '+2348077777777',
+      consent: true
+    });
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    await sessions.update(session.id, { updatedAt: stale });
+    await expect(
+      service.handleTurn(farmer, session.id, { text: 'my maize has spots' })
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('the retention sweep purges transcripts past retention and is admin-only', async () => {
+    const { service, turns } = build();
+    const { session } = await service.startSession(farmer, {
+      channel: 'ivr',
+      phone: '+2348077777777',
+      consent: true
+    });
+    await service.handleTurn(farmer, session.id, { text: 'my maize has spots' });
+    const before = await turns.listForSession(session.id);
+    expect(before.length).toBeGreaterThan(0);
+    // Admin-only.
+    await expect(service.sweepTranscriptRetention(farmer)).rejects.toBeInstanceOf(
+      ForbiddenException
+    );
+    // A sweep at "now" keeps everything (turns are fresh).
+    expect((await service.sweepTranscriptRetention(admin)).purgedTurns).toBe(0);
+    expect(await turns.listForSession(session.id)).toHaveLength(before.length);
+    // A sweep 40 days on purges turns older than the 30-day default.
+    const later = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+    const result = await service.sweepTranscriptRetention(admin, later);
+    expect(result.purgedTurns).toBe(before.length);
+    expect(await turns.listForSession(session.id)).toHaveLength(0);
   });
 });
