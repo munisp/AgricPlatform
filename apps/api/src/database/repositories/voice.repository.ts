@@ -49,6 +49,12 @@ export interface VoiceSessionRecord {
    * agent-only (fail closed).
    */
   createdByUserId?: string;
+  /**
+   * Voice consent flag (V-69, NDPA 2023): true when the caller consented to
+   * their voice being recorded and their transcript retained (IVR consent
+   * prompt / gateway flag at session start). Pre-092 rows default false.
+   */
+  consentCaptured?: boolean;
   /** Captured locale (en/ha/yo/ig); responses stay en-only this wave. */
   locale: string;
   crop?: string;
@@ -110,6 +116,11 @@ export interface VoiceTurnRepository {
   /** Next 1-based turn index for the session transcript. */
   nextIndex(sessionId: string): Promise<number>;
   listForSession(sessionId: string): Promise<VoiceTurnRecord[]>;
+  /**
+   * Retention sweep (V-69, NDPA 2023): DELETE transcript turns older than
+   * the cutoff; returns the purged count.
+   */
+  purgeOlderThan(cutoffIso: string): Promise<number>;
 }
 
 export interface AgentCaseCriteria {
@@ -199,6 +210,17 @@ export class InMemoryVoiceTurnRepository implements VoiceTurnRepository {
       .filter((record) => record.sessionId === sessionId)
       .sort((a, b) => a.turnIndex - b.turnIndex || a.id.localeCompare(b.id))
       .map((record) => structuredClone(record));
+  }
+
+  async purgeOlderThan(cutoffIso: string): Promise<number> {
+    let purged = 0;
+    for (const record of [...this.items.values()]) {
+      if (record.createdAt < cutoffIso) {
+        this.items.delete(record.id);
+        purged += 1;
+      }
+    }
+    return purged;
   }
 }
 
