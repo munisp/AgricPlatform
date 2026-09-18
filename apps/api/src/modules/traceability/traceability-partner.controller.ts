@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsOptional, IsString } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
 import {
   PartnerAuthGuard,
   partnerIdentity,
@@ -11,11 +11,14 @@ import { TraceabilityService } from './traceability.service.js';
 
 class PartnerCreateShipmentDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(200, { each: true })
   lotIds!: string[];
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   reference?: string;
 }
 
