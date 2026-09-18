@@ -378,6 +378,42 @@ describe('PIN failure policy (shared-device PIN reuse)', () => {
     expect(await h.sessions.find({})).toHaveLength(0);
   });
 
+  it('scopes lockout per device profile: a locked profile does not deny the account (L-11)', async () => {
+    const h = build();
+    const user = await registeredFarmer(h);
+    // Same PIN on a second family device (salted per device token).
+    const DEVICE2 = 'device-token-bbbb';
+    await h.pins.save({
+      deviceToken: DEVICE2,
+      userId: user.id,
+      pinHash: hashSharedDevicePin(DEVICE2, user.id, PIN),
+      attempts: 0,
+      createdAt: '2026-01-01T00:00:00.000Z'
+    });
+    // Lock the first profile (e.g. after a dial-in attacker's wrong guesses).
+    await h.pins.update(DEVICE, user.id, {
+      attempts: 0,
+      lockedUntil: new Date(Date.now() + VOICE_TELLER_PIN_LOCKOUT_MS).toISOString()
+    });
+    // The account is NOT locked: the correct PIN still verifies through the
+    // unlocked device profile.
+    const turn = await h.service.resolvePinTurn(pinInput('balance.savings', PIN));
+    expect(turn.end).toBe(true);
+    expect(turn.actions[0]).not.toEqual({ type: 'say', text: expect.stringContaining('locked') });
+    // A wrong PIN re-prompts rather than reporting an account-wide lock…
+    const wrong = await h.service.resolvePinTurn(pinInput('balance.savings', '9999'));
+    expect(wrong.end).toBe(false);
+    expect(wrong.actions[0]).toEqual({ type: 'say', text: 'That PIN is not correct.' });
+    // …until EVERY profile is locked.
+    await h.pins.update(DEVICE2, user.id, {
+      attempts: 0,
+      lockedUntil: new Date(Date.now() + VOICE_TELLER_PIN_LOCKOUT_MS).toISOString()
+    });
+    const denied = await h.service.resolvePinTurn(pinInput('balance.savings', PIN));
+    expect(denied.end).toBe(true);
+    expect(denied.actions[0]).toEqual({ type: 'say', text: expect.stringContaining('locked') });
+  });
+
   it('a correct PIN clears prior failed attempts', async () => {
     const h = build();
     const user = await registeredFarmer(h);
