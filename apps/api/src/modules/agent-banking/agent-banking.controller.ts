@@ -128,6 +128,72 @@ class CashTransactionDto {
   @IsNotEmpty()
   @MaxLength(100)
   idempotencyKey!: string;
+
+  /**
+   * W2-C2 (V-41): bound-device token. May also arrive as the
+   * `x-agent-device-token` header (preferred — keeps it out of bodies/logs).
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  deviceToken?: string;
+}
+
+class BindDeviceDto {
+  /** High-entropy device identity token (>= 16 chars); only its hash persists (V-41). */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  deviceToken!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  label?: string;
+}
+
+class RevokeDeviceDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
+}
+
+class InitiateReversalDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  transactionId!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason!: string;
+
+  /** V-08: fraud case (fraud.sentinel_cases id) this reversal resolves. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  fraudCaseId?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  idempotencyKey!: string;
+}
+
+class DeregisterAgentDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+
+  /** V-40: voucher honour-or-refund grace window in days (default 30). */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(365)
+  voucherGraceDays?: number;
 }
 
 class IssueVoucherDto {
@@ -338,8 +404,13 @@ export class AgentBankingController {
   @UseGuards(RolesGuard)
   @Roles('agent', 'admin')
   @ApiOperation({ summary: 'Farmer cash-in at the agent (ledger double-entry, OTP proof, idempotent)' })
-  async cashIn(@Param('id') id: string, @Body() dto: CashTransactionDto, @CurrentUser() actor: User | null) {
-    return { data: await this.banking.cashIn(id, dto, actorOf(actor)) };
+  async cashIn(
+    @Param('id') id: string,
+    @Body() dto: CashTransactionDto,
+    @Headers('x-agent-device-token') deviceToken: string | undefined,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.banking.cashIn(id, { ...dto, deviceToken: deviceToken ?? dto.deviceToken }, actorOf(actor)) };
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
@@ -347,8 +418,14 @@ export class AgentBankingController {
   @UseGuards(RolesGuard)
   @Roles('agent', 'admin')
   @ApiOperation({ summary: 'Farmer cash-out at the agent (ledger double-entry, OTP proof, idempotent)' })
-  async cashOut(@Param('id') id: string, @Body() dto: CashTransactionDto, @CurrentUser() actor: User | null) {
+  async cashOut(
+    @Param('id') id: string,
+    @Body() dto: CashTransactionDto,
+    @Headers('x-agent-device-token') deviceToken: string | undefined,
+    @CurrentUser() actor: User | null
+  ) {
     const caller = actorOf(actor);
+    dto = { ...dto, deviceToken: deviceToken ?? dto.deviceToken };
     // V-78: payout outcome counter (agric_agent_payouts_total{result}) so a
     // payout stall/failure storm is visible to Prometheus alerts.
     try {
@@ -439,6 +516,121 @@ export class AgentBankingController {
   @ApiOperation({ summary: 'Void an ISSUED voucher (issuing agent or admin)' })
   async voidVoucher(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.banking.voidVoucher(id, actorOf(actor)) };
+  }
+
+  @Post('vouchers/:id/expire')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({
+    summary:
+      'Expire an ISSUED voucher (V-33): a PAID voucher books a refundable liability ' +
+      '(refunds_payable) visible in the agent settlement'
+  })
+  async expireVoucher(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.expireVoucher(id, actorOf(actor)) };
+  }
+
+  @Post('vouchers/:id/confirm-refund')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({
+    summary: 'Confirm the cash hand-back for an expired paid voucher (V-33): PAYABLE → PAID'
+  })
+  async confirmVoucherRefund(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.confirmVoucherRefund(id, actorOf(actor)) };
+  }
+
+  // --------------------------------------- W2-C2: settlement, reversals, exit, devices
+
+  @Get('agents/:id/settlement')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({ summary: 'Agent settlement view (V-33): float, voucher liability, refundable queue' })
+  async settlement(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const agent = await this.banking.getAgent(id);
+    this.banking.assertAgentAccess(agent, actorOf(actor));
+    return { data: await this.banking.agentSettlement(id) };
+  }
+
+  @Post('agents/:id/reversals')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({
+    summary: 'Initiate a transaction reversal (V-08 maker): nothing moves until a DIFFERENT admin approves'
+  })
+  async initiateReversal(@Param('id') id: string, @Body() dto: InitiateReversalDto, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.initiateReversal(id, dto, actorOf(actor)) };
+  }
+
+  @Get('agents/:id/reversals')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({ summary: 'List reversal requests for an agent (V-08)' })
+  async listReversals(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.listReversals(id, actorOf(actor)) };
+  }
+
+  @Post('reversals/:id/approve')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Approve a reversal (V-08 checker, initiator ≠ approver): posts the exact inverse entry, ' +
+      'corrects the daily-limit counter and claws the commission back'
+  })
+  async approveReversal(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.decideReversal(id, 'approve', actorOf(actor)) };
+  }
+
+  @Post('reversals/:id/reject')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Reject a reversal request (V-08 checker)' })
+  async rejectReversal(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.decideReversal(id, 'reject', actorOf(actor)) };
+  }
+
+  @Post('agents/:id/deregister')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Deregister an agent (V-40 close-out): sweeps the float to zero with balanced legs, ' +
+      'settles accrued commission, opens a voucher honour-or-refund grace window'
+  })
+  async deregisterAgent(@Param('id') id: string, @Body() dto: DeregisterAgentDto, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.deregisterAgent(id, dto, actorOf(actor).id) };
+  }
+
+  @Post('agents/:id/devices')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({
+    summary: 'Bind a device to the agent (V-41): hash-at-rest; additional devices audit a re-enrolment event'
+  })
+  async bindDevice(@Param('id') id: string, @Body() dto: BindDeviceDto, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.bindDevice(id, dto, actorOf(actor)) };
+  }
+
+  @Get('agents/:id/devices')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({ summary: 'List the bound devices of an agent (V-41)' })
+  async listDevices(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.banking.listDevices(id, actorOf(actor)) };
+  }
+
+  @Post('agents/:id/devices/:deviceId/revoke')
+  @UseGuards(RolesGuard)
+  @Roles('agent', 'admin')
+  @ApiOperation({ summary: 'Remote freeze: revoke a device (V-41) — its token is rejected on cash endpoints' })
+  async revokeDevice(
+    @Param('id') id: string,
+    @Param('deviceId') deviceId: string,
+    @Body() dto: RevokeDeviceDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.banking.revokeDevice(id, deviceId, actorOf(actor), dto.reason) };
   }
 
   // ---------------------------------------------- commissions & reports
