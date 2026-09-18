@@ -9,10 +9,16 @@ import {
   createInMemoryCreditGuarantorRepository,
   createInMemoryCreditLoanRepository,
   createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditRestructureRepository,
   createInMemoryCreditSavingsAccountRepository,
   createInMemoryCreditSavingsTransactionRepository,
   InMemoryCreditProductRepository
 } from '../../database/repositories/credit-suite.repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from '../../database/repositories/ledger.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { InMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { InMemoryProfileRepository } from '../../database/repositories/profile.repository.js';
@@ -46,20 +52,40 @@ function makeServices() {
   const transactions = createInMemoryCreditSavingsTransactionRepository();
   const savingsAccounts = createInMemoryCreditSavingsAccountRepository(transactions);
   const guarantors = createInMemoryCreditGuarantorRepository();
-  const groupsService = new CreditGroupsService(events, groups, members);
+  const loans = createInMemoryCreditLoanRepository();
+  const repayments = createInMemoryCreditRepaymentRepository();
+  const groupsService = new CreditGroupsService(
+    events,
+    groups,
+    members,
+    loans,
+    repayments,
+    guarantors,
+    savingsAccounts,
+    transactions
+  );
+  const ledger = new LedgerService(
+    events,
+    createInMemoryLedgerAccountRepository(),
+    createInMemoryLedgerEntryRepository()
+  );
   const credit = new CreditService(
     events,
     new InMemoryCreditProductRepository([GROUP_PRODUCT]),
-    createInMemoryCreditLoanRepository(),
-    createInMemoryCreditRepaymentRepository(),
+    loans,
+    repayments,
     createInMemoryCreditCollateralRepository(),
     guarantors,
+    groups,
     members,
     savingsAccounts,
     new InMemoryProfileRepository(),
-    new InMemoryOrderRepository()
+    new InMemoryOrderRepository(),
+    createInMemoryCreditRestructureRepository(),
+    transactions,
+    ledger
   );
-  return { groupsService, credit, guarantors, members };
+  return { groupsService, credit, guarantors, members, loans, repayments, savingsAccounts, groups };
 }
 
 async function threeMemberGroup(services: ReturnType<typeof makeServices>) {
@@ -230,5 +256,140 @@ describe('CreditService group (VSLA) lending', () => {
     expect(schedule).toHaveLength(3); // ceil(90/30)
     // 900_000 * 1000 * 90 / (10000*365) = 22_191 kobo interest (floored).
     expect(schedule.reduce((sum, entry) => sum + entry.amountKobo, 0)).toBe(922_191);
+  });
+});
+
+/* ------------------------------------------------ V-46 exit + dissolution -- */
+
+describe('V-46 exit-settlement and group dissolution', () => {
+  /** Drives a group loan to `repaying` with all co-obligors recorded. */
+  async function liveGroupLoan(services: ReturnType<typeof makeServices>, groupId: string) {
+    const loan = await services.credit.applyForGroup(
+      { productId: GROUP_PRODUCT.id, principalKobo: 900_000, groupId },
+      leader
+    );
+    await services.credit.submit(loan.id, leader);
+    await services.credit.score(loan.id, lender);
+    await services.credit.approve(loan.id, lender);
+    await services.credit.disburse(loan.id, lender);
+    return services.credit.startRepayment(loan.id, lender);
+  }
+
+  it('exit with a live loan is blocked until the share is settled or substituted', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    await liveGroupLoan(services, group.id);
+
+    // Bare leave: blocked with the computed liability in the message.
+    await expect(services.groupsService.leave(group.id, memberA)).rejects.toThrowError(
+      /EXIT_SETTLEMENT_REQUIRED/
+    );
+    // The preview shows the equal share of the outstanding balance.
+    const preview = await services.groupsService.exitSettlement(group.id, memberA);
+    expect(preview.openLoanIds).toHaveLength(1);
+    expect(preview.shareKobo).toBeGreaterThan(0);
+
+    // Guarantor substitution: memberB (already an accepted co-obligor)
+    // takes over memberA's positions; memberA's guarantor row is released.
+    await services.groupsService.leave(group.id, memberA, { substituteUserId: memberB.id });
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(2);
+    const released = services.guarantors;
+    const memberARow = await released.findOne({ guarantorUserId: memberA.id });
+    expect(memberARow!.status).toBe('settled'); // released by substitution
+    const memberBRow = await released.findOne({ guarantorUserId: memberB.id });
+    expect(memberBRow!.status).toBe('accepted');
+  });
+
+  it('exit settles the share from the member’s savings (the call is the consent)', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    await liveGroupLoan(services, group.id);
+    const preview = await services.groupsService.exitSettlement(group.id, memberA);
+
+    // No savings → settlement impossible.
+    await expect(
+      services.groupsService.leave(group.id, memberA, { settleFromSavings: true })
+    ).rejects.toThrowError(/no savings account/);
+
+    // Fund memberA just below the share → insufficient.
+    const now = new Date().toISOString();
+    await services.savingsAccounts.create({
+      id: 'csav-aisha',
+      userId: memberA.id,
+      balanceKobo: preview.shareKobo - 1,
+      updatedAt: now
+    });
+    await expect(
+      services.groupsService.leave(group.id, memberA, { settleFromSavings: true })
+    ).rejects.toThrowError(/EXIT_SETTLEMENT_INSUFFICIENT/);
+
+    // Fund fully → the exit settles and the member leaves.
+    await services.savingsAccounts.applyTransaction(
+      'csav-aisha',
+      { balanceKobo: preview.shareKobo - 1 },
+      { balanceKobo: preview.shareKobo, updatedAt: new Date().toISOString() },
+      {
+        id: 'ctxn-topup',
+        accountId: 'csav-aisha',
+        direction: 'deposit',
+        amountKobo: 1,
+        balanceAfterKobo: preview.shareKobo,
+        ref: 'top-up',
+        createdAt: new Date().toISOString()
+      }
+    );
+    await services.groupsService.leave(group.id, memberA, { settleFromSavings: true });
+    expect((await services.groupsService.getGroup(group.id, leader)).members).toHaveLength(2);
+    expect((await services.savingsAccounts.getById('csav-aisha')).balanceKobo).toBe(0);
+  });
+
+  it('dissolution is blocked with open liabilities and succeeds once the loan closes', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    const loan = await liveGroupLoan(services, group.id);
+
+    await expect(services.groupsService.dissolve(group.id, leader)).rejects.toThrowError(
+      /DISSOLVE_BLOCKED/
+    );
+    // Non-leader cannot dissolve.
+    await expect(services.groupsService.dissolve(group.id, memberA)).rejects.toBeInstanceOf(
+      ForbiddenException
+    );
+
+    // Close the loan: all installments paid → dissolution unblocks.
+    const schedule = await services.credit.getSchedule(loan.id, leader);
+    for (const entry of schedule) {
+      await services.credit.recordPayment(loan.id, entry.sequence, leader);
+    }
+    const dissolved = await services.groupsService.dissolve(group.id, leader);
+    expect(dissolved.status).toBe('dissolved');
+    expect(dissolved.dissolvedAt).toBeDefined();
+    // Idempotent replay.
+    expect((await services.groupsService.dissolve(group.id, leader)).status).toBe('dissolved');
+
+    // A dissolved group is closed: no joins, no member adds, no new group loans.
+    await expect(services.groupsService.join(group.id, outsider)).rejects.toThrowError(
+      /dissolved/
+    );
+    await expect(
+      services.groupsService.addMember(group.id, outsider.id, leader)
+    ).rejects.toThrowError(/dissolved/);
+    await expect(
+      services.credit.applyForGroup(
+        { productId: GROUP_PRODUCT.id, principalKobo: 500_000, groupId: group.id },
+        leader
+      )
+    ).rejects.toThrowError(/dissolved/);
+  });
+
+  it('dissolution is blocked by unsettled guarantor demands even with closed loans', async () => {
+    const services = makeServices();
+    const group = await threeMemberGroup(services);
+    const loan = await liveGroupLoan(services, group.id);
+    // Default issues demands to memberA and memberB (called).
+    await services.credit.defaultLoan(loan.id, lender);
+    await expect(services.groupsService.dissolve(group.id, leader)).rejects.toThrowError(
+      /DISSOLVE_BLOCKED/
+    );
   });
 });
