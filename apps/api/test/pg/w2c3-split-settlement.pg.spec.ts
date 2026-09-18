@@ -194,6 +194,14 @@ describePg('pg W2-C3 live (migrations 105-109)', () => {
     const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
     try {
       const repo = createPgEscrowRepository(pool);
+      // marketplace.orders.listing_id is FK'd to marketplace.listings — the
+      // listing fixture must be seeded first (CI db-contract failure,
+      // 2026-09-18).
+      await pool.query(
+        `INSERT INTO marketplace.listings (id, seller_id, kind, title)
+         VALUES ('listing-x', 'seller-x', 'produce', 'w2c3 contract listing')
+         ON CONFLICT (id) DO NOTHING`
+      );
       await pool.query(
         `INSERT INTO marketplace.orders (id, listing_id, buyer_id, seller_id, quantity, total_naira, status, escrow_required, created_at)
          VALUES ('pg-w2c3-order-1', 'listing-x', 'buyer-x', 'seller-x', 2, 370000, 'disputed', true, now())
@@ -215,6 +223,9 @@ describePg('pg W2-C3 live (migrations 105-109)', () => {
       );
       expect(settled.status).toBe('settled');
       expect(settled.releasedKobo! + settled.refundedKobo!).toBe(settled.amountKobo);
+      await pool.query(`DELETE FROM marketplace.escrow_records WHERE id = 'pg-w2c3-escrow-1'`);
+      await pool.query(`DELETE FROM marketplace.orders WHERE id = 'pg-w2c3-order-1'`);
+      await pool.query(`DELETE FROM marketplace.listings WHERE id = 'listing-x'`);
     } finally {
       await pool.end();
     }
