@@ -26,4 +26,3 @@ ALTER TABLE marketplace.orders
     CHECK (delivered_quantity IS NULL OR (delivered_quantity >= 1 AND delivered_quantity < quantity));
 
 COMMIT;
-
