@@ -104,8 +104,8 @@ export const seedOpportunities: Opportunity[] = [
 
 export const seedChapters: Chapter[] = [
   { id: 'chapter-national', name: 'NYFN National', level: 'national', state: 'FCT', memberCount: 2000000, active: true },
-  { id: 'chapter-kaduna', name: 'Kaduna State Chapter', level: 'state', parentId: 'chapter-national', state: 'Kaduna', memberCount: 4200, active: true },
-  { id: 'chapter-kano', name: 'Kano State Chapter', level: 'state', parentId: 'chapter-national', state: 'Kano', memberCount: 5100, active: true },
+  { id: 'chapter-kaduna', name: 'Kaduna State Chapter', level: 'state', parentId: 'chapter-national', state: 'Kaduna', leadUserId: 'user-lead-kaduna', memberCount: 4200, active: true },
+  { id: 'chapter-kano', name: 'Kano State Chapter', level: 'state', parentId: 'chapter-national', state: 'Kano', leadUserId: 'user-lead-kano', memberCount: 5100, active: true },
   { id: 'chapter-anambra', name: 'Anambra State Chapter', level: 'state', parentId: 'chapter-national', state: 'Anambra', memberCount: 3600, active: true }
 ];
 
