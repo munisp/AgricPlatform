@@ -33,6 +33,7 @@ import {
   ESCROW_HOLDS_LIABILITY_ACCOUNT,
   ESCROW_PROVIDER_FLOAT_ACCOUNT,
   escrowLegPostingInput,
+  escrowSplitLegPostingInput,
   type EscrowLedgerLeg
 } from './escrow-ledger.js';
 import { ESCROW_PAYOUT_DRIVER, type EscrowPayoutDriverPort } from './payout.driver.js';
@@ -78,7 +79,10 @@ export const ESCROW_TRANSITIONS: Readonly<
   held: {
     released: ['buyer'],
     refunded: ['seller'],
-    disputed: ['buyer', 'seller']
+    disputed: ['buyer', 'seller'],
+    // V-36: split settlement of a partially-delivered order before any
+    // geo-sealed attestation. Admin/system mediated only (empty actor list).
+    settled: []
   },
   releasing: {
     // Retry/finalize of a provider-backed release (system-driven entry).
@@ -89,9 +93,13 @@ export const ESCROW_TRANSITIONS: Readonly<
     refunded: ['seller']
   },
   disputed: {
-    // Dispute resolution is admin-mediated only (empty actor list).
+    // Dispute resolution is admin-mediated only (empty actor list). V-06:
+    // 'settled' is the split-settlement outcome (partial release + partial
+    // refund summing exactly to the held amount) — also admin-mediated only
+    // and only via resolveDisputeSplit/settleSplit.
     released: [],
-    refunded: []
+    refunded: [],
+    settled: []
   },
   // Stage 27 (Innovation 9): entered ONLY by the geo-sealed attestation path
   // (markDeliveredPendingConfirm) — it is deliberately absent from `held`'s
@@ -99,10 +107,15 @@ export const ESCROW_TRANSITIONS: Readonly<
   // may confirm early (released); the confirm-window sweep auto-releases once
   // the deadline passes.
   delivered_pending_confirm: {
-    released: ['buyer']
+    released: ['buyer'],
+    // V-36: a partial delivery settles the escrow by split (delivered share
+    // released to the seller, remainder refunded to the buyer). System/admin
+    // mediated only — never a party-driven transition.
+    settled: []
   },
   released: {},
-  refunded: {}
+  refunded: {},
+  settled: {}
 };
 
 /** System-driven pending states that API actors may never request directly. */
@@ -183,7 +196,8 @@ export class EscrowService {
    */
   private async postEscrowLedgerLeg(
     record: EscrowRecord,
-    leg: EscrowLedgerLeg,
+    // Whole-amount legs only; V-06 split parts post via postSplitLedgerLegs.
+    leg: 'hold' | 'released' | 'refunded',
     actorId: string
   ): Promise<void> {
     if (!this.ledger) {
@@ -205,6 +219,31 @@ export class EscrowService {
     await this.postEscrowLedgerLeg(record, 'hold', actorId);
     if (record.status === 'released' || record.status === 'refunded') {
       await this.postEscrowLedgerLeg(record, record.status, actorId);
+    }
+    if (record.status === 'settled') {
+      // V-06: re-ensure BOTH split legs (idempotency-keyed per leg).
+      await this.postSplitLedgerLegs(record, actorId);
+    }
+  }
+
+  /**
+   * V-06: posts the two balanced split legs of a settled escrow (partial
+   * release to the seller + partial refund to the buyer). Each leg is
+   * idempotency-keyed per (escrow, part) so replays converge.
+   */
+  private async postSplitLedgerLegs(record: EscrowRecord, actorId: string): Promise<void> {
+    if (!this.ledger) {
+      return; // unit-construction convenience; production fails closed earlier
+    }
+    const releasedKobo = record.releasedKobo ?? 0;
+    const refundedKobo = record.refundedKobo ?? 0;
+    await this.ledger.ensureAccount({ code: ESCROW_PROVIDER_FLOAT_ACCOUNT, type: 'asset' });
+    await this.ledger.ensureAccount({ code: ESCROW_HOLDS_LIABILITY_ACCOUNT, type: 'liability' });
+    if (releasedKobo > 0) {
+      await this.ledger.postEntry(escrowSplitLegPostingInput(record, 'split_release', releasedKobo), actorId);
+    }
+    if (refundedKobo > 0) {
+      await this.ledger.postEntry(escrowSplitLegPostingInput(record, 'split_refund', refundedKobo), actorId);
     }
   }
 
@@ -516,6 +555,13 @@ export class EscrowService {
         `Status '${status}' is system-driven; request the terminal status instead`
       );
     }
+    if (status === 'settled') {
+      // V-06: a split settlement needs its award amounts — drive it through
+      // resolveDisputeSplit/settlePartialForOrder, never the generic machine.
+      throw new BadRequestException(
+        "Status 'settled' requires split amounts; use the dispute-resolution/partial-settlement path"
+      );
+    }
     const record = await this.escrows.getById(id);
     if (record.status === status) {
       // WP-G13: a terminal replay re-ensures the ledger legs (idempotent),
@@ -582,6 +628,266 @@ export class EscrowService {
       );
     }
     return this.applyTransition(record, 'released', actorId);
+  }
+
+  /**
+   * V-06 split-settlement resolution of a DISPUTED escrow (admin only):
+   * instead of the all-or-nothing released/refunded outcomes, the mediator
+   * awards a partial release to the seller and a partial refund to the
+   * buyer. The two parts are validated to sum EXACTLY to the held amount —
+   * no dust, no over-payment. Degenerate awards (one side zero) delegate to
+   * the existing full release/refund transitions so history stays uniform.
+   *
+   * Replay: an already-'settled' record with the SAME amounts re-ensures the
+   * ledger legs and returns (idempotent); a DIFFERENT split on a settled
+   * escrow is a 409 — a money resolution is never silently re-decided.
+   */
+  async resolveDisputeSplit(
+    id: string,
+    split: { releaseKobo: number; refundKobo: number },
+    actor: Pick<User, 'id' | 'roles'>
+  ): Promise<EscrowRecord> {
+    if (!actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only an administrator may resolve a dispute with a split award');
+    }
+    const record = await this.escrows.getById(id);
+    this.assertSplitAmounts(record, split);
+    if (record.status === 'settled') {
+      if (record.releasedKobo !== split.releaseKobo || record.refundedKobo !== split.refundKobo) {
+        throw new ConflictException(
+          `Escrow ${id} is already settled (${record.releasedKobo} released / ${record.refundedKobo} refunded); ` +
+            'a money resolution cannot be re-decided'
+        );
+      }
+      await this.ensureEscrowLedgerLegs(record, actor.id);
+      return record; // idempotent replay
+    }
+    if (record.status !== 'disputed') {
+      throw new BadRequestException(
+        `Only a disputed escrow can be split-resolved (escrow ${id} is '${record.status}')`
+      );
+    }
+    // Degenerate awards ride the existing all-or-nothing rails.
+    if (split.refundKobo === 0) {
+      return this.applyTransition(record, 'released', actor.id, { allowUnverified: true });
+    }
+    if (split.releaseKobo === 0) {
+      return this.applyTransition(record, 'refunded', actor.id, { allowUnverified: true });
+    }
+    // Admin dispute mediation is the documented path that may move money for
+    // a legacy/unverified hold (same doctrine as transition()).
+    return this.applySplitSettlement(record, split, actor.id, { allowUnverified: true });
+  }
+
+  /**
+   * V-36 partial-fulfilment settlement (system path): a partially delivered
+   * order settles its escrow by split — the delivered share releases to the
+   * seller, the remainder refunds to the buyer. Allowed from 'held' and
+   * 'delivered_pending_confirm' (and replayed from 'settled' with identical
+   * amounts). Unlike dispute resolution this is NOT the unverified-deposit
+   * escape hatch: the verify-before-credit gate applies normally.
+   */
+  async settlePartialForOrder(
+    orderId: string,
+    releaseKobo: number,
+    actorId: string
+  ): Promise<EscrowRecord | undefined> {
+    const record = await this.escrowForOrder(orderId);
+    if (!record) {
+      return record;
+    }
+    const split = { releaseKobo, refundKobo: record.amountKobo - releaseKobo };
+    this.assertSplitAmounts(record, split);
+    if (record.status === 'settled') {
+      if (record.releasedKobo !== split.releaseKobo || record.refundedKobo !== split.refundKobo) {
+        throw new ConflictException(
+          `Escrow ${record.id} is already settled with different amounts; refusing to re-decide`
+        );
+      }
+      await this.ensureEscrowLedgerLegs(record, actorId);
+      return record; // idempotent replay
+    }
+    if (record.status !== 'held' && record.status !== 'delivered_pending_confirm') {
+      throw new ConflictException(
+        `Escrow ${record.id} is '${record.status}'; a partial settlement requires 'held' or 'delivered_pending_confirm'`
+      );
+    }
+    if (split.refundKobo === 0) {
+      return this.applyTransition(record, 'released', actorId);
+    }
+    if (split.releaseKobo === 0) {
+      return this.applyTransition(record, 'refunded', actorId);
+    }
+    return this.applySplitSettlement(record, split, actorId);
+  }
+
+  /**
+   * Validates a split award against the held amount: integer kobo parts,
+   * both non-negative, at least one positive, summing EXACTLY to the held
+   * amount (the defining invariant of the V-06 design).
+   */
+  private assertSplitAmounts(
+    record: EscrowRecord,
+    split: { releaseKobo: number; refundKobo: number }
+  ): void {
+    for (const [label, value] of [
+      ['releaseKobo', split.releaseKobo],
+      ['refundKobo', split.refundKobo]
+    ] as const) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new BadRequestException(`${label} must be a non-negative integer (kobo)`);
+      }
+    }
+    if (split.releaseKobo === 0 && split.refundKobo === 0) {
+      throw new BadRequestException('A split award cannot be zero on both sides');
+    }
+    if (split.releaseKobo + split.refundKobo !== record.amountKobo) {
+      throw new BadRequestException(
+        `Split award (${split.releaseKobo} + ${split.refundKobo} kobo) must sum EXACTLY to the ` +
+          `held amount ${record.amountKobo} kobo for escrow ${record.id}`
+      );
+    }
+  }
+
+  /**
+   * Core of the V-06/V-36 split settlement: persist 'settled' with the two
+   * award parts, then post the two balanced legs. The payout rail (when
+   * required) drives each part under its own claim key BEFORE the terminal
+   * write, so a mid-split crash leaves a resumable record and retries
+   * converge on the recorded attempts instead of double-paying.
+   */
+  private async applySplitSettlement(
+    record: EscrowRecord,
+    split: { releaseKobo: number; refundKobo: number },
+    actorId: string,
+    options?: { allowUnverified?: boolean }
+  ): Promise<EscrowRecord> {
+    await this.assertEscrowLedgerAvailable('split_release', record, actorId);
+    if (!options?.allowUnverified && this.verificationRequired() && !record.depositVerifiedAt) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.split_blocked_unverified',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId: record.orderId, depositReference: record.depositReference }
+      });
+      throw new ConflictException(
+        `Escrow ${record.id} has no provider-verified deposit; refusing split settlement. ` +
+          'Resolve through the admin-mediated dispute path.'
+      );
+    }
+    if (this.payoutRequired()) {
+      // Stage 23 rail, per part: recorded, claimed, idempotency-keyed.
+      await this.executeSplitPayoutRail(record, 'release', split.releaseKobo, actorId);
+      await this.executeSplitPayoutRail(record, 'refund', split.refundKobo, actorId);
+    }
+    const persisted = await this.persistTransition(record, 'settled', actorId, {
+      releasedKobo: split.releaseKobo,
+      refundedKobo: split.refundKobo
+    });
+    await this.postSplitLedgerLegs(persisted, actorId);
+    await this.audit?.record({
+      actorId,
+      action: 'marketplace.escrow.settled_split',
+      entityType: 'escrow_record',
+      entityId: record.id,
+      metadata: {
+        orderId: record.orderId,
+        releasedKobo: split.releaseKobo,
+        refundedKobo: split.refundKobo,
+        amountKobo: record.amountKobo
+      }
+    });
+    return persisted;
+  }
+
+  /**
+   * One payout-rail leg of a split settlement (V-06). Mirrors
+   * executePayoutRail's claim/lease/finalize discipline under a PART-scoped
+   * idempotency key, but does NOT move the escrow through a pending state —
+   * the escrow stays in its pre-settlement status until BOTH parts have
+   * succeeded and the guarded terminal write lands. A driver failure leaves
+   * the attempt 'failed' and the escrow untouched; a retry re-claims and
+   * converges, and an already-succeeded attempt replays without a second
+   * driver call.
+   */
+  private async executeSplitPayoutRail(
+    record: EscrowRecord,
+    kind: 'release' | 'refund',
+    amountKobo: number,
+    actorId: string
+  ): Promise<void> {
+    if (
+      !this.payoutDriver ||
+      !this.payouts ||
+      (isProduction() && this.payoutDriver.name === 'stub')
+    ) {
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.payout_unavailable',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId: record.orderId, kind: `split_${kind}`, driver: this.payoutDriver?.name ?? 'none', production: isProduction() }
+      });
+      throw new ServiceUnavailableException(
+        `Escrow payout rail is not available for the split ${kind} part (driver: ${this.payoutDriver?.name ?? 'none'}). ` +
+          'Production requires ESCROW_PAYOUT_DRIVER=live with PAYOUT_PROVIDER_* configured; ' +
+          `refusing to settle escrow ${record.id} — nothing was recorded or posted.`
+      );
+    }
+    const idempotencyKey = `escrow-payout:split-${kind}:${record.id}`;
+    const payload = { escrowId: record.id, orderId: record.orderId, kind, amountKobo };
+    const now = new Date().toISOString();
+    const claim = await claimPayoutAttempt(this.payouts, {
+      id: newId('payout'),
+      ...payload,
+      idempotencyKey,
+      payloadHash: hashPayoutPayload(payload),
+      provider: this.payoutDriver.name,
+      createdAt: now,
+      updatedAt: now
+    });
+    if (!claim.claimed) {
+      return; // a prior attempt already succeeded — never pay twice
+    }
+    const revalidation = await revalidatePayoutClaimLease(this.payouts, claim.attempt);
+    if (!revalidation.held) {
+      return;
+    }
+    try {
+      const result = await this.payoutDriver.payout({
+        ...payload,
+        idempotencyKey,
+        depositProviderReference: record.providerReference
+      });
+      await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
+        status: 'succeeded',
+        providerReference: result.providerReference
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const finalized = await finalizePayoutAttempt(this.payouts, revalidation.attempt, {
+        status: 'failed',
+        failureReason: message
+      });
+      if (finalized.status === 'succeeded') {
+        return; // a concurrent claimant's driver call landed first
+      }
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.escrow.payout_failed',
+        entityType: 'escrow_record',
+        entityId: record.id,
+        metadata: { orderId: record.orderId, kind: `split_${kind}`, driver: this.payoutDriver.name, idempotencyKey, error: message }
+      });
+      if (error instanceof ServiceUnavailableException) {
+        throw error; // fail-closed driver answers propagate as 503
+      }
+      throw new BadGatewayException(
+        `Payout driver '${this.payoutDriver.name}' failed the split ${kind} part of escrow ${record.id} ` +
+          `(${message}); the escrow is unchanged and the settlement must be retried`
+      );
+    }
   }
 
   /** System-path dispute freeze when the underlying order is disputed. */
@@ -869,7 +1175,7 @@ export class EscrowService {
     actorId: string,
     extra?: Partial<EscrowRecord>
   ): Promise<EscrowRecord> {
-    const terminal = status === 'released' || status === 'refunded';
+    const terminal = status === 'released' || status === 'refunded' || status === 'settled';
     const event = this.events.build(
       'marketplace.escrow.status_changed',
       { escrowId: record.id, orderId: record.orderId, from: record.status, to: status },
