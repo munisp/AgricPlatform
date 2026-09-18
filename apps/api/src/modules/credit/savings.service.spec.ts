@@ -5,12 +5,26 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   createInMemoryCreditGroupMemberRepository,
   createInMemoryCreditGroupRepository,
+  createInMemoryCreditGuarantorRepository,
+  createInMemoryCreditLoanRepository,
+  createInMemoryCreditRepaymentRepository,
   createInMemoryCreditSavingsAccountRepository,
   createInMemoryCreditSavingsTransactionRepository
 } from '../../database/repositories/credit-suite.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from '../../database/repositories/ledger.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 import { CreditGroupsService } from './groups.service.js';
-import { CreditSavingsService } from './savings.service.js';
+import {
+  CreditSavingsService,
+  SAVINGS_CASH_FLOAT_ACCOUNT,
+  SAVINGS_LEDGER_REFERENCE_TYPE,
+  SAVINGS_MEMBER_DEPOSITS_ACCOUNT,
+  savingsLedgerKey
+} from './savings.service.js';
 
 const farmer: Pick<User, 'id' | 'roles'> = { id: 'user-adamu', roles: ['farmer'] };
 const other: Pick<User, 'id' | 'roles'> = { id: 'user-aisha', roles: ['farmer'] };
@@ -22,9 +36,21 @@ function makeServices() {
   const members = createInMemoryCreditGroupMemberRepository();
   const transactions = createInMemoryCreditSavingsTransactionRepository();
   const accounts = createInMemoryCreditSavingsAccountRepository(transactions);
-  const savings = new CreditSavingsService(events, accounts, transactions, groups, members);
-  const groupsService = new CreditGroupsService(events, groups, members);
-  return { savings, groupsService, accounts, transactions };
+  const ledgerAccounts = createInMemoryLedgerAccountRepository();
+  const ledgerEntries = createInMemoryLedgerEntryRepository();
+  const ledger = new LedgerService(events, ledgerAccounts, ledgerEntries);
+  const savings = new CreditSavingsService(events, accounts, transactions, groups, members, ledger);
+  const groupsService = new CreditGroupsService(
+    events,
+    groups,
+    members,
+    createInMemoryCreditLoanRepository(),
+    createInMemoryCreditRepaymentRepository(),
+    createInMemoryCreditGuarantorRepository(),
+    accounts,
+    transactions
+  );
+  return { savings, groupsService, accounts, transactions, ledger, ledgerEntries };
 }
 
 describe('CreditSavingsService personal accounts', () => {
@@ -139,3 +165,62 @@ describe('CreditSavingsService group accounts', () => {
     expect(ownAccount.balanceKobo).toBe(10_000);
   });
 });
+
+
+describe('CreditSavingsService ledger mirror (V-58)', () => {
+  it('posts a balanced, traceable ledger leg per deposit', async () => {
+    const { savings, ledger } = makeServices();
+    const deposit = await savings.depositOwn(farmer, 250_000, 'ref-led-dep-1');
+    const entry = await ledgerEntriesForKey(ledger, savingsLedgerKey('ref-led-dep-1'));
+    expect(entry.referenceType).toBe(SAVINGS_LEDGER_REFERENCE_TYPE);
+    expect(entry.referenceId).toBe(deposit.transaction.id);
+    const debits = entry.postings.filter((p) => p.direction === 'debit');
+    const credits = entry.postings.filter((p) => p.direction === 'credit');
+    expect(debits).toEqual([
+      { accountCode: SAVINGS_CASH_FLOAT_ACCOUNT, direction: 'debit', amountKobo: 250_000 }
+    ]);
+    expect(credits).toEqual([
+      { accountCode: SAVINGS_MEMBER_DEPOSITS_ACCOUNT, direction: 'credit', amountKobo: 250_000 }
+    ]);
+  });
+
+  it('mirrors withdrawals with the flipped balanced leg', async () => {
+    const { savings, ledger } = makeServices();
+    await savings.depositOwn(farmer, 100_000, 'ref-led-dep-2');
+    await savings.withdrawOwn(farmer, 60_000, 'ref-led-wd-1');
+    const entry = await ledgerEntriesForKey(ledger, savingsLedgerKey('ref-led-wd-1'));
+    expect(entry.postings).toEqual([
+      { accountCode: SAVINGS_MEMBER_DEPOSITS_ACCOUNT, direction: 'debit', amountKobo: 60_000 },
+      { accountCode: SAVINGS_CASH_FLOAT_ACCOUNT, direction: 'credit', amountKobo: 60_000 }
+    ]);
+  });
+
+  it('the ledger mirrors the savings book: balances agree after a mixed run', async () => {
+    const { savings, ledger } = makeServices();
+    await savings.depositOwn(farmer, 100_000, 'ref-bal-1');
+    await savings.depositOwn(farmer, 50_000, 'ref-bal-2');
+    await savings.withdrawOwn(farmer, 30_000, 'ref-bal-3');
+    const account = await savings.getOwnAccount(farmer);
+    // Liability account is credit-normal: member deposits balance = credits - debits.
+    const depositsBalance = await ledger.balance(SAVINGS_MEMBER_DEPOSITS_ACCOUNT);
+    expect(-depositsBalance.balanceKobo).toBe(account.balanceKobo);
+    const floatBalance = await ledger.balance(SAVINGS_CASH_FLOAT_ACCOUNT);
+    expect(floatBalance.balanceKobo).toBe(account.balanceKobo);
+  });
+
+  it('never double-posts on ref replay: the idempotency key dedupes the leg', async () => {
+    const { savings, ledger } = makeServices();
+    await savings.depositOwn(farmer, 75_000, 'ref-led-replay');
+    const replayed = await savings.depositOwn(farmer, 75_000, 'ref-led-replay');
+    expect(replayed.replay).toBe(true);
+    const floatBalance = await ledger.balance(SAVINGS_CASH_FLOAT_ACCOUNT);
+    expect(floatBalance.balanceKobo).toBe(75_000); // posted exactly once
+  });
+});
+
+async function ledgerEntriesForKey(ledger: LedgerService, key: string) {
+  const entries = await ledger.entriesForAccount(SAVINGS_CASH_FLOAT_ACCOUNT);
+  const entry = entries.find((candidate) => candidate.idempotencyKey === key);
+  expect(entry, `ledger entry for ${key}`).toBeDefined();
+  return entry!;
+}
