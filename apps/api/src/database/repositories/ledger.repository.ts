@@ -42,6 +42,19 @@ export interface DailyLimitReservation {
 }
 
 /**
+ * W2-C2 (V-08): reversal counterpart of DailyLimitReservation — releases
+ * `amountKobo` from the (agent, businessDate) counter of the REVERSED
+ * transaction's original business date, in the same posting transaction, so
+ * the daily cap reflects the reversal (GREATEST-floored at 0; a missing
+ * counter row is a no-op).
+ */
+export interface DailyLimitCorrection {
+  agentId: string;
+  businessDate: string;
+  amountKobo: number;
+}
+
+/**
  * Opaque caller-owned transaction handle for in-transaction postings
  * (WP-G1 VSLA fold). Mirrors the input-vouchers `AllocationTx` doctrine:
  * the pg implementation passes the open transaction's client so a caller
@@ -88,7 +101,8 @@ export interface LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
     outboxEvent?: DomainEvent,
-    dailyLimitReservation?: DailyLimitReservation
+    dailyLimitReservation?: DailyLimitReservation,
+    dailyLimitCorrection?: DailyLimitCorrection
   ): Promise<LedgerJournalEntry>;
   /**
    * Optional (pg): the posting body of `postEntry` running on a CALLER-OWNED
@@ -210,7 +224,8 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
     entry: LedgerJournalEntry,
     requireSolventAccounts?: readonly string[],
     outboxEvent?: DomainEvent,
-    dailyLimitReservation?: DailyLimitReservation
+    dailyLimitReservation?: DailyLimitReservation,
+    dailyLimitCorrection?: DailyLimitCorrection
   ): Promise<LedgerJournalEntry> {
     // WP-G13: the same persistence-level balance assertion the pg posting
     // enforces in-transaction via finance.transfer_is_balanced() — an
@@ -239,6 +254,15 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
       }
       this.dailyUsage.set(reservationKey, used + dailyLimitReservation.amountKobo);
     }
+    // W2-C2 (V-08): reversal releases capacity on the ORIGINAL business date.
+    let correctionKey: string | undefined;
+    if (dailyLimitCorrection) {
+      correctionKey = `${dailyLimitCorrection.agentId}|${dailyLimitCorrection.businessDate}`;
+      this.dailyUsage.set(
+        correctionKey,
+        Math.max(0, (this.dailyUsage.get(correctionKey) ?? 0) - dailyLimitCorrection.amountKobo)
+      );
+    }
     this.items.set(entry.id, structuredClone(entry));
     // Solvency guard with rollback semantics: compute the post-entry balance
     // synchronously and back the entry out when a protected account would
@@ -253,6 +277,12 @@ export class InMemoryLedgerEntryRepository implements LedgerEntryRepository {
           this.dailyUsage.set(
             reservationKey,
             (this.dailyUsage.get(reservationKey) ?? 0) - dailyLimitReservation.amountKobo
+          );
+        }
+        if (correctionKey && dailyLimitCorrection) {
+          this.dailyUsage.set(
+            correctionKey,
+            (this.dailyUsage.get(correctionKey) ?? 0) + dailyLimitCorrection.amountKobo
           );
         }
         throw new BadRequestException(
