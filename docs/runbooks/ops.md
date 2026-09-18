@@ -137,3 +137,108 @@ funds-integrity incidents:
 Likely abuse or a broken client. Identify sources in the API logs
 (`requestId` correlated), tighten throttler limits or block the client per
 `docs/security-compliance.md` §7.
+
+## Migrations — markers, maintenance windows, and policies
+
+**Non-transactional marker (V-76).** A migration whose first line is
+exactly `-- no-transaction` is applied statement-by-statement WITHOUT an
+enclosing transaction (required for `CREATE INDEX CONCURRENTLY`; also the
+right home for `NOT VALID` + `VALIDATE CONSTRAINT` splits). Rules for
+marker files:
+
+- flat DDL only — no `$$` bodies, no `BEGIN`/`COMMIT`/`ROLLBACK` (the
+  runner refuses them loudly);
+- every statement idempotent (`IF NOT EXISTS` / `IF EXISTS`) because
+  partial application is possible — the file is recorded in
+  `schema_migrations` only after ALL statements succeed, so re-running
+  `npm run migrate -w @agric-platform/api` resumes safely;
+- **run CONCURRENTLY index builds in a low-traffic window**: they avoid
+  write-blocking locks but still scan the whole table once per index.
+- if a CONCURRENTLY build is killed mid-run it can leave an INVALID index
+  behind: `DROP INDEX IF EXISTS <name>;` then re-run the migration.
+
+Example: `infra/postgres/082_hot_path_indexes.sql` (V-75: indexes on
+`marketplace.order_events(order_id)`, `marketplace.orders(listing_id)`,
+`livestock.lot_animals(animal_id)`).
+
+**No-down-path policy (L-21, recorded).** Migrations are additive and
+forward-only: there is no down/rollback tooling and none may be added
+ad-hoc. A bad migration is fixed by a new forward migration, or by
+backup-restore per [dr.md](dr.md) when data was damaged. Rollback of the
+APPLICATION never implies rolling back the database.
+
+**Baseline idempotency (L-21).** On a database whose tables already exist
+but whose `schema_migrations` ledger is empty (e.g. bootstrapped by
+docker-initdb), the migrator baselines — records every on-disk migration
+through the latest probed artifact — instead of re-applying files. Artifact
+probes live in `apps/api/src/database/migrate.ts`
+(`LATEST_ARTIFACT_PROBES`); when you add a migration, extend the probe map
+to your file so Compose-bootstrapped databases baseline through it.
+
+### Migration 043 fork remediation (N-6)
+
+Migration 043 repaired audit-chain forks by keeping the LONGEST branch.
+If a chain still fails `AuditService.verify()` with a fork (two events
+sharing a `prev_hash`), remediate manually:
+
+```sql
+-- 1. Identify forked parents:
+SELECT prev_hash, count(*) FROM admin.audit_events
+GROUP BY prev_hash HAVING count(*) > 1;
+
+-- 2. For each fork, inspect both branches and decide the canonical one
+--    (normally the branch whose tip the audit ANCHORS reference).
+SELECT id, actor_id, action, entity_id, created_at, hash
+FROM admin.audit_events WHERE prev_hash = '<forked-prev-hash>'
+ORDER BY created_at, id;
+
+-- 3. Quarantine the losing branch (do NOT delete — tamper evidence):
+INSERT INTO admin.audit_events_quarantine
+SELECT * FROM admin.audit_events WHERE id = '<losing-event-id>';
+DELETE FROM admin.audit_events WHERE id = '<losing-event-id>';
+
+-- 4. Re-anchor the surviving tip as admin:
+--    POST /api/v1/admin/audit-log/anchors
+-- 5. Re-run verification: GET /api/v1/admin/audit-log/verify must return
+--    valid:true. Any anchor-gap finding after quarantine is EXPECTED —
+--    the new anchor re-baselines the window.
+```
+
+If no `audit_events_quarantine` table exists in your schema version,
+create one with the same columns first, or export the losing rows to a
+signed JSONL file next to the anchor sink instead.
+
+## Client contract — escrow expiry race (N-4)
+
+Escrow expiry is lazy: a payment intent that passes `expiresAt` is not
+swept in the background — it flips to `expired` the NEXT time it is read
+or acted on. Clients therefore MUST NOT treat "no expiry event received"
+as "still payable". Contract for integrators:
+
+- always read the intent (`GET /payments/intents/:id`) immediately before
+  attempting confirmation; a `status: 'expired'` response is final;
+- never retry a `409 intent_expired` — mint a new intent instead;
+- display countdowns from the server-issued `expiresAt`, never from a
+  client-side estimate (clock skew will lose races);
+- webhooks: an expiry between your last read and the provider callback is
+  handled idempotently server-side — a late `charge.success` for an
+  expired intent is acknowledged but NOT applied.
+
+## Multi-replica caveats — in-memory break-glass mode (N-7)
+
+The in-memory persistence driver (no `DATABASE_URL`) is a dev/demo and
+break-glass fallback only. Under the production HPA (≥2 replicas) it is
+actively dangerous: every replica holds its OWN users, wallets, voucher
+and escrow state — the same phone number can register twice with
+different balances, and idempotency keys dedupe only within one pod.
+Break-glass protocol:
+
+1. Use in-memory mode ONLY with `replicas: 1` (scale the deployment down
+   first) and only to survive a postgres outage read/write-limited.
+2. Banner the incident loudly: every in-memory write is LOST on pod
+   restart — plan a reconciliation window before returning to postgres.
+3. Never run in-memory mode against real MSISDNs/NINs; it bypasses the
+   pg-side uniqueness and row-lock guarantees the money paths rely on
+   (see dim06 findings V-13/V-14).
+4. Feature flags, rate limits and audit anchors are likewise per-pod in
+   this mode — do not treat their state as authoritative.
