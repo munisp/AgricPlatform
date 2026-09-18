@@ -9,6 +9,7 @@ import type {
   CreditGuarantorStatus,
   CreditLoanApplication,
   CreditLoanProduct,
+  CreditLoanRestructure,
   CreditLoanStatus,
   CreditRepayment,
   CreditRepaymentStatus,
@@ -66,6 +67,11 @@ export interface CreditLoanCriteria {
   productId?: string;
   status?: CreditLoanStatus;
   groupId?: string;
+  /** V-03: find loans linked to a plot / planting (grace trigger lookup). */
+  plotId?: string;
+  plantingId?: string;
+  /** V-30: find the top-up application consolidating a given loan. */
+  consolidatesLoanId?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -79,7 +85,10 @@ export function creditLoanMatcher(
     (!criteria.applicantUserId || loan.applicantUserId === criteria.applicantUserId) &&
     (!criteria.productId || loan.productId === criteria.productId) &&
     (!criteria.status || loan.status === criteria.status) &&
-    (!criteria.groupId || loan.groupId === criteria.groupId);
+    (!criteria.groupId || loan.groupId === criteria.groupId) &&
+    (!criteria.plotId || loan.plotId === criteria.plotId) &&
+    (!criteria.plantingId || loan.plantingId === criteria.plantingId) &&
+    (!criteria.consolidatesLoanId || loan.consolidatesLoanId === criteria.consolidatesLoanId);
 }
 
 export class InMemoryCreditLoanRepository
@@ -419,4 +428,33 @@ export class InMemoryCreditSavingsTransactionRepository
 
 export function createInMemoryCreditSavingsTransactionRepository(): InMemoryCreditSavingsTransactionRepository {
   return new InMemoryCreditSavingsTransactionRepository();
+}
+
+/* ----------------------------------------------------- restructures (V-04) -- */
+
+export interface CreditRestructureCriteria {
+  loanId?: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface CreditRestructureRepository
+  extends AsyncRepository<CreditLoanRestructure, CreditRestructureCriteria> {}
+
+export function creditRestructureMatcher(
+  criteria: CreditRestructureCriteria
+): (restructure: CreditLoanRestructure) => boolean {
+  return (restructure) => !criteria.loanId || restructure.loanId === criteria.loanId;
+}
+
+export class InMemoryCreditRestructureRepository
+  extends InMemoryRepository<CreditLoanRestructure, CreditRestructureCriteria>
+  implements CreditRestructureRepository
+{
+  constructor(seed: readonly CreditLoanRestructure[] = []) {
+    super(seed, creditRestructureMatcher);
+  }
+}
+
+export function createInMemoryCreditRestructureRepository(): InMemoryCreditRestructureRepository {
+  return new InMemoryCreditRestructureRepository();
 }
