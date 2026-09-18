@@ -12,11 +12,15 @@ import type {
   InsuranceClaim,
   InsurancePolicy,
   InsurancePolicyStatus,
+  LivestockAnimalStatusChangedPayload,
   LivestockRecallInitiatedPayload,
   LivestockSubjectType,
   User
 } from '@agric-platform/shared';
-import { LIVESTOCK_RECALL_INITIATED_EVENT } from '@agric-platform/shared';
+import {
+  LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT,
+  LIVESTOCK_RECALL_INITIATED_EVENT
+} from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -99,6 +103,17 @@ export class InsuranceService implements OnModuleInit {
         (error: unknown) =>
           this.logger.warn(
             `recall auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
+          )
+      );
+    });
+    // V-11: mortality auto-claim — animal death/theft drafts a claim per
+    // bound policy covering the animal, off the same status_changed event
+    // the lien service uses for its margin call.
+    this.events.on(LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT, (event) => {
+      void this.handleAnimalStatusChanged(event.payload as LivestockAnimalStatusChangedPayload).catch(
+        (error: unknown) =>
+          this.logger.warn(
+            `mortality auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
           )
       );
     });
@@ -409,6 +424,97 @@ export class InsuranceService implements OnModuleInit {
       });
     }
     return drafted;
+  }
+
+  /**
+   * V-11 mortality hook: drafts one 'mortality' claim per BOUND policy whose
+   * subject is the dead/stolen animal (animal policies directly; lot
+   * policies when the animal is a lot member). Idempotent per
+   * (policyId, animalId, 'mortality'): an animal dies at most once, so a
+   * pre-existing mortality claim covering it makes the delivery a no-op —
+   * duplicate event deliveries and subscriber re-drives never double-draft.
+   * Claims land as 'draft' for the holder to review/submit; the insurer is
+   * notified via the livestock_trade.claim.auto_drafted event.
+   */
+  async handleAnimalStatusChanged(
+    payload: LivestockAnimalStatusChangedPayload
+  ): Promise<InsuranceClaim[]> {
+    if (!payload || typeof payload.animalId !== 'string') {
+      this.logger.warn('ignoring malformed livestock.animal.status_changed payload');
+      return [];
+    }
+    if (payload.to !== 'dead' && payload.to !== 'stolen') {
+      return [];
+    }
+    const drafted: InsuranceClaim[] = [];
+    const bound = await this.policies.find({ status: 'bound' });
+    for (const policy of bound) {
+      const covers = await this.policyCoversAnimal(policy, payload.animalId);
+      if (!covers) {
+        continue;
+      }
+      const existing = await this.claims.find({ policyId: policy.id });
+      if (
+        existing.some(
+          (claim) => claim.trigger === 'mortality' && claim.animalIds.includes(payload.animalId)
+        )
+      ) {
+        continue; // mortality claim for this animal already drafted — idempotent replay
+      }
+      const now = new Date().toISOString();
+      const claim: InsuranceClaim = {
+        id: newId('claim'),
+        policyId: policy.id,
+        claimantUserId: policy.holderUserId,
+        trigger: 'mortality',
+        animalIds: [payload.animalId],
+        status: 'draft',
+        notes: `Auto-drafted: animal '${payload.animalId}' reported ${payload.to}`,
+        createdAt: now,
+        updatedAt: now
+      };
+      try {
+        drafted.push(await this.claims.create(claim));
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+        // Concurrent drafter won — converge (adopt-on-conflict).
+      }
+    }
+    if (drafted.length > 0) {
+      await this.events.publish('livestock_trade.claim.auto_drafted', {
+        animalId: payload.animalId,
+        cause: payload.to,
+        trigger: 'mortality',
+        claimIds: drafted.map((claim) => claim.id)
+      });
+    }
+    return drafted;
+  }
+
+  /** True when the policy subject IS the animal or a lot containing it. */
+  private async policyCoversAnimal(policy: InsurancePolicy, animalId: string): Promise<boolean> {
+    if (policy.subjectType === 'animal') {
+      return policy.subjectId === animalId;
+    }
+    try {
+      const members = await this.lots.listAnimalIds(policy.subjectId);
+      return members.includes(animalId);
+    } catch (error) {
+      // Same doctrine as recallOverlap: only a genuinely unknown/gone lot
+      // means "not covered"; any other store failure must surface, not
+      // silently skip a mortality draft on a no-retry path.
+      if (error instanceof NotFoundException) {
+        return false;
+      }
+      this.logger.error(
+        `mortality coverage lookup failed for lot '${policy.subjectId}': ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      throw error;
+    }
   }
 
   private async recallOverlap(policy: InsurancePolicy, recalled: ReadonlySet<string>): Promise<string[]> {
