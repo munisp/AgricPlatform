@@ -61,6 +61,23 @@ export class PgIvrCallRepository implements IvrCallRepository {
     return result.rowCount ?? 0;
   }
 
+  async pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number> {
+    const result = await this.pool.query(
+      'UPDATE channels.ivr_calls SET caller_number = $1 WHERE caller_number = $2',
+      [pseudonym, phone]
+    );
+    return result.rowCount ?? 0;
+  }
+
+  /** DTMF retention purge (V-69, NDPA 2023): blank keypress history on idle calls. */
+  async purgeDtmfHistory(olderThanIso: string): Promise<number> {
+    const result = await this.pool.query(
+      "UPDATE channels.ivr_calls SET dtmf_history = '' WHERE updated_at < $1 AND dtmf_history <> ''",
+      [olderThanIso]
+    );
+    return result.rowCount ?? 0;
+  }
+
   private fromRow(row: Record<string, unknown>): IvrCallRecord {
     return {
       sessionId: row.session_id as string,
