@@ -30,7 +30,11 @@ describe('isNonTransactionalMigration (V-76)', () => {
     expect(isNonTransactionalMigration(sql)).toBe(true);
     const statements = splitNonTransactionalStatements(sql, '082_hot_path_indexes.sql');
     expect(statements).toHaveLength(3);
-    expect(statements.every((s) => s.includes('CREATE INDEX CONCURRENTLY IF NOT EXISTS'))).toBe(
+    // Strong oracle: every statement must START with the DDL — an
+    // `includes` check alone once let a comment fragment ("the reverse
+    // animal→lots lookup…") ride in front of the third statement (CI
+    // db-contract failure, 2026-09-18).
+    expect(statements.every((s) => s.startsWith('CREATE INDEX CONCURRENTLY IF NOT EXISTS'))).toBe(
       true
     );
   });
@@ -49,6 +53,17 @@ describe('splitNonTransactionalStatements (V-76)', () => {
     expect(statements).toHaveLength(2);
     expect(statements[0]).toContain('a_idx');
     expect(statements[1]).toContain('b_idx');
+  });
+
+  it('ignores semicolons inside line comments when splitting', () => {
+    const sql = [
+      NON_TRANSACTIONAL_MARKER,
+      '-- covers lot→animals; the reverse lookup was unindexed.',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS c_idx ON s.v (e);'
+    ].join('\n');
+    const statements = splitNonTransactionalStatements(sql, 'x.sql');
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toBe('CREATE INDEX CONCURRENTLY IF NOT EXISTS c_idx ON s.v (e)');
   });
 
   it('refuses dollar-quoted bodies (would be split incorrectly)', () => {
