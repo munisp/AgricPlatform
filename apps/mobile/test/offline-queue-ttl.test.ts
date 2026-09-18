@@ -32,8 +32,8 @@ const WITHIN = new Date(Date.parse(T0) + 60_000).toISOString();
 describe('offline queue TTL (V-64)', () => {
   it('drops expired entries WITHOUT replaying and surfaces them in the result', async () => {
     const { queue, setNow } = queueAt(T0);
-    const stale = await queue.enqueue({ ...BASE, idempotencyKey: 'stale' });
-    const fresh = await queue.enqueue({ ...BASE, idempotencyKey: 'fresh' });
+    await queue.enqueue({ ...BASE, idempotencyKey: 'stale' });
+    await queue.enqueue({ ...BASE, idempotencyKey: 'fresh' });
     setNow(LATER); // past the default 7-day TTL for both
     await queue.enqueue({ ...BASE, idempotencyKey: 'brand-new' });
 
