@@ -40,6 +40,7 @@ import {
 
 const lead = { id: 'user-lead', roles: ['chapter_lead'] } as unknown as User;
 const farmer = { id: 'user-farmer', roles: ['farmer'] } as unknown as User;
+const admin = { id: 'user-admin', roles: ['admin'] } as unknown as User;
 
 const stubNdvi: NdviProvider = {
   name: 'stub',
@@ -93,7 +94,7 @@ function makeService() {
 async function makeGroupWithCycle(service: VslaCarbonService) {
   const group = await service.createGroup(lead, { name: 'Kano Women Savings' });
   const member2 = await service.addMember(lead, group.id, { userId: farmer.id });
-  const leadMember = (await service.listMembers(group.id)).find((m) => m.userId === lead.id);
+  const leadMember = (await service.listMembers(admin, group.id)).find((m) => m.userId === lead.id);
   const cycle = await service.openCycle(lead, group.id, '2026 Cycle 1');
   return { group, cycle, leadMember: leadMember!, member2 };
 }
