@@ -140,6 +140,30 @@ class RedeemVoucherDto {
   @IsString()
   @MaxLength(100)
   plotId?: string;
+
+  /**
+   * W2-C2 (V-32): partial redemption amount. Omit to redeem the full
+   * remaining balance; an overshoot of the remaining balance is 422.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(MAX_VOUCHER_AMOUNT_KOBO)
+  amountKobo?: number;
+}
+
+class RefundVoucherDto {
+  /** Operator reason for the refund (e.g. counterfeit-input discovery). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+
+  /** V-02: complaint/dispute case this refund resolves (linkage). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  complaintCaseId?: string;
 }
 
 class FundProgrammeDto {
@@ -357,7 +381,8 @@ export class InputVouchersController {
     // so a redemption failure storm is visible to Prometheus alerts.
     try {
       const data = await this.vouchers.redeemVoucher(id, dto.invoiceRef, caller, {
-        plotId: dto.plotId
+        plotId: dto.plotId,
+        amountKobo: dto.amountKobo
       });
       this.metrics.voucherRedemption('success');
       return { data };
@@ -381,6 +406,24 @@ export class InputVouchersController {
   @ApiOperation({ summary: 'Expire an ISSUED voucher past its expiry and release its encumbrance (admin)' })
   async expireVoucher(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.vouchers.expireVoucher(id, actorOf(actor).id) };
+  }
+
+  @Post('vouchers/:id/refund')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Refund a REDEEMED/PARTIALLY_REDEEMED voucher (V-02): reposts balanced reversals of every ' +
+      'redemption part (dealer-settlement clawback), returns the settled float, releases any ' +
+      'unredeemed remainder and links the complaint case. Idempotent replay returns the refund.'
+  })
+  async refundVoucher(@Param('id') id: string, @Body() dto: RefundVoucherDto, @CurrentUser() actor: User | null) {
+    return {
+      data: await this.vouchers.refundVoucher(id, actorOf(actor).id, {
+        reason: dto.reason,
+        complaintCaseId: dto.complaintCaseId
+      })
+    };
   }
 
   // ------------------------------------------------------ identity adapter
