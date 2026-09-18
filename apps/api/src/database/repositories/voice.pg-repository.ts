@@ -25,8 +25,8 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
     await this.pool.query(
       'INSERT INTO voice.voice_sessions ' +
         '(id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
-        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at) ' +
-        'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)',
+        'consent_captured, locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at) ' +
+        'VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
       [
         record.id,
         record.channel,
@@ -36,6 +36,7 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
         record.ninRefHash ?? null,
         record.farmerUserId ?? null,
         record.createdByUserId ?? null,
+        record.consentCaptured ?? false,
         record.locale,
         record.crop ?? null,
         record.symptomCategory ?? null,
@@ -51,8 +52,8 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
   async findById(id: string): Promise<VoiceSessionRecord | undefined> {
     const result = await this.pool.query(
       'SELECT id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
-        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at ' +
-        'FROM voice.voice_sessions WHERE id = $1',
+        'consent_captured, locale, crop, symptom_category, menu_state, active_case_id, created_at, ' +
+        'updated_at FROM voice.voice_sessions WHERE id = $1',
       [id]
     );
     return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
@@ -76,8 +77,9 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
     };
     await this.pool.query(
       'UPDATE voice.voice_sessions SET channel = $2, state = $3, phone = $4, nin_ref = $5, ' +
-        'nin_ref_hash = $6, farmer_user_id = $7, created_by_user_id = $8, locale = $9, crop = $10, ' +
-        'symptom_category = $11, menu_state = $12, active_case_id = $13, updated_at = $14 WHERE id = $1',
+        'nin_ref_hash = $6, farmer_user_id = $7, created_by_user_id = $8, consent_captured = $9, ' +
+        'locale = $10, crop = $11, symptom_category = $12, menu_state = $13, active_case_id = $14, ' +
+        'updated_at = $15 WHERE id = $1',
       [
         updated.id,
         updated.channel,
@@ -87,6 +89,7 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
         updated.ninRefHash ?? null,
         updated.farmerUserId ?? null,
         updated.createdByUserId ?? null,
+        updated.consentCaptured ?? false,
         updated.locale,
         updated.crop ?? null,
         updated.symptomCategory ?? null,
@@ -116,8 +119,8 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     const result = await this.pool.query(
       'SELECT id, channel, state, phone, nin_ref, nin_ref_hash, farmer_user_id, created_by_user_id, ' +
-        'locale, crop, symptom_category, menu_state, active_case_id, created_at, updated_at ' +
-        `FROM voice.voice_sessions${where} ` +
+        'consent_captured, locale, crop, symptom_category, menu_state, active_case_id, created_at, ' +
+        `updated_at FROM voice.voice_sessions${where} ` +
         'ORDER BY created_at ASC, id ASC',
       params
     );
@@ -134,6 +137,7 @@ export class PgVoiceSessionRepository implements VoiceSessionRepository {
       ninRefHash: (row.nin_ref_hash as string | null) ?? undefined,
       farmerUserId: (row.farmer_user_id as string | null) ?? undefined,
       createdByUserId: (row.created_by_user_id as string | null) ?? undefined,
+      consentCaptured: (row.consent_captured as boolean | null) ?? false,
       locale: row.locale as string,
       crop: (row.crop as string | null) ?? undefined,
       symptomCategory: (row.symptom_category as string | null) ?? undefined,
@@ -182,6 +186,14 @@ export class PgVoiceTurnRepository implements VoiceTurnRepository {
       [sessionId]
     );
     return result.rows.map((row) => this.turnFromRow(row));
+  }
+
+  /** Retention sweep (V-69, NDPA 2023): purge transcript turns past retention. */
+  async purgeOlderThan(cutoffIso: string): Promise<number> {
+    const result = await this.pool.query('DELETE FROM voice.voice_turns WHERE created_at < $1', [
+      cutoffIso
+    ]);
+    return result.rowCount ?? 0;
   }
 
   private turnFromRow(row: Record<string, unknown>): VoiceTurnRecord {
