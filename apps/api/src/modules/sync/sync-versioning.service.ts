@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { MetricsService } from '../../common/metrics/metrics.service.js';
 import { ENTITY_VERSION_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { EntityVersionRepository } from '../../database/repositories/sync.repository.js';
 
@@ -27,10 +28,17 @@ export class SyncVersioningService {
   private readonly logger = new Logger(SyncVersioningService.name);
 
   constructor(
-    @Inject(ENTITY_VERSION_REPOSITORY) private readonly versions: EntityVersionRepository
+    @Inject(ENTITY_VERSION_REPOSITORY) private readonly versions: EntityVersionRepository,
+    // Global metrics module; optional so bare unit constructions keep working.
+    @Optional() private readonly metrics?: MetricsService
   ) {}
 
-  /** Bumps sync.entity_versions for one record; never throws. */
+  /**
+   * Bumps sync.entity_versions for one record; never throws. A failure leaves
+   * the write sync-INVISIBLE until the next write (L-10), so it is surfaced
+   * two ways: a WARN log and the `agric_sync_version_bump_failures_total`
+   * Prometheus counter (alertable) — silence here is how divergence hides.
+   */
   async recordChange(change: SyncVersionChange): Promise<void> {
     try {
       await this.versions.bump({
@@ -41,6 +49,7 @@ export class SyncVersioningService {
         deleted: change.deleted ?? false
       });
     } catch (error) {
+      this.metrics?.recordSyncVersionBumpFailure(change.entity);
       this.logger.warn(
         `sync version bump failed for ${change.entity}/${change.entityId}: ${
           error instanceof Error ? error.message : String(error)
