@@ -27,6 +27,14 @@ export interface IvrCallRepository {
   remove(sessionId: string): Promise<boolean>;
   /** Deletes every call whose expiry is at/before `nowIso`; returns the count. */
   deleteExpired(nowIso: string): Promise<number>;
+  /** NDPA erasure fan-out (V-25): rewrite callerNumber; returns rows rewritten. */
+  pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number>;
+  /**
+   * DTMF retention purge (V-69, NDPA 2023): blanks the cumulative keypress
+   * history on calls idle past the retention window (the call record itself
+   * is kept for audit until expiry). Returns the purged count.
+   */
+  purgeDtmfHistory(olderThanIso: string): Promise<number>;
 }
 
 export class InMemoryIvrCallRepository implements IvrCallRepository {
@@ -55,6 +63,28 @@ export class InMemoryIvrCallRepository implements IvrCallRepository {
       }
     }
     return removed;
+  }
+
+  async pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number> {
+    let rewritten = 0;
+    for (const [sessionId, record] of this.items) {
+      if (record.callerNumber === phone) {
+        this.items.set(sessionId, { ...record, callerNumber: pseudonym });
+        rewritten += 1;
+      }
+    }
+    return rewritten;
+  }
+
+  async purgeDtmfHistory(olderThanIso: string): Promise<number> {
+    let purged = 0;
+    for (const [sessionId, record] of this.items) {
+      if (record.updatedAt < olderThanIso && record.dtmfHistory !== '') {
+        this.items.set(sessionId, { ...record, dtmfHistory: '' });
+        purged += 1;
+      }
+    }
+    return purged;
   }
 }
 
