@@ -4,6 +4,12 @@ import {
   isProduction,
   PRODUCTION_HMAC_SECRET_MIN_LENGTH
 } from '../../common/auth/auth.config.js';
+import {
+  hmacSign,
+  hmacVerify,
+  resolveHmacKeyRing,
+  type HmacKeyRing
+} from '../../common/crypto/key-rotation.js';
 
 /**
  * Offline-voucher signature scheme (wave AGENTBANK). A voucher payload —
@@ -16,6 +22,14 @@ import {
  *
  * The development default secret is clearly labelled and must be overridden
  * in any real deployment (see docs/agent-banking.md).
+ *
+ * KEY ROTATION (V-26 — reference adoption of common/crypto/key-rotation):
+ * new signatures carry the signing key id as `<kid>:<hmac-hex>`; the ring
+ * accepts the ACTIVE plus PREVIOUS keys during the rotation window and
+ * rejects retired kids outright. Bare-hex signatures (printed before kid
+ * envelopes shipped) keep verifying against every ring secret during the
+ * transition window — set AGENT_VOUCHER_KEYS="kid=secret,..." to rotate;
+ * once every fielded voucher carries a kid, drop the legacy path.
  */
 
 export const VOUCHER_PAYLOAD_VERSION = 'v1';
@@ -87,4 +101,44 @@ export function resolveVoucherSecret(env: NodeJS.ProcessEnv = process.env): stri
     );
   }
   return DEV_VOUCHER_SECRET;
+}
+
+/**
+ * V-26: the voucher signing key RING. Preferred env: AGENT_VOUCHER_KEYS
+ * ("kid=secret,kid=secret" — first pair active, rest verify-only previous).
+ * AGENT_VOUCHER_SECRET remains as the legacy single-key fallback (kid
+ * 'legacy'); the published dev default maps to kid 'dev'.
+ */
+export function resolveVoucherKeyRing(env: NodeJS.ProcessEnv = process.env): HmacKeyRing {
+  return resolveHmacKeyRing(env, {
+    keysEnv: 'AGENT_VOUCHER_KEYS',
+    legacyEnv: 'AGENT_VOUCHER_SECRET',
+    devDefault: DEV_VOUCHER_SECRET,
+    fallbackKid: isProduction(env) ? 'legacy' : 'dev',
+    purpose: 'agent-banking voucher signing',
+    minLength: PRODUCTION_HMAC_SECRET_MIN_LENGTH,
+    publishedDefaults: [DEV_VOUCHER_SECRET]
+  });
+}
+
+/**
+ * Signs a voucher payload with the ring's ACTIVE key — the returned
+ * signature is the key-versioned envelope `<kid>:<hmac-hex>`.
+ */
+export function signVoucherEnvelope(payload: VoucherPayload, ring: HmacKeyRing): string {
+  return hmacSign(ring, canonicalVoucherPayload(payload));
+}
+
+/**
+ * Constant-time verification of a voucher signature against the ring:
+ * accepts active+previous kids, rejects retired kids, and (transition
+ * window) accepts bare-hex legacy signatures verified against every ring
+ * secret.
+ */
+export function verifyVoucherEnvelope(
+  payload: VoucherPayload,
+  signature: string,
+  ring: HmacKeyRing
+): boolean {
+  return hmacVerify(ring, canonicalVoucherPayload(payload), signature, { legacyBareHex: true }).ok;
 }
