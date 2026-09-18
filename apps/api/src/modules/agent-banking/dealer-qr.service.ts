@@ -49,7 +49,8 @@ import {
   verifyQrSignature,
   type QrPayload
 } from './qr-crypto.js';
-import { resolveVoucherSecret, verifyVoucherSignature } from './voucher-crypto.js';
+import { resolveVoucherKeyRing, verifyVoucherEnvelope } from './voucher-crypto.js';
+import type { HmacKeyRing } from '../../common/crypto/key-rotation.js';
 
 /** Rollout flag gating the whole Dealer QR Pay surface (default OFF, fail-closed). */
 export const DEALER_QR_PAY_FLAG = 'dealer-qr-pay';
@@ -174,7 +175,8 @@ function isLiveAdapter(adapter: MojaloopAdapter | undefined): adapter is LiveMoj
 @Injectable()
 export class DealerQrService {
   private readonly qrSecret: string;
-  private readonly voucherSecret: string;
+  /** V-26: key-versioned voucher signature ring (kid:hmac-hex envelopes). */
+  private readonly voucherKeyRing: HmacKeyRing;
   private readonly telemetry: TelemetryService;
 
   constructor(
@@ -190,7 +192,7 @@ export class DealerQrService {
     @Optional() private readonly env: NodeJS.ProcessEnv = process.env
   ) {
     this.qrSecret = resolveQrSecret(env);
-    this.voucherSecret = resolveVoucherSecret(env);
+    this.voucherKeyRing = resolveVoucherKeyRing(env);
     this.telemetry = telemetry ?? new TelemetryService();
   }
 
@@ -449,8 +451,9 @@ export class DealerQrService {
       throw new GoneException(`Voucher '${voucherId}' expired at ${voucher.expiresAt}`);
     }
     // Server-side signature verification of the stored voucher payload —
-    // only a genuinely platform-issued voucher can be tendered.
-    const valid = verifyVoucherSignature(
+    // only a genuinely platform-issued voucher can be tendered. Key-versioned
+    // envelope (V-26): active+previous kids accepted during rotation.
+    const valid = verifyVoucherEnvelope(
       {
         voucherId: voucher.id,
         agentId: voucher.agentId,
@@ -460,7 +463,7 @@ export class DealerQrService {
         nonce: voucher.nonce
       },
       voucher.signature,
-      this.voucherSecret
+      this.voucherKeyRing
     );
     if (!valid) {
       throw new UnauthorizedException('Voucher signature verification failed');
