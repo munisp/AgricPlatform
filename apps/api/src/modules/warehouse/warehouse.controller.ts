@@ -9,15 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Max,
-  Min
-} from 'class-validator';
+import { IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User, WarehouseCertificationStatus, WarehouseGrade } from '@agric-platform/shared';
 import { WAREHOUSE_CERTIFICATION_STATUSES, WAREHOUSE_GRADES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
@@ -30,12 +22,15 @@ import {
 
 class RegisterWarehouseDto implements RegisterWarehouseInput {
   @IsString()
+  @MaxLength(200)
   name!: string;
 
   @IsString()
+  @MaxLength(100)
   state!: string;
 
   @IsString()
+  @MaxLength(100)
   lga!: string;
 
   @IsNumber()
@@ -50,16 +45,19 @@ class RegisterWarehouseDto implements RegisterWarehouseInput {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   operatorLicenseRef?: string;
 }
 
 class BrowseWarehousesQuery {
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   state?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lga?: string;
 
   @IsOptional()
@@ -69,13 +67,16 @@ class BrowseWarehousesQuery {
 
 class CreateDepositDto {
   @IsString()
+  @MaxLength(100)
   warehouseId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lotId?: string;
 
   @IsString()
+  @MaxLength(100)
   crop!: string;
 }
 
@@ -104,15 +105,18 @@ class PledgeReceiptDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   terms?: string;
 }
 
 class TransferReceiptDto {
   @IsString()
+  @MaxLength(100)
   toOwnerId!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
 
