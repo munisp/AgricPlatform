@@ -259,7 +259,10 @@ describe('Partner API (e2e)', () => {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({
         eventTypes: ['disbursement.recorded'],
-        targetUrl: 'https://partner.example/hook',
+        // V-59: registration runs the DNS-resolving SSRF guard (fail closed).
+        // A literal public IP skips resolution, so the e2e needs no DNS stub
+        // (@nestjs/testing is not a dependency, so no provider override).
+        targetUrl: 'https://93.184.216.34/hook',
         secret: 'sixteen-char-secret'
       })
     });
