@@ -550,13 +550,14 @@ describe('AgentBankingService — offline vouchers', () => {
     return { agent, voucher };
   }
 
-  it('issues an ISSUED voucher with a valid HMAC signature', async () => {
+  it('issues an ISSUED voucher with a valid key-versioned HMAC signature (V-26)', async () => {
     const ctx = await makeService();
     const { voucher } = await issuedVoucher(ctx);
     expect(voucher.status).toBe('ISSUED');
-    expect(voucher.signature).toMatch(/^[0-9a-f]{64}$/);
+    // kid-versioned envelope: the dev ring signs with kid 'dev'.
+    expect(voucher.signature).toMatch(/^dev:[0-9a-f]{64}$/);
     expect(voucher.signature).toBe(
-      signVoucher(
+      `dev:${signVoucher(
         {
           voucherId: voucher.id,
           agentId: voucher.agentId,
@@ -566,8 +567,32 @@ describe('AgentBankingService — offline vouchers', () => {
           nonce: voucher.nonce
         },
         'agent-banking-dev-voucher-secret-INSECURE'
-      )
+      )}`
     );
+  });
+
+  it('accepts a legacy bare-hex signature during the transition window (V-26)', async () => {
+    const ctx = await makeService();
+    const { voucher } = await issuedVoucher(ctx);
+    // A voucher printed BEFORE kid envelopes shipped: the stored signature
+    // is bare hex over the same payload with the (legacy) secret.
+    const bareHex = signVoucher(
+      {
+        voucherId: voucher.id,
+        agentId: voucher.agentId,
+        farmerId: voucher.farmerId,
+        amountKobo: voucher.amountKobo,
+        expiry: voucher.expiresAt,
+        nonce: voucher.nonce
+      },
+      'agent-banking-dev-voucher-secret-INSECURE'
+    );
+    await ctx.vouchers.updateExpected(voucher.id, { signature: bareHex }, { status: 'ISSUED' });
+    const redeemed = await ctx.service.redeemVoucher(voucher.id, bareHex, {
+      id: ctx.farmer.id,
+      roles: ['farmer']
+    });
+    expect(redeemed.voucher.status).toBe('REDEEMED');
   });
 
   it('redeems a voucher exactly once — wallet credited, float debited, voucher REDEEMED', async () => {
@@ -651,19 +676,32 @@ describe('AgentBankingService — offline vouchers', () => {
     void agent;
   });
 
-  it('redemption fails closed when the agent float cannot cover the voucher', async () => {
+  it('redemption is funded by the issuance liability even without a float top-up (V-33)', async () => {
+    // Pre-W2-C2 this test asserted redemption FAILS when the float cannot
+    // cover the voucher — that was the V-33 gap: issuance booked NOTHING, so
+    // the farmer's cash was invisible. Now issuance posts DR float / CR
+    // voucher_liability (cash received), the redemption payout draws that
+    // tracked cash down and the settle leg clears the liability. The float
+    // ends at -amountKobo (agent owes the platform the e-money, backed by
+    // the physical cash in the till) — identical net economics to a cash-in.
     const ctx = await makeService();
     const agent = await activeAgent(ctx);
-    // No float top-up: float is 0.
+    // No float top-up: float is 0 until issuance books the cash received.
     const voucher = await ctx.service.issueVoucher(
       agent.id,
       { farmerId: ctx.farmer.id, amountKobo: 100_000, idempotencyKey: 'v-underfunded-1' },
       agentActor(ctx.agentUser)
     );
-    await expect(
-      ctx.service.redeemVoucher(voucher.id, voucher.signature, { id: ctx.farmer.id, roles: ['farmer'] })
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect((await ctx.service.getVoucher(voucher.id)).status).toBe('ISSUED');
+    const { voucher: redeemed } = await ctx.service.redeemVoucher(
+      voucher.id,
+      voucher.signature,
+      { id: ctx.farmer.id, roles: ['farmer'] }
+    );
+    expect(redeemed.status).toBe('REDEEMED');
+    const liability = await ctx.ledger.balance(`agent:${agent.id}:voucher_liability`);
+    expect(liability.creditsKobo - liability.debitsKobo).toBe(0); // settled exactly
+    const wallet = await ctx.ledger.balance(farmerWalletAccountCode(ctx.farmer.id));
+    expect(wallet.balanceKobo).toBe(100_000);
   });
 
   it('an unrelated user cannot redeem someone else\u2019s voucher', async () => {
