@@ -26,7 +26,29 @@ import type {
   CreditSavingsAccountRepository,
   CreditSavingsTransactionRepository
 } from '../../database/repositories/credit-suite.repository.js';
+import { UsersService } from '../users/users.service.js';
 import type { CreditActor } from './credit.service.js';
+import { LedgerService } from '../finance/ledger.service.js';
+
+/**
+ * V-58 ledger mirror accounts (pooled — no per-member proliferation, same
+ * doctrine as the V-56 disbursement legs):
+ *   deposit:    DR credit:savings:cash_float       (asset — platform float received)
+ *               CR credit:savings:member_deposits  (liability — owed to members)
+ *   withdrawal: DR credit:savings:member_deposits
+ *               CR credit:savings:cash_float
+ */
+export const SAVINGS_CASH_FLOAT_ACCOUNT = 'credit:savings:cash_float';
+export const SAVINGS_MEMBER_DEPOSITS_ACCOUNT = 'credit:savings:member_deposits';
+export const SAVINGS_LEDGER_REFERENCE_TYPE = 'credit_savings_transaction';
+
+/**
+ * Entity-derived idempotency key: the savings `ref` is already unique per
+ * transaction, so the ledger leg inherits exactly-once semantics from it.
+ */
+export function savingsLedgerKey(ref: string): string {
+  return `credit-savings:${ref}`;
+}
 
 export interface SavingsTransactionResult {
   account: CreditSavingsAccount;
@@ -40,9 +62,15 @@ const MAX_ATTEMPTS = 3;
 /**
  * VSLA savings (Wave CREDIT): personal and group accounts with guarded
  * balance updates. Every deposit/withdrawal is:
- *   - idempotent by caller-supplied `ref` (unique per transaction), and
+ *   - idempotent by caller-supplied `ref` (unique per transaction),
  *   - atomic: balance CAS + transaction append (+ outbox event on pg) in
- *     one unit of work via CreditSavingsAccountRepository.applyTransaction.
+ *     one unit of work via CreditSavingsAccountRepository.applyTransaction, and
+ *   - ledger-mirrored (V-58): a balanced double-entry leg keyed
+ *     `credit-savings:{ref}` ties the savings balance to the trial balance.
+ *     The leg is posted after the CAS commit and re-driven on the
+ *     idempotent replay path, so a crash between the two converges on the
+ *     caller's retry (the ledger dedupes on the idempotency key) instead of
+ *     drifting permanently.
  * Group accounts are administered by the group leader; members may read.
  */
 @Injectable()
@@ -55,7 +83,12 @@ export class CreditSavingsService {
     private readonly transactions: CreditSavingsTransactionRepository,
     @Inject(CREDIT_GROUP_REPOSITORY) private readonly groups: CreditGroupRepository,
     @Inject(CREDIT_GROUP_MEMBER_REPOSITORY) private readonly members: CreditGroupMemberRepository,
-    @Optional() private readonly audit?: AuditService
+    private readonly ledger: LedgerService,
+    @Optional() private readonly audit?: AuditService,
+    // V-09: deceased accounts freeze withdrawals (estate preservation
+    // pending succession). Optional so bare unit constructions keep working;
+    // absent → no status check (tests inject it to exercise the freeze).
+    @Optional() private readonly users?: UsersService
   ) {}
 
   /* --------------------------------------------------- personal accounts -- */
@@ -172,10 +205,20 @@ export class CreditSavingsService {
     if (!ref || !ref.trim()) {
       throw new BadRequestException('ref is required (idempotency key)');
     }
+    // V-09: a deceased owner's personal account is estate-frozen — deposits
+    // still post (incoming money harms no one) but withdrawals refuse until
+    // succession transfers the estate.
+    if (direction === 'withdrawal' && account.userId && this.users) {
+      if ((await this.users.statusFor(account.userId)) === 'deceased') {
+        throw new ForbiddenException(
+          'Account is deceased: withdrawals are frozen pending succession (estate preservation)'
+        );
+      }
+    }
     const normalRef = ref.trim();
     const existing = await this.transactions.findOne({ ref: normalRef });
     if (existing) {
-      return this.replay(account.id, existing, amountKobo, direction);
+      return this.replay(account.id, existing, amountKobo, direction, actor.id);
     }
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       const current = await this.accounts.getById(account.id);
@@ -223,13 +266,14 @@ export class CreditSavingsService {
           entityId: account.id,
           metadata: { amountKobo, ref: normalRef, balanceAfterKobo: newBalance }
         });
+        await this.postLedgerLeg(result.transaction, actor.id);
         return { account: result.account, transaction: result.transaction, replay: false };
       } catch (error) {
         if (error instanceof ConflictException) {
           // Ref race: a concurrent request with the same ref committed.
           const winner = await this.transactions.findOne({ ref: normalRef });
           if (winner) {
-            return this.replay(account.id, winner, amountKobo, direction);
+            return this.replay(account.id, winner, amountKobo, direction, actor.id);
           }
           // Balance CAS race: re-read and retry.
           continue;
@@ -246,12 +290,18 @@ export class CreditSavingsService {
    * Idempotent replay: the stored transaction wins, but only when the ref
    * targets the same account, direction and amount — a ref reused with
    * different parameters is a 409, never a silent no-op.
+   *
+   * The V-58 ledger leg is re-driven here on purpose: if the original
+   * request crashed between the balance CAS commit and the ledger posting,
+   * the caller's retry lands on this path and the idempotency-keyed post
+   * converges the books (a re-post of an existing key is a ledger no-op).
    */
-  private replay(
+  private async replay(
     accountId: string,
     stored: CreditSavingsTransaction,
     amountKobo: number,
-    direction: SavingsDirection
+    direction: SavingsDirection,
+    actorId: string
   ): Promise<SavingsTransactionResult> {
     if (
       stored.accountId !== accountId ||
@@ -262,9 +312,60 @@ export class CreditSavingsService {
         `Savings ref '${stored.ref}' was already used with different parameters`
       );
     }
-    return this.accounts
-      .getById(accountId)
-      .then((account) => ({ account, transaction: stored, replay: true }));
+    await this.postLedgerLeg(stored, actorId);
+    const account = await this.accounts.getById(accountId);
+    return { account, transaction: stored, replay: true };
+  }
+
+  /**
+   * V-58: post the balanced double-entry leg mirroring a savings
+   * transaction into the ledger. Idempotent per transaction (key derived
+   * from the unique savings ref) — replay paths and consumer re-drives can
+   * never double-post.
+   */
+  private async postLedgerLeg(
+    transaction: CreditSavingsTransaction,
+    actorId: string
+  ): Promise<void> {
+    await this.ledger.ensureAccount({ code: SAVINGS_CASH_FLOAT_ACCOUNT, type: 'asset' });
+    await this.ledger.ensureAccount({ code: SAVINGS_MEMBER_DEPOSITS_ACCOUNT, type: 'liability' });
+    await this.ledger.postEntry(
+      {
+        idempotencyKey: savingsLedgerKey(transaction.ref),
+        referenceType: SAVINGS_LEDGER_REFERENCE_TYPE,
+        referenceId: transaction.id,
+        description:
+          `Savings ${transaction.direction} of ${transaction.amountKobo} kobo ` +
+          `on account ${transaction.accountId} (ref ${transaction.ref})`,
+        postings:
+          transaction.direction === 'deposit'
+            ? [
+                {
+                  accountCode: SAVINGS_CASH_FLOAT_ACCOUNT,
+                  direction: 'debit',
+                  amountKobo: transaction.amountKobo
+                },
+                {
+                  accountCode: SAVINGS_MEMBER_DEPOSITS_ACCOUNT,
+                  direction: 'credit',
+                  amountKobo: transaction.amountKobo
+                }
+              ]
+            : [
+                {
+                  accountCode: SAVINGS_MEMBER_DEPOSITS_ACCOUNT,
+                  direction: 'debit',
+                  amountKobo: transaction.amountKobo
+                },
+                {
+                  accountCode: SAVINGS_CASH_FLOAT_ACCOUNT,
+                  direction: 'credit',
+                  amountKobo: transaction.amountKobo
+                }
+              ]
+      },
+      actorId
+    );
   }
 
   private async requireMembership(groupId: string, actor: CreditActor): Promise<void> {
