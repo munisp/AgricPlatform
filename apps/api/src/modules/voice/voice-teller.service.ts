@@ -293,14 +293,22 @@ export class VoiceTellerService {
       return 'no_profile';
     }
     const now = Date.now();
-    if (profiles.some((p) => p.lockedUntil && new Date(p.lockedUntil).getTime() > now)) {
+    // L-11: lockout is scoped PER DEVICE PROFILE, not account-wide. The old
+    // any-profile-locked ⇒ refuse-everything check let a dial-in attacker
+    // lock ONE profile (5 wrong guesses) and thereby deny the whole account
+    // — even to correct PINs — for 15 minutes. Locked profiles now sit out
+    // the check; the caller is refused only when EVERY profile is locked.
+    const isLocked = (p: (typeof profiles)[number]): boolean =>
+      p.lockedUntil !== undefined && new Date(p.lockedUntil).getTime() > now;
+    const active = profiles.filter((p) => !isLocked(p));
+    if (active.length === 0) {
       return 'locked';
     }
-    const match = profiles.find(
+    const match = active.find(
       (p) => p.pinHash === hashSharedDevicePin(p.deviceToken, userId, pin)
     );
     if (match) {
-      for (const profile of profiles) {
+      for (const profile of active) {
         if (profile.attempts > 0 || profile.lockedUntil) {
           await this.pins.update(profile.deviceToken, userId, {
             attempts: 0,
@@ -310,18 +318,22 @@ export class VoiceTellerService {
       }
       return 'ok';
     }
-    let locked = false;
-    for (const profile of profiles) {
+    for (const profile of active) {
       const attempts = await this.pins.incrementAttempts(profile.deviceToken, userId);
       if (attempts >= VOICE_TELLER_PIN_MAX_ATTEMPTS) {
         await this.pins.update(profile.deviceToken, userId, {
           attempts: 0,
           lockedUntil: new Date(now + VOICE_TELLER_PIN_LOCKOUT_MS).toISOString()
         });
-        locked = true;
       }
     }
-    return locked ? 'locked' : 'wrong';
+    // The wrong guess may have locked some profiles; the account is denied
+    // only when none remain usable.
+    const remaining = await this.pins.listForUser(userId);
+    const stillActive = remaining.some(
+      (p) => !(p.lockedUntil && new Date(p.lockedUntil).getTime() > Date.now())
+    );
+    return stillActive ? 'wrong' : 'locked';
   }
 
   /** PIN ok → read the intent's read model LIVE and render the answer. */
