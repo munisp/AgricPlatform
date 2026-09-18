@@ -17,6 +17,8 @@ import {
 import type {
   CropPlantingCriteria,
   CropPlantingRepository,
+  ExpenseAllocationRow,
+  FarmExpenseAllocationRepository,
   FarmExpenseCriteria,
   FarmExpenseRepository,
   FarmPlotCriteria,
@@ -121,6 +123,8 @@ const CROP_PLANTING_MAPPING = {
   planted_at: 'plantedAt',
   expected_harvest_at: 'expectedHarvestAt',
   status: 'status',
+  replant_of_id: 'replantOfId',
+  failure_reason: 'failureReason',
   created_at: 'createdAt',
   updated_at: 'updatedAt',
   version: 'version',
@@ -138,6 +142,8 @@ export const cropPlantingMapper: RowMapper<CropPlanting> = {
     plantedAt: ts(row.planted_at),
     expectedHarvestAt: row.expected_harvest_at ? ts(row.expected_harvest_at) : undefined,
     status: row.status as CropPlanting['status'],
+    replantOfId: (row.replant_of_id as string | null) ?? undefined,
+    failureReason: (row.failure_reason as CropPlanting['failureReason'] | null) ?? undefined,
     createdAt: ts(row.created_at),
     updatedAt: ts(row.updated_at),
     version: num(row.version),
@@ -265,4 +271,68 @@ export class PgFarmExpenseRepository
 
 export function createPgFarmExpenseRepository(pool: pg.Pool): PgFarmExpenseRepository {
   return new PgFarmExpenseRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * farms.expense_allocations (W2-FP4 A4, migration 117). Composite-key child
+ * of farm_expenses — write-once rows, so a plain pool-backed class (the
+ * base repository assumes an `id` PK).
+ */
+export class PgFarmExpenseAllocationRepository implements FarmExpenseAllocationRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async record(
+    expenseId: string,
+    allocations: readonly { plantingId: string; sharePercent: number }[]
+  ): Promise<void> {
+    for (const allocation of allocations) {
+      await this.pool.query(
+        `INSERT INTO farms.expense_allocations (expense_id, planting_id, share_percent)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (expense_id, planting_id) DO NOTHING`,
+        [expenseId, allocation.plantingId, allocation.sharePercent]
+      );
+    }
+  }
+
+  async listForExpenses(expenseIds: readonly string[]): Promise<ExpenseAllocationRow[]> {
+    if (expenseIds.length === 0) {
+      return [];
+    }
+    const result = await this.pool.query(
+      `SELECT expense_id, planting_id, share_percent
+         FROM farms.expense_allocations
+        WHERE expense_id = ANY($1)
+        ORDER BY expense_id, planting_id`,
+      [[...expenseIds]]
+    );
+    return result.rows.map((row) => ({
+      expenseId: row.expense_id as string,
+      plantingId: row.planting_id as string,
+      sharePercent: num(row.share_percent)
+    }));
+  }
+
+  async listForPlanting(plantingId: string): Promise<ExpenseAllocationRow[]> {
+    const result = await this.pool.query(
+      `SELECT expense_id, planting_id, share_percent
+         FROM farms.expense_allocations
+        WHERE planting_id = $1
+        ORDER BY expense_id`,
+      [plantingId]
+    );
+    return result.rows.map((row) => ({
+      expenseId: row.expense_id as string,
+      plantingId: row.planting_id as string,
+      sharePercent: num(row.share_percent)
+    }));
+  }
+}
+
+export function createPgFarmExpenseAllocationRepository(
+  pool: pg.Pool
+): PgFarmExpenseAllocationRepository {
+  return new PgFarmExpenseAllocationRepository(pool);
 }
