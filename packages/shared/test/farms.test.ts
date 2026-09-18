@@ -27,7 +27,9 @@ describe('farms domain primitives', () => {
   });
 
   it('keeps the planting lifecycle and fixture lists stable', () => {
-    expect(PLANTING_STATUSES).toEqual(['growing', 'harvested', 'failed']);
+    // A3 (W2-FP4): 'partially_harvested' is the staggered-harvest state —
+    // additive, positioned between growing and harvested.
+    expect(PLANTING_STATUSES).toEqual(['growing', 'partially_harvested', 'harvested', 'failed']);
     expect(HARVEST_UNITS).toContain('kg');
     expect(FARM_EXPENSE_CATEGORIES).toContain('fertilizer');
     expect(SOIL_TYPES.length).toBeGreaterThan(0);
