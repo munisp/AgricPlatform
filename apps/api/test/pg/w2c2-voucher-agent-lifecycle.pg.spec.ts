@@ -198,6 +198,13 @@ const pool = process.env.DATABASE_URL
   ? new pg.Pool({ connectionString: process.env.DATABASE_URL })
   : null;
 
+// The pool is shared by both live describes below, so it must be ended once —
+// a per-describe pool.end() kills the sibling describe's seed ("Cannot use a
+// pool after calling end on the pool", CI db-contract failure, 2026-09-18).
+afterAll(async () => {
+  await pool?.end();
+});
+
 // NOT 'contract-%': pg-repositories.spec.ts deletes LIKE 'contract-%' rows.
 const PREFIX = 'w2c2-';
 const AGENT_ID = `${PREFIX}agent`;
@@ -269,10 +276,7 @@ async function cleanup(): Promise<void> {
 
 describe.skipIf(!process.env.DATABASE_URL)('W2-C2 voucher lifecycle (live)', () => {
   beforeAll(seed);
-  afterAll(async () => {
-    await cleanup();
-    await pool?.end();
-  });
+  afterAll(cleanup);
 
   it('V-32: two partials sum ≤ face value; overshoot rejected; concurrent race is single-winner', async () => {
     const vouchers = createPgInputVoucherRepository(pool!);
@@ -412,10 +416,7 @@ describe.skipIf(!process.env.DATABASE_URL)('W2-C2 voucher lifecycle (live)', () 
 
 describe.skipIf(!process.env.DATABASE_URL)('W2-C2 agent banking (live)', () => {
   beforeAll(seed);
-  afterAll(async () => {
-    await cleanup();
-    await pool?.end();
-  });
+  afterAll(cleanup);
 
   it('V-33: an expired paid voucher carries a PAYABLE refund visible in the settlement index', async () => {
     const vouchers = createPgAgentVoucherRepository(pool!);
