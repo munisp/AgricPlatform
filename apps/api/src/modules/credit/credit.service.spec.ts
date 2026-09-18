@@ -5,15 +5,22 @@ import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   createInMemoryCreditCollateralRepository,
   createInMemoryCreditGroupMemberRepository,
+  createInMemoryCreditGroupRepository,
   createInMemoryCreditGuarantorRepository,
   createInMemoryCreditLoanRepository,
   createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditRestructureRepository,
   createInMemoryCreditSavingsAccountRepository,
   createInMemoryCreditSavingsTransactionRepository,
   InMemoryCreditLoanRepository,
   InMemoryCreditProductRepository,
   InMemoryCreditRepaymentRepository
 } from '../../database/repositories/credit-suite.repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository
+} from '../../database/repositories/ledger.repository.js';
+import { LedgerService } from '../finance/ledger.service.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { InMemoryOrderRepository } from '../../database/repositories/order.repository.js';
 import { InMemoryProfileRepository } from '../../database/repositories/profile.repository.js';
@@ -52,9 +59,16 @@ function makeService(options: {
   const repayments = options.repayments ?? createInMemoryCreditRepaymentRepository();
   const collateral = createInMemoryCreditCollateralRepository();
   const guarantors = createInMemoryCreditGuarantorRepository();
+  const groups = createInMemoryCreditGroupRepository();
   const members = createInMemoryCreditGroupMemberRepository();
   const profiles = options.profiles ?? new InMemoryProfileRepository();
   const orders = new InMemoryOrderRepository();
+  const restructures = createInMemoryCreditRestructureRepository();
+  const ledger = new LedgerService(
+    events,
+    createInMemoryLedgerAccountRepository(),
+    createInMemoryLedgerEntryRepository()
+  );
   const service = new CreditService(
     events,
     new InMemoryCreditProductRepository([PRODUCT]),
@@ -62,12 +76,30 @@ function makeService(options: {
     repayments,
     collateral,
     guarantors,
+    groups,
     members,
     savingsAccounts,
     profiles,
-    orders
+    orders,
+    restructures,
+    transactions,
+    ledger
   );
-  return { service, events, loans, repayments, collateral, guarantors, members, profiles, orders };
+  return {
+    service,
+    events,
+    loans,
+    repayments,
+    collateral,
+    guarantors,
+    members,
+    profiles,
+    orders,
+    restructures,
+    transactions,
+    savingsAccounts,
+    ledger
+  };
 }
 
 /** Drives a loan from draft to `repaying` through the reviewer pipeline. */
