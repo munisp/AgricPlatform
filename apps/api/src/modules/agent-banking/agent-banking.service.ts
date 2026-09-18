@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -8,6 +8,7 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
   UnauthorizedException
 } from '@nestjs/common';
 import type { LedgerJournalEntry } from '@agric-platform/shared';
@@ -19,15 +20,21 @@ import {
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   AGENT_BANKING_AGENT_REPOSITORY,
+  AGENT_DEVICE_REPOSITORY,
   AGENT_FLOAT_TOPUP_REPOSITORY,
+  AGENT_REVERSAL_REPOSITORY,
   AGENT_TRANSACTION_REPOSITORY,
   AGENT_VOUCHER_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
   AgentBankingAgentRepository,
+  AgentDeviceRecord,
+  AgentDeviceRepository,
   AgentFloatTopUpRecord,
   AgentFloatTopUpRepository,
   AgentRecord,
+  AgentReversalRecord,
+  AgentReversalRepository,
   AgentStatus,
   AgentTopUpStatus,
   AgentTransactionRecord,
@@ -46,7 +53,12 @@ import { LedgerService } from '../finance/ledger.service.js';
 import { UsersService } from '../users/users.service.js';
 import { commissionFor, type CommissionableType } from './commission.js';
 import { OTP_DRIVER_TOKEN, OtpVerificationError, type OtpDriver } from './otp.driver.js';
-import { resolveVoucherSecret, signVoucher, verifyVoucherSignature } from './voucher-crypto.js';
+import {
+  resolveVoucherKeyRing,
+  signVoucherEnvelope,
+  verifyVoucherEnvelope
+} from './voucher-crypto.js';
+import type { HmacKeyRing } from '../../common/crypto/key-rotation.js';
 
 /** Default per-agent daily cash-in/out limit: N250,000. */
 export const DEFAULT_AGENT_DAILY_LIMIT_KOBO = 25_000_000;
@@ -58,6 +70,11 @@ export const DEFAULT_VOUCHER_TTL_MS = 72 * 60 * 60 * 1000;
 export const AGENT_FLOAT_ACCOUNT_PREFIX = 'agent';
 export const PLATFORM_COMMISSION_EXPENSE_ACCOUNT = 'platform:commission_expense';
 export const PLATFORM_CASH_ACCOUNT = 'platform:cash';
+
+/** W2-C2 (V-40): default voucher honour-or-refund grace window after deregistration. */
+export const DEFAULT_VOUCHER_GRACE_DAYS = 30;
+/** W2-C2 (V-41): minimum device-token length (V-60 PIN device-token doctrine). */
+export const MIN_AGENT_DEVICE_TOKEN_LENGTH = 16;
 
 /**
  * Bounded-retry probe discipline for crash-safe rollback legs (stage 24,
@@ -84,6 +101,16 @@ export function farmerWalletAccountCode(farmerId: string): string {
   return `member:${farmerId}:wallet`;
 }
 
+/** W2-C2 (V-33): per-agent liability for cash received against unredeemed paid vouchers. */
+export function agentVoucherLiabilityAccountCode(agentId: string): string {
+  return `agent:${agentId}:voucher_liability`;
+}
+
+/** W2-C2 (V-33): expired-paid-voucher refunds owed to farmers (agent settlement queue). */
+export function agentRefundsPayableAccountCode(agentId: string): string {
+  return `agent:${agentId}:refunds_payable`;
+}
+
 export interface RegisterAgentInput {
   userId: string;
   organisation: string;
@@ -107,6 +134,12 @@ export interface CashTransactionInput {
   otp: string;
   /** Mandatory client idempotency key; replays return the original record. */
   idempotencyKey: string;
+  /**
+   * W2-C2 (V-41): presented device token. Once the agent has at least one
+   * ACTIVE device binding this is REQUIRED and must hash to an ACTIVE row;
+   * a token hashing to a REVOKED row (remote freeze) is rejected 401.
+   */
+  deviceToken?: string;
 }
 
 export interface TopUpRequestInput {
@@ -133,7 +166,8 @@ export interface IssueVoucherInput {
 }
 
 export interface CommissionStatementRow {
-  type: CommissionableType;
+  /** W2-C2 (V-08): includes 'reversal' rows whose negative commission nets the accrual. */
+  type: AgentTransactionType;
   count: number;
   volumeKobo: number;
   commissionKobo: number;
@@ -156,6 +190,17 @@ export interface AgentReconciliation {
   volumeByType: Record<'cash_in' | 'cash_out' | 'voucher_redemption' | 'float_topup', number>;
   commissionAccruedKobo: number;
   transactionCount: number;
+}
+
+/** W2-C2 (V-33): agent settlement view — float, voucher liability, refund queue. */
+export interface AgentSettlementView {
+  agentId: string;
+  floatBalanceKobo: number;
+  /** Outstanding paid-voucher liability (issued, not yet redeemed/expired). */
+  vouchersOutstandingLiabilityKobo: number;
+  /** Expired paid vouchers whose cash refund is still owed to farmers. */
+  refundsPayableKobo: number;
+  pendingRefunds: Array<{ voucherId: string; farmerId: string; amountKobo: number }>;
 }
 
 export interface ActorRef {
@@ -207,7 +252,8 @@ function monthBounds(month: string): { from: string; to: string } {
  */
 @Injectable()
 export class AgentBankingService {
-  private readonly voucherSecret: string;
+  /** V-26: voucher signatures are key-versioned envelopes (kid:hmac-hex). */
+  private readonly voucherKeyRing: HmacKeyRing;
 
   constructor(
     @Inject(AGENT_BANKING_AGENT_REPOSITORY) private readonly agents: AgentBankingAgentRepository,
@@ -219,9 +265,26 @@ export class AgentBankingService {
     private readonly events: DomainEventsService,
     @Inject(OTP_DRIVER_TOKEN) private readonly otp: OtpDriver,
     @Optional() @Inject(MOJALOOP_ADAPTER) private readonly mojaloop?: MojaloopAdapter,
-    @Optional() private readonly env: NodeJS.ProcessEnv = process.env
+    @Optional() private readonly env: NodeJS.ProcessEnv = process.env,
+    // W2-C2 (V-08/V-41): wired by DatabaseModule; fail closed (503) when absent.
+    @Optional() @Inject(AGENT_REVERSAL_REPOSITORY) private readonly reversals?: AgentReversalRepository,
+    @Optional() @Inject(AGENT_DEVICE_REPOSITORY) private readonly devices?: AgentDeviceRepository
   ) {
-    this.voucherSecret = resolveVoucherSecret(env);
+    this.voucherKeyRing = resolveVoucherKeyRing(env);
+  }
+
+  private reversalsRepo(): AgentReversalRepository {
+    if (!this.reversals) {
+      throw new ServiceUnavailableException('Agent reversal persistence is not wired');
+    }
+    return this.reversals;
+  }
+
+  private devicesRepo(): AgentDeviceRepository {
+    if (!this.devices) {
+      throw new ServiceUnavailableException('Agent device-binding persistence is not wired');
+    }
+    return this.devices;
   }
 
   // ---------------------------------------------------------------- agents
@@ -297,7 +360,11 @@ export class AgentBankingService {
     const allowed: Record<AgentStatus, AgentStatus[]> = {
       PENDING: ['ACTIVE', 'SUSPENDED'],
       ACTIVE: ['SUSPENDED'],
-      SUSPENDED: ['ACTIVE']
+      SUSPENDED: ['ACTIVE'],
+      // W2-C2 (V-40): close-out is terminal; DEREGISTERING/DEREGISTERED are
+      // driven exclusively by deregisterAgent(), never by setAgentStatus.
+      DEREGISTERING: [],
+      DEREGISTERED: []
     };
     if (!allowed[agent.status].includes(status)) {
       throw new BadRequestException(
@@ -552,6 +619,10 @@ export class AgentBankingService {
     }
     const agent = await this.activeAgent(agentId);
     this.assertAgentAccess(agent, actor);
+    // W2-C2 (V-41): device binding — once the agent has bound devices, a
+    // bound+ACTIVE device token is mandatory; a REVOKED token (remote
+    // freeze) is rejected before any money moves.
+    await this.assertDeviceAllowed(agent, input.deviceToken);
     assertPositiveKobo(input.amountKobo);
     await this.users.getById(input.farmerId);
     try {
@@ -735,7 +806,19 @@ export class AgentBankingService {
     const today = new Date().toISOString().slice(0, 10);
     const { from, to } = dayBounds(today);
     const todays = await this.transactions.find({ agentId: agent.id, from, to });
-    const used = todays.reduce((sum, tx) => sum + tx.amountKobo, 0);
+    // W2-C2 (V-08): reversal rows NET OUT the same-day transaction they
+    // reverse (mirroring the dailyLimitCorrection applied to the atomic
+    // counter on the original business date) — a reversed fake deposit must
+    // not keep consuming the agent's daily cap.
+    const byId = new Map(todays.map((tx) => [tx.id, tx]));
+    const used = todays.reduce((sum, tx) => {
+      if (tx.type === 'reversal') {
+        return tx.reversalOfTransactionId && byId.has(tx.reversalOfTransactionId)
+          ? sum - tx.amountKobo
+          : sum;
+      }
+      return sum + tx.amountKobo;
+    }, 0);
     if (used + amountKobo > agent.dailyLimitKobo) {
       throw new BadRequestException(
         `Agent daily limit exceeded: ${used + amountKobo} kobo would pass the ${agent.dailyLimitKobo} kobo daily limit`
@@ -863,9 +946,32 @@ export class AgentBankingService {
     }
     const id = newId('voucher');
     const nonce = randomUUID();
-    const signature = signVoucher(
+    const signature = signVoucherEnvelope(
       { voucherId: id, agentId: agent.id, farmerId: input.farmerId, amountKobo: input.amountKobo, expiry: expiresAt, nonce },
-      this.voucherSecret
+      this.voucherKeyRing
+    );
+    // W2-C2 (V-33): the farmer PAID cash for this voucher — book the
+    // issuance liability (DR float: cash received into the till / CR voucher
+    // liability: obligation to deliver value or refund) BEFORE the row
+    // exists. Entity-derived key replays on transport retry; redemption
+    // settles it and expiry reclassifies it to refunds_payable.
+    await this.ledger.ensureAccount({
+      code: agentVoucherLiabilityAccountCode(agent.id),
+      type: 'liability',
+      ownerId: agent.userId
+    });
+    const issuanceEntry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `agent-voucher-issuance:${input.idempotencyKey}`,
+        referenceType: 'agent_banking_voucher_issuance',
+        referenceId: id,
+        description: `Cash received for paid voucher ${id} (${input.amountKobo} kobo issuance liability)`,
+        postings: [
+          { accountCode: agent.floatAccountCode, direction: 'debit', amountKobo: input.amountKobo },
+          { accountCode: agentVoucherLiabilityAccountCode(agent.id), direction: 'credit', amountKobo: input.amountKobo }
+        ]
+      },
+      actor.id
     );
     try {
       const record = await this.vouchers.create({
@@ -879,6 +985,8 @@ export class AgentBankingService {
         status: 'ISSUED',
         idempotencyKey: input.idempotencyKey,
         payloadHash,
+        issuanceLedgerEntryId: issuanceEntry.id,
+        refundStatus: 'NONE',
         createdAt: new Date().toISOString()
       });
       await this.events.publish(
@@ -944,7 +1052,8 @@ export class AgentBankingService {
     // A REDEEMING voucher resumes below regardless of the expiry clock — the
     // claim was taken while the voucher was valid and must settle exactly once.
     if (voucher.status === 'ISSUED' && Date.parse(voucher.expiresAt) <= Date.now()) {
-      await this.vouchers.updateExpected(id, { status: 'EXPIRED' }, { status: 'ISSUED' });
+      // V-33: expiry of a PAID voucher books the refundable liability.
+      await this.expireIssuedAgentVoucher(voucher, actor.id);
       throw new GoneException(`Voucher '${id}' expired at ${voucher.expiresAt}`);
     }
     // Server-side signature verification: the presented signature must be a
@@ -962,11 +1071,13 @@ export class AgentBankingService {
     };
     if (
       presented !== voucher.signature ||
-      !verifyVoucherSignature(payload, presented, this.voucherSecret)
+      !verifyVoucherEnvelope(payload, presented, this.voucherKeyRing)
     ) {
       throw new UnauthorizedException('Voucher signature verification failed');
     }
-    const agent = await this.activeAgent(voucher.agentId);
+    // W2-C2 (V-40): a DEREGISTERED agent's pre-issued vouchers stay
+    // redeemable during the honour-or-refund grace window.
+    const agent = await this.redeemableAgent(voucher.agentId);
     // Redeemer must be the farmer themself, the issuing agent, or an admin.
     if (!actor.roles.includes('admin') && actor.id !== voucher.farmerId && actor.id !== agent.userId) {
       throw new ForbiddenException('Only the farmer, the issuing agent or an admin can redeem this voucher');
@@ -995,7 +1106,13 @@ export class AgentBankingService {
               { accountCode: walletCode, direction: 'debit', amountKobo: voucher.amountKobo },
               { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: voucher.amountKobo }
             ],
-            requireSolventAccounts: [agent.floatAccountCode]
+            // W2-C2 (V-40): during the DEREGISTERED grace window the float was
+            // swept to zero by definition — the payout is funded by the booked
+            // issuance liability (settled immediately below, restoring the
+            // float) or, for legacy vouchers, recorded as a negative-float
+            // receivable against the exited agent. ACTIVE-agent redemptions
+            // keep the float solvency guard.
+            requireSolventAccounts: agent.status === 'ACTIVE' ? [agent.floatAccountCode] : []
           },
           actor.id
         );
@@ -1049,11 +1166,37 @@ export class AgentBankingService {
         }
       }
     }
+    // W2-C2 (V-33): settle the issuance liability (DR voucher_liability /
+    // CR float) exactly once per voucher. Runs AFTER the payout entry on both
+    // the create and resume paths — the rollback leg above only fires when
+    // the payout is proven absent, i.e. before this leg ever posts.
+    let settleLedgerEntryId: string | undefined;
+    if (voucher.issuanceLedgerEntryId) {
+      const settleEntry = await this.ledger.postEntry(
+        {
+          idempotencyKey: `agent-voucher-settle:${voucher.id}`,
+          referenceType: 'agent_banking_voucher_liability_settle',
+          referenceId: voucher.id,
+          description: `Paid voucher ${voucher.id} redeemed — issuance liability settled`,
+          postings: [
+            { accountCode: agentVoucherLiabilityAccountCode(agent.id), direction: 'debit', amountKobo: voucher.amountKobo },
+            { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: voucher.amountKobo }
+          ]
+        },
+        actor.id
+      );
+      settleLedgerEntryId = settleEntry.id;
+    }
     // Finalize: REDEEMING→REDEEMED. A twin that already finalized loses this
     // CAS and surfaces as a 409 — exactly-once payout is preserved.
     const redeemed = await this.vouchers.updateExpected(
       id,
-      { status: 'REDEEMED', redeemedAt: new Date().toISOString(), ledgerEntryId: transaction.ledgerEntryId },
+      {
+        status: 'REDEEMED',
+        redeemedAt: new Date().toISOString(),
+        ledgerEntryId: transaction.ledgerEntryId,
+        ...(settleLedgerEntryId ? { settleLedgerEntryId } : {})
+      },
       { status: 'REDEEMING' }
     );
     await this.events.publish(
@@ -1099,7 +1242,7 @@ export class AgentBankingService {
     const agent = await this.getAgent(agentId);
     const { from, to } = monthBounds(month);
     const txs = await this.transactions.find({ agentId: agent.id, from, to });
-    const rows = new Map<CommissionableType, CommissionStatementRow>();
+    const rows = new Map<AgentTransactionType, CommissionStatementRow>();
     for (const tx of txs) {
       const row = rows.get(tx.type) ?? { type: tx.type, count: 0, volumeKobo: 0, commissionKobo: 0 };
       row.count += 1;
@@ -1175,6 +1318,590 @@ export class AgentBankingService {
       delta += posting.direction === 'debit' ? posting.amountKobo : -posting.amountKobo;
     }
     return delta;
+  }
+
+
+  // -------------------------------------- W2-C2: voucher liability (V-33)
+
+  /**
+   * V-40 grace-aware variant of activeAgent for voucher REDEMPTION: a
+   * DEREGISTERED agent's pre-issued vouchers stay redeemable until
+   * voucherGraceUntil (honour window); after it, refund via V-33.
+   */
+  private async redeemableAgent(agentId: string): Promise<AgentRecord> {
+    const agent = await this.getAgent(agentId);
+    if (agent.status === 'ACTIVE') {
+      return agent;
+    }
+    const inGrace =
+      agent.status === 'DEREGISTERED' &&
+      !!agent.voucherGraceUntil &&
+      Date.parse(agent.voucherGraceUntil) > Date.now();
+    if (!inGrace) {
+      throw new BadRequestException(
+        agent.status === 'DEREGISTERED'
+          ? 'This agent was deregistered and the voucher grace window has closed — the voucher must be refunded'
+          : `Agent must be ACTIVE to transact (status is ${agent.status})`
+      );
+    }
+    return agent;
+  }
+
+  /**
+   * V-33: expire an ISSUED voucher, booking the refundable liability when
+   * the voucher was PAID (issuance liability posted at issue): the obligation
+   * reclassifies agent:<id>:voucher_liability → agent:<id>:refunds_payable so
+   * it surfaces in the agent settlement queue (agentSettlement).
+   * Idempotent: the entry key is entity-derived (`agent-voucher-expiry-refund:<id>`).
+   */
+  private async expireIssuedAgentVoucher(voucher: AgentVoucherRecord, actorId: string): Promise<AgentVoucherRecord> {
+    const expired = await this.vouchers.updateExpected(voucher.id, { status: 'EXPIRED' }, { status: 'ISSUED' });
+    if (!voucher.issuanceLedgerEntryId) {
+      return expired; // legacy (pre-101) voucher — no liability was booked
+    }
+    const agent = await this.getAgent(voucher.agentId);
+    await this.ledger.ensureAccount({
+      code: agentRefundsPayableAccountCode(agent.id),
+      type: 'liability',
+      ownerId: agent.userId
+    });
+    const entry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `agent-voucher-expiry-refund:${voucher.id}`,
+        referenceType: 'agent_banking_voucher_expiry_refund',
+        referenceId: voucher.id,
+        description: `Paid voucher ${voucher.id} expired unredeemed — ${voucher.amountKobo} kobo refundable to farmer ${voucher.farmerId}`,
+        postings: [
+          { accountCode: agentVoucherLiabilityAccountCode(agent.id), direction: 'debit', amountKobo: voucher.amountKobo },
+          { accountCode: agentRefundsPayableAccountCode(agent.id), direction: 'credit', amountKobo: voucher.amountKobo }
+        ]
+      },
+      actorId
+    );
+    const marked = await this.vouchers.updateExpected(
+      voucher.id,
+      { refundStatus: 'PAYABLE', refundLedgerEntryId: entry.id },
+      { status: 'EXPIRED' }
+    );
+    await this.events.publish(
+      'agentbank.voucher.refund_due',
+      { voucherId: voucher.id, agentId: agent.id, farmerId: voucher.farmerId, amountKobo: voucher.amountKobo },
+      actorId
+    );
+    return marked;
+  }
+
+  /** Admin/owner-triggered expiry sweep step for agent vouchers (V-33). */
+  async expireVoucher(id: string, actor: ActorRef): Promise<AgentVoucherRecord> {
+    const voucher = await this.getVoucher(id);
+    const agent = await this.getAgent(voucher.agentId);
+    this.assertAgentAccess(agent, actor);
+    if (voucher.status === 'EXPIRED') {
+      return voucher; // idempotent replay
+    }
+    if (voucher.status !== 'ISSUED') {
+      throw new ConflictException(`Only ISSUED vouchers can expire (status is ${voucher.status})`);
+    }
+    return this.expireIssuedAgentVoucher(voucher, actor.id);
+  }
+
+  /**
+   * V-33: confirms the agent handed the cash back for an expired paid
+   * voucher — DR refunds_payable / CR float (float solvency-guarded), CAS
+   * refundStatus PAYABLE→PAID. Idempotent replay returns the PAID row.
+   */
+  async confirmVoucherRefund(id: string, actor: ActorRef): Promise<AgentVoucherRecord> {
+    const voucher = await this.getVoucher(id);
+    const agent = await this.getAgent(voucher.agentId);
+    this.assertAgentAccess(agent, actor);
+    if (voucher.refundStatus === 'PAID') {
+      return voucher; // idempotent replay
+    }
+    if (voucher.status !== 'EXPIRED' || voucher.refundStatus !== 'PAYABLE') {
+      throw new ConflictException(
+        `Only an EXPIRED paid voucher with a PAYABLE refund can be confirmed (status ${voucher.status}, refund ${voucher.refundStatus ?? 'NONE'})`
+      );
+    }
+    const entry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `agent-voucher-refund:${voucher.id}`,
+        referenceType: 'agent_banking_voucher_refund',
+        referenceId: voucher.id,
+        description: `Cash refund handed back for expired paid voucher ${voucher.id}`,
+        postings: [
+          { accountCode: agentRefundsPayableAccountCode(agent.id), direction: 'debit', amountKobo: voucher.amountKobo },
+          { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: voucher.amountKobo }
+        ],
+        requireSolventAccounts: [agent.floatAccountCode]
+      },
+      actor.id
+    );
+    const updated = await this.vouchers.updateExpected(
+      id,
+      { refundStatus: 'PAID', refundLedgerEntryId: entry.id, refundedAt: new Date().toISOString() },
+      { status: 'EXPIRED' }
+    );
+    await this.events.publish(
+      'agentbank.voucher.refunded',
+      { voucherId: voucher.id, agentId: agent.id, amountKobo: voucher.amountKobo },
+      actor.id
+    );
+    return updated;
+  }
+
+  /**
+   * V-33: the agent settlement view — float, outstanding paid-voucher
+   * liability, and the refundable queue (expired paid vouchers awaiting the
+   * cash hand-back).
+   */
+  async agentSettlement(agentId: string): Promise<AgentSettlementView> {
+    const agent = await this.getAgent(agentId);
+    const float = await this.ledger.balance(agent.floatAccountCode);
+    const liability = await this.balanceOrZero(agentVoucherLiabilityAccountCode(agent.id));
+    const refundsPayable = await this.balanceOrZero(agentRefundsPayableAccountCode(agent.id));
+    const vouchers = await this.vouchers.find({ agentId: agent.id });
+    const pendingRefunds = vouchers
+      .filter((voucher) => voucher.status === 'EXPIRED' && voucher.refundStatus === 'PAYABLE')
+      .map((voucher) => ({ voucherId: voucher.id, farmerId: voucher.farmerId, amountKobo: voucher.amountKobo }));
+    return {
+      agentId: agent.id,
+      floatBalanceKobo: float.balanceKobo,
+      vouchersOutstandingLiabilityKobo: liability.creditsKobo - liability.debitsKobo,
+      refundsPayableKobo: refundsPayable.creditsKobo - refundsPayable.debitsKobo,
+      pendingRefunds
+    };
+  }
+
+  private async balanceOrZero(accountCode: string): Promise<{ debitsKobo: number; creditsKobo: number }> {
+    try {
+      const balance = await this.ledger.balance(accountCode);
+      return { debitsKobo: balance.debitsKobo, creditsKobo: balance.creditsKobo };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        return { debitsKobo: 0, creditsKobo: 0 }; // account never provisioned (no paid vouchers yet)
+      }
+      throw error;
+    }
+  }
+
+  // --------------------------- W2-C2: reversal instrument (V-08, maker-checker)
+
+  /**
+   * V-08 step 1 (maker): initiate a reversal/adjustment of a cash_in/cash_out
+   * transaction. Nothing moves until an admin OTHER than the initiator
+   * approves. Idempotent on the client key; one live reversal per transaction.
+   */
+  async initiateReversal(
+    agentId: string,
+    input: { transactionId: string; reason: string; fraudCaseId?: string; idempotencyKey: string },
+    actor: ActorRef
+  ): Promise<AgentReversalRecord> {
+    if (!input.idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required — reversal initiation must be replay-safe');
+    }
+    const repo = this.reversalsRepo();
+    const replay = await repo.findByIdempotencyKey(input.idempotencyKey);
+    if (replay) {
+      return replay; // idempotent replay
+    }
+    const agent = await this.getAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    if (!input.reason?.trim()) {
+      throw new BadRequestException('A reversal reason is required (audit trail)');
+    }
+    const tx = await this.transactions.findById(input.transactionId);
+    if (!tx || tx.agentId !== agent.id) {
+      throw new NotFoundException(`Transaction '${input.transactionId}' not found for agent '${agentId}'`);
+    }
+    if (tx.type !== 'cash_in' && tx.type !== 'cash_out') {
+      throw new BadRequestException(
+        `Only cash_in/cash_out transactions can be reversed (type is ${tx.type}); voucher redemptions use the voucher refund lifecycle`
+      );
+    }
+    if (await repo.findLiveByTransaction(tx.id)) {
+      throw new ConflictException(`Transaction '${tx.id}' already has a live reversal`);
+    }
+    try {
+      const record = await repo.create({
+        id: newId('rev'),
+        agentId: agent.id,
+        transactionId: tx.id,
+        amountKobo: tx.amountKobo,
+        reason: input.reason.trim(),
+        fraudCaseId: input.fraudCaseId?.trim() || undefined,
+        status: 'PENDING',
+        initiatedBy: actor.id,
+        idempotencyKey: input.idempotencyKey,
+        createdAt: new Date().toISOString()
+      });
+      await this.events.publish(
+        'agentbank.reversal.initiated',
+        { reversalId: record.id, agentId: agent.id, transactionId: tx.id, fraudCaseId: record.fraudCaseId },
+        actor.id
+      );
+      return record;
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const existing = await repo.findByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          return existing; // lost a retry race — the original is authoritative
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * V-08 step 2 (checker): an admin who is NOT the initiator approves → the
+   * EXACT INVERSE of the original entry posts (flipped directions,
+   * reversesEntryId set), the daily-limit counter on the ORIGINAL business
+   * date is corrected inside the same posting transaction, the accrued
+   * commission is clawed back, and a type='reversal' transaction row links
+   * it all (fraudCaseId carried). Every posting is entity-keyed so an
+   * APPROVED reversal resumes safely after a crash. Reject is a plain CAS.
+   */
+  async decideReversal(
+    id: string,
+    decision: 'approve' | 'reject',
+    actor: ActorRef
+  ): Promise<AgentReversalRecord> {
+    const repo = this.reversalsRepo();
+    const reversal = await repo.findById(id);
+    if (!reversal) {
+      throw new NotFoundException(`Reversal '${id}' not found`);
+    }
+    if (reversal.status === 'POSTED') {
+      return reversal; // idempotent replay
+    }
+    if (!actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only an admin can decide a reversal');
+    }
+    if (reversal.initiatedBy === actor.id) {
+      throw new ForbiddenException('Maker-checker: the initiator cannot decide their own reversal');
+    }
+    const now = new Date().toISOString();
+    if (decision === 'reject') {
+      const updated = await repo.updateExpected(
+        id,
+        { status: 'REJECTED', decidedBy: actor.id, decidedAt: now },
+        { status: 'PENDING' }
+      );
+      await this.events.publish('agentbank.reversal.rejected', { reversalId: id }, actor.id);
+      return updated;
+    }
+    // Approve: claim PENDING→APPROVED (resume-safe: an APPROVED row re-enters below).
+    let current = reversal;
+    if (reversal.status === 'PENDING') {
+      current = await repo.updateExpected(
+        id,
+        { status: 'APPROVED', decidedBy: actor.id, decidedAt: now },
+        { status: 'PENDING' }
+      );
+    }
+    if (current.status !== 'APPROVED') {
+      throw new ConflictException(`Reversal '${id}' cannot be approved (status is ${current.status})`);
+    }
+    const tx = await this.transactions.findById(current.transactionId);
+    if (!tx) {
+      throw new NotFoundException(`Transaction '${current.transactionId}' not found`);
+    }
+    const agent = await this.getAgent(current.agentId);
+    const original = await this.ledger.getEntry(tx.ledgerEntryId);
+    const entry = await this.ledger.postEntry(
+      {
+        idempotencyKey: `agent-tx-reversal:${current.id}`,
+        referenceType: 'agent_banking_reversal',
+        referenceId: current.id,
+        description: `Reversal of agent transaction ${tx.id} (${current.reason})`,
+        reversesEntryId: original.id,
+        postings: original.postings.map((posting) => ({
+          accountCode: posting.accountCode,
+          direction: posting.direction === 'debit' ? ('credit' as const) : ('debit' as const),
+          amountKobo: posting.amountKobo
+        })),
+        // Daily-limit counter correction on the ORIGINAL business date.
+        dailyLimitCorrection: {
+          agentId: agent.id,
+          businessDate: tx.createdAt.slice(0, 10),
+          amountKobo: tx.amountKobo
+        }
+      },
+      actor.id
+    );
+    // Commission clawback: exact inverse of the accrual entry (idempotent).
+    if (tx.commissionKobo > 0) {
+      const accrual = await this.ledger.findEntryByIdempotencyKey(`agent-commission:${tx.idempotencyKey}`);
+      if (accrual) {
+        await this.ledger.postEntry(
+          {
+            idempotencyKey: `agent-commission-reversal:${current.id}`,
+            referenceType: 'agent_banking_commission_reversal',
+            referenceId: current.id,
+            description: `Commission clawback for reversed transaction ${tx.id}`,
+            reversesEntryId: accrual.id,
+            postings: accrual.postings.map((posting) => ({
+              accountCode: posting.accountCode,
+              direction: posting.direction === 'debit' ? ('credit' as const) : ('debit' as const),
+              amountKobo: posting.amountKobo
+            }))
+          },
+          actor.id
+        );
+      }
+    }
+    let reversalTx = await this.transactions.findByIdempotencyKey(`agent-tx-reversal-tx:${current.id}`);
+    if (!reversalTx) {
+      reversalTx = await this.transactions.create({
+        id: newId('agtx'),
+        agentId: agent.id,
+        farmerId: tx.farmerId,
+        type: 'reversal',
+        amountKobo: tx.amountKobo,
+        // NEGATIVE commission so statements/reconciliation sums net out.
+        commissionKobo: -tx.commissionKobo,
+        idempotencyKey: `agent-tx-reversal-tx:${current.id}`,
+        ledgerEntryId: entry.id,
+        reversalOfTransactionId: tx.id,
+        fraudCaseId: current.fraudCaseId,
+        createdAt: now
+      });
+    }
+    const posted = await repo.updateExpected(
+      id,
+      { status: 'POSTED', ledgerEntryId: entry.id, reversalTransactionId: reversalTx.id },
+      { status: 'APPROVED' }
+    );
+    await this.events.publish(
+      'agentbank.reversal.posted',
+      {
+        reversalId: id,
+        agentId: agent.id,
+        transactionId: tx.id,
+        amountKobo: tx.amountKobo,
+        ledgerEntryId: entry.id,
+        fraudCaseId: current.fraudCaseId
+      },
+      actor.id
+    );
+    return posted;
+  }
+
+  async listReversals(agentId: string, actor: ActorRef): Promise<AgentReversalRecord[]> {
+    const agent = await this.getAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    return this.reversalsRepo().findByAgent(agent.id);
+  }
+
+  // --------------------------- W2-C2: deregistration close-out (V-40)
+
+  /**
+   * V-40: ACTIVE/SUSPENDED → DEREGISTERING → DEREGISTERED close-out:
+   *   1. claim CAS into DEREGISTERING (blocks cash-in/out, top-ups and new
+   *      voucher issuance — activeAgent rejects non-ACTIVE);
+   *   2. float sweep to ZERO with balanced legs (DR platform:cash / CR float,
+   *      float solvency-guarded), entity-keyed `agent-deregister-float-sweep:<id>`;
+   *   3. accrued commission settles (DR commission_payable / CR platform:cash),
+   *      entity-keyed `agent-deregister-commission:<id>`;
+   *   4. finalize CAS DEREGISTERED with a voucher honour-or-refund grace
+   *      window (voucherGraceUntil) during which pre-issued vouchers remain
+   *      redeemable (redeemableAgent); expired/unredeemed paid vouchers then
+   *      surface in the settlement queue as refundable (V-33).
+   * Every posting is idempotent, so a DEREGISTERING agent resumes safely.
+   */
+  async deregisterAgent(
+    id: string,
+    input: { reason?: string; voucherGraceDays?: number } = {},
+    actorId: string
+  ): Promise<AgentRecord> {
+    const agent = await this.getAgent(id);
+    if (agent.status === 'DEREGISTERED') {
+      return agent; // idempotent replay
+    }
+    if (agent.status !== 'ACTIVE' && agent.status !== 'SUSPENDED' && agent.status !== 'DEREGISTERING') {
+      throw new BadRequestException(`Only ACTIVE or SUSPENDED agents can deregister (status is ${agent.status})`);
+    }
+    const now = new Date().toISOString();
+    if (agent.status !== 'DEREGISTERING') {
+      await this.agents.updateExpected(
+        id,
+        { status: 'DEREGISTERING', deregistrationReason: input.reason?.trim() || undefined, updatedAt: now },
+        { status: agent.status }
+      );
+    }
+    const float = await this.ledger.balance(agent.floatAccountCode);
+    if (float.balanceKobo > 0) {
+      await this.ledger.ensureAccount({ code: PLATFORM_CASH_ACCOUNT, type: 'asset' });
+      await this.ledger.postEntry(
+        {
+          idempotencyKey: `agent-deregister-float-sweep:${agent.id}`,
+          referenceType: 'agent_banking_deregister',
+          referenceId: agent.id,
+          description: `Deregistration close-out: float sweep of ${float.balanceKobo} kobo from agent ${agent.id}`,
+          postings: [
+            { accountCode: PLATFORM_CASH_ACCOUNT, direction: 'debit', amountKobo: float.balanceKobo },
+            { accountCode: agent.floatAccountCode, direction: 'credit', amountKobo: float.balanceKobo }
+          ],
+          requireSolventAccounts: [agent.floatAccountCode]
+        },
+        actorId
+      );
+    }
+    const commission = await this.ledger.balance(agent.commissionAccountCode);
+    const payableKobo = commission.creditsKobo - commission.debitsKobo;
+    if (payableKobo > 0) {
+      await this.ledger.ensureAccount({ code: PLATFORM_CASH_ACCOUNT, type: 'asset' });
+      await this.ledger.postEntry(
+        {
+          idempotencyKey: `agent-deregister-commission:${agent.id}`,
+          referenceType: 'agent_banking_deregister_commission',
+          referenceId: agent.id,
+          description: `Deregistration close-out: commission settlement of ${payableKobo} kobo to agent ${agent.id}`,
+          postings: [
+            { accountCode: agent.commissionAccountCode, direction: 'debit', amountKobo: payableKobo },
+            { accountCode: PLATFORM_CASH_ACCOUNT, direction: 'credit', amountKobo: payableKobo }
+          ]
+        },
+        actorId
+      );
+    }
+    const graceDays = input.voucherGraceDays ?? DEFAULT_VOUCHER_GRACE_DAYS;
+    const updated = await this.agents.updateExpected(
+      id,
+      {
+        status: 'DEREGISTERED',
+        deregisteredAt: now,
+        voucherGraceUntil: new Date(Date.now() + graceDays * 24 * 60 * 60 * 1000).toISOString(),
+        updatedAt: now
+      },
+      { status: 'DEREGISTERING' }
+    );
+    await this.events.publish(
+      'agentbank.agent.deregistered',
+      {
+        agentId: agent.id,
+        floatSweptKobo: Math.max(0, float.balanceKobo),
+        commissionSettledKobo: Math.max(0, payableKobo),
+        voucherGraceUntil: updated.voucherGraceUntil
+      },
+      actorId
+    );
+    return updated;
+  }
+
+  // --------------------------- W2-C2: device binding (V-41)
+
+  /** V-41/V-60 hash-at-rest: only the keyed hash of a device token persists. */
+  private hashDeviceToken(agentId: string, deviceToken: string): string {
+    return createHash('sha256').update(`agent-device:${agentId}:${deviceToken}`).digest('hex');
+  }
+
+  /**
+   * V-41: bind a device to an agent (owner or admin). Re-binding the same
+   * ACTIVE device replays; a REVOKED device stays revoked (fail closed —
+   * enrol a NEW token). Binding an ADDITIONAL device emits the audited
+   * re-enrolment event.
+   */
+  async bindDevice(
+    agentId: string,
+    input: { deviceToken: string; label?: string },
+    actor: ActorRef
+  ): Promise<AgentDeviceRecord> {
+    const repo = this.devicesRepo();
+    const agent = await this.getAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    if (agent.status === 'DEREGISTERING' || agent.status === 'DEREGISTERED') {
+      throw new BadRequestException('A deregistered agent cannot bind devices');
+    }
+    if (!input.deviceToken || input.deviceToken.length < MIN_AGENT_DEVICE_TOKEN_LENGTH) {
+      throw new BadRequestException(
+        `deviceToken must be at least ${MIN_AGENT_DEVICE_TOKEN_LENGTH} characters (high-entropy device identity)`
+      );
+    }
+    const tokenHash = this.hashDeviceToken(agent.id, input.deviceToken);
+    const existing = await repo.findByAgentAndHash(agent.id, tokenHash);
+    if (existing) {
+      if (existing.status === 'REVOKED') {
+        throw new ConflictException('This device was revoked — enrol a new device token instead');
+      }
+      return existing; // idempotent replay of a re-bind
+    }
+    const boundCount = (await repo.findByAgent(agent.id)).length;
+    const record = await repo.create({
+      id: newId('dev'),
+      agentId: agent.id,
+      deviceTokenHash: tokenHash,
+      label: input.label?.trim() || undefined,
+      status: 'ACTIVE',
+      boundBy: actor.id,
+      createdAt: new Date().toISOString()
+    });
+    await this.events.publish(
+      boundCount > 0 ? 'agentbank.agent.device_reenrolled' : 'agentbank.agent.device_bound',
+      { agentId: agent.id, deviceId: record.id, boundBy: actor.id, reenrolment: boundCount > 0 },
+      actor.id
+    );
+    return record;
+  }
+
+  /** V-41: remote freeze/revoke — ACTIVE→REVOKED CAS, audited. */
+  async revokeDevice(
+    agentId: string,
+    deviceId: string,
+    actor: ActorRef,
+    reason?: string
+  ): Promise<AgentDeviceRecord> {
+    const repo = this.devicesRepo();
+    const agent = await this.getAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    const device = await repo.findById(deviceId);
+    if (!device || device.agentId !== agent.id) {
+      throw new NotFoundException(`Device '${deviceId}' not found for agent '${agentId}'`);
+    }
+    if (device.status === 'REVOKED') {
+      return device; // idempotent replay
+    }
+    const updated = await repo.updateExpected(
+      deviceId,
+      { status: 'REVOKED', revokedBy: actor.id, revokedAt: new Date().toISOString(), revokeReason: reason?.trim() || undefined },
+      { status: 'ACTIVE' }
+    );
+    await this.events.publish(
+      'agentbank.agent.device_revoked',
+      { agentId: agent.id, deviceId, revokedBy: actor.id, reason: reason?.trim() },
+      actor.id
+    );
+    return updated;
+  }
+
+  async listDevices(agentId: string, actor: ActorRef): Promise<AgentDeviceRecord[]> {
+    const agent = await this.getAgent(agentId);
+    this.assertAgentAccess(agent, actor);
+    return this.devicesRepo().findByAgent(agent.id);
+  }
+
+  /**
+   * V-41 cash-endpoint enforcement: legacy agents (no bindings at all) pass
+   * through; once any binding exists a presented token is MANDATORY and must
+   * hash to an ACTIVE row — a revoked token is rejected (remote freeze).
+   */
+  private async assertDeviceAllowed(agent: AgentRecord, deviceToken?: string): Promise<void> {
+    if (!this.devices) {
+      return; // persistence not wired (unit harnesses) — enforcement off
+    }
+    const bindings = await this.devices.findByAgent(agent.id);
+    if (bindings.length === 0) {
+      return; // legacy pass-through until the first device is bound
+    }
+    if (!deviceToken) {
+      throw new UnauthorizedException('This agent transacts from bound devices only — present the device token');
+    }
+    const binding = await this.devices.findByAgentAndHash(agent.id, this.hashDeviceToken(agent.id, deviceToken));
+    if (!binding) {
+      throw new ForbiddenException('Unknown device — bind it first (device re-enrolment is audited)');
+    }
+    if (binding.status === 'REVOKED') {
+      throw new UnauthorizedException('This device was revoked (remote freeze) — cash endpoints refuse it');
+    }
   }
 
   // ------------------------------------------- interop (stub/simulator only)
