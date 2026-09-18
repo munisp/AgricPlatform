@@ -23,6 +23,11 @@ export interface UssdSessionRepository {
   remove(sessionId: string): Promise<boolean>;
   /** Deletes every session whose expiry is at/before `nowIso`; returns the count. */
   deleteExpired(nowIso: string): Promise<number>;
+  /**
+   * NDPA erasure fan-out (V-25): replaces every occurrence of `phone` (and
+   * the mirroring msisdn) with the pseudonym; returns rows rewritten.
+   */
+  pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number>;
 }
 
 export class InMemoryUssdSessionRepository implements UssdSessionRepository {
@@ -51,6 +56,17 @@ export class InMemoryUssdSessionRepository implements UssdSessionRepository {
       }
     }
     return removed;
+  }
+
+  async pseudonymiseForPhone(phone: string, pseudonym: string): Promise<number> {
+    let rewritten = 0;
+    for (const [sessionId, record] of this.items) {
+      if (record.phone === phone || record.msisdn === phone) {
+        this.items.set(sessionId, { ...record, phone: pseudonym, msisdn: pseudonym });
+        rewritten += 1;
+      }
+    }
+    return rewritten;
   }
 }
 
