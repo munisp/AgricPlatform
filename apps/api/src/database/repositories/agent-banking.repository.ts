@@ -10,7 +10,10 @@ import { ConflictException } from '@nestjs/common';
  * silently overwriting each other, mirroring the loan disbursement path.
  */
 
-export const AGENT_STATUSES = ['PENDING', 'ACTIVE', 'SUSPENDED'] as const;
+// W2-C2 (V-40, migration 103): DEREGISTERING/DEREGISTERED close-out. The
+// close-out sweeps the float to zero with balanced legs and settles accrued
+// commission; pre-issued vouchers stay redeemable until voucherGraceUntil.
+export const AGENT_STATUSES = ['PENDING', 'ACTIVE', 'SUSPENDED', 'DEREGISTERING', 'DEREGISTERED'] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 export const AGENT_TOPUP_STATUSES = ['REQUESTED', 'APPROVED', 'SETTLED', 'REJECTED'] as const;
@@ -22,7 +25,11 @@ export type AgentTopUpStatus = (typeof AGENT_TOPUP_STATUSES)[number];
 export const AGENT_VOUCHER_STATUSES = ['ISSUED', 'REDEEMING', 'REDEEMED', 'EXPIRED', 'VOIDED'] as const;
 export type AgentVoucherStatus = (typeof AGENT_VOUCHER_STATUSES)[number];
 
-export const AGENT_TRANSACTION_TYPES = ['cash_in', 'cash_out', 'voucher_redemption'] as const;
+// W2-C2 (V-08, migration 102): 'reversal' is the compensating-adjustment
+// type posted by the maker-checker reversal instrument; its row carries
+// reversalOfTransactionId (+ optional fraudCaseId) and a NEGATIVE
+// commissionKobo so statement sums net out.
+export const AGENT_TRANSACTION_TYPES = ['cash_in', 'cash_out', 'voucher_redemption', 'reversal'] as const;
 export type AgentTransactionType = (typeof AGENT_TRANSACTION_TYPES)[number];
 
 export interface AgentRecord {
@@ -37,6 +44,11 @@ export interface AgentRecord {
   commissionAccountCode: string;
   dailyLimitKobo: number;
   lowFloatThresholdKobo: number;
+  /** W2-C2 (V-40, migration 103): close-out bookkeeping. */
+  deregisteredAt?: string;
+  /** V-40: pre-issued vouchers stay redeemable until this instant (grace window). */
+  voucherGraceUntil?: string;
+  deregistrationReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,6 +89,67 @@ export interface AgentTopUpCriteria {
   status?: AgentTopUpStatus;
 }
 
+export interface AgentDeviceRecord {
+  id: string;
+  agentId: string;
+  /** SHA-256 hash of `agent-device:<agentId>:<token>` — raw tokens NEVER persist (V-41/V-60 hash-at-rest doctrine). */
+  deviceTokenHash: string;
+  label?: string;
+  status: 'ACTIVE' | 'REVOKED';
+  boundBy: string;
+  revokedBy?: string;
+  revokedAt?: string;
+  revokeReason?: string;
+  createdAt: string;
+}
+
+export const AGENT_REVERSAL_STATUSES = ['PENDING', 'APPROVED', 'POSTED', 'REJECTED'] as const;
+export type AgentReversalStatus = (typeof AGENT_REVERSAL_STATUSES)[number];
+
+/** W2-C2 (V-08): maker-checker reversal request for an agent transaction. */
+export interface AgentReversalRecord {
+  id: string;
+  agentId: string;
+  transactionId: string;
+  amountKobo: number;
+  reason: string;
+  fraudCaseId?: string;
+  status: AgentReversalStatus;
+  initiatedBy: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  ledgerEntryId?: string;
+  reversalTransactionId?: string;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export interface AgentDeviceRepository {
+  create(record: AgentDeviceRecord): Promise<AgentDeviceRecord>;
+  findByAgentAndHash(agentId: string, deviceTokenHash: string): Promise<AgentDeviceRecord | undefined>;
+  findById(id: string): Promise<AgentDeviceRecord | undefined>;
+  findByAgent(agentId: string): Promise<AgentDeviceRecord[]>;
+  updateExpected(
+    id: string,
+    patch: Partial<AgentDeviceRecord>,
+    expected: { status: AgentDeviceRecord['status'] }
+  ): Promise<AgentDeviceRecord>;
+}
+
+export interface AgentReversalRepository {
+  create(record: AgentReversalRecord): Promise<AgentReversalRecord>;
+  findById(id: string): Promise<AgentReversalRecord | undefined>;
+  findByIdempotencyKey(key: string): Promise<AgentReversalRecord | undefined>;
+  /** Live (PENDING/APPROVED/POSTED) reversal for a transaction — one per tx. */
+  findLiveByTransaction(transactionId: string): Promise<AgentReversalRecord | undefined>;
+  findByAgent(agentId: string): Promise<AgentReversalRecord[]>;
+  updateExpected(
+    id: string,
+    patch: Partial<AgentReversalRecord>,
+    expected: { status: AgentReversalStatus }
+  ): Promise<AgentReversalRecord>;
+}
+
 export interface AgentVoucherRecord {
   id: string;
   agentId: string;
@@ -97,6 +170,14 @@ export interface AgentVoucherRecord {
    * IDEMPOTENCY_PAYLOAD_MISMATCH. Undefined only on pre-061 legacy rows.
    */
   payloadHash?: string;
+  /** W2-C2 (V-33, migration 101): issuance-liability ledger entry (DR float / CR voucher_liability) posted at issue. */
+  issuanceLedgerEntryId?: string;
+  /** V-33: liability settlement entry posted at redemption. */
+  settleLedgerEntryId?: string;
+  /** V-33: NONE (legacy) | PAYABLE (expired unredeemed — refund owed) | PAID. */
+  refundStatus?: 'NONE' | 'PAYABLE' | 'PAID';
+  refundLedgerEntryId?: string;
+  refundedAt?: string;
   createdAt: string;
 }
 
@@ -129,6 +210,10 @@ export interface AgentTransactionRecord {
    * 'live'. Voucher redemptions carry no OTP and leave this unset.
    */
   otpBasis?: 'stub' | 'live';
+  /** W2-C2 (V-08, migration 102): on type='reversal' rows — the reversed transaction. */
+  reversalOfTransactionId?: string;
+  /** V-08: fraud case (fraud.sentinel_cases id) the reversal resolves. */
+  fraudCaseId?: string;
   createdAt: string;
 }
 
@@ -183,6 +268,7 @@ export interface AgentVoucherRepository {
 }
 
 export interface AgentTransactionRepository {
+  findById(id: string): Promise<AgentTransactionRecord | undefined>;
   /** Throws ConflictException when idempotencyKey already exists. */
   create(record: AgentTransactionRecord): Promise<AgentTransactionRecord>;
   findByIdempotencyKey(key: string): Promise<AgentTransactionRecord | undefined>;
@@ -361,6 +447,11 @@ export class InMemoryAgentVoucherRepository implements AgentVoucherRepository {
 export class InMemoryAgentTransactionRepository implements AgentTransactionRepository {
   private readonly items = new Map<string, AgentTransactionRecord>();
 
+  async findById(id: string): Promise<AgentTransactionRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
   async create(record: AgentTransactionRecord): Promise<AgentTransactionRecord> {
     // Mirror the pg UNIQUE constraint on idempotency_key: a retry that raced
     // the original write surfaces as 409 instead of double-posting.
@@ -392,6 +483,115 @@ export class InMemoryAgentTransactionRepository implements AgentTransactionRepos
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((item) => structuredClone(item));
   }
+}
+
+export class InMemoryAgentDeviceRepository implements AgentDeviceRepository {
+  private readonly items = new Map<string, AgentDeviceRecord>();
+
+  async create(record: AgentDeviceRecord): Promise<AgentDeviceRecord> {
+    // Mirror UNIQUE (agent_id, device_token_hash): re-binding replays as 409.
+    for (const existing of this.items.values()) {
+      if (existing.agentId === record.agentId && existing.deviceTokenHash === record.deviceTokenHash) {
+        throw new ConflictException('This device is already bound to the agent');
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findByAgentAndHash(agentId: string, deviceTokenHash: string): Promise<AgentDeviceRecord | undefined> {
+    const record = [...this.items.values()].find(
+      (item) => item.agentId === agentId && item.deviceTokenHash === deviceTokenHash
+    );
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findById(id: string): Promise<AgentDeviceRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByAgent(agentId: string): Promise<AgentDeviceRecord[]> {
+    return [...this.items.values()].filter((item) => item.agentId === agentId).map((item) => structuredClone(item));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<AgentDeviceRecord>,
+    expected: { status: AgentDeviceRecord['status'] }
+  ): Promise<AgentDeviceRecord> {
+    const current = this.items.get(id);
+    if (!current || current.status !== expected.status) {
+      throw new ConflictException(`Device '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = { ...current, ...patch };
+    this.items.set(id, updated);
+    return structuredClone(updated);
+  }
+}
+
+export class InMemoryAgentReversalRepository implements AgentReversalRepository {
+  private readonly items = new Map<string, AgentReversalRecord>();
+
+  async create(record: AgentReversalRecord): Promise<AgentReversalRecord> {
+    for (const existing of this.items.values()) {
+      if (existing.idempotencyKey === record.idempotencyKey) {
+        throw new ConflictException('A record with these unique values already exists');
+      }
+      // Mirror the partial UNIQUE index: one LIVE reversal per transaction.
+      if (
+        existing.transactionId === record.transactionId &&
+        existing.status !== 'REJECTED'
+      ) {
+        throw new ConflictException(`Transaction '${record.transactionId}' already has a live reversal`);
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findById(id: string): Promise<AgentReversalRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<AgentReversalRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.idempotencyKey === key);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findLiveByTransaction(transactionId: string): Promise<AgentReversalRecord | undefined> {
+    const record = [...this.items.values()].find(
+      (item) => item.transactionId === transactionId && item.status !== 'REJECTED'
+    );
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByAgent(agentId: string): Promise<AgentReversalRecord[]> {
+    return [...this.items.values()].filter((item) => item.agentId === agentId).map((item) => structuredClone(item));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<AgentReversalRecord>,
+    expected: { status: AgentReversalStatus }
+  ): Promise<AgentReversalRecord> {
+    const current = this.items.get(id);
+    if (!current || current.status !== expected.status) {
+      throw new ConflictException(`Reversal '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = { ...current, ...patch };
+    this.items.set(id, updated);
+    return structuredClone(updated);
+  }
+}
+
+export function createInMemoryAgentDeviceRepository(): InMemoryAgentDeviceRepository {
+  return new InMemoryAgentDeviceRepository();
+}
+
+export function createInMemoryAgentReversalRepository(): InMemoryAgentReversalRepository {
+  return new InMemoryAgentReversalRepository();
 }
 
 export function createInMemoryAgentBankingAgentRepository(): InMemoryAgentBankingAgentRepository {
