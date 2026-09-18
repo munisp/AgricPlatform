@@ -3,8 +3,13 @@ import type { AsyncRepository } from '../../common/async-repository.js';
 import { ilike, InMemoryRepository } from '../../common/in-memory.repository.js';
 import { seedUsers } from '../seed-data.js';
 
-/** Admin-managed account overlay; backed by identity.users.status in pg. */
-export type AccountStatus = 'active' | 'suspended';
+/**
+ * Admin-managed account overlay; backed by identity.users.status in pg.
+ * `deceased` (V-09, migration 086): estate-frozen — sessions are revoked and
+ * withdrawals refuse; the identity row is NEVER anonymised (succession
+ * claims need the estate linkage, unlike DSAR erasure).
+ */
+export type AccountStatus = 'active' | 'suspended' | 'deceased';
 
 export interface UserCriteria {
   role?: UserRole;
