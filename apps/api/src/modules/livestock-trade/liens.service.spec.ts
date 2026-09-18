@@ -110,7 +110,7 @@ describe('LiensService', () => {
     const lien = await service.register(lender, registerInput);
     const defaulted = await service.markDefaulted(lender, lien.id);
     expect(defaulted.status).toBe('defaulted');
-    await expect(service.discharge(lender, lien.id)).rejects.toThrow('only active liens');
+    await expect(service.discharge(lender, lien.id)).rejects.toThrow('only live liens');
   });
 
   it('scopes subject lien history to owner, lender or admin', async () => {
