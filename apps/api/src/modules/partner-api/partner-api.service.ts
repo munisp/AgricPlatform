@@ -1,4 +1,4 @@
-import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import type { Enrolment, Opportunity, Profile, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -25,7 +25,14 @@ import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { ProfilesService } from '../profiles/profiles.service.js';
 import { UsersService } from '../users/users.service.js';
-import { PARTNER_EVENT_TYPES, type PartnerEventType } from './webhook-dispatch.service.js';
+import {
+  defaultWebhookDnsLookup,
+  PARTNER_EVENT_TYPES,
+  WEBHOOK_DNS_LOOKUP,
+  webhookDeliveryBlockReason,
+  type PartnerEventType,
+  type WebhookDnsLookup
+} from './webhook-dispatch.service.js';
 
 /** Consent purpose required before any member-level data leaves the partner API. */
 export const PARTNER_SHARE_CONSENT_PURPOSE = 'partner_data_sharing';
@@ -101,7 +108,12 @@ export class PartnerApiService {
     @Inject(EXTERNAL_ACCOUNT_LINK_REPOSITORY)
     private readonly accountLinks: ExternalAccountLinkRepository,
     @Inject(FARM_RECORD_REPOSITORY) private readonly farmRecords: FarmRecordRepository,
-    @Inject(INBOUND_EVENT_REPOSITORY) private readonly inboundEvents: InboundEventRepository
+    @Inject(INBOUND_EVENT_REPOSITORY) private readonly inboundEvents: InboundEventRepository,
+    // V-59: appended last so existing positional constructor calls (unit
+    // specs) keep working; Nest injects WEBHOOK_DNS_LOOKUP at runtime.
+    @Optional()
+    @Inject(WEBHOOK_DNS_LOOKUP)
+    private readonly webhookLookup: WebhookDnsLookup = defaultWebhookDnsLookup
   ) {}
 
   /** True when the user holds an active partner-sharing consent. */
@@ -433,6 +445,19 @@ export class PartnerApiService {
       throw new ForbiddenException(
         `Unknown event type(s): ${invalid.join(', ')}. Supported: ${PARTNER_EVENT_TYPES.join(', ')}`
       );
+    }
+    // V-59: registration-time SSRF gate — the full DNS-resolving guard, not
+    // just the literal check, so a hostname that already resolves to a
+    // private range can never be stored. (A hostname rebound AFTER
+    // registration is caught by the per-attempt delivery guard; this check
+    // is defence in depth, not the primary control.)
+    const blockReason = await webhookDeliveryBlockReason(
+      input.targetUrl,
+      process.env,
+      this.webhookLookup
+    );
+    if (blockReason) {
+      throw new BadRequestException(`webhook targetUrl rejected: ${blockReason}`);
     }
     return this.subscriptions.create({
       id: newId('whsub'),
