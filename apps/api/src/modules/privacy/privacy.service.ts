@@ -4,11 +4,24 @@ import { newId } from '../../common/async-repository.js';
 import {
   AUTH_SESSION_REPOSITORY,
   CONSENT_REPOSITORY,
-  DELETION_REQUEST_REPOSITORY
+  DELETION_REQUEST_REPOSITORY,
+  ERASURE_HOLD_REPOSITORY,
+  FARM_PLOT_REPOSITORY,
+  IVR_CALL_REPOSITORY,
+  PROFILE_REPOSITORY,
+  USSD_SESSION_REPOSITORY,
+  VOICE_SESSION_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type { AuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import type { ConsentRepository } from '../../database/repositories/consent.repository.js';
 import type { DeletionRequestRepository } from '../../database/repositories/deletion-request.repository.js';
+import type { ErasureHoldRepository } from '../../database/repositories/erasure-hold.repository.js';
+import type { FarmPlotRepository } from '../../database/repositories/farms.repository.js';
+import type { IvrCallRepository } from '../../database/repositories/ivr-call.repository.js';
+import type { ProfileRepository } from '../../database/repositories/profile.repository.js';
+import type { UssdSessionRepository } from '../../database/repositories/ussd-session.repository.js';
+import type { VoiceSessionRepository } from '../../database/repositories/voice.repository.js';
+import { pseudonymFor } from '../compliance/compliance.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { DeletionRequest } from '../../database/seed-data.js';
@@ -64,6 +77,34 @@ const PROCESSING_REGISTER: ProcessingRegisterEntry[] = [
   }
 ];
 
+/**
+ * Legal-hold categories (V-25), keyed for the NDPA-inventory table-driven
+ * test: data that must outlive an erasure request gets a per-category DPO
+ * sign-off hold (privacy.erasure_holds) instead of silently keeping PII.
+ */
+export const ERASURE_LEGAL_HOLD_CATEGORIES = [
+  'marketplace_orders', // orders, extensions, returns — 7-year legal hold
+  'finance_records', // escrow, invoices, shipments, ledger, loans, repayments — 7-year
+  'consent_records', // consent + lifecycle audit — legal obligation
+  'audit_trail', // audit events — legal hold, flag-only
+  'warehouse_receipts', // asset ownership records (succession/accounting integrity)
+  'credit_vsla', // VSLA membership + credit scoring history (financial records)
+  'notification_records' // messages/delivery logs — 12-month retention obligation
+] as const;
+
+export type ErasureLegalHoldCategory = (typeof ERASURE_LEGAL_HOLD_CATEGORIES)[number];
+
+export const ERASURE_HOLD_REASONS: Record<ErasureLegalHoldCategory, string> = {
+  marketplace_orders: 'NDPA legal hold: orders/extensions/returns retained 7 years (financial records)',
+  finance_records: 'NDPA legal hold: escrow/invoices/shipments/ledger/loans/repayments retained 7 years',
+  consent_records: 'NDPA legal obligation: consent records retained with lifecycle audit',
+  audit_trail: 'NDPA legal hold: audit events retained (flag-only, indefinite)',
+  warehouse_receipts:
+    'Asset-record integrity: warehouse receipt ownership must survive for succession/accounting',
+  credit_vsla: 'Asset-record integrity: VSLA membership and credit history are financial records',
+  notification_records: 'NDPA retention obligation: notification delivery records retained 12 months'
+};
+
 @Injectable()
 export class PrivacyService {
   private readonly logger = new Logger(PrivacyService.name);
@@ -84,6 +125,13 @@ export class PrivacyService {
     // V-24: erasure must revoke the subject's auth sessions (mirrors the
     // compliance.service.ts approve() doctrine).
     @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository,
+    // V-25: erasure fan-out targets (NDPA inventory categories).
+    @Inject(PROFILE_REPOSITORY) private readonly profileRepo: ProfileRepository,
+    @Inject(FARM_PLOT_REPOSITORY) private readonly farmPlots: FarmPlotRepository,
+    @Inject(USSD_SESSION_REPOSITORY) private readonly ussdSessions: UssdSessionRepository,
+    @Inject(IVR_CALL_REPOSITORY) private readonly ivrCalls: IvrCallRepository,
+    @Inject(VOICE_SESSION_REPOSITORY) private readonly voiceSessions: VoiceSessionRepository,
+    @Inject(ERASURE_HOLD_REPOSITORY) private readonly erasureHolds: ErasureHoldRepository,
     // Stage 27 Innovation 13 (optional, additive): NDPA deletion also
     // expunges dispute-evidence blobs the user uploaded, leaving hash
     // tombstones so evidence chains stay verifiable. Optional so the
@@ -216,7 +264,15 @@ export class PrivacyService {
     if (!request) {
       throw new NotFoundException(`Deletion request '${requestId}' not found`);
     }
+    // V-25: capture the channel-linked PII (phone) BEFORE anonymize severs
+    // the linkage, so the fan-out can pseudonymise channel records.
+    const subject = await this.users.getById(request.userId);
+    const subjectPhone = subject.phone;
     await this.users.anonymize(request.userId);
+    // V-25: fan out per docs/compliance/ndpa-data-inventory.md —
+    // profile tombstone, farm geo strip, channel pseudonymisation, and
+    // per-category DPO sign-off holds for legal-hold categories.
+    await this.fanOutErasure(request.userId, subjectPhone, actorId);
     // V-24: erasure must also kill the subject's sessions — an anonymised
     // user holding live refresh tokens would keep using the account (same
     // doctrine as compliance.service.ts approve()).
@@ -261,6 +317,97 @@ export class PrivacyService {
 
   async deletionRequest(id: string): Promise<DeletionRequest> {
     return this.deletionRequests.getById(id);
+  }
+
+  /**
+   * NDPA erasure fan-out (V-25, dim05-10/M9): anonymising identity.users
+   * alone left cleartext PII in member_profiles, farm plot geometry and the
+   * USSD/IVR/voice channel stores. Driven by
+   * docs/compliance/ndpa-data-inventory.md:
+   * - profiles  → tombstone (location/bio/interests cleared);
+   * - farms     → geo strip (boundary dropped, centroid rounded to ~1°);
+   * - channels  → pseudonymised with the compliance pseudonymFor pattern;
+   * - legal-hold categories (orders/escrow/ledger/consent/audit + asset
+   *   records whose ownership FKs must survive for succession/accounting) →
+   *   a per-category DPO sign-off hold is RECORDED, never silently kept.
+   * Idempotent: holds are keyed (userId, category); re-runs are no-ops.
+   */
+  private async fanOutErasure(userId: string, phone: string, actorId: string): Promise<void> {
+    const pseudonym = pseudonymFor(userId);
+    const now = new Date().toISOString();
+    const result: Record<string, number | boolean> = {};
+
+    // profiles.member_profiles → tombstone.
+    const profile = await this.profileRepo.findByUserId(userId);
+    if (profile) {
+      await this.profileRepo.upsert({
+        userId,
+        location: { state: 'redacted', lga: 'redacted' },
+        farmingInterests: [],
+        valueChains: [],
+        badges: [],
+        completionScore: 0
+      });
+    }
+    result.profileTombstoned = !!profile;
+
+    // farms.farm_plots → geo strip (boundary dropped; centroid rounded to
+    // whole degrees ≈ 111 km — useless as location PII).
+    const plots = await this.farmPlots.find({ ownerUserId: userId });
+    for (const plot of plots) {
+      await this.farmPlots.updateExpected(
+        plot.id,
+        {
+          name: 'Redacted plot',
+          centroidLat: Math.round(plot.centroidLat),
+          centroidLong: Math.round(plot.centroidLong),
+          boundaryGeojson: null as unknown as undefined,
+          soilType: undefined,
+          updatedAt: now
+        },
+        { ownerUserId: userId }
+      );
+    }
+    result.farmPlotsStripped = plots.length;
+
+    // Channels → pseudonymise phone-shaped PII (compliance pseudonymFor
+    // doctrine; hashes at rest where the channel already stores hashes).
+    result.ussdSessionsPseudonymised = await this.ussdSessions.pseudonymiseForPhone(
+      phone,
+      pseudonym
+    );
+    result.ivrCallsPseudonymised = await this.ivrCalls.pseudonymiseForPhone(phone, pseudonym);
+    let voiceSessions = 0;
+    for (const session of await this.voiceSessions.find({ phone })) {
+      await this.voiceSessions.update(session.id, { phone: pseudonym });
+      voiceSessions += 1;
+    }
+    result.voiceSessionsPseudonymised = voiceSessions;
+
+    // Legal-hold categories → per-category DPO sign-off hold (the confirming
+    // admin acts as the DPO signatory), instead of silently keeping PII.
+    for (const category of ERASURE_LEGAL_HOLD_CATEGORIES) {
+      const existing = await this.erasureHolds.find({ userId, category });
+      if (existing.length === 0) {
+        await this.erasureHolds.create({
+          id: newId('erasurehold'),
+          userId,
+          category,
+          reason: ERASURE_HOLD_REASONS[category],
+          signedOffBy: actorId,
+          signedOffAt: now
+        });
+      }
+    }
+    result.legalHoldsRecorded = ERASURE_LEGAL_HOLD_CATEGORIES.length;
+
+    await this.audit.record({
+      actorId,
+      action: 'privacy.erasure_fanned_out',
+      entityType: 'user',
+      entityId: userId,
+      metadata: result
+    });
   }
 
   /**
