@@ -4,7 +4,9 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
   Optional
 } from '@nestjs/common';
 import type {
@@ -18,7 +20,7 @@ import type {
 import { newId } from '../../common/async-repository.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
+import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
 import {
   COLLATERAL_POSITION_REPOSITORY,
   LOAN_APPLICATION_REPOSITORY,
@@ -107,7 +109,9 @@ function isIntInRange(value: number, min: number, max: number): boolean {
  *    warehouse.ltv_evaluations_total{basis=unavailable}.
  */
 @Injectable()
-export class LtvGuardianService {
+export class LtvGuardianService implements OnModuleInit {
+  private readonly logger = new Logger(LtvGuardianService.name);
+
   constructor(
     private readonly events: DomainEventsService,
     private readonly ledger: LedgerService,
@@ -126,6 +130,91 @@ export class LtvGuardianService {
     private readonly prices: CommodityPriceProvider,
     @Optional() private readonly audit?: AuditService
   ) {}
+
+  /**
+   * V-07: subscribe to spoilage/condition loss events. A reported loss
+   * writes down the pledged quantity on every live collateral position over
+   * the affected receipt and immediately re-evaluates — a write-down can
+   * push the LTV through the margin-call threshold WITHOUT any price move
+   * (the guardian was previously price-only, so destroyed grain kept
+   * claiming full collateral value). Best-effort listener: a failure is
+   * logged for reconciliation, never thrown back into the event fan-out.
+   */
+  onModuleInit(): void {
+    this.events.on('warehouse.receipt.loss_reported', (event) => {
+      void this.applyLossEvent(event).catch((error: unknown) => {
+        this.logger.error(
+          `LTV loss write-down failed for event ${event.id}: ${(error as Error)?.message ?? error}`
+        );
+      });
+    });
+  }
+
+  /**
+   * Applies one loss event to the live collateral positions of the receipt:
+   * pledgedQtyKg is written down to the loss-adjusted effective weight (CAS,
+   * never an increase — a partial write-down replay is a no-op), then the
+   * position is re-evaluated so a collateral erosion raises the margin call.
+   * A total loss (effective 0 kg) raises the call directly — the LTV is
+   * undefined at zero collateral, never silently 'fine'.
+   */
+  async applyLossEvent(event: DomainEvent): Promise<void> {
+    const payload = event.payload as
+      | { receiptId?: string; effectiveWeightKg?: number }
+      | undefined;
+    if (!payload?.receiptId || payload.effectiveWeightKg === undefined) {
+      return;
+    }
+    const live = (
+      await Promise.all(LIVE_POSITION_STATUSES.map((status) => this.positions.find({ status })))
+    ).flat();
+    for (const position of live) {
+      if (position.receiptId !== payload.receiptId) {
+        continue;
+      }
+      if (payload.effectiveWeightKg >= position.pledgedQtyKg) {
+        // Nothing to write down — but an idempotent REPLAY must still
+        // re-drive the evaluation in case the first attempt wrote down the
+        // quantity and then crashed before evaluating (converge, don't skip).
+        if (payload.effectiveWeightKg === position.pledgedQtyKg && position.pledgedQtyKg > 0) {
+          await this.evaluatePosition(position, event.actorId);
+        }
+        continue;
+      }
+      let updated: CollateralPosition;
+      try {
+        updated = await this.positions.updateExpected(
+          position.id,
+          { pledgedQtyKg: payload.effectiveWeightKg, updatedAt: new Date().toISOString() },
+          { status: position.status, pledgedQtyKg: position.pledgedQtyKg }
+        );
+      } catch (error) {
+        if (error instanceof ConflictException) {
+          continue; // a concurrent write-down/evaluation won — converge
+        }
+        throw error;
+      }
+      await this.audit?.record({
+        actorId: event.actorId ?? 'system',
+        action: 'warehouse.position.loss_write_down',
+        entityType: 'warehouse_collateral_position',
+        entityId: position.id,
+        metadata: {
+          receiptId: position.receiptId,
+          fromQtyKg: position.pledgedQtyKg,
+          toQtyKg: payload.effectiveWeightKg
+        }
+      });
+      if (payload.effectiveWeightKg <= 0) {
+        // Total loss: collateral value is zero — raise the call directly.
+        if (updated.status === 'active') {
+          await this.raiseMarginCall(updated, BPS_DENOMINATOR, undefined, event.actorId);
+        }
+        continue;
+      }
+      await this.evaluatePosition(updated, event.actorId);
+    }
+  }
 
   /* --------------------------------------------------------- attach ------- */
 
@@ -441,7 +530,7 @@ export class LtvGuardianService {
   private async raiseMarginCall(
     position: CollateralPosition,
     ltvBps: number,
-    observationId: string,
+    observationId?: string,
     actorId?: string
   ): Promise<CollateralPosition> {
     const event = this.events.build(
