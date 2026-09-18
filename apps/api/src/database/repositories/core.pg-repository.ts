@@ -213,6 +213,35 @@ export class PgOutboxRepository implements OutboxRepository {
     );
     return (result.rowCount ?? 0) > 0;
   }
+
+  async countPublishedBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT count(*)::int AS n FROM events.outbox
+       WHERE published_at IS NOT NULL AND published_at < $1`,
+      [cutoff]
+    );
+    return result.rows[0].n as number;
+  }
+
+  async anonymizePublishedBefore(cutoff: string): Promise<number> {
+    // payload is jsonb NOT NULL, so the tombstone is '{}', never NULL; the
+    // payload <> '{}' guard keeps repeated sweeps no-ops (idempotent).
+    const result = await this.pool.query(
+      `UPDATE events.outbox SET payload = '{}'::jsonb
+       WHERE published_at IS NOT NULL AND published_at < $1 AND payload <> '{}'::jsonb`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async purgePublishedBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM events.outbox
+       WHERE published_at IS NOT NULL AND published_at < $1`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
 }
 
 export function createPgAuditRepository(pool: pg.Pool): PgAuditRepository {
