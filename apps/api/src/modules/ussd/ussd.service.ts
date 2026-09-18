@@ -38,6 +38,13 @@ import {
 export const USSD_SESSION_TTL_MS = 3 * 60 * 1000;
 /** Default sweep cadence for the outbound expiry sweeper. */
 export const USSD_SWEEP_INTERVAL_MS = 60_000;
+/**
+ * Per-phone registration-effect rate limit (V-19, production profile): a
+ * callback-token holder probing MSISDNs through the register menu cannot
+ * cycle unbounded registration effects for one number.
+ */
+export const USSD_REGISTER_MAX_PER_WINDOW = 5;
+export const USSD_REGISTER_WINDOW_MS = 60 * 60 * 1000;
 
 const USSD_PROVIDER = 'africastalking-ussd';
 
@@ -91,6 +98,8 @@ export class UssdService {
   private readonly logger = new Logger(UssdService.name);
   private timer?: NodeJS.Timeout;
   readonly driverConfig: UssdDriverConfig;
+  /** Per-phone registration-effect timestamps (V-19 rate limit window). */
+  private readonly registrationAttempts = new Map<string, number[]>();
 
   constructor(
     private readonly users: UsersService,
@@ -169,15 +178,33 @@ export class UssdService {
       );
     }
 
-    if (existing && existing.expiresAt > new Date(now).toISOString()) {
-      const stored = existing.state as unknown as StoredUssdState;
-      if (stored.lastText === text && stored.lastResponse !== undefined) {
-        return stored.lastResponse;
+    const liveExisting =
+      existing && existing.expiresAt > new Date(now).toISOString() ? existing : undefined;
+    if (liveExisting) {
+      const storedState = liveExisting.state as unknown as StoredUssdState;
+      if (storedState.lastText === text && storedState.lastResponse !== undefined) {
+        return storedState.lastResponse;
       }
+      // Cumulative-text ordering (V-66): AT sends the full `*`-joined input
+      // history on every turn, so the new text must extend the last
+      // processed text by exactly one segment. Out-of-order delivery or a
+      // rewritten history is rejected with a re-sync END instead of silently
+      // feeding the last segment to the wrong menu state.
+      const lastText = storedState.lastText ?? '';
+      const lastSegments = lastText === '' ? 0 : lastText.split('*').length;
+      const newSegments = text === '' ? 0 : text.split('*').length;
+      const extendsByOne =
+        newSegments === lastSegments + 1 && (lastText === '' || text.startsWith(`${lastText}*`));
+      if (!extendsByOne) {
+        return 'END Session out of sync. Please hang up and dial again.';
+      }
+    } else if (text !== '') {
+      // Expired/unknown session carrying accumulated input (V-66): never
+      // restart the flow from the last segment — expire explicitly.
+      return 'END Session expired. Please dial again.';
     }
 
-    const expired = !existing || existing.expiresAt <= new Date(now).toISOString();
-    const stored = expired ? undefined : (existing.state as unknown as StoredUssdState);
+    const stored = liveExisting ? (liveExisting.state as unknown as StoredUssdState) : undefined;
     const engineState = stored?.engine ?? initialUssdState();
     const segment = text.split('*').pop() ?? '';
 
@@ -214,6 +241,9 @@ export class UssdService {
   ): Promise<string> {
     try {
       if (effect.type === 'register') {
+        if (this.registrationRateLimited(phone)) {
+          return 'END Too many registration attempts for this number. Please try again later.';
+        }
         await this.users.create({
           phone,
           fullName: effect.fullName,
@@ -237,6 +267,28 @@ export class UssdService {
       this.logger.warn(`USSD ${effect.type} effect failed: ${(error as Error).message}`);
       return 'END Service unavailable. Please try again shortly.';
     }
+  }
+
+  /**
+   * Per-phone registration-effect rate limit (V-19), production profile
+   * only — non-production behavior is unchanged. Returns true when the phone
+   * has exhausted its registration window.
+   */
+  private registrationRateLimited(phone: string): boolean {
+    if (!isProduction()) {
+      return false;
+    }
+    const now = Date.now();
+    const attempts = (this.registrationAttempts.get(phone) ?? []).filter(
+      (at) => now - at < USSD_REGISTER_WINDOW_MS
+    );
+    if (attempts.length >= USSD_REGISTER_MAX_PER_WINDOW) {
+      this.registrationAttempts.set(phone, attempts);
+      return true;
+    }
+    attempts.push(now);
+    this.registrationAttempts.set(phone, attempts);
+    return false;
   }
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */
