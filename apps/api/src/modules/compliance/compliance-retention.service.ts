@@ -1,10 +1,12 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import {
   COMPLIANCE_CONSENT_REPOSITORY,
   DATA_SUBJECT_REQUEST_REPOSITORY,
+  INBOUND_EVENT_REPOSITORY,
   NOTIFICATION_REPOSITORY,
+  OUTBOX_REPOSITORY,
   RETENTION_POLICY_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
@@ -14,6 +16,14 @@ import type {
   RetentionPolicyRepository
 } from '../../database/repositories/compliance.repository.js';
 import type { NotificationRepository } from '../../database/repositories/notification.repository.js';
+import {
+  InMemoryInboundEventRepository,
+  type InboundEventRepository
+} from '../../database/repositories/phase3.repository.js';
+import {
+  InMemoryOutboxRepository,
+  type OutboxRepository
+} from '../../database/repositories/outbox.repository.js';
 import { pseudonymFor } from './compliance.service.js';
 
 export interface RetentionSweepOptions {
@@ -56,10 +66,16 @@ export interface RetentionSweepResult {
  *   compliance.consent_records        revoked consents past retain_days
  *   compliance.data_subject_requests  closed DSRs past retain_days
  *   notifications.messages            notifications past retain_days
+ *   integrations.inbound_events       processed inbound webhook rows past retain_days (V-27)
+ *   events.outbox                     published outbox rows past retain_days (V-27)
  * Unknown entities are reported as `skipped` (never silently ignored).
  *
  * anonymize_not_delete = true pseudonymises the user reference (deterministic
  * salted tombstone, same function as erasure); false hard-deletes the rows.
+ * For the two event-ledger entities (V-27) there is no user reference to
+ * pseudonymise — the PII sits in the payload — so anonymise scrubs the
+ * payload to an empty-object tombstone (both columns are jsonb NOT NULL,
+ * so NULL is not an option) and keeps the row metadata as the audit trail.
  * Financial/ledger/audit rows are NEVER in scope — legal hold.
  */
 @Injectable()
@@ -71,7 +87,16 @@ export class ComplianceRetentionService {
     private readonly consents: ComplianceConsentRepository,
     @Inject(DATA_SUBJECT_REQUEST_REPOSITORY)
     private readonly dsr: DataSubjectRequestRepository,
-    @Inject(NOTIFICATION_REPOSITORY) private readonly notifications: NotificationRepository
+    @Inject(NOTIFICATION_REPOSITORY) private readonly notifications: NotificationRepository,
+    // V-27: appended last with in-memory defaults so existing positional
+    // constructor calls (unit specs) keep working unchanged; Nest injects
+    // the configured drivers via the tokens at runtime.
+    @Optional()
+    @Inject(INBOUND_EVENT_REPOSITORY)
+    private readonly inboundEvents: InboundEventRepository = new InMemoryInboundEventRepository(),
+    @Optional()
+    @Inject(OUTBOX_REPOSITORY)
+    private readonly outbox: OutboxRepository = new InMemoryOutboxRepository()
   ) {}
 
   async listPolicies(): Promise<RetentionPolicy[]> {
@@ -183,6 +208,34 @@ export class ComplianceRetentionService {
           affected,
           note: 'matched via full scan — NotificationCriteria exposes no createdBefore filter'
         };
+      }
+      case 'integrations.inbound_events': {
+        // V-27: processed inbound webhook payloads carry partner/provider
+        // PII. anonymize_not_delete=true keeps the row metadata (system,
+        // dedupe key, received/processed timestamps — the processing audit
+        // trail) and scrubs only the payload to an empty-object tombstone
+        // (the column is jsonb NOT NULL, so NULL is not an option);
+        // false hard-deletes the whole row.
+        const matched = await this.inboundEvents.countProcessedBefore(cutoff);
+        const affected = dryRun
+          ? 0
+          : policy.anonymizeNotDelete
+            ? await this.inboundEvents.anonymizeProcessedBefore(cutoff)
+            : await this.inboundEvents.purgeProcessedBefore(cutoff);
+        return { ...base, matched, action: policy.anonymizeNotDelete ? 'anonymize' : 'purge', affected };
+      }
+      case 'events.outbox': {
+        // V-27: published outbox rows are relay history; the default policy
+        // prunes them (anonymize_not_delete=false). If an operator flips the
+        // policy to anonymize, the payload is tombstoned to '{}' (jsonb NOT
+        // NULL — never NULL) and the event metadata survives for debugging.
+        const matched = await this.outbox.countPublishedBefore(cutoff);
+        const affected = dryRun
+          ? 0
+          : policy.anonymizeNotDelete
+            ? await this.outbox.anonymizePublishedBefore(cutoff)
+            : await this.outbox.purgePublishedBefore(cutoff);
+        return { ...base, matched, action: policy.anonymizeNotDelete ? 'anonymize' : 'purge', affected };
       }
       default:
         return {
