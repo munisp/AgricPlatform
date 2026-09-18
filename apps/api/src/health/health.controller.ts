@@ -33,13 +33,27 @@ import { ModuleHealthService } from './module-health.service.js';
 type PersistenceStatus = 'up' | 'down' | 'disabled';
 
 /**
- * REQUIRED readiness dependencies: a configured-and-down postgres or redis
- * fails the probe (503). Every other dependency and every infra driver is
- * OPTIONAL — degraded ones are listed in degraded[] under a 200 response
- * (Stage 27 WP-G10 degraded-not-down semantics). Unconfigured/skipped
- * dependencies and stub drivers report 'disabled', never 'down'.
+ * REQUIRED readiness dependencies: a configured-and-down postgres fails the
+ * probe (503). Every other dependency — including redis — and every infra
+ * driver is OPTIONAL: degraded ones are listed in degraded[] under a 200
+ * response (Stage 27 WP-G10 degraded-not-down semantics).
+ *
+ * V-77 degraded tier: redis is NOT required because the API now survives
+ * its loss — the throttler cache tier fails OPEN (unthrottled, metered via
+ * agric_throttle_redis_errors_total) while the idempotency/OTP store tier
+ * fails CLOSED (503 on keyed mutations / OTP flows only). Evicting every
+ * pod at once on a redis blip (the old REQUIRED behaviour) was strictly
+ * worse. The degraded[] reason names both tiers so operators see what
+ * redis-down actually means. Unconfigured/skipped dependencies and stub
+ * drivers report 'disabled', never 'down'.
  */
-const REQUIRED_DEPENDENCIES: ReadonlySet<string> = new Set(['database', 'redis']);
+const REQUIRED_DEPENDENCIES: ReadonlySet<string> = new Set(['database']);
+
+/** V-77: per-dependency degraded reasons that distinguish cache-vs-store tiers. */
+const DEGRADED_REASONS: Readonly<Record<string, string>> = {
+  redis:
+    'Redis down — rate-limit cache tier fail-open (serving unthrottled, see agric_throttle_redis_errors_total); idempotency/OTP store tier fail-closed (keyed mutations and OTP flows answer 503).'
+};
 
 function toPersistenceStatus(status: DependencyStatus | undefined): PersistenceStatus {
   if (status === 'skipped' || status === undefined) {
@@ -130,7 +144,8 @@ export class HealthController {
       };
 
       // REQUIRED dependencies fail the probe outright — a configured
-      // postgres/redis that is down means the API cannot serve reads/writes.
+      // postgres that is down means the API cannot serve reads/writes.
+      // (redis was REMOVED from REQUIRED in V-77: degraded tier below.)
       const requiredDown = dependencies.filter(
         (dep) => REQUIRED_DEPENDENCIES.has(dep.name) && dep.status === 'down'
       );
@@ -152,7 +167,11 @@ export class HealthController {
           })),
         ...dependencies
           .filter((dep) => dep.status === 'down' && !REQUIRED_DEPENDENCIES.has(dep.name))
-          .map((dep) => ({ name: dep.name, reason: 'Dependency check failed.' })),
+          .map((dep) => ({
+            name: dep.name,
+            // V-77: tier-aware reason when one is registered (redis).
+            reason: DEGRADED_REASONS[dep.name] ?? 'Dependency check failed.'
+          })),
         ...degradedDrivers(drivers)
       ];
       return {
