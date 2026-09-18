@@ -54,7 +54,7 @@ describe('offline queue hardening', () => {
       if (request.idempotencyKey === 'k1') throw authError();
     });
 
-    expect(result).toEqual({ sent: 0, failed: 0, parked: 3 });
+    expect(result).toEqual({ sent: 0, failed: 0, parked: 3, blocked: 0, expired: [] });
     // k2 and k3 were never attempted.
     expect(attempted).toEqual(['k1']);
     // Everything stays queued in the original order.
@@ -74,7 +74,7 @@ describe('offline queue hardening', () => {
     const second = await queue.flush(async (request) => {
       replayed.push(request.idempotencyKey);
     });
-    expect(second).toEqual({ sent: 2, failed: 0, parked: 0 });
+    expect(second).toEqual({ sent: 2, failed: 0, parked: 0, blocked: 0, expired: [] });
     expect(replayed).toEqual(['k1', 'k2']);
     expect(await queue.pending()).toHaveLength(0);
   });
@@ -91,7 +91,7 @@ describe('offline queue hardening', () => {
       if (request.idempotencyKey === 'k3') throw authError();
     });
 
-    expect(result).toEqual({ sent: 1, failed: 1, parked: 2 });
+    expect(result).toEqual({ sent: 1, failed: 1, parked: 2, blocked: 0, expired: [] });
     const remaining = (await queue.pending()).map((entry: QueuedRequest) => entry.idempotencyKey);
     expect(remaining).toEqual(['k2', 'k3', 'k4']);
   });
