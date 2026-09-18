@@ -73,6 +73,55 @@ export function verifyReceiptSignature(
   return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
 }
 
+/* -------------------------------------------------------------------------
+ * V-37 receipt split: signature chaining for child receipts. A child
+ * receipt's signature signs the SAME field set as an issuance receipt PLUS
+ * the parent receipt number and the parent's signature, under a distinct
+ * payload version so a child signature can never be replayed as an issuance
+ * signature (and vice versa). Re-parenting or tampering with the parent's
+ * identity invalidates every child.
+ * ------------------------------------------------------------------------- */
+
+export const RECEIPT_CHILD_PAYLOAD_VERSION = 'v1c';
+
+/** Canonical child encoding: child payload chained to the parent identity. */
+export function canonicalChildReceiptPayload(
+  payload: ReceiptPayload,
+  parent: { receiptNumber: string; signature: string }
+): string {
+  return [
+    RECEIPT_CHILD_PAYLOAD_VERSION,
+    parent.receiptNumber,
+    parent.signature,
+    ...canonicalReceiptPayload(payload).split('.').slice(1) // drop the v1 prefix
+  ].join('.');
+}
+
+/** HMAC-SHA256 signature of a split child receipt, chained to its parent. */
+export function signChildReceipt(
+  payload: ReceiptPayload,
+  parent: { receiptNumber: string; signature: string },
+  secret: string
+): string {
+  return createHmac('sha256', secret)
+    .update(canonicalChildReceiptPayload(payload, parent))
+    .digest('hex');
+}
+
+/** Constant-time verification of a split child receipt against its parent. */
+export function verifyChildReceiptSignature(
+  payload: ReceiptPayload,
+  parent: { receiptNumber: string; signature: string },
+  signature: string,
+  secret: string
+): boolean {
+  if (!/^[0-9a-f]{64}$/.test(signature)) {
+    return false;
+  }
+  const expected = signChildReceipt(payload, parent, secret);
+  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
+}
+
 /**
  * Resolves the signing secret; fails closed when production lacks one.
  * Production additionally rejects the published development default and
