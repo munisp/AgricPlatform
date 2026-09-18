@@ -35,6 +35,8 @@
 | `compliance.consent_records` | Consents whose `revoked_at` is past the window | 730 | Anonymise (tombstone `user_id`) | Consent history is the controller's proof of lawful basis; keep the fact, drop the person |
 | `compliance.data_subject_requests` | Closed (`completed`/`rejected`) DSRs past the window | 1095 | Anonymise (`user_id`) | Evidence of rights handling; 3-year placeholder |
 | `notifications.messages` | Notifications with `created_at` past the window | 365 | Purge (hard delete) | Transient messaging; no evidence value |
+| `integrations.inbound_events` | Processed inbound webhook rows (`processed_at` past the window) | 90 | Anonymise (payload → `{}` tombstone; column is jsonb NOT NULL) | V-27: payloads carry partner/provider PII; row metadata stays as the processing audit trail |
+| `events.outbox` | Published outbox rows (`published_at` past the window) | 90 | Purge (hard delete) | V-27: relay history; no evidence value once delivered |
 
 **Never in scope (legal hold):** orders, ledger/finance rows, escrow, invoices, audit events.
 These survive erasure and retention sweeps — see `legal-review-checklist.md` (CBN/PSB
