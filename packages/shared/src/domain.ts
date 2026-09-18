@@ -261,6 +261,13 @@ export interface Order {
   status: OrderStatus;
   escrowRequired: boolean;
   /**
+   * V-36 partial fulfilment: the quantity the seller actually delivered when
+   * it is less than the ordered quantity. Set by recordPartialDelivery; a
+   * completed order with deliveredQuantity < quantity settles the escrow by
+   * split (release the delivered share, refund the remainder).
+   */
+  deliveredQuantity?: number;
+  /**
    * Optional client idempotency key (Stage 27 WP-G11; column exists since
    * 001, UNIQUE): a transport retry with the same key replays the original
    * order instead of double-booking stock.
@@ -440,7 +447,12 @@ export const ESCROW_STATUSES = [
   'refunding',
   'refunded',
   'disputed',
-  'delivered_pending_confirm'
+  'delivered_pending_confirm',
+  // V-06: split settlement — a dispute/partial-fulfilment resolution that
+  // pays the seller a partial release AND refunds the buyer the remainder in
+  // two balanced legs summing EXACTLY to the held amount (releasedKobo +
+  // refundedKobo === amountKobo). Terminal.
+  'settled'
 ] as const;
 export type EscrowStatus = (typeof ESCROW_STATUSES)[number];
 
@@ -485,6 +497,17 @@ export interface EscrowRecord {
    * requires an explicit buyer confirm, the sweep never auto-releases it.
    */
   deliveryConfirmUntil?: string;
+  /**
+   * V-06 split settlement: the seller-side release part of a 'settled'
+   * escrow (integer kobo). Set only on split settlement; undefined on the
+   * all-or-nothing released/refunded paths (where the full amountKobo moved).
+   */
+  releasedKobo?: number;
+  /**
+   * V-06 split settlement: the buyer-side refund part of a 'settled' escrow
+   * (integer kobo). Invariant: releasedKobo + refundedKobo === amountKobo.
+   */
+  refundedKobo?: number;
 }
 
 /**
