@@ -170,7 +170,7 @@ export class EscalationConsoleService implements OnModuleInit {
       }
       void this.enqueueFromAgentCase(caseId).catch((error: unknown) => {
         this.logger.warn(
-          `console intake failed for agent case ${agentCaseId}: ${(error as Error)?.message ?? error}`
+          `console intake failed for agent case ${caseId}: ${(error as Error)?.message ?? error}`
         );
       });
     });
