@@ -259,6 +259,18 @@ export interface InboundEventRepository extends AsyncRepository<InboundEvent, In
    */
   ingest(event: InboundEvent): Promise<InboundEvent | undefined>;
   markProcessed(id: string, processedAt: string): Promise<InboundEvent>;
+  /** Retention sweeper (V-27): processed rows whose processed_at < cutoff. */
+  countProcessedBefore(cutoff: string): Promise<number>;
+  /**
+   * Retention sweeper (V-27): scrubs the PII-bearing payload on processed
+   * rows older than the cutoff, keeping the row metadata (system, event
+   * type, dedupe key, timestamps) as the processing audit trail. The column
+   * is jsonb NOT NULL, so the tombstone is an empty object — never NULL.
+   * Rows already tombstoned are skipped (idempotent). Returns rows changed.
+   */
+  anonymizeProcessedBefore(cutoff: string): Promise<number>;
+  /** Retention sweeper (V-27): hard-deletes processed rows older than the cutoff. */
+  purgeProcessedBefore(cutoff: string): Promise<number>;
 }
 
 export function inboundEventMatcher(criteria: InboundEventCriteria): (event: InboundEvent) => boolean {
@@ -289,6 +301,33 @@ export class InMemoryInboundEventRepository
 
   async markProcessed(id: string, processedAt: string): Promise<InboundEvent> {
     return this.update(id, { processedAt });
+  }
+
+  async countProcessedBefore(cutoff: string): Promise<number> {
+    return [...this.items.values()].filter(
+      (event) => event.processedAt !== undefined && event.processedAt < cutoff
+    ).length;
+  }
+
+  async anonymizeProcessedBefore(cutoff: string): Promise<number> {
+    let changed = 0;
+    for (const event of this.items.values()) {
+      if (event.processedAt === undefined || event.processedAt >= cutoff) continue;
+      if (Object.keys(event.payload).length === 0) continue; // already tombstoned
+      await this.update(event.id, { payload: {} });
+      changed += 1;
+    }
+    return changed;
+  }
+
+  async purgeProcessedBefore(cutoff: string): Promise<number> {
+    const expired = [...this.items.values()].filter(
+      (event) => event.processedAt !== undefined && event.processedAt < cutoff
+    );
+    for (const event of expired) {
+      await this.remove(event.id);
+    }
+    return expired.length;
   }
 }
 
