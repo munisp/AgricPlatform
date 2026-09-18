@@ -278,8 +278,9 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     try {
       await (tx ?? this.pool).query(
         'INSERT INTO input_vouchers.vouchers (id, programme_id, beneficiary_id, farmer_id, amount_kobo, ' +
-          'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at, updated_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
+          'status, idempotency_key, expires_at, distributed_at, redeemed_at, voided_at, ledger_entry_id, created_at, updated_at, ' +
+          'redeemed_amount_kobo, pending_amount_kobo) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)',
         [
           record.id,
           record.programmeId,
@@ -296,7 +297,10 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
           record.createdAt,
           // WP-G12 (migration 061): state-write clock for the stuck-voucher
           // sweeper; fresh rows start at their creation time.
-          record.updatedAt ?? record.createdAt
+          record.updatedAt ?? record.createdAt,
+          // W2-C2 (V-32, migration 100): balance-bearing voucher counters.
+          record.redeemedAmountKobo ?? 0,
+          record.pendingAmountKobo ?? null
         ]
       );
     } catch (error) {
@@ -355,7 +359,15 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
       distributedAt: 'distributed_at',
       redeemedAt: 'redeemed_at',
       voidedAt: 'voided_at',
-      ledgerEntryId: 'ledger_entry_id'
+      ledgerEntryId: 'ledger_entry_id',
+      // W2-C2 (V-32/V-02, migration 100): partial-redemption balance, the
+      // in-flight claim amount and the refund terminal markers.
+      redeemedAmountKobo: 'redeemed_amount_kobo',
+      pendingAmountKobo: 'pending_amount_kobo',
+      refundedAt: 'refunded_at',
+      refundedAmountKobo: 'refunded_amount_kobo',
+      refundReason: 'refund_reason',
+      complaintCaseId: 'complaint_case_id'
     };
     const sets: string[] = [];
     const params: unknown[] = [id];
@@ -401,6 +413,18 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
       redeemedAt: toIso(row.redeemed_at),
       voidedAt: toIso(row.voided_at),
       ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
+      redeemedAmountKobo: Number(row.redeemed_amount_kobo ?? 0),
+      pendingAmountKobo:
+        row.pending_amount_kobo === null || row.pending_amount_kobo === undefined
+          ? undefined
+          : Number(row.pending_amount_kobo),
+      refundedAt: toIso(row.refunded_at),
+      refundedAmountKobo:
+        row.refunded_amount_kobo === null || row.refunded_amount_kobo === undefined
+          ? undefined
+          : Number(row.refunded_amount_kobo),
+      refundReason: (row.refund_reason as string) ?? undefined,
+      complaintCaseId: (row.complaint_case_id as string) ?? undefined,
       createdAt: toIso(row.created_at) as string,
       updatedAt: toIso(row.updated_at)
     };
@@ -419,10 +443,10 @@ export class PgInputVoucherRepository implements InputVoucherRepository {
     const result = await this.pool.query(
       `SELECT * FROM input_vouchers.vouchers
        WHERE (
-           status IN ('ISSUED', 'EXPIRING')
+           status IN ('ISSUED', 'EXPIRING', 'PARTIALLY_REDEEMED')
            AND expires_at <= $1
          ) OR (
-           status IN ('VOIDING', 'REDEEMING')
+           status IN ('VOIDING', 'REDEEMING', 'REFUNDING')
            AND COALESCE(updated_at, created_at) <= $2
          )
        ORDER BY created_at
@@ -441,8 +465,8 @@ export class PgRedemptionRepository implements RedemptionRepository {
     try {
       await this.pool.query(
         'INSERT INTO input_vouchers.redemptions (id, voucher_id, programme_id, supplier_id, invoice_ref, ' +
-          'amount_kobo, idempotency_key, ledger_entry_id, created_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          'amount_kobo, idempotency_key, ledger_entry_id, created_at, part_seq) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
         [
           record.id,
           record.voucherId,
@@ -452,7 +476,9 @@ export class PgRedemptionRepository implements RedemptionRepository {
           record.amountKobo,
           record.idempotencyKey,
           record.ledgerEntryId,
-          record.createdAt
+          record.createdAt,
+          // W2-C2 (V-32, migration 100): per-part anti-double-spend key.
+          record.partSeq ?? 1
         ]
       );
     } catch (error) {
@@ -502,6 +528,7 @@ export class PgRedemptionRepository implements RedemptionRepository {
       amountKobo: Number(row.amount_kobo),
       idempotencyKey: row.idempotency_key as string,
       ledgerEntryId: row.ledger_entry_id as string,
+      partSeq: Number(row.part_seq ?? 1),
       createdAt: toIso(row.created_at) as string
     };
   }
@@ -640,6 +667,10 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
     await this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'release');
   }
 
+  async refundSettled(programmeId: string, amountKobo: number, markerKey: string, actorId: string): Promise<void> {
+    await this.applyMarker(programmeId, amountKobo, markerKey, actorId, 'refund');
+  }
+
   /**
    * Marker-first exactly-once move: the marker event inserts ON CONFLICT DO
    * NOTHING (a concurrent retry blocks then skips), and only the INSERT
@@ -652,9 +683,16 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
     amountKobo: number,
     markerKey: string,
     actorId: string,
-    kind: 'settle' | 'release'
+    kind: 'settle' | 'release' | 'refund'
   ): Promise<void> {
-    const settledSet = kind === 'settle' ? ', settled_kobo = settled_kobo + $3' : '';
+    // W2-C2 (V-02): 'refund' moves SETTLED money back to available
+    // (settled_kobo decreases; the funding row's available headroom rises) —
+    // guard on settled_kobo so a refund can never drive settled negative.
+    const updateSet =
+      kind === 'refund'
+        ? 'SET settled_kobo = settled_kobo - $3, updated_at = now() '
+        : `SET reserved_kobo = reserved_kobo - $3, updated_at = now()${kind === 'settle' ? ', settled_kobo = settled_kobo + $3' : ''} `;
+    const guard = kind === 'refund' ? 'settled_kobo >= $3' : 'reserved_kobo >= $3';
     await this.pool.query(
       'WITH ins AS (' +
         'INSERT INTO input_vouchers.programme_funding_events ' +
@@ -668,8 +706,8 @@ export class PgProgrammeFundingRepository implements ProgrammeFundingRepository 
         'ON CONFLICT DO NOTHING RETURNING id' +
         ') ' +
         'UPDATE input_vouchers.programme_funding ' +
-        `SET reserved_kobo = reserved_kobo - $3, updated_at = now()${settledSet} ` +
-        'WHERE programme_id = $2 AND reserved_kobo >= $3 AND EXISTS (SELECT 1 FROM ins)',
+        updateSet +
+        `WHERE programme_id = $2 AND ${guard} AND EXISTS (SELECT 1 FROM ins)`,
       [markerKey, programmeId, amountKobo, markerKey, actorId]
     );
   }
