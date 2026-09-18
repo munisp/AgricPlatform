@@ -73,6 +73,10 @@ import type {
   TopicFlag
 } from '../seed-data.js';
 import type { DeliveryLogEntry } from '../repositories/delivery-log.repository.js';
+import type { ErasureHold } from '../repositories/erasure-hold.repository.js';
+import type { GuardianLink } from '../repositories/guardian-link.repository.js';
+import type { AccountMerge, NinAnchor } from '../repositories/nin-anchor.repository.js';
+import type { SuccessionClaim } from '../repositories/succession.repository.js';
 import type { RecommendationFeedbackEvent } from '../repositories/recommendation-feedback.repository.js';
 import type { DeliveryResult } from '../../modules/integrations/adapters.js';
 import type { RowMapper } from './pg-repository.base.js';
@@ -211,6 +215,173 @@ export const consentMapper: RowMapper<ConsentRecord> = {
       granted: 'granted',
       granted_at: 'grantedAt',
       revoked_at: 'revokedAt'
+    })
+};
+
+/** V-25: privacy.erasure_holds (migration 089). */
+export const erasureHoldMapper: RowMapper<ErasureHold> = {
+  columns: ['id', 'user_id', 'category', 'reason', 'signed_off_by', 'signed_off_at'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    userId: row.user_id as string,
+    category: row.category as string,
+    reason: row.reason as string,
+    signedOffBy: row.signed_off_by as string,
+    signedOffAt: ts(row.signed_off_at)
+  }),
+  toRow: (hold) =>
+    present(hold, {
+      id: 'id',
+      user_id: 'userId',
+      category: 'category',
+      reason: 'reason',
+      signed_off_by: 'signedOffBy',
+      signed_off_at: 'signedOffAt'
+    })
+};
+
+/** V-45: identity.nin_anchors (migration 088). */
+export const ninAnchorMapper: RowMapper<NinAnchor> = {
+  columns: ['id', 'user_id', 'nin_hash', 'status', 'anchored_at', 'anchored_by'],
+  fromRow: (row) => ({
+    id: row.id as string,
+    userId: row.user_id as string,
+    ninHash: row.nin_hash as string,
+    status: row.status as NinAnchor['status'],
+    anchoredAt: ts(row.anchored_at),
+    anchoredBy: row.anchored_by as string
+  }),
+  toRow: (anchor) =>
+    present(anchor, {
+      id: 'id',
+      user_id: 'userId',
+      nin_hash: 'ninHash',
+      status: 'status',
+      anchored_at: 'anchoredAt',
+      anchored_by: 'anchoredBy'
+    })
+};
+
+/** V-45: identity.account_merges (migration 088). */
+export const accountMergeMapper: RowMapper<AccountMerge> = {
+  columns: [
+    'id',
+    'primary_user_id',
+    'duplicate_user_id',
+    'credit_loans_moved',
+    'loan_applications_moved',
+    'merged_at',
+    'merged_by',
+    'note'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    primaryUserId: row.primary_user_id as string,
+    duplicateUserId: row.duplicate_user_id as string,
+    creditLoansMoved: num(row.credit_loans_moved),
+    loanApplicationsMoved: num(row.loan_applications_moved),
+    mergedAt: ts(row.merged_at),
+    mergedBy: row.merged_by as string,
+    note: (row.note as string) ?? undefined
+  }),
+  toRow: (merge) =>
+    present(merge, {
+      id: 'id',
+      primary_user_id: 'primaryUserId',
+      duplicate_user_id: 'duplicateUserId',
+      credit_loans_moved: 'creditLoansMoved',
+      loan_applications_moved: 'loanApplicationsMoved',
+      merged_at: 'mergedAt',
+      merged_by: 'mergedBy',
+      note: 'note'
+    })
+};
+
+/** V-44: identity.guardian_links (migration 087). */
+export const guardianLinkMapper: RowMapper<GuardianLink> = {
+  columns: [
+    'id',
+    'dependent_user_id',
+    'guardian_user_id',
+    'custodian_agent_id',
+    'kind',
+    'relationship',
+    'contact_phone',
+    'presence_proof',
+    'created_at',
+    'revoked_at'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    dependentUserId: row.dependent_user_id as string,
+    guardianUserId: (row.guardian_user_id as string) ?? undefined,
+    custodianAgentId: (row.custodian_agent_id as string) ?? undefined,
+    kind: row.kind as GuardianLink['kind'],
+    relationship: row.relationship as string,
+    contactPhone: row.contact_phone as string,
+    presenceProof: row.presence_proof as GuardianLink['presenceProof'],
+    createdAt: ts(row.created_at),
+    revokedAt: row.revoked_at ? ts(row.revoked_at) : undefined
+  }),
+  toRow: (link) =>
+    present(link, {
+      id: 'id',
+      dependent_user_id: 'dependentUserId',
+      guardian_user_id: 'guardianUserId',
+      custodian_agent_id: 'custodianAgentId',
+      kind: 'kind',
+      relationship: 'relationship',
+      contact_phone: 'contactPhone',
+      presence_proof: 'presenceProof',
+      created_at: 'createdAt',
+      revoked_at: 'revokedAt'
+    })
+};
+
+/** V-09: identity.succession_claims (migration 086). */
+export const successionClaimMapper: RowMapper<SuccessionClaim> = {
+  columns: [
+    'id',
+    'deceased_user_id',
+    'heir_user_id',
+    'claimant_name',
+    'claimant_phone',
+    'relationship',
+    'evidence_ref',
+    'status',
+    'filed_at',
+    'decided_at',
+    'decided_by',
+    'decision_note'
+  ],
+  fromRow: (row) => ({
+    id: row.id as string,
+    deceasedUserId: row.deceased_user_id as string,
+    heirUserId: (row.heir_user_id as string) ?? undefined,
+    claimantName: row.claimant_name as string,
+    claimantPhone: (row.claimant_phone as string) ?? undefined,
+    relationship: row.relationship as string,
+    evidenceRef: row.evidence_ref as string,
+    status: row.status as SuccessionClaim['status'],
+    filedAt: ts(row.filed_at),
+    decidedAt: row.decided_at ? ts(row.decided_at) : undefined,
+    decidedBy: (row.decided_by as string) ?? undefined,
+    decisionNote: (row.decision_note as string) ?? undefined
+  }),
+  toRow: (claim) =>
+    present(claim, {
+      id: 'id',
+      deceased_user_id: 'deceasedUserId',
+      heir_user_id: 'heirUserId',
+      claimant_name: 'claimantName',
+      claimant_phone: 'claimantPhone',
+      relationship: 'relationship',
+      evidence_ref: 'evidenceRef',
+      status: 'status',
+      filed_at: 'filedAt',
+      decided_at: 'decidedAt',
+      decided_by: 'decidedBy',
+      decision_note: 'decisionNote'
     })
 };
 
@@ -654,6 +825,8 @@ export const orderMapper: RowMapper<Order> = {
     'escrow_required',
     'idempotency_key',
     'payload_hash',
+    // V-36: partial fulfilment (106_order_partial_fulfilment.sql).
+    'delivered_quantity',
     'created_at'
   ],
   fromRow: (row) => ({
@@ -667,6 +840,10 @@ export const orderMapper: RowMapper<Order> = {
     escrowRequired: row.escrow_required as boolean,
     idempotencyKey: (row.idempotency_key as string) ?? undefined,
     payloadHash: (row.payload_hash as string) ?? undefined,
+    deliveredQuantity:
+      row.delivered_quantity === null || row.delivered_quantity === undefined
+        ? undefined
+        : num(row.delivered_quantity),
     createdAt: ts(row.created_at)
   }),
   toRow: (item) =>
@@ -681,6 +858,7 @@ export const orderMapper: RowMapper<Order> = {
       escrow_required: 'escrowRequired',
       idempotency_key: 'idempotencyKey',
       payload_hash: 'payloadHash',
+      delivered_quantity: 'deliveredQuantity',
       created_at: 'createdAt'
     })
 };
@@ -2942,7 +3120,13 @@ export const warehouseReceiptMapper: RowMapper<WarehouseReceipt> = {
     'signature',
     'issued_at',
     'created_at',
-    'updated_at'
+    'updated_at',
+    // V-37 (108_receipt_split.sql) + V-07 (107_warehouse_receipt_loss.sql).
+    'parent_receipt_id',
+    'split_seq',
+    'lost_weight_kg',
+    'lost_bag_count',
+    'regraded_to'
   ],
   fromRow: (row) => ({
     id: row.id as string,
@@ -2959,7 +3143,19 @@ export const warehouseReceiptMapper: RowMapper<WarehouseReceipt> = {
     signature: row.signature as string,
     issuedAt: ts(row.issued_at),
     createdAt: ts(row.created_at),
-    updatedAt: ts(row.updated_at)
+    updatedAt: ts(row.updated_at),
+    parentReceiptId: (row.parent_receipt_id as string) ?? undefined,
+    splitSeq:
+      row.split_seq === null || row.split_seq === undefined ? undefined : num(row.split_seq),
+    lostWeightKg:
+      row.lost_weight_kg === null || row.lost_weight_kg === undefined
+        ? undefined
+        : num(row.lost_weight_kg),
+    lostBagCount:
+      row.lost_bag_count === null || row.lost_bag_count === undefined
+        ? undefined
+        : num(row.lost_bag_count),
+    regradedTo: (row.regraded_to as WarehouseReceipt['regradedTo']) ?? undefined
   }),
   toRow: (item) =>
     present(item, {
@@ -2977,7 +3173,12 @@ export const warehouseReceiptMapper: RowMapper<WarehouseReceipt> = {
       signature: 'signature',
       issued_at: 'issuedAt',
       created_at: 'createdAt',
-      updated_at: 'updatedAt'
+      updated_at: 'updatedAt',
+      parent_receipt_id: 'parentReceiptId',
+      split_seq: 'splitSeq',
+      lost_weight_kg: 'lostWeightKg',
+      lost_bag_count: 'lostBagCount',
+      regraded_to: 'regradedTo'
     })
 };
 
