@@ -164,7 +164,13 @@ export interface ExportDocument {
 // ---------------------------------------------------------------------------
 // F5 — liens.
 
-export const LIEN_STATUSES = ['active', 'discharged', 'defaulted'] as const;
+/**
+ * Lien lifecycle. `margin_call` (V-11) is set automatically when the
+ * collateral animal dies or is stolen mid-loan: the lien stays enforced
+ * (transfer guard still blocks, uniqueness rule still applies) but the
+ * lender is margin-called to resecure or default the facility.
+ */
+export const LIEN_STATUSES = ['active', 'margin_call', 'discharged', 'defaulted'] as const;
 export type LienStatus = (typeof LIEN_STATUSES)[number];
 
 export interface LivestockLien {
@@ -214,7 +220,7 @@ export const INSURANCE_CLAIM_STATUSES = [
 ] as const;
 export type InsuranceClaimStatus = (typeof INSURANCE_CLAIM_STATUSES)[number];
 
-export const INSURANCE_CLAIM_TRIGGERS = ['manual', 'recall'] as const;
+export const INSURANCE_CLAIM_TRIGGERS = ['manual', 'recall', 'mortality'] as const;
 export type InsuranceClaimTrigger = (typeof INSURANCE_CLAIM_TRIGGERS)[number];
 
 export interface InsuranceClaim {
@@ -240,6 +246,19 @@ export const LIVESTOCK_RECALL_INITIATED_EVENT = 'livestock.recall.initiated';
 export interface LivestockRecallInitiatedPayload {
   recallId: string;
   animalIds: string[];
+}
+
+/**
+ * Published by the livestock core module when an animal's status changes
+ * (alive → sold|dead|stolen). V-11 subscribers: the lien service margin-calls
+ * the lender on collateral loss and the insurance service auto-drafts a
+ * mortality claim per bound policy covering the animal.
+ */
+export const LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT = 'livestock.animal.status_changed';
+export interface LivestockAnimalStatusChangedPayload {
+  animalId: string;
+  from: string;
+  to: string;
 }
 
 // ---------------------------------------------------------------------------
