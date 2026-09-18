@@ -4,7 +4,8 @@ import {
   ExecutionContext,
   Inject,
   Injectable,
-  NestInterceptor
+  NestInterceptor,
+  ServiceUnavailableException
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
@@ -135,7 +136,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
       cached = await this.store.get(scopedKey);
     } catch (error) {
       release();
-      throw error;
+      // FAIL-CLOSED (V-77): the idempotency store is a store of RECORD, not
+      // a cache — proceeding without it could execute a duplicate mutation.
+      // Answer a clean 503 (retryable) instead of leaking a raw 500; the
+      // throttler cache tier fails OPEN by contrast.
+      throw new ServiceUnavailableException(
+        `Idempotency store unavailable — retry the request later (${error instanceof Error ? error.message : String(error)})`
+      );
     }
     if (cached !== undefined) {
       release();
@@ -163,6 +170,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
         const envelope: IdempotencyEnvelope = { requestHash, body };
         try {
           await this.store.save(scopedKey, envelope);
+        } catch (error) {
+          // FAIL-CLOSED (V-77): without the cached envelope the twin/retry
+          // cannot replay — surface 503 so the client retries with the same
+          // key; service-level UNIQUE constraints backstop the duplicate.
+          throw new ServiceUnavailableException(
+            `Idempotency store unavailable — retry the request with the same Idempotency-Key (${error instanceof Error ? error.message : String(error)})`
+          );
         } finally {
           release();
         }
