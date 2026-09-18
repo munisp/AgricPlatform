@@ -4,6 +4,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { LoggingModule } from './common/logging/logging.module.js';
 import { MetricsModule } from './common/metrics/metrics.module.js';
+import { MetricsService } from './common/metrics/metrics.service.js';
 import { TelemetryModule } from './common/telemetry/telemetry.module.js';
 import { CoreModule } from './core/core.module.js';
 import { DatabaseModule } from './database/database.module.js';
@@ -23,6 +24,8 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { OpportunitiesModule } from './modules/opportunities/opportunities.module.js';
 import { PartnerModule } from './modules/partner/partner.module.js';
 import { PrivacyModule } from './modules/privacy/privacy.module.js';
+import { SuccessionModule } from './modules/succession/succession.module.js';
+import { IdentityModule } from './modules/identity/identity.module.js';
 import { ProfilesModule } from './modules/profiles/profiles.module.js';
 import { SearchModule } from './modules/search/search.module.js';
 import { UsersModule } from './modules/users/users.module.js';
@@ -110,10 +113,13 @@ import { OfftakeModule } from './modules/marketplace/offtake.module.js';
     // (limits hold across replicas; ioredis was already a dependency), the
     // built-in in-memory store otherwise (single-instance only).
     ThrottlerModule.forRootAsync({
-      inject: [{ token: REDIS_CLIENT, optional: true }],
-      useFactory: (redis: import('ioredis').Redis | null) => ({
+      inject: [{ token: REDIS_CLIENT, optional: true }, MetricsService],
+      useFactory: (redis: import('ioredis').Redis | null, metrics: MetricsService) => ({
         throttlers: [{ ttl: 60_000, limit: 300 }],
-        ...(redis ? { storage: new RedisThrottlerStorage(redis) } : {})
+        // V-77: the storage fails OPEN with agric_throttle_redis_errors_total
+        // on Redis errors (cache tier), so a Redis outage degrades rate
+        // limiting instead of taking the API down.
+        ...(redis ? { storage: new RedisThrottlerStorage(redis, metrics) } : {})
       })
     }),
     DatabaseModule,
@@ -135,6 +141,8 @@ import { OfftakeModule } from './modules/marketplace/offtake.module.js';
     PartnerModule,
     AnalyticsModule,
     PrivacyModule,
+    SuccessionModule,
+    IdentityModule,
     SearchModule,
     IntegrationsModule,
     HealthModule,
