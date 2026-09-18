@@ -1,7 +1,35 @@
 /**
- * Sync protocol v1 wire types (Wave SYNCSRV). The authoritative contract for
- * the client wave is docs/sync-protocol.md; these types mirror it exactly.
+ * Sync protocol v2 wire types (Wave SYNCSRV + FP-4). The authoritative
+ * contract for the client wave is docs/sync-protocol.md; these types mirror
+ * it exactly.
+ *
+ * v2: pull cursors operate on the GLOBAL monotonic `change_seq` (per-record
+ * `version` remains the push CAS counter only). Pulls with a non-zero
+ * `since` MUST declare `v=2`; legacy (v1) cursors are rejected with a 409
+ * `sync_resync_required` signal so pre-v2 devices fail loudly and resync
+ * instead of silently diverging.
  */
+
+/** Current protocol version. Clients pass it as `v` on pull. */
+export const SYNC_PROTOCOL_VERSION = 2;
+
+/** Machine-readable resync signal (409 body `error` / message prefix). */
+export const SYNC_RESYNC_REQUIRED_CODE = 'sync_resync_required';
+export const SYNC_RESYNC_REQUIRED_MESSAGE =
+  'resync_required: the pull cursor predates sync protocol v2 — reset to since=0 and perform a full sync';
+
+/**
+ * Thrown by entity apply hooks when the atomic version-row claim is lost to
+ * a concurrent writer (V-18). The sync engine maps it to a per-item
+ * `conflict` result carrying the fresh server version + payload — never a
+ * retryable `apply_failed`, and the losing payload never lands.
+ */
+export class SyncVersionConflictError extends Error {
+  override readonly name = 'SyncVersionConflictError';
+  constructor(entity: string, entityId: string) {
+    super(`sync version claim lost for ${entity}/${entityId}`);
+  }
+}
 
 /** Operations a client may push. `upsert` creates or replaces; `delete` tombstones. */
 export type SyncPushOp = 'upsert' | 'delete';
@@ -39,7 +67,10 @@ export interface SyncPushItemResult {
 
 export interface SyncPullItem {
   entityId: string;
+  /** Per-record version — push baseVersion bookkeeping only, NOT a cursor. */
   version: number;
+  /** Global monotonic change sequence this state was stamped with (v2). */
+  changeSeq: number;
   deleted: boolean;
   /** Current server payload; null for tombstones. */
   payload: unknown;
@@ -48,17 +79,29 @@ export interface SyncPullItem {
 export interface SyncPullPage {
   entity: string;
   items: SyncPullItem[];
-  /** Monotonic per (user, entity): pass back as `since` on the next pull. */
+  /**
+   * change_seq cursor: monotonic per (user, entity); pass back as `since`
+   * (with `v=2`) on the next pull.
+   */
   cursor: number;
   /** True when more rows are visible beyond this page. */
   hasMore: boolean;
+  /** Protocol version that minted this page's cursor (2). */
+  protocol: number;
 }
 
 export interface SyncStatusEntry {
   entity: string;
-  /** Highest version currently visible in the caller's scope. */
+  /**
+   * Highest change_seq currently visible in the caller's scope (0 when
+   * nothing visible). Kept under the v1 field name for wire compatibility —
+   * comparable against v2 cursors only.
+   */
   serverMaxVersion: number;
-  /** Last cursor the server recorded for the caller (0 when never pulled). */
+  /**
+   * Last v2 cursor the server recorded for the caller (0 when never pulled
+   * under v2; stale v1 records are not surfaced).
+   */
   cursor: number;
 }
 
