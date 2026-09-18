@@ -23,7 +23,6 @@ import { UsersService } from '../users/users.service.js';
 import { StubIdentityDriver, stubIdentityResult } from './identity.driver.js';
 import {
   InputVouchersService,
-  PLATFORM_SUBSIDY_BUDGET_ACCOUNT,
   programmeLiabilityAccountCode,
   supplierReceivableAccountCode,
   type ActorRef
