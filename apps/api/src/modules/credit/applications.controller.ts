@@ -21,7 +21,10 @@ import {
   CreditService,
   type AddCollateralInput,
   type ApplyForGroupLoanInput,
-  type ApplyForLoanInput
+  type ApplyForLoanInput,
+  type ApplyForTopUpInput,
+  type RestructureLoanInput,
+  type SettleLoanInput
 } from './credit.service.js';
 import {
   SEASONAL_REPAYMENT_FLAG,
@@ -42,6 +45,18 @@ class ApplyDto implements ApplyForLoanInput {
   @IsString()
   @MaxLength(2000)
   purpose?: string;
+
+  /** V-03: optional link to the financed plot (grace trigger lookup). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  plotId?: string;
+
+  /** V-03: optional link to the financed planting (grace trigger lookup). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  plantingId?: string;
 }
 
 class ApplyGroupDto extends ApplyDto implements ApplyForGroupLoanInput {
@@ -62,12 +77,73 @@ class AddCollateralDto implements AddCollateralInput {
   @IsInt()
   @Min(0)
   estimatedValueKobo!: number;
+
+  /** V-31: warehouse pledge reference when the collateral is receipt-backed. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  warehousePledgeId?: string;
+
+  /** V-31: warehouse receipt reference when the collateral is receipt-backed. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  warehouseReceiptId?: string;
 }
 
 class InviteGuarantorDto {
   @IsString()
   @MaxLength(100)
   guarantorUserId!: string;
+}
+
+class RestructureLoanDto implements RestructureLoanInput {
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  termDays!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  interestBpsAnnual?: number;
+
+  @IsString()
+  @MaxLength(2000)
+  reason!: string;
+}
+
+class SettleLoanDto implements SettleLoanInput {
+  @IsInt()
+  @Min(0)
+  settlementKobo!: number;
+}
+
+class ApplyTopUpDto extends ApplyDto implements ApplyForTopUpInput {
+  @IsString()
+  @MaxLength(100)
+  consolidatesLoanId!: string;
+}
+
+class RecordPaymentDto {
+  /** V-29: partial amount; omit to pay the installment's full remaining balance. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  amountKobo?: number;
+}
+
+class SettleGuarantorDemandDto {
+  /**
+   * Recorded consent reference for debiting the guarantor's savings account
+   * (V-28: savings debit ONLY with recorded consent). Omit to record an
+   * out-of-band cash settlement.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  consentRef?: string;
 }
 
 class PreviewSeasonalScheduleDto implements PreviewSeasonalScheduleInput {
@@ -249,6 +325,57 @@ export class CreditApplicationsController {
     return { data: await this.credit.writeOff(id, requireActor(actor)) };
   }
 
+  @Post(':id/settle')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'lender')
+  @ApiOperation({
+    summary:
+      'V-05: settle a defaulted loan for less than outstanding (admin|lender); ' +
+      'posts the balanced write-down ledger entry and closes the loan'
+  })
+  async settle(
+    @Param('id') id: string,
+    @Body() dto: SettleLoanDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.credit.settleDefaultedLoan(id, dto, requireActor(actor)) };
+  }
+
+  @Post(':id/restructure')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'lender')
+  @ApiOperation({
+    summary:
+      'V-04: restructure a repaying loan (admin|lender) — old open schedule superseded, ' +
+      'new schedule over the outstanding balance, recompute of the borrower score. 409 on concurrent restructure.'
+  })
+  async restructure(
+    @Param('id') id: string,
+    @Body() dto: RestructureLoanDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.credit.restructureLoan(id, dto, requireActor(actor)) };
+  }
+
+  @Get(':id/restructures')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'V-04: restructure audit history for a loan (party)' })
+  async restructures(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.credit.listRestructures(id, requireActor(actor)) };
+  }
+
+  @Post('top-up')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'V-30: top-up consolidation application — folds a repaying loan into the new one at approval'
+  })
+  async applyTopUp(@Body() dto: ApplyTopUpDto, @CurrentUser() actor: User | null) {
+    return { data: await this.credit.applyForTopUp(dto, requireActor(actor)) };
+  }
+
   /* ------------------------------------------------------ repayments -- */
 
   @Get(':id/schedule')
@@ -311,13 +438,21 @@ export class CreditApplicationsController {
   @Post(':id/repayments/:sequence/pay')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Record an installment payment — idempotent (borrower or admin|lender)' })
+  @ApiOperation({
+    summary:
+      'Record an installment payment (borrower or admin|lender) — idempotent; ' +
+      'V-29: optional partial amountKobo, overpayment rejected; ' +
+      'V-05: a payment on a defaulted loan cures it (defaulted → repaying)'
+  })
   async pay(
     @Param('id') id: string,
     @Param('sequence', ParseIntPipe) sequence: number,
+    @Body() dto: RecordPaymentDto,
     @CurrentUser() actor: User | null
   ) {
-    return { data: await this.credit.recordPayment(id, sequence, requireActor(actor)) };
+    return {
+      data: await this.credit.recordPayment(id, sequence, requireActor(actor), dto.amountKobo)
+    };
   }
 
   /* ------------------------------------------------------ collateral -- */
@@ -406,5 +541,39 @@ export class CreditApplicationsController {
     @CurrentUser() actor: User | null
   ) {
     return { data: await this.credit.declineGuarantor(guarantorId, requireActor(actor)) };
+  }
+
+  @Post('guarantors/:guarantorId/demand/accept')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'V-28: accept a guarantor demand (called guarantor only) — posts the liability ledger leg'
+  })
+  async acceptGuarantorDemand(
+    @Param('guarantorId') guarantorId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.credit.acceptGuarantorDemand(guarantorId, requireActor(actor)) };
+  }
+
+  @Post('guarantors/:guarantorId/demand/settle')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'V-28: settle an accepted guarantor demand (guarantor or admin|lender); ' +
+      'savings debit only with a recorded consentRef'
+  })
+  async settleGuarantorDemand(
+    @Param('guarantorId') guarantorId: string,
+    @Body() dto: SettleGuarantorDemandDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.credit.settleGuarantorDemand(guarantorId, requireActor(actor), {
+        consentRef: dto.consentRef
+      })
+    };
   }
 }
