@@ -8,7 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsNumber, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsNumber, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
@@ -25,6 +25,7 @@ export const WHR_LTV_GUARDIAN_FLAG = 'whr-ltv-guardian';
 
 class AttachMonitorDto implements AttachMonitorInput {
   @IsString()
+  @MaxLength(100)
   loanId!: string;
 
   @IsNumber()
@@ -32,6 +33,7 @@ class AttachMonitorDto implements AttachMonitorInput {
   pledgedQtyKg!: number;
 
   @IsString()
+  @MaxLength(500)
   commodity!: string;
 
   @IsInt()
