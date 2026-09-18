@@ -86,11 +86,17 @@ export class SessionService {
       await this.sessions.save({ ...session, revokedAt: new Date().toISOString() });
       throw new UnauthorizedException('Refresh token expired');
     }
-    // Suspended accounts must not extend their sessions: reject and kill the
-    // family so no generation minted before the suspension stays usable.
-    if ((await this.users.statusFor(session.userId)) === 'suspended') {
+    // Suspended/deceased accounts must not extend their sessions: reject and
+    // kill the family so no generation minted before the status change stays
+    // usable. `deceased` (V-09) freezes the estate pending succession.
+    const accountStatus = await this.users.statusFor(session.userId);
+    if (accountStatus === 'suspended' || accountStatus === 'deceased') {
       await this.sessions.revokeFamily(session.familyId, new Date().toISOString());
-      throw new UnauthorizedException('Account is suspended; the session family has been revoked.');
+      throw new UnauthorizedException(
+        accountStatus === 'deceased'
+          ? 'Account is deceased; the session family has been revoked pending succession.'
+          : 'Account is suspended; the session family has been revoked.'
+      );
     }
     // Absolute family cap: rotation cannot extend a family past its maximum
     // age (measured from the family's oldest session).
