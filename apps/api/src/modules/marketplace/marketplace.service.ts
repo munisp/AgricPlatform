@@ -68,6 +68,20 @@ export function assertKoboRepresentable(priceNaira: number): void {
   }
 }
 
+/**
+ * V-36: seller-side release part of a partial-fulfilment settlement, in
+ * integer kobo. Pro-rata on quantity, FLOOR-truncated so the release never
+ * exceeds the delivered share; the buyer's refund part is the exact
+ * remainder, so release + refund always sum to the held amount (no dust).
+ */
+export function partialReleaseKobo(
+  amountKobo: number,
+  deliveredQuantity: number,
+  orderedQuantity: number
+): number {
+  return Math.floor((amountKobo * deliveredQuantity) / orderedQuantity);
+}
+
 /** Which order party may drive each transition (admins may drive any of them). */
 type OrderActor = 'buyer' | 'seller';
 
@@ -103,7 +117,11 @@ export const ORDER_TRANSITIONS: Readonly<Record<OrderStatus, Readonly<Partial<Re
   },
   in_fulfilment: {
     delivered: ['seller'],
-    disputed: ['buyer', 'seller']
+    disputed: ['buyer', 'seller'],
+    // V-36: terminal shipment failure fast-tracks the unwind (escrow refund
+    // + invoice cancel) instead of waiting out the escrow expiry — admin/
+    // system mediated only (empty actor list, dispute-resolution doctrine).
+    cancelled: []
   },
   delivered: {
     completed: ['buyer'],
@@ -472,9 +490,126 @@ export class MarketplaceService {
       await this.escrow?.refundForOrder(id, actor.id);
       await this.invoices?.cancelForOrder(id, actor.id);
     } else if (status === 'completed') {
-      await this.escrow?.releaseForOrder(id, actor.id);
+      // V-36: a partially-delivered order settles its escrow by SPLIT — the
+      // delivered share releases to the seller, the remainder refunds to the
+      // buyer — instead of an all-or-nothing release.
+      const partiallyDelivered =
+        updated.deliveredQuantity !== undefined && updated.deliveredQuantity < updated.quantity;
+      if (partiallyDelivered && this.escrow) {
+        const record = await this.escrow.escrowForOrder(id);
+        if (record) {
+          const releaseKobo = partialReleaseKobo(record.amountKobo, updated.deliveredQuantity!, updated.quantity);
+          await this.escrow.settlePartialForOrder(id, releaseKobo, actor.id);
+        }
+      } else {
+        await this.escrow?.releaseForOrder(id, actor.id);
+      }
       await this.invoices?.markPaidForOrder(id, actor.id);
     }
+    return updated;
+  }
+
+  /**
+   * V-06: admin dispute resolution with a SPLIT award. `releaseKobo` is the
+   * seller's part, the remainder refunds to the buyer; the escrow validates
+   * that the parts sum exactly to the held amount. The order then completes
+   * (buyer accepted goods worth the released part) or cancels (full refund),
+   * through the same guarded order machine as any other resolution.
+   * Idempotent: replaying the same award returns the already-resolved order.
+   */
+  async resolveDispute(
+    orderId: string,
+    award: { releaseKobo: number },
+    actor: Pick<User, 'id' | 'roles'>
+  ): Promise<Order> {
+    if (!actor.roles.includes('admin')) {
+      throw new ForbiddenException('Only an administrator may resolve a disputed order');
+    }
+    const order = await this.orders.getById(orderId);
+    if (order.status === 'completed' || order.status === 'cancelled') {
+      return order; // idempotent replay of a resolved dispute
+    }
+    if (order.status !== 'disputed') {
+      throw new BadRequestException(
+        `Order ${orderId} is '${order.status}'; only a disputed order can be resolved by award`
+      );
+    }
+    if (order.escrowRequired && this.escrow) {
+      const record = await this.escrow.escrowForOrder(orderId);
+      if (!record) {
+        throw new ConflictException(
+          `Order ${orderId} requires escrow but none exists; resolve the escrow state first`
+        );
+      }
+      await this.escrow.resolveDisputeSplit(
+        record.id,
+        { releaseKobo: award.releaseKobo, refundKobo: record.amountKobo - award.releaseKobo },
+        actor
+      );
+    }
+    return this.setOrderStatus(orderId, award.releaseKobo > 0 ? 'completed' : 'cancelled', actor);
+  }
+
+  /**
+   * V-36 partial fulfilment: the seller records that only `deliveredQuantity`
+   * of the ordered quantity was delivered. The order moves to 'delivered'
+   * carrying the partial quantity; when the buyer (or an admin) completes the
+   * order, the escrow settles by split (see the completed hook above).
+   * CAS-guarded from 'in_fulfilment'; a replay with the same quantity is an
+   * idempotent no-op, a conflicting quantity on an already-recorded partial
+   * delivery is a 409.
+   */
+  async recordPartialDelivery(
+    id: string,
+    deliveredQuantity: number,
+    actor: Pick<User, 'id' | 'roles'>
+  ): Promise<Order> {
+    const order = await this.orders.getById(id);
+    const isAdmin = actor.roles.includes('admin');
+    if (!isAdmin && actor.id !== order.sellerId) {
+      throw new ForbiddenException('Only the order seller may record a partial delivery');
+    }
+    if (!Number.isSafeInteger(deliveredQuantity) || deliveredQuantity <= 0 || deliveredQuantity >= order.quantity) {
+      throw new BadRequestException(
+        `deliveredQuantity must be an integer between 1 and ${order.quantity - 1} for a partial delivery of order ${id}`
+      );
+    }
+    if (order.deliveredQuantity !== undefined) {
+      if (order.deliveredQuantity === deliveredQuantity) {
+        return order; // idempotent replay
+      }
+      throw new ConflictException(
+        `Order ${id} already recorded a partial delivery of ${order.deliveredQuantity}; refusing to change it`
+      );
+    }
+    if (order.status !== 'in_fulfilment') {
+      throw new BadRequestException(
+        `Order ${id} is '${order.status}'; a partial delivery records only while 'in_fulfilment'`
+      );
+    }
+    const event = this.events.build(
+      'marketplace.order.status_changed',
+      { orderId: id, from: order.status, to: 'delivered', deliveredQuantity },
+      actor.id
+    );
+    const updated = await this.orders.updateExpected(
+      id,
+      { status: 'delivered', deliveredQuantity },
+      { status: 'in_fulfilment' },
+      event
+    );
+    if (this.orders.transactionalOutbox) {
+      this.events.emit(event);
+    } else {
+      await this.events.persist(event);
+    }
+    await this.audit?.record({
+      actorId: actor.id,
+      action: 'marketplace.order.partial_delivery',
+      entityType: 'order',
+      entityId: id,
+      metadata: { deliveredQuantity, quantity: order.quantity }
+    });
     return updated;
   }
 
