@@ -10,6 +10,7 @@ import { CreditSavingsService } from './savings.service.js';
 import { SeasonalScheduleService } from './seasonal-schedule.service.js';
 import { GeoVerificationModule } from './geo-verification/geo-verification.module.js';
 import { CoopScoreModule } from './coop-score.module.js';
+import { FinanceModule } from '../finance/finance.module.js';
 
 /**
  * Wave CREDIT (additive): microfinance suite — best-of-both merge of the
@@ -25,7 +26,12 @@ import { CoopScoreModule } from './coop-score.module.js';
 @Module({
   // Wave GEOCREDIT (additive): shadow-mode geo-verified credit factor.
   // Stage-27 Innovation 14 (additive): institution-level Cooperative Score.
-  imports: [GeoVerificationModule, CoopScoreModule],
+  // Wave-2 (V-05/V-28): settlement write-down and guarantor liability legs
+  // post through the double-entry ledger (FinanceModule exports LedgerService;
+  // no import cycle — FinanceModule does not depend on CreditModule).
+  // FinanceModule: LedgerService for the V-58 savings ledger mirror (no
+  // cycle — FinanceModule depends on neither CreditModule nor its peers).
+  imports: [GeoVerificationModule, CoopScoreModule, FinanceModule],
   controllers: [
     CreditProductsController,
     CreditApplicationsController,
