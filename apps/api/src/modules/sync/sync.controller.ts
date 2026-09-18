@@ -98,6 +98,18 @@ class SyncPullQuery {
   @Min(1)
   @Max(SYNC_PULL_LIMIT_MAX)
   limit?: number;
+
+  /**
+   * Protocol version the client's cursor belongs to (2 since FP-4). Pulls
+   * with a non-zero `since` and no/legacy `v` are answered 409
+   * sync_resync_required (docs/sync-protocol.md §6).
+   */
+  @IsOptional()
+  @Transform(({ value }) => (value === undefined ? undefined : Number(value)))
+  @IsInt()
+  @Min(1)
+  @Max(2)
+  v?: number;
 }
 
 function requireActor(actor: User | null): User {
@@ -108,8 +120,8 @@ function requireActor(actor: User | null): User {
 }
 
 /**
- * Sync protocol v1 (Wave SYNCSRV; docs/sync-protocol.md). All routes require
- * an authenticated identity; every operation is scoped to the caller.
+ * Sync protocol v2 (Wave SYNCSRV + FP-4; docs/sync-protocol.md). All routes
+ * require an authenticated identity; every operation is scoped to the caller.
  */
 @ApiTags('sync')
 @Controller('sync')
@@ -151,7 +163,7 @@ export class SyncController {
     @CurrentUser() actor: User | null
   ): Promise<{ data: SyncPullPage }> {
     const caller = requireActor(actor);
-    const page = await this.sync.pull(caller, query.entity, query.since ?? 0, query.limit);
+    const page = await this.sync.pull(caller, query.entity, query.since ?? 0, query.limit, query.v);
     return { data: page };
   }
 
