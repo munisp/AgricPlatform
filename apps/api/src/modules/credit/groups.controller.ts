@@ -9,7 +9,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated } from '../../common/auth/roles.decorator.js';
@@ -31,6 +31,19 @@ class AddMemberDto {
   @IsString()
   @MaxLength(100)
   userId!: string;
+}
+
+class LeaveGroupDto {
+  /** V-46: settle the exit share from the caller's savings (the call is the consent). */
+  @IsOptional()
+  @IsBoolean()
+  settleFromSavings?: boolean;
+
+  /** V-46: existing member who takes over the leaver's guarantor positions. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  substituteUserId?: string;
 }
 
 function requireActor(actor: User | null): User {
@@ -89,10 +102,43 @@ export class CreditGroupsController {
   @Post(':id/leave')
   @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Leave a group (leader blocked while members remain)' })
-  async leave(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    await this.groups.leave(id, requireActor(actor));
+  @ApiOperation({
+    summary:
+      'Leave a group (leader blocked while members remain). V-46: with an open ' +
+      'liability share, the same call must settle it from savings or nominate a ' +
+      'substitute guarantor.'
+  })
+  async leave(
+    @Param('id') id: string,
+    @Body() dto: LeaveGroupDto,
+    @CurrentUser() actor: User | null
+  ) {
+    await this.groups.leave(id, requireActor(actor), {
+      settleFromSavings: dto.settleFromSavings,
+      substituteUserId: dto.substituteUserId
+    });
     return { data: { left: true } };
+  }
+
+  @Get(':id/exit-settlement')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary: 'V-46: preview the caller’s exit-settlement liability share for this group'
+  })
+  async exitSettlement(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.groups.exitSettlement(id, requireActor(actor)) };
+  }
+
+  @Post(':id/dissolve')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary:
+      'V-46: dissolve the group (leader or admin); blocked while open liabilities exist'
+  })
+  async dissolve(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    return { data: await this.groups.dissolve(id, requireActor(actor)) };
   }
 
   @Post(':id/members')
