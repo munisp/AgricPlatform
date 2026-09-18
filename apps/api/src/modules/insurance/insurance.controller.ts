@@ -15,7 +15,12 @@ import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
-import { InsuranceService, type QuoteInput } from './insurance.service.js';
+import {
+  InsuranceService,
+  type CorrectedEvidenceInput,
+  type ExGratiaPayoutInput,
+  type QuoteInput
+} from './insurance.service.js';
 
 function requireActor(actor: User | null): User {
   if (!actor) {
@@ -137,5 +142,109 @@ export class InsuranceController {
   })
   async confirmPayout(@Param('id') id: string, @CurrentUser() actor: User | null) {
     return { data: await this.insurance.confirmPayout(requireActor(actor), id) };
+  }
+
+  /* ------------------------- V-42: dispute / appeal ------------------------- */
+
+  @Post('payouts/:id/dispute')
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Dispute a proposed payout (policy holder, within the appeal window; freezes confirmation).'
+  })
+  async disputePayout(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.insurance.disputePayout(requireActor(actor), id, body.reason) };
+  }
+
+  @Post('payouts/:id/reject')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Reject an erroneous proposed/disputed payout (admin; auditable, appealable).'
+  })
+  async rejectPayout(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.insurance.rejectPayout(requireActor(actor), id, body.reason) };
+  }
+
+  @Post('payouts/:id/appeal')
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Appeal a rejected payout (policy holder, within the appeal window).'
+  })
+  async appealPayout(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.insurance.appealPayout(requireActor(actor), id, body.reason) };
+  }
+
+  @Post('payouts/:id/reevaluate')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Re-evaluate a disputed/appealed payout with corrected evidence (admin; deterministic re-run of the product trigger; balanced correcting leg on amount change).'
+  })
+  async reevaluatePayout(
+    @Param('id') id: string,
+    @Body() body: CorrectedEvidenceInput,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.insurance.reevaluatePayout(requireActor(actor), id, body) };
+  }
+
+  @Post('payouts/ex-gratia')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Propose an ex-gratia payout (admin; basis-risk safety valve for losses the parametric trigger missed; bounded by the sum insured).'
+  })
+  async proposeExGratia(@Body() body: ExGratiaPayoutInput, @CurrentUser() actor: User | null) {
+    return { data: await this.insurance.proposeExGratiaPayout(requireActor(actor), body) };
+  }
+
+  /* ------------------ V-43: settlement confirmation rail ------------------ */
+
+  @Post('payouts/:id/settle')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Mark a PAID payout SETTLED on insurer rail confirmation (fail-closed 503 in production while the rail is stub-only).'
+  })
+  async confirmSettlement(
+    @Param('id') id: string,
+    @Body() body: { railReference: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.insurance.confirmSettlement(requireActor(actor), id, body.railReference)
+    };
+  }
+
+  @Post('payouts/:id/settlement-failure')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary:
+      'Record a rail settlement failure: reverses the settlement leg and re-queues the payout to PROPOSED.'
+  })
+  async recordSettlementFailure(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.insurance.recordSettlementFailure(requireActor(actor), id, body.reason)
+    };
   }
 }
