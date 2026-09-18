@@ -38,7 +38,8 @@ UPDATE sync.entity_versions ev
 
 SELECT setval(
   'sync.entity_versions_change_seq_seq',
-  COALESCE((SELECT max(change_seq) FROM sync.entity_versions), 0)
+  GREATEST(COALESCE((SELECT max(change_seq) FROM sync.entity_versions), 0), 1),
+  (SELECT max(change_seq) FROM sync.entity_versions) IS NOT NULL
 );
 
 ALTER TABLE sync.entity_versions ALTER COLUMN change_seq SET DEFAULT nextval('sync.entity_versions_change_seq_seq');
