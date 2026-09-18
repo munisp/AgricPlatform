@@ -12,9 +12,11 @@ import { DomainEventsService } from '../../../core/domain-events.service.js';
 import {
   createInMemoryCreditCollateralRepository,
   createInMemoryCreditGroupMemberRepository,
+  createInMemoryCreditGroupRepository,
   createInMemoryCreditGuarantorRepository,
   createInMemoryCreditLoanRepository,
   createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditRestructureRepository,
   createInMemoryCreditSavingsAccountRepository,
   createInMemoryCreditSavingsTransactionRepository,
   InMemoryCreditLoanRepository,
@@ -367,10 +369,13 @@ describe('decision-path neutrality (shadow mode)', () => {
       createInMemoryCreditRepaymentRepository(),
       createInMemoryCreditCollateralRepository(),
       createInMemoryCreditGuarantorRepository(),
+      createInMemoryCreditGroupRepository(),
       createInMemoryCreditGroupMemberRepository(),
       createInMemoryCreditSavingsAccountRepository(transactions),
       new InMemoryProfileRepository(),
-      new InMemoryOrderRepository()
+      new InMemoryOrderRepository(),
+      createInMemoryCreditRestructureRepository(),
+      transactions
     );
   }
 
