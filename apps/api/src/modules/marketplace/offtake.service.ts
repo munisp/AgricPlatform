@@ -47,8 +47,12 @@ import {
   allMilestonesMet,
   assertValidPriceBand,
   buyerEscrowAccountCode,
+  buyerPenaltyPayableAccountCode,
   contractEscrowLiabilityAccountCode,
+  coopPenaltyReceivableAccountCode,
   coopReceivableAccountCode,
+  defaultPenaltyKobo,
+  defaultPenaltyLedgerKey,
   deliveryAmountKobo,
   deliveryLedgerIdempotencyKey,
   effectiveMilestoneStatus,
@@ -57,9 +61,11 @@ import {
   priceWithinBand,
   settlementLedgerIdempotencyKey,
   validateMilestonePlan,
+  type OfftakeAmendment,
   type OfftakeContract,
   type OfftakeDelivery,
-  type OfftakeMilestone
+  type OfftakeMilestone,
+  type OfftakePriceBand
 } from './offtake.js';
 
 export interface MilestonePlanInput {
@@ -97,6 +103,14 @@ export interface OfftakeContractView {
   deliveries: OfftakeDelivery[];
 }
 
+/** V-34: one amendment proposal's terms (at least one must change). */
+export interface ProposeAmendmentInput {
+  priceBand?: OfftakePriceBand;
+  windowEnd?: string;
+  milestoneDueDates?: { seq: number; dueDate: string }[];
+  note?: string;
+}
+
 export interface OfftakeDeliveryResult {
   delivery: OfftakeDelivery;
   milestone: OfftakeMilestone;
@@ -126,7 +140,13 @@ export const OFFTAKE_EVENTS = {
   milestoneMissed: 'marketplace.offtake.milestone_missed',
   fulfilled: 'marketplace.offtake.fulfilled',
   defaulted: 'marketplace.offtake.defaulted',
-  renegotiationRequired: 'marketplace.offtake.renegotiation_required'
+  renegotiationRequired: 'marketplace.offtake.renegotiation_required',
+  // V-34: versioned amendment flow.
+  amendmentProposed: 'marketplace.offtake.amendment_proposed',
+  amendmentAccepted: 'marketplace.offtake.amendment_accepted',
+  amendmentRejected: 'marketplace.offtake.amendment_rejected',
+  // V-35: buyer-default remedy (penalty receivable + re-marketing linkage).
+  defaultRemedy: 'marketplace.offtake.default_remedy'
 } as const;
 
 /** OTel counters (tenant.id is attached automatically by TelemetryService). */
@@ -1250,6 +1270,275 @@ export class OfftakeService implements OnModuleInit {
     return { scanned, redriven };
   }
 
+  /* ==================== V-34: renegotiation (contract amendments) ==========
+   *
+   * The 'renegotiation required' event (out-of-band price, missed deadlines)
+   * previously had no state to land in. An amendment is a VERSIONED proposal
+   * of new terms (price band / window end / open-milestone due dates) that
+   * only takes effect when the OTHER party accepts it; acceptance CAS-bumps
+   * the contract's termsVersion and rewrites the band/window/due dates, so
+   * the sweep and the delivery band check read the amended terms from then
+   * on. All transitions are CAS-guarded; the amendment rows are append-only
+   * evidence (status moves only, never edits).
+   */
+
+  /**
+   * Propose amended terms (either contract party). Supersedes any still-open
+   * proposal (CAS per row). The proposal does NOT change the contract — only
+   * acceptance does.
+   */
+  async proposeAmendment(
+    actor: User | null,
+    contractId: string,
+    input: ProposeAmendmentInput
+  ): Promise<OfftakeAmendment> {
+    const caller = requireActor(actor);
+    const contract = await this.contracts.getById(contractId);
+    if (caller.id !== contract.cooperativeId && caller.id !== contract.buyerOrgId) {
+      throw new NotFoundException(`Offtake contract '${contractId}' not found`);
+    }
+    if (contract.status !== 'active') {
+      throw new ConflictException(
+        `Offtake contract '${contractId}' is '${contract.status}'; amendments propose only against an active contract`
+      );
+    }
+    this.assertAmendmentTerms(contract, input);
+    const existing = await this.contracts.listAmendments(contractId);
+    // A new proposal supersedes any still-open ones (CAS each; a lost race
+    // means a twin already decided it — the supersede of that one is moot).
+    for (const open of existing.filter((amendment) => amendment.status === 'proposed')) {
+      try {
+        await this.contracts.updateAmendmentExpected(
+          open.id,
+          { status: 'superseded', decidedAt: new Date().toISOString() },
+          { status: 'proposed' }
+        );
+      } catch (error) {
+        if (!(error instanceof ConflictException)) {
+          throw error;
+        }
+      }
+    }
+    const amendment: OfftakeAmendment = {
+      id: newId('offamend'),
+      contractId,
+      seq: existing.length + 1,
+      status: 'proposed',
+      priceBand: input.priceBand,
+      windowEnd: input.windowEnd,
+      milestoneDueDates: input.milestoneDueDates,
+      note: input.note?.trim() || undefined,
+      proposedBy: caller.id,
+      createdAt: new Date().toISOString()
+    };
+    try {
+      await this.contracts.addAmendment(amendment);
+    } catch (error) {
+      // pg UNIQUE (contract_id, seq) / partial-unique 'proposed' → the twin
+      // proposal won; surface as a conflict for an honest retry.
+      if (error instanceof ConflictException) {
+        throw new ConflictException(
+          `A concurrent amendment raced this proposal on contract '${contractId}'; re-read and retry`
+        );
+      }
+      throw error;
+    }
+    await this.events.publish(
+      OFFTAKE_EVENTS.amendmentProposed,
+      { contractId, amendmentId: amendment.id, seq: amendment.seq, proposedBy: caller.id },
+      caller.id
+    );
+    await this.audit?.record({
+      actorId: caller.id,
+      action: 'marketplace.offtake.amendment_proposed',
+      entityType: 'offtake_contract',
+      entityId: contractId,
+      metadata: { amendmentId: amendment.id, seq: amendment.seq }
+    });
+    return amendment;
+  }
+
+  /**
+   * Accept an open proposal: the COUNTERPARTY (never the proposer; an admin
+   * may mediate) accepts. CAS-claims the proposal, then applies the amended
+   * terms to the contract with a termsVersion bump (CAS on the pre-read
+   * updatedAt), then re-dates the named OPEN milestones. A milestone the
+   * sweep already marked 'missed' is REVIVED (back to pending/partial) when
+   * the amendment gives it a due date in the future — that is the point of
+   * renegotiation.
+   */
+  async acceptAmendment(
+    actor: User | null,
+    contractId: string,
+    amendmentId: string
+  ): Promise<{ contract: OfftakeContract; amendment: OfftakeAmendment }> {
+    const caller = requireActor(actor);
+    const contract = await this.contracts.getById(contractId);
+    if (
+      caller.id !== contract.cooperativeId &&
+      caller.id !== contract.buyerOrgId &&
+      !isAdmin(caller)
+    ) {
+      throw new NotFoundException(`Offtake contract '${contractId}' not found`);
+    }
+    const amendment = await this.contracts.amendmentById(amendmentId);
+    if (!amendment || amendment.contractId !== contractId) {
+      throw new NotFoundException(`Offtake amendment '${amendmentId}' not found on contract '${contractId}'`);
+    }
+    if (amendment.status === 'accepted') {
+      // Idempotent replay: re-read the contract at its current terms.
+      return { contract: await this.contracts.getById(contractId), amendment };
+    }
+    if (amendment.status !== 'proposed') {
+      throw new ConflictException(
+        `Amendment '${amendmentId}' is '${amendment.status}'; only a proposed amendment can be accepted`
+      );
+    }
+    if (amendment.proposedBy === caller.id && !isAdmin(caller)) {
+      throw new ForbiddenException('The proposer cannot accept their own amendment');
+    }
+    if (contract.status !== 'active') {
+      throw new ConflictException(
+        `Offtake contract '${contractId}' is '${contract.status}'; amendments land only on an active contract`
+      );
+    }
+    const decidedAt = new Date().toISOString();
+    const accepted = await this.contracts.updateAmendmentExpected(
+      amendmentId,
+      { status: 'accepted', decidedAt },
+      { status: 'proposed' }
+    );
+    const nextVersion = (contract.termsVersion ?? 1) + 1;
+    const updatedContract = await this.contracts.updateExpected(
+      contractId,
+      {
+        priceBand: amendment.priceBand ?? contract.priceBand,
+        windowEnd: amendment.windowEnd ?? contract.windowEnd,
+        termsVersion: nextVersion,
+        updatedAt: new Date().toISOString()
+      },
+      { status: 'active', updatedAt: contract.updatedAt }
+    );
+    // Re-date open milestones (and revive freshly-missed ones when the new
+    // due date is in the future).
+    const today = todayIso();
+    for (const change of amendment.milestoneDueDates ?? []) {
+      const milestone = await this.contracts.milestoneBySeq(contractId, change.seq);
+      if (!milestone) {
+        continue;
+      }
+      const open = milestone.status === 'pending' || milestone.status === 'partial';
+      const revivable = milestone.status === 'missed' && change.dueDate >= today;
+      if (!open && !revivable) {
+        continue; // met milestones never move
+      }
+      await this.contracts.updateMilestoneExpected(
+        milestone.id,
+        {
+          dueDate: change.dueDate,
+          status: revivable
+            ? milestone.deliveredQtyKg > 0
+              ? 'partial'
+              : 'pending'
+            : milestone.status
+        },
+        { status: milestone.status }
+      );
+    }
+    await this.events.publish(
+      OFFTAKE_EVENTS.amendmentAccepted,
+      {
+        contractId,
+        amendmentId,
+        termsVersion: nextVersion,
+        priceBand: updatedContract.priceBand,
+        windowEnd: updatedContract.windowEnd
+      },
+      caller.id
+    );
+    await this.audit?.record({
+      actorId: caller.id,
+      action: 'marketplace.offtake.amendment_accepted',
+      entityType: 'offtake_contract',
+      entityId: contractId,
+      metadata: { amendmentId, termsVersion: nextVersion }
+    });
+    return { contract: updatedContract, amendment: accepted };
+  }
+
+  /** Reject an open proposal (counterparty or admin). CAS-guarded. */
+  async rejectAmendment(
+    actor: User | null,
+    contractId: string,
+    amendmentId: string
+  ): Promise<OfftakeAmendment> {
+    const caller = requireActor(actor);
+    const contract = await this.contracts.getById(contractId);
+    if (
+      caller.id !== contract.cooperativeId &&
+      caller.id !== contract.buyerOrgId &&
+      !isAdmin(caller)
+    ) {
+      throw new NotFoundException(`Offtake contract '${contractId}' not found`);
+    }
+    const amendment = await this.contracts.amendmentById(amendmentId);
+    if (!amendment || amendment.contractId !== contractId) {
+      throw new NotFoundException(`Offtake amendment '${amendmentId}' not found on contract '${contractId}'`);
+    }
+    if (amendment.status === 'rejected') {
+      return amendment; // idempotent replay
+    }
+    if (amendment.status !== 'proposed') {
+      throw new ConflictException(
+        `Amendment '${amendmentId}' is '${amendment.status}'; only a proposed amendment can be rejected`
+      );
+    }
+    const rejected = await this.contracts.updateAmendmentExpected(
+      amendmentId,
+      { status: 'rejected', decidedAt: new Date().toISOString() },
+      { status: 'proposed' }
+    );
+    await this.events.publish(
+      OFFTAKE_EVENTS.amendmentRejected,
+      { contractId, amendmentId },
+      caller.id
+    );
+    return rejected;
+  }
+
+  /** Validates one amendment proposal's terms against the current contract. */
+  private assertAmendmentTerms(contract: OfftakeContract, input: ProposeAmendmentInput): void {
+    if (!input.priceBand && !input.windowEnd && !input.milestoneDueDates?.length) {
+      throw new BadRequestException('An amendment must change at least one term');
+    }
+    if (input.priceBand) {
+      assertValidPriceBand(input.priceBand);
+    }
+    const effectiveWindowEnd = input.windowEnd ?? contract.windowEnd;
+    if (input.windowEnd !== undefined) {
+      if (!isIsoCalendarDate(input.windowEnd) || input.windowEnd <= contract.windowStart) {
+        throw new BadRequestException(
+          `windowEnd must be an ISO date after the window start (${contract.windowStart})`
+        );
+      }
+    }
+    for (const change of input.milestoneDueDates ?? []) {
+      if (!Number.isSafeInteger(change.seq) || change.seq <= 0) {
+        throw new BadRequestException('milestoneDueDates entries need a positive milestone seq');
+      }
+      if (
+        !isIsoCalendarDate(change.dueDate) ||
+        change.dueDate < contract.windowStart ||
+        change.dueDate > effectiveWindowEnd
+      ) {
+        throw new BadRequestException(
+          `Milestone ${change.seq}: amended dueDate must be an ISO date inside the (amended) window ` +
+            `(${contract.windowStart}..${effectiveWindowEnd})`
+        );
+      }
+    }
+  }
+
   /**
    * Missed/defaulted sweep (admin): milestones past their due_date while
    * unmet become 'missed' (never before the due date); a contract past its
@@ -1321,9 +1610,140 @@ export class OfftakeService implements OnModuleInit {
         }
         defaultedContracts += 1;
         this.telemetry?.increment(OFFTAKE_METRICS.contractsTotal, 1, { status: 'defaulted' });
+        // V-35: buyer-default remedy — penalty receivable + re-marketing.
+        await this.applyDefaultRemedy(contract, milestones, caller.id);
       }
     }
     return { missedMilestones, defaultedContracts };
+  }
+
+  /**
+   * V-35 buyer-default remedy (sweep step, runs exactly once per contract —
+   * gated by the active→defaulted CAS the caller just won):
+   *
+   *   1. Penalty receivable: 10% of the undelivered value at the band floor
+   *      posts as a BALANCED journal — DR coop:<coop>:default_penalty_receivable
+   *      (asset) / CR org:<buyer>:default_penalty_payable (liability) —
+   *      idempotency-keyed per contract. This is a RECEIVABLE RECORD ONLY:
+   *      collecting it moves money, which stays behind the existing
+   *      fail-closed payout-rail stubs until the E-01 external gate lands.
+   *   2. Assisted re-marketing: the stranded lot (the contract's latest
+   *      linked traceability lot) is listed on the marketplace at the band
+   *      floor for the undelivered quantity, and the contract records the
+   *      linkage (remarketedListingId) so ops/credit can follow it.
+   *
+   * A remedy failure after the default CAS is logged + audited loudly
+   * (never silently swallowed) — the ledger journal key makes a manual
+   * re-drive safe.
+   */
+  private async applyDefaultRemedy(
+    contract: OfftakeContract,
+    milestones: readonly OfftakeMilestone[],
+    actorId: string
+  ): Promise<void> {
+    const undeliveredQtyKg = milestones.reduce(
+      (sum, milestone) => sum + Math.max(0, milestone.qtyKg - milestone.deliveredQtyKg),
+      0
+    );
+    if (undeliveredQtyKg <= 0) {
+      return; // fully delivered (fulfilment CAS is a separate path)
+    }
+    const penaltyKobo = defaultPenaltyKobo(contract, undeliveredQtyKg);
+    let remarketedListingId: string | undefined;
+    try {
+      if (penaltyKobo > 0) {
+        await this.ledger.ensureAccount({
+          code: coopPenaltyReceivableAccountCode(contract.cooperativeId),
+          type: 'asset',
+          ownerId: contract.cooperativeId
+        });
+        await this.ledger.ensureAccount({
+          code: buyerPenaltyPayableAccountCode(contract.buyerOrgId),
+          type: 'liability',
+          ownerId: contract.buyerOrgId
+        });
+        await this.ledger.postEntry(
+          {
+            idempotencyKey: defaultPenaltyLedgerKey(contract.id),
+            referenceType: 'offtake_default_penalty',
+            referenceId: contract.id,
+            description:
+              `Buyer-default penalty on offtake contract ${contract.id}: ${penaltyKobo} kobo ` +
+              `(${undeliveredQtyKg} kg undelivered at band floor)`,
+            postings: [
+              {
+                accountCode: coopPenaltyReceivableAccountCode(contract.cooperativeId),
+                direction: 'debit',
+                amountKobo: penaltyKobo
+              },
+              {
+                accountCode: buyerPenaltyPayableAccountCode(contract.buyerOrgId),
+                direction: 'credit',
+                amountKobo: penaltyKobo
+              }
+            ]
+          },
+          actorId
+        );
+      }
+      // Assisted re-marketing: stranded lot → new marketplace listing at the
+      // band floor. The location comes from the cooperative's real profile
+      // (never fabricated; a missing profile skips the listing, honestly).
+      const strandedLotId = [...milestones].reverse().find((m) => m.linkedLotId)?.linkedLotId;
+      const profile = await this.profiles.get(contract.cooperativeId).catch(() => undefined);
+      if (profile?.location) {
+        // floor kobo/kg → naira is exact (integer kobo = ≤2 decimal naira).
+        const listing = await this.marketplace.createListing({
+          sellerId: contract.cooperativeId,
+          kind: 'produce',
+          title: `[remarketed] ${contract.commodity} — offtake ${contract.id} default`,
+          crop: contract.commodity,
+          quantity: undeliveredQtyKg,
+          unit: 'kg',
+          priceNaira: contract.priceBand.floorKoboPerKg / 100,
+          location: profile.location
+        });
+        remarketedListingId = listing.id;
+      }
+      const patch: Partial<OfftakeContract> = { updatedAt: new Date().toISOString() };
+      if (penaltyKobo > 0) {
+        patch.defaultPenaltyKobo = penaltyKobo;
+      }
+      if (remarketedListingId) {
+        patch.remarketedListingId = remarketedListingId;
+      }
+      await this.contracts.updateExpected(contract.id, patch, { status: 'defaulted' });
+      await this.events.publish(
+        OFFTAKE_EVENTS.defaultRemedy,
+        {
+          contractId: contract.id,
+          undeliveredQtyKg,
+          penaltyKobo,
+          strandedLotId,
+          remarketedListingId
+        },
+        actorId
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.offtake.default_remedy',
+        entityType: 'offtake_contract',
+        entityId: contract.id,
+        metadata: { undeliveredQtyKg, penaltyKobo, strandedLotId, remarketedListingId }
+      });
+    } catch (error) {
+      this.logger.error(
+        `V-35 default remedy failed for contract ${contract.id} (penalty journal key ` +
+          `${defaultPenaltyLedgerKey(contract.id)}): ${(error as Error)?.message ?? error}`
+      );
+      await this.audit?.record({
+        actorId,
+        action: 'marketplace.offtake.default_remedy_failed',
+        entityType: 'offtake_contract',
+        entityId: contract.id,
+        metadata: { error: (error as Error)?.message ?? String(error) }
+      });
+    }
   }
 
   private async buildView(contract: OfftakeContract): Promise<OfftakeContractView> {
