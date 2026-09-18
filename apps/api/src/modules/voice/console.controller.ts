@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
@@ -9,7 +10,29 @@ import {
   ESCALATION_CASE_STATUSES,
   type EscalationCaseStatus
 } from '../../database/repositories/escalation-console.repository.js';
-import { EscalationConsoleService } from './escalation-console.service.js';
+import { EscalationConsoleService, MAX_ANSWER_TEXT_LENGTH } from './escalation-console.service.js';
+
+/**
+ * V-71/V-74: DTO classes (not inline literals) so the global ValidationPipe
+ * actually validates these bodies; answerText is capped because it is
+ * dispatched over a paid SMS channel.
+ */
+class AnswerCaseDto {
+  @IsString()
+  @MaxLength(MAX_ANSWER_TEXT_LENGTH)
+  answerText!: string;
+}
+
+class ScoreQualityDto {
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  score!: number;
+
+  @IsOptional()
+  @IsBoolean()
+  close?: boolean;
+}
 
 /**
  * Agronomist SLA console (Stage 27 innovation #19) — the operated queue
@@ -71,7 +94,7 @@ export class AgronomistConsoleController {
   async answerCase(
     @CurrentUser() actor: User | null,
     @Param('id') id: string,
-    @Body() body: { answerText: string }
+    @Body() body: AnswerCaseDto
   ) {
     return { data: await this.console.answerCase(actor, id, body ?? { answerText: '' }) };
   }
@@ -84,7 +107,7 @@ export class AgronomistConsoleController {
   async scoreQuality(
     @CurrentUser() actor: User | null,
     @Param('id') id: string,
-    @Body() body: { score: number; close?: boolean }
+    @Body() body: ScoreQualityDto
   ) {
     return { data: await this.console.scoreQuality(actor, id, body ?? { score: 0 }) };
   }
