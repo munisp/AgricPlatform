@@ -25,7 +25,13 @@ export type VslaMemberStatus = (typeof VSLA_MEMBER_STATUSES)[number];
 export const VSLA_CYCLE_STATUSES = ['OPEN', 'CLOSED'] as const;
 export type VslaCycleStatus = (typeof VSLA_CYCLE_STATUSES)[number];
 
-export const VSLA_LOAN_STATUSES = ['ACTIVE', 'REPAID'] as const;
+/**
+ * ACTIVE → REPAID on full repayment. A loan still open when its cycle closes
+ * becomes DEFAULTED (V-10): the claim persists (repayable, netted from the
+ * borrower's share-out, carried into later cycles) until repaid or a group
+ * admin explicitly writes it off (WRITTEN_OFF, bad-debt expense booked).
+ */
+export const VSLA_LOAN_STATUSES = ['ACTIVE', 'REPAID', 'DEFAULTED', 'WRITTEN_OFF'] as const;
 export type VslaLoanStatus = (typeof VSLA_LOAN_STATUSES)[number];
 
 export const CARBON_PRACTICE_TYPES = [
@@ -125,12 +131,20 @@ export interface VslaShareOutRecord {
   id: string;
   cycleId: string;
   memberId: string;
-  /** Amount actually paid out to the member's wallet at close. */
+  /** Amount actually paid out to the member's wallet at close (net of arrears). */
   shareKobo: number;
   /** Total the member contributed over the cycle. */
   contributedKobo: number;
   /** Liability left on the member account (loans outstanding against the pool). */
   residualKobo: number;
+  /**
+   * Arrears withheld from the gross share and applied against the member's
+   * DEFAULTED loans (V-10): share-out is NET of arrears so unpaid loans are
+   * recovered from the borrower's own payout first, not socialised. Optional
+   * on the record (pre-090 rows / legacy fixtures default to 0); the column
+   * itself is NOT NULL DEFAULT 0.
+   */
+  arrearsWithheldKobo?: number;
   ledgerEntryId: string;
   createdAt: string;
 }
@@ -150,10 +164,17 @@ export interface VslaShareOutPlanRecord {
   id: string;
   cycleId: string;
   memberId: string;
-  /** Pro-rata share computed from the pre-payout pool snapshot. */
+  /** Pro-rata GROSS share computed from the pre-payout pool snapshot. */
   shareKobo: number;
   contributedKobo: number;
   residualKobo: number;
+  /**
+   * Arrears withheld from the gross share at plan time (V-10) — persisted so
+   * crash-resume replays the SAME netting instead of recomputing from loan
+   * state that may have moved. Optional on the record (pre-090 rows / legacy
+   * fixtures default to 0); the column itself is NOT NULL DEFAULT 0.
+   */
+  arrearsWithheldKobo?: number;
   createdAt: string;
 }
 
@@ -415,8 +436,14 @@ export interface VslaLoanRepository {
    * failed. Guarded (repaid_kobo >= amountKobo) so a rollback can never drive
    * the aggregate negative. Also the reconciler's release for phantom claims
    * (WP-G1: claims not backed by any committed repayment posting).
+   * `priorStatus` restores the pre-claim lifecycle state (V-10: DEFAULTED
+   * loans stay DEFAULTED on rollback; defaults to ACTIVE for legacy callers).
    */
-  rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void>;
+  rollbackRepaymentClaim(
+    id: string,
+    amountKobo: number,
+    priorStatus?: VslaLoanStatus
+  ): Promise<void>;
 }
 
 export interface VslaLoanRepaymentRepository {
@@ -836,7 +863,8 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
     const current = this.items.get(id);
     if (
       !current ||
-      current.status !== 'ACTIVE' ||
+      // V-10: DEFAULTED loans remain repayable — the claim survives close.
+      (current.status !== 'ACTIVE' && current.status !== 'DEFAULTED') ||
       current.repaidKobo + amountKobo > current.totalDueKobo
     ) {
       return undefined;
@@ -852,16 +880,23 @@ export class InMemoryVslaLoanRepository implements VslaLoanRepository {
     return structuredClone(updated);
   }
 
-  async rollbackRepaymentClaim(id: string, amountKobo: number): Promise<void> {
+  async rollbackRepaymentClaim(
+    id: string,
+    amountKobo: number,
+    priorStatus: VslaLoanStatus = 'ACTIVE'
+  ): Promise<void> {
     const current = this.items.get(id);
     if (!current || current.repaidKobo < amountKobo) {
       return; // guarded: never drive the aggregate negative
     }
+    const repaidKobo = current.repaidKobo - amountKobo;
     this.items.set(id, {
       ...current,
-      repaidKobo: current.repaidKobo - amountKobo,
-      status: 'ACTIVE',
-      repaidAt: undefined
+      repaidKobo,
+      // Restore the pre-claim lifecycle state (V-10): a claim that completed
+      // the loan rolls back to REPAID only when still fully covered.
+      status: repaidKobo >= current.totalDueKobo ? 'REPAID' : priorStatus,
+      repaidAt: repaidKobo >= current.totalDueKobo ? current.repaidAt : undefined
     });
   }
 }
@@ -1044,6 +1079,160 @@ export function createInMemoryVslaLoanRepository(): InMemoryVslaLoanRepository {
 
 export function createInMemoryVslaLoanRepaymentRepository(): InMemoryVslaLoanRepaymentRepository {
   return new InMemoryVslaLoanRepaymentRepository();
+}
+
+/**
+ * Cash-count declaration lifecycle (V-48): the treasurer (group admin)
+ * DECLARES the physical lockbox count (PENDING); a DIFFERENT active member
+ * attests (dual attestation), at which point the ledger balance is compared
+ * and a variance adjustment posts. ATTESTED = within tolerance, FLAGGED =
+ * beyond the flag threshold (audited).
+ */
+export const VSLA_CASH_COUNT_STATUSES = ['PENDING', 'ATTESTED', 'FLAGGED'] as const;
+export type VslaCashCountStatus = (typeof VSLA_CASH_COUNT_STATUSES)[number];
+
+/** VSLA meeting (V-48): the governance anchor for cash counts. */
+export interface VslaMeetingRecord {
+  id: string;
+  groupId: string;
+  heldAt: string;
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface VslaMeetingCriteria {
+  groupId?: string;
+}
+
+/** Dual-attested physical cash-count declaration against the ledger (V-48). */
+export interface VslaCashCountRecord {
+  id: string;
+  groupId: string;
+  meetingId?: string;
+  /** Physical lockbox count declared by the treasurer. */
+  declaredKobo: number;
+  /** Ledger cash balance captured at attestation. */
+  ledgerKobo?: number;
+  /** declaredKobo - ledgerKobo (negative = shortage / missing cash). */
+  varianceKobo?: number;
+  declaredBy: string;
+  attestedBy?: string;
+  status: VslaCashCountStatus;
+  /** Client idempotency key for the declaration (unique). */
+  idempotencyKey: string;
+  /** Variance adjustment entry (vsla-cashcount:{id}); set once posted. */
+  ledgerEntryId?: string;
+  createdAt: string;
+  attestedAt?: string;
+}
+
+export interface VslaCashCountCriteria {
+  groupId?: string;
+  meetingId?: string;
+}
+
+export interface VslaMeetingRepository {
+  create(record: VslaMeetingRecord): Promise<VslaMeetingRecord>;
+  findById(id: string): Promise<VslaMeetingRecord | undefined>;
+  find(criteria: VslaMeetingCriteria): Promise<VslaMeetingRecord[]>;
+}
+
+export interface VslaCashCountRepository {
+  /** Throws ConflictException when idempotencyKey already exists. */
+  create(record: VslaCashCountRecord): Promise<VslaCashCountRecord>;
+  findById(id: string): Promise<VslaCashCountRecord | undefined>;
+  findByIdempotencyKey(key: string): Promise<VslaCashCountRecord | undefined>;
+  find(criteria: VslaCashCountCriteria): Promise<VslaCashCountRecord[]>;
+  /** Compare-and-set (attestation transitions); 409 when it moved on. */
+  updateExpected(
+    id: string,
+    patch: Partial<VslaCashCountRecord>,
+    expected: Partial<VslaCashCountRecord>
+  ): Promise<VslaCashCountRecord>;
+}
+
+export class InMemoryVslaMeetingRepository implements VslaMeetingRepository {
+  private readonly items = new Map<string, VslaMeetingRecord>();
+
+  async create(record: VslaMeetingRecord): Promise<VslaMeetingRecord> {
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findById(id: string): Promise<VslaMeetingRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async find(criteria: VslaMeetingCriteria): Promise<VslaMeetingRecord[]> {
+    return [...this.items.values()]
+      .filter((item) => !criteria.groupId || item.groupId === criteria.groupId)
+      .map((item) => structuredClone(item));
+  }
+}
+
+export class InMemoryVslaCashCountRepository implements VslaCashCountRepository {
+  private readonly items = new Map<string, VslaCashCountRecord>();
+
+  async create(record: VslaCashCountRecord): Promise<VslaCashCountRecord> {
+    for (const item of this.items.values()) {
+      if (item.idempotencyKey === record.idempotencyKey) {
+        throw new ConflictException(
+          `A cash-count declaration with idempotency key '${record.idempotencyKey}' already exists`
+        );
+      }
+    }
+    this.items.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  async findById(id: string): Promise<VslaCashCountRecord | undefined> {
+    const record = this.items.get(id);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async findByIdempotencyKey(key: string): Promise<VslaCashCountRecord | undefined> {
+    const record = [...this.items.values()].find((item) => item.idempotencyKey === key);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async find(criteria: VslaCashCountCriteria): Promise<VslaCashCountRecord[]> {
+    return [...this.items.values()]
+      .filter(
+        (item) =>
+          (!criteria.groupId || item.groupId === criteria.groupId) &&
+          (!criteria.meetingId || item.meetingId === criteria.meetingId)
+      )
+      .map((item) => structuredClone(item));
+  }
+
+  async updateExpected(
+    id: string,
+    patch: Partial<VslaCashCountRecord>,
+    expected: Partial<VslaCashCountRecord>
+  ): Promise<VslaCashCountRecord> {
+    const current = this.items.get(id);
+    const matches =
+      current &&
+      Object.entries(expected).every(
+        ([key, value]) => current[key as keyof VslaCashCountRecord] === value
+      );
+    if (!matches) {
+      throw new ConflictException(`VSLA cash count '${id}' changed concurrently; reload and retry`);
+    }
+    const updated = { ...current, ...patch } as VslaCashCountRecord;
+    this.items.set(id, updated);
+    return structuredClone(updated);
+  }
+}
+
+export function createInMemoryVslaMeetingRepository(): InMemoryVslaMeetingRepository {
+  return new InMemoryVslaMeetingRepository();
+}
+
+export function createInMemoryVslaCashCountRepository(): InMemoryVslaCashCountRepository {
+  return new InMemoryVslaCashCountRepository();
 }
 
 export function createInMemoryCarbonPlotRepository(): InMemoryCarbonPlotRepository {
