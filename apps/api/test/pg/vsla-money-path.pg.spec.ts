@@ -108,7 +108,10 @@ describe('pg vsla money path (query spy)', () => {
     const claimed = await repo.claimRepayment('loan-1', 40_000, txHandle);
     expect(claimed?.repaidKobo).toBe(40_000);
     const update = calls.find((call) => call.text.includes('UPDATE vsla_carbon.vsla_loans'));
-    expect(update?.text).toContain("status = 'ACTIVE'");
+    // V-10: status advances to REPAID via CASE; DEFAULTED stays repayable.
+    expect(update?.text).toContain('status = CASE');
+    expect(update?.text).toContain("WHEN repaid_kobo + $1 >= total_due_kobo THEN 'REPAID'");
+    expect(update?.text).toContain("status IN ('ACTIVE', 'DEFAULTED')");
     expect(update?.text).toContain('repaid_kobo + $1 <= total_due_kobo');
     expect(update?.params).toEqual([40_000, 'loan-1']);
   });
