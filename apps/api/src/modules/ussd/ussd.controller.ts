@@ -11,21 +11,31 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { IsOptional, IsString } from 'class-validator';
-import { assertAtCallbackIp, assertAtCallbackToken } from '../../common/auth/at-callback.utils.js';
+import { IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  assertAtCallbackFreshness,
+  assertAtCallbackIp,
+  assertAtCallbackToken,
+  resolveAtCallbackToken
+} from '../../common/auth/at-callback.utils.js';
+import { E164_PATTERN } from '../auth/auth.controller.js';
 import { UssdService } from './ussd.service.js';
 
 /** Africa's Talking form-encoded callback payload (application/x-www-form-urlencoded). */
 class UssdCallbackDto {
   @IsString()
+  @MaxLength(128)
   sessionId!: string;
 
-  @IsString()
+  // MSISDN shape (V-66): the session phone binding and every registration
+  // effect key on this value, so it must be a canonical E.164 number.
+  @Matches(E164_PATTERN, { message: 'phoneNumber must be in E.164 format (e.g. +2348012345678)' })
   phoneNumber!: string;
 
   /** Cumulative `*` separated inputs; empty on the opening dial. */
   @IsOptional()
   @IsString()
+  @MaxLength(512)
   text?: string;
 }
 
@@ -58,6 +68,8 @@ export class UssdController {
     @Body() dto: UssdCallbackDto,
     @Query('token') token?: string,
     @Headers('x-at-callback-token') headerToken?: string,
+    @Headers('x-at-callback-timestamp') timestamp?: string,
+    @Headers('x-at-callback-nonce') nonce?: string,
     @Ip() ip?: string
   ): Promise<string> {
     if (!this.ussd.driverConfig.enabled) {
@@ -65,7 +77,9 @@ export class UssdController {
         'USSD callback is disabled. Set USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME.'
       );
     }
-    assertAtCallbackToken(token ?? headerToken);
+    // V-19: header-only token in production plus per-request freshness.
+    assertAtCallbackToken(resolveAtCallbackToken(token, headerToken));
+    assertAtCallbackFreshness({ timestamp, nonce });
     assertAtCallbackIp(ip);
     return this.ussd.handleCallback({
       sessionId: dto.sessionId,
