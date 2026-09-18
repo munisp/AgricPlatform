@@ -3241,7 +3241,7 @@ export function fetchCreditScoreAssessment(
 }
 
 /* ------------------------- voice agronomist (wave-voice) ---------------- */
-/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T }` */
+/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T } */
 /* envelopes throughout. Agent-assist console endpoints are role-gated        */
 /* (agronomist/admin) server-side.                                            */
 
