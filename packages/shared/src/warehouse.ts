@@ -15,7 +15,16 @@ export type WarehouseCertificationStatus = (typeof WAREHOUSE_CERTIFICATION_STATU
 export const WAREHOUSE_DEPOSIT_STATUSES = ['received', 'graded', 'issued', 'withdrawn'] as const;
 export type WarehouseDepositStatus = (typeof WAREHOUSE_DEPOSIT_STATUSES)[number];
 
-export const WAREHOUSE_RECEIPT_STATUSES = ['active', 'pledged', 'released', 'redeemed'] as const;
+export const WAREHOUSE_RECEIPT_STATUSES = [
+  'active',
+  'pledged',
+  'released',
+  'redeemed',
+  // V-37: terminal state of a PARENT receipt after a split — the parent's
+  // claim moved wholly into its child receipts (quantity-conserved). A split
+  // parent is non-pledgeable, non-transferable and non-redeemable.
+  'split'
+] as const;
 export type WarehouseReceiptStatus = (typeof WAREHOUSE_RECEIPT_STATUSES)[number];
 
 export const WAREHOUSE_PLEDGE_STATUSES = ['active', 'released'] as const;
@@ -103,6 +112,27 @@ export interface WarehouseReceipt {
   issuedAt: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * V-37 receipt split: the parent receipt this child was split from
+   * (undefined on issuance receipts). A child's signature chains the parent's
+   * receipt number + signature (receipt-crypto.ts signChildReceipt), so a
+   * child cannot be re-parented without invalidating its signature.
+   */
+  parentReceiptId?: string;
+  /** 1-based position of this child within the parent's split (V-37). */
+  splitSeq?: number;
+  /**
+   * V-07 spoilage/condition loss: cumulative recorded loss in kg. The SIGNED
+   * issuance fields (weightKg/bagCount/grade) are never rewritten — tamper
+   * evidence would break — so downstream quantity math must use the
+   * loss-adjusted effective quantity (see effectiveReceiptWeightKg).
+   */
+  lostWeightKg?: number;
+  /** V-07: cumulative recorded bag loss (integer). */
+  lostBagCount?: number;
+  /** V-07: post-issuance re-grade (condition adjustment). The effective
+   * grade is `regradedTo ?? grade`; the signed issuance grade is preserved. */
+  regradedTo?: WarehouseGrade;
 }
 
 /**
@@ -140,6 +170,67 @@ export interface WarehouseReceiptTransfer {
   note?: string;
   createdAt: string;
 }
+
+/* ---- V-07: spoilage/condition loss & adjustment events ------------------ */
+
+/**
+ * Loss/adjustment event kinds recorded against an issued receipt. The events
+ * themselves ride the transactional outbox (warehouse.receipt.loss_reported)
+ * as append-only evidence; the receipt row carries the CUMULATIVE loss
+ * fields above so the effective quantity is readable without a replay.
+ */
+export const WAREHOUSE_LOSS_KINDS = [
+  'spoilage',
+  'theft',
+  'moisture_damage',
+  'regrade',
+  'operator_fraud'
+] as const;
+export type WarehouseLossKind = (typeof WAREHOUSE_LOSS_KINDS)[number];
+
+/**
+ * V-07: effective (loss-adjusted) receipt quantity in kg. Never negative —
+ * the service refuses a loss report that would drive it below zero.
+ */
+export function effectiveReceiptWeightKg(
+  receipt: Pick<WarehouseReceipt, 'weightKg' | 'lostWeightKg'>
+): number {
+  return receipt.weightKg - (receipt.lostWeightKg ?? 0);
+}
+
+/** V-07: effective (loss-adjusted) bag count. */
+export function effectiveReceiptBagCount(
+  receipt: Pick<WarehouseReceipt, 'bagCount' | 'lostBagCount'>
+): number {
+  return receipt.bagCount - (receipt.lostBagCount ?? 0);
+}
+
+/** V-07: effective grade — a re-grade supersedes the signed issuance grade. */
+export function effectiveReceiptGrade(
+  receipt: Pick<WarehouseReceipt, 'grade' | 'regradedTo'>
+): WarehouseGrade {
+  return receipt.regradedTo ?? receipt.grade;
+}
+
+/* ---- V-39: operator bond (ledger accounts; see WarehouseBondService) ----- */
+
+/**
+ * Ledger account holding an operator's performance bond (liability: the
+ * platform owes the bond back to the operator until a fraud draw). The
+ * REAL bond instrument is an external legal/insurance gate (E-08) — these
+ * accounts model the in-platform recourse once that gate lands.
+ */
+export function warehouseOperatorBondAccountCode(warehouseId: string): string {
+  return `warehouse:${warehouseId}:operator_bond`;
+}
+
+/** Liability account for fraud compensation owed to receipt holders. */
+export function warehouseFraudCompensationAccountCode(warehouseId: string): string {
+  return `warehouse:${warehouseId}:fraud_compensation_payable`;
+}
+
+/** Platform cash account debited when an operator posts a bond. */
+export const WAREHOUSE_BOND_CASH_ACCOUNT = 'platform:cash';
 
 /** Regulator/admin read-only audit export bundle. */
 export interface WarehouseRegistryExport {
