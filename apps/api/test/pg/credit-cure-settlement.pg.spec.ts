@@ -258,12 +258,15 @@ const PRODUCT = `${PREFIX}product`;
 const LOAN = `${PREFIX}loan`;
 const now = () => new Date().toISOString();
 
+// Loan-scoped rows only. The shared PRODUCT/FARMER fixtures must survive a
+// per-test clean — deleting the product here broke the loan INSERT's FK in
+// any test that cleans first (CI db-contract failure, 2026-09-18). The
+// product is rerun-safe via ON CONFLICT and torn down in afterAll.
 async function clean(): Promise<void> {
   if (!pool) return;
   await pool.query(`DELETE FROM credit.loan_repayments WHERE loan_id = $1`, [LOAN]);
   await pool.query(`DELETE FROM credit.loan_restructures WHERE loan_id = $1`, [LOAN]);
   await pool.query(`DELETE FROM credit.loan_applications WHERE id = $1`, [LOAN]);
-  await pool.query(`DELETE FROM credit.loan_products WHERE id = $1`, [PRODUCT]);
 }
 
 describePg('pg credit cure/settlement (live, migrations 094–096)', () => {
@@ -288,6 +291,7 @@ describePg('pg credit cure/settlement (live, migrations 094–096)', () => {
   afterAll(async () => {
     if (pool) {
       await clean();
+      await pool.query(`DELETE FROM credit.loan_products WHERE id = $1`, [PRODUCT]);
       await pool.query(`DELETE FROM identity.users WHERE id = $1`, [FARMER]);
       await pool.end();
     }
@@ -313,11 +317,15 @@ describePg('pg credit cure/settlement (live, migrations 094–096)', () => {
 
   it('cure CAS on a defaulted loan succeeds once and conflicts on replay', async () => {
     await clean();
+    // updated_at is written explicitly at millisecond ISO precision — exactly
+    // how the repository writes rows. Relying on the column DEFAULT now()
+    // stamps microseconds that the ms-precision CAS guard can never match
+    // (CI db-contract failure, 2026-09-18).
     await pool!.query(
       `INSERT INTO credit.loan_applications
-         (id, applicant_user_id, product_id, principal_kobo, status)
-       VALUES ($1, $2, $3, $4, 'defaulted')`,
-      [LOAN, FARMER, PRODUCT, 1_000_000]
+         (id, applicant_user_id, product_id, principal_kobo, status, updated_at)
+       VALUES ($1, $2, $3, $4, 'defaulted', $5)`,
+      [LOAN, FARMER, PRODUCT, 1_000_000, now()]
     );
     const loans = createPgCreditLoanRepository(pool!);
     const stored = await loans.getById(LOAN);
