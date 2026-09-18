@@ -50,6 +50,8 @@ import {
 import {
   createInMemoryCreditCollateralRepository,
   createInMemoryCreditGroupMemberRepository,
+  createInMemoryCreditGroupRepository,
+  createInMemoryCreditRestructureRepository,
   createInMemoryCreditGuarantorRepository,
   createInMemoryCreditLoanRepository,
   createInMemoryCreditRepaymentRepository,
@@ -362,10 +364,13 @@ function makeCreditService() {
     createInMemoryCreditRepaymentRepository(),
     createInMemoryCreditCollateralRepository(),
     createInMemoryCreditGuarantorRepository(),
+    createInMemoryCreditGroupRepository(),
     createInMemoryCreditGroupMemberRepository(),
     createInMemoryCreditSavingsAccountRepository(transactions),
     new InMemoryProfileRepository(),
-    new InMemoryOrderRepository()
+    new InMemoryOrderRepository(),
+    createInMemoryCreditRestructureRepository(),
+    transactions
   );
 }
 
