@@ -10,7 +10,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsISO8601, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsISO8601, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import {
   ESCROW_STATUSES,
   INVOICE_STATUSES,
@@ -77,6 +77,34 @@ class ShipmentStatusDto {
   @IsString()
   @MaxLength(2000)
   failureReason?: string;
+}
+
+/** V-06: admin split award for a disputed escrow (seller part in kobo). */
+class ResolveSplitDto {
+  /** Seller-side release part; the buyer's refund part is the remainder. */
+  @IsInt()
+  @Min(0)
+  releaseKobo!: number;
+
+  /** Buyer-side refund part; releaseKobo + refundKobo must equal the held amount. */
+  @IsInt()
+  @Min(0)
+  refundKobo!: number;
+}
+
+/** V-36: seller-recorded partial delivery quantity. */
+class PartialDeliveryDto {
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  deliveredQuantity!: number;
+}
+
+/** V-36: terminal shipment failure with fast-track escrow refund. */
+class FailShipmentDto {
+  @IsString()
+  @MaxLength(2000)
+  failureReason!: string;
 }
 
 function requireActor(actor: User | null): User {
@@ -252,5 +280,80 @@ export class CommerceController {
     return {
       data: await this.logistics.transition(id, dto.status, requireActor(actor), dto.failureReason)
     };
+  }
+
+  /**
+   * V-06: admin-mediated dispute resolution with a SPLIT award — the escrow
+   * posts a partial release to the seller and a partial refund to the buyer
+   * (two balanced legs summing exactly to the held amount), then the order
+   * completes (release part > 0) or cancels (full refund).
+   */
+  @Post('orders/:id/resolve-dispute')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Resolve a disputed order with a partial award (admin; idempotent per award)'
+  })
+  async resolveDispute(
+    @Param('id') orderId: string,
+    @Body() dto: ResolveSplitDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.marketplace.resolveDispute(orderId, { releaseKobo: dto.releaseKobo }, requireActor(actor))
+    };
+  }
+
+  /** V-06: escrow-level split resolution (admin; the dispute path for holds). */
+  @Post('escrow/:id/resolve-split')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({
+    summary: 'Split-resolve a disputed escrow (admin; two legs summing exactly to the held amount)'
+  })
+  async resolveEscrowSplit(
+    @Param('id') id: string,
+    @Body() dto: ResolveSplitDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.escrow.resolveDisputeSplit(
+        id,
+        { releaseKobo: dto.releaseKobo, refundKobo: dto.refundKobo },
+        requireActor(actor)
+      )
+    };
+  }
+
+  /** V-36: record a partial delivery (seller); completion then settles by split. */
+  @Post('orders/:id/partial-delivery')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Record a partial delivery (seller); order completes with a split escrow settlement'
+  })
+  async recordPartialDelivery(
+    @Param('id') orderId: string,
+    @Body() dto: PartialDeliveryDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return {
+      data: await this.marketplace.recordPartialDelivery(orderId, dto.deliveredQuantity, requireActor(actor))
+    };
+  }
+
+  /** V-36: terminal shipment failure with immediate escrow refund (fast-track). */
+  @Post('shipments/:id/fail-refund')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Mark a shipment terminally failed and refund the escrow immediately (seller/admin)'
+  })
+  async failShipmentAndRefund(
+    @Param('id') id: string,
+    @Body() dto: FailShipmentDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.logistics.failAndRefund(id, requireActor(actor), dto.failureReason) };
   }
 }
