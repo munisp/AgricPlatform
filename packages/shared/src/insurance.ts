@@ -131,22 +131,67 @@ export interface ParametricTriggerEvent {
   createdAt: string;
 }
 
-export const PARAMETRIC_PAYOUT_STATUSES = ['proposed', 'paid'] as const;
+/**
+ * Payout lifecycle (V-42/V-43):
+ *   proposed → paid → settled          (happy path; settled ONLY on rail confirmation)
+ *   proposed → disputed → proposed     (farmer dispute + admin re-evaluation upholds)
+ *   proposed → disputed → rejected     (re-evaluation finds no breach on corrected evidence)
+ *   proposed → rejected → appealed → proposed|rejected
+ *   paid     → proposed                (settlement failure: leg reversed, payout re-queued)
+ * `paid` means the settlement leg is ledger-booked; it NEVER means money
+ * reached the farmer — only `settled` (rail confirmation) does.
+ */
+export const PARAMETRIC_PAYOUT_STATUSES = [
+  'proposed',
+  'disputed',
+  'rejected',
+  'appealed',
+  'paid',
+  'settled'
+] as const;
 export type ParametricPayoutStatus = (typeof PARAMETRIC_PAYOUT_STATUSES)[number];
+
+/** Payout origin: parametric trigger evaluation or ex-gratia (basis-risk safety valve, V-42). */
+export const PARAMETRIC_PAYOUT_ORIGINS = ['parametric', 'ex_gratia'] as const;
+export type ParametricPayoutOrigin = (typeof PARAMETRIC_PAYOUT_ORIGINS)[number];
 
 export interface ParametricPayout {
   id: string;
   policyId: string;
-  triggerEventId: string;
+  /** Absent for ex-gratia payouts (no trigger event behind them). */
+  triggerEventId?: string;
   farmerUserId: string;
   amountKobo: number;
   status: ParametricPayoutStatus;
+  /** Origin of the payout (V-42). Legacy rows pre-default to 'parametric'. */
+  origin?: ParametricPayoutOrigin;
   /** Honest execution label — always 'stub' in this wave. */
   execution: 'stub';
   ledgerProposalEntryId?: string;
   ledgerSettlementEntryId?: string;
   proposedAt: string;
   paidAt?: string;
+  /* ---- V-42 dispute / rejection / appeal audit trail ---- */
+  disputedAt?: string;
+  disputeReason?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  appealedAt?: string;
+  appealReason?: string;
+  /** Last admin re-evaluation timestamp (corrected-evidence review). */
+  reevaluatedAt?: string;
+  /* ---- V-43 settlement confirmation ---- */
+  settledAt?: string;
+  /** Rail confirmation reference that triggered `settled` (never the ledger posting). */
+  settlementReference?: string;
+  settlementFailureReason?: string;
+  /**
+   * Settlement attempts so far (V-43 re-queue): each failed settlement
+   * reverses its leg and increments this counter, so a retried confirmation
+   * posts a FRESH settlement entry (the reversed attempt's idempotency key
+   * is never reused).
+   */
+  settlementAttempts?: number;
 }
 
 /** Quote response: deterministic premium breakdown (rate card mirror). */
