@@ -6,6 +6,7 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  Optional,
   ServiceUnavailableException
 } from '@nestjs/common';
 import type { LedgerJournalEntry, User } from '@agric-platform/shared';
@@ -64,6 +65,7 @@ import type {
 } from '../../database/repositories/vsla-carbon.repository.js';
 import { LedgerService, type PreparedLedgerPost } from '../finance/ledger.service.js';
 import { H3Service } from '../geo/h3.service.js';
+import { UsersService } from '../users/users.service.js';
 import {
   CARBON_COEFFICIENTS,
   CO2E_COEFFICIENT_VERSION,
@@ -304,7 +306,11 @@ export class VslaCarbonService {
     @Inject(CHAPTER_REPOSITORY) private readonly chapters?: ChapterRepository,
     // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
     @Inject(VSLA_MEETING_REPOSITORY) private readonly meetings?: VslaMeetingRepository,
-    @Inject(VSLA_CASH_COUNT_REPOSITORY) private readonly cashCounts?: VslaCashCountRepository
+    @Inject(VSLA_CASH_COUNT_REPOSITORY) private readonly cashCounts?: VslaCashCountRepository,
+    // OB-14: verification lookup for leadership grants. Optional so bare
+    // unit-test constructions keep working; the global UsersModule always
+    // wires it at runtime. Leadership grants FAIL CLOSED without it.
+    @Optional() private readonly users?: UsersService
   ) {}
 
   // --------------------------------------------------------------- groups
@@ -318,6 +324,9 @@ export class VslaCarbonService {
       // Chapter-linked group: the chapter must exist (chapters model).
       await this.chapters.getById(input.chapterId);
     }
+    // OB-14: the lead takes group-fund signing authority — verify BEFORE any
+    // write so a rejected lead leaves no half-created group behind.
+    await this.assertLeadershipEligible(input.leadUserId ?? actor.id, 'lead');
     const id = newId('vsla');
     const now = new Date().toISOString();
     // Ledger sub-accounts up-front so every later posting finds them.
@@ -403,6 +412,30 @@ export class VslaCarbonService {
     return this.assertGroupReader(actor, id);
   }
 
+  /**
+   * OB-14: VSLA leadership (any non-'member' role, e.g. 'lead') requires a
+   * verified identity — OTP-verified or KYC tier ≥ 1. An unverified tier_0
+   * account may join as a plain member but may not hold signing/attestation
+   * authority over group funds. Fails closed when the user directory is not
+   * wired.
+   */
+  private async assertLeadershipEligible(userId: string, role: VslaMemberRole): Promise<void> {
+    if (role === 'member') {
+      return;
+    }
+    if (!this.users) {
+      throw new ServiceUnavailableException(
+        'User directory is not wired — VSLA leadership grants fail closed'
+      );
+    }
+    const user = await this.users.getById(userId);
+    if (!user.isVerified && user.kycTier === 'tier_0') {
+      throw new ForbiddenException(
+        `VSLA leadership role '${role}' requires a verified account (OTP-verified or KYC tier ≥ 1)`
+      );
+    }
+  }
+
   async addMember(actor: User, groupId: string, input: AddMemberInput): Promise<VslaMemberRecord> {
     const group = await this.getGroup(groupId);
     requireGroupAdmin(actor, group);
@@ -410,6 +443,7 @@ export class VslaCarbonService {
     if (existing) {
       return existing; // idempotent re-join
     }
+    await this.assertLeadershipEligible(input.userId, input.role ?? 'member');
     await this.ledger.ensureAccount({
       code: memberSavingsAccountCode(groupId, input.userId),
       type: 'liability',
