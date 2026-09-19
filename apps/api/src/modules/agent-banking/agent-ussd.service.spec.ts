@@ -23,14 +23,15 @@ import { StubOtpDriver } from './otp.driver.js';
 
 async function makeChannel(env: NodeJS.ProcessEnv = {} as NodeJS.ProcessEnv) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const ledgerAccounts = createInMemoryLedgerAccountRepository();
   const ledger = new LedgerService(
     events,
-    createInMemoryLedgerAccountRepository(),
+    ledgerAccounts,
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
   const banking = new AgentBankingService(
-    createInMemoryAgentBankingAgentRepository(),
+    createInMemoryAgentBankingAgentRepository(ledgerAccounts),
     createInMemoryAgentFloatTopUpRepository(),
     createInMemoryAgentVoucherRepository(),
     createInMemoryAgentTransactionRepository(),
