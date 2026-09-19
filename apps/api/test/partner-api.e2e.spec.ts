@@ -293,9 +293,25 @@ describe('Partner API (e2e)', () => {
   });
 
   it('issues a developer API key via the portal flow and accepts it as x-api-key', async () => {
-    const issued = await fetch(`${base}/partner/developer-keys`, {
+    // OB-08: key issuance is admin/partner-only — a farmer member is 403…
+    const asFarmer = await fetch(`${base}/partner/developer-keys`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user-adamu' },
+      body: JSON.stringify({ scopes: ['impact:read'] })
+    });
+    expect(asFarmer.status).toBe(403);
+    // …unknown scope strings are a 400 (whitelisted against the scopes the
+    // partner routes actually consume)…
+    const unknownScope = await fetch(`${base}/partner/developer-keys`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-admin' },
+      body: JSON.stringify({ scopes: ['impact:read', 'admin:everything'] })
+    });
+    expect(unknownScope.status).toBe(400);
+    // …and an admin can issue a key for a real scope.
+    const issued = await fetch(`${base}/partner/developer-keys`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user-admin' },
       body: JSON.stringify({ scopes: ['impact:read'] })
     });
     expect(issued.status).toBe(201);
