@@ -6,11 +6,13 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException
 } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { PIN_PROFILE_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { PinProfile, PinProfileRepository } from '../../database/repositories/pin-profile.repository.js';
+import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService } from './auth.service.js';
@@ -65,7 +67,12 @@ export class PinSessionService {
     @Inject(PIN_PROFILE_REPOSITORY) private readonly profiles: PinProfileRepository,
     private readonly users: UsersService,
     private readonly auth: AuthService,
-    private readonly events: DomainEventsService
+    private readonly events: DomainEventsService,
+    /**
+     * Tamper-evident audit trail (OB-03). Optional so bare unit-test
+     * constructions keep working; the deployed app always wires it.
+     */
+    @Optional() private readonly audit?: AuditService
   ) {}
 
   /** Salted PIN hash — the raw PIN never leaves the request. */
@@ -77,6 +84,15 @@ export class PinSessionService {
   async addProfile(userId: string, deviceToken: string, pin: string): Promise<PinProfileView> {
     if (!PIN_PATTERN.test(pin)) {
       throw new BadRequestException('PIN must be exactly 4 digits');
+    }
+    // OB-16: the listing path rejects short, guessable device tokens
+    // (PIN_MIN_DEVICE_TOKEN_LENGTH); enrollment must enforce the SAME floor,
+    // otherwise a profile could be pinned on a token the listing path then
+    // refuses — and weak tokens stay enumerable through the swap path.
+    if (deviceToken.length < PIN_MIN_DEVICE_TOKEN_LENGTH) {
+      throw new BadRequestException(
+        `deviceToken must be at least ${PIN_MIN_DEVICE_TOKEN_LENGTH} characters (high-entropy device identity)`
+      );
     }
     // Confirms the account exists before linking it to a device.
     await this.users.getById(userId);
@@ -178,6 +194,16 @@ export class PinSessionService {
     // Credential threading: the PIN survived the salted-hash check, so it is
     // the verified second factor. It is threaded into token issuance — never
     // logged, never persisted (only its salted hash is stored above).
-    return this.auth.issueSessionFor(userId, undefined, pin);
+    const session = await this.auth.issueSessionFor(userId, undefined, pin);
+    // OB-03: successful PIN logins hit the tamper-evident audit log. The raw
+    // PIN is never part of the record.
+    await this.audit?.record({
+      actorId: userId,
+      action: 'pin.login',
+      entityType: 'pin_profile',
+      entityId: `${deviceToken}:${userId}`,
+      metadata: { deviceToken }
+    });
+    return session;
   }
 }

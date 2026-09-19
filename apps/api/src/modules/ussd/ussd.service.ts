@@ -4,14 +4,17 @@ import {
   Injectable,
   Logger,
   Optional,
+  ServiceUnavailableException,
   UnauthorizedException
 } from '@nestjs/common';
 import { missingAtCallbackConfig } from '../../common/auth/at-callback.utils.js';
 import { isProduction } from '../../common/auth/auth.config.js';
 import {
   COMMODITY_PRICE_REPOSITORY,
+  KEY_VALUE_STORE,
   USSD_SESSION_REPOSITORY
 } from '../../database/persistence.tokens.js';
+import type { KeyValueStore } from '../../redis/key-value-store.js';
 import type { CommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
 import type {
   UssdSessionRecord,
@@ -98,8 +101,6 @@ export class UssdService {
   private readonly logger = new Logger(UssdService.name);
   private timer?: NodeJS.Timeout;
   readonly driverConfig: UssdDriverConfig;
-  /** Per-phone registration-effect timestamps (V-19 rate limit window). */
-  private readonly registrationAttempts = new Map<string, number[]>();
 
   constructor(
     private readonly users: UsersService,
@@ -116,7 +117,11 @@ export class UssdService {
     // service constructions in pre-existing unit tests keep working; when
     // unwired the menu answers "unavailable" honestly.
     @Optional() private readonly priceWire?: PriceWireService,
-    @Optional() private readonly flags?: FeatureFlagsService
+    @Optional() private readonly flags?: FeatureFlagsService,
+    // OB-09: shared counter store for the registration rate limit — Redis in
+    // production (RedisModule is @Global, so this is always wired in the
+    // app), in-memory only in bare unit-test constructions.
+    @Optional() @Inject(KEY_VALUE_STORE) private readonly kv?: KeyValueStore
   ) {
     this.driverConfig = resolveUssdDriver(env);
     // Fail closed at boot in production: a live/sandbox USSD driver without
@@ -241,15 +246,21 @@ export class UssdService {
   ): Promise<string> {
     try {
       if (effect.type === 'register') {
-        if (this.registrationRateLimited(phone)) {
+        if (await this.registrationRateLimited(phone)) {
           return 'END Too many registration attempts for this number. Please try again later.';
         }
-        await this.users.create({
+        const created = await this.users.create({
           phone,
           fullName: effect.fullName,
           roles: [effect.role],
           preferredLanguage: 'en'
         });
+        // OB-01c: USSD registration arrives over the telco channel — the
+        // Africa's Talking callback only fires for the MSISDN holding the
+        // line, so line possession IS the verification proof. Mark the
+        // account verified at creation (web/API registration stays
+        // unverified until OTP proof instead).
+        await this.users.setVerified(created.id, true);
         return successResponse;
       }
       const user = await this.users.findByPhone(phone);
@@ -270,25 +281,45 @@ export class UssdService {
   }
 
   /**
-   * Per-phone registration-effect rate limit (V-19), production profile
-   * only — non-production behavior is unchanged. Returns true when the phone
-   * has exhausted its registration window.
+   * Per-phone registration-effect rate limit (V-19, OB-09), production
+   * profile only — non-production behavior is unchanged. Returns true when
+   * the phone has exhausted its registration window.
+   *
+   * The counter lives in the shared KeyValueStore (Redis in production), so
+   * the cap holds across API replicas; the window is anchored at the first
+   * attempt (TTL applied only when the counter is created). DEGRADED MODE
+   * follows the platform's store-of-record pattern (V-77, cf.
+   * redis/otp-challenge.store.ts): this limiter is an anti-probing security
+   * control, not a cache, so a backing-store outage FAILS CLOSED — the
+   * registration effect is refused with a retryable "service unavailable"
+   * response rather than letting unbounded registrations slip through.
    */
-  private registrationRateLimited(phone: string): boolean {
+  private async registrationRateLimited(phone: string): Promise<boolean> {
     if (!isProduction()) {
       return false;
     }
-    const now = Date.now();
-    const attempts = (this.registrationAttempts.get(phone) ?? []).filter(
-      (at) => now - at < USSD_REGISTER_WINDOW_MS
-    );
-    if (attempts.length >= USSD_REGISTER_MAX_PER_WINDOW) {
-      this.registrationAttempts.set(phone, attempts);
-      return true;
+    if (!this.kv) {
+      // Unreachable in the app (RedisModule is @Global); bare constructions
+      // in production fail closed rather than silently skipping the cap.
+      this.logger.error('USSD registration rate limit has no counter store — failing closed');
+      throw new ServiceUnavailableException(
+        'USSD registration rate limit unavailable (no counter store)'
+      );
     }
-    attempts.push(now);
-    this.registrationAttempts.set(phone, attempts);
-    return false;
+    try {
+      const attempts = await this.kv.incr(
+        `ussd:register:${phone}`,
+        USSD_REGISTER_WINDOW_MS
+      );
+      return attempts > USSD_REGISTER_MAX_PER_WINDOW;
+    } catch (error) {
+      this.logger.error(
+        `USSD registration rate-limit counter failed (${error instanceof Error ? error.message : String(error)}) — failing closed`
+      );
+      throw new ServiceUnavailableException(
+        'USSD registration rate limit temporarily unavailable'
+      );
+    }
   }
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */

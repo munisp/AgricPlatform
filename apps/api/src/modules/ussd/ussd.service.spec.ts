@@ -4,6 +4,7 @@ import type { Course, Opportunity } from '@agric-platform/shared';
 import { createInMemoryCommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { createInMemoryUssdSessionRepository } from '../../database/repositories/ussd-session.repository.js';
+import { InMemoryKeyValueStore, type KeyValueStore } from '../../redis/key-value-store.js';
 import type { LearningService } from '../learning/learning.service.js';
 import type { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { UsersService } from '../users/users.service.js';
@@ -66,7 +67,13 @@ const COURSES: Course[] = [
   }
 ];
 
-function build(overrides: { enrol?: LearningService['enrol']; env?: NodeJS.ProcessEnv } = {}) {
+function build(
+  overrides: {
+    enrol?: LearningService['enrol'];
+    env?: NodeJS.ProcessEnv;
+    kv?: KeyValueStore;
+  } = {}
+) {
   const users = new UsersService(createInMemoryUserRepository());
   const opportunities = {
     all: async () => OPPORTUNITIES
@@ -83,7 +90,11 @@ function build(overrides: { enrol?: LearningService['enrol']; env?: NodeJS.Proce
     learning,
     sessions,
     prices,
-    overrides.env ?? ENABLED_ENV
+    overrides.env ?? ENABLED_ENV,
+    undefined,
+    undefined,
+    undefined,
+    overrides.kv ?? new InMemoryKeyValueStore()
   );
   return { service, users, sessions, learning };
 }
@@ -190,6 +201,9 @@ describe('UssdService.handleCallback', () => {
     expect(user?.roles).toEqual(['farmer']);
     expect(user?.kycTier).toBe('tier_0');
     expect(user?.preferredLanguage).toBe('en');
+    // OB-01c: USSD registration rides the telco channel — line possession is
+    // the verification proof, so the account is verified at creation.
+    expect(user?.isVerified).toBe(true);
   });
 
   it('is idempotent on sessionId + cumulative text (replays do not re-register)', async () => {
@@ -539,6 +553,81 @@ describe('UssdService registration rate limit (V-19, production profile)', () =>
     await service.handleCallback({ ...session, text: '' });
     const open = await service.handleCallback({ ...session, text: '1' });
     expect(open).toMatch(/^CON /);
+  });
+
+  it('shares the counter across limiter instances, simulating replicas (OB-09)', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      // One shared counter store, two service instances = two API replicas.
+      const kv = new InMemoryKeyValueStore();
+      const env = {
+        ...ENABLED_ENV,
+        AT_CALLBACK_TOKEN: 'prod-callback-token-with-32-chars-min'
+      } as unknown as NodeJS.ProcessEnv;
+      const replicaA = build({ env, kv }).service;
+      const replicaB = build({ env, kv }).service;
+      const phone = '+234842';
+      const runTraversal = async (service: UssdService, sessionId: string) => {
+        const session = { sessionId, phoneNumber: phone };
+        await service.handleCallback({ ...session, text: '' });
+        await service.handleCallback({ ...session, text: '1' });
+        await service.handleCallback({ ...session, text: '1*Test Name' });
+        await service.handleCallback({ ...session, text: '1*Test Name*Kano' });
+        return service.handleCallback({ ...session, text: '1*Test Name*Kano*1' });
+      };
+      // Alternate replicas: the budget is spent across BOTH instances, not
+      // per instance.
+      for (let i = 0; i < 5; i += 1) {
+        const replica = i % 2 === 0 ? replicaA : replicaB;
+        const result = await runTraversal(replica, `s-rep-${i}`);
+        expect(result).not.toContain('Too many registration attempts');
+      }
+      // The 6th attempt is refused even against the replica that saw fewer
+      // of this phone's attempts — per-replica memory would have allowed it.
+      const limitedA = await runTraversal(replicaA, 's-rep-6a');
+      const limitedB = await runTraversal(replicaB, 's-rep-6b');
+      for (const limited of [limitedA, limitedB]) {
+        expect(limited).toBe(
+          'END Too many registration attempts for this number. Please try again later.'
+        );
+      }
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
+  });
+
+  it('fails closed when the counter store is down (OB-09 degraded mode)', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      // A counter-store outage must not wave registrations through
+      // unthrottled (store-of-record pattern, V-77): the effect is refused
+      // with a retryable "service unavailable" instead.
+      const brokenKv = {
+        incr: async () => {
+          throw new Error('redis connection refused');
+        }
+      } as unknown as KeyValueStore;
+      const { service, users } = build({
+        env: {
+          ...ENABLED_ENV,
+          AT_CALLBACK_TOKEN: 'prod-callback-token-with-32-chars-min'
+        } as unknown as NodeJS.ProcessEnv,
+        kv: brokenKv
+      });
+      const session = { sessionId: 's-rl-degraded', phoneNumber: '+234843' };
+      await service.handleCallback({ ...session, text: '' });
+      await service.handleCallback({ ...session, text: '1' });
+      await service.handleCallback({ ...session, text: '1*Test Name' });
+      await service.handleCallback({ ...session, text: '1*Test Name*Kano' });
+      const result = await service.handleCallback({ ...session, text: '1*Test Name*Kano*1' });
+      expect(result).toBe('END Service unavailable. Please try again shortly.');
+      // Fail-closed means no registration happened at all.
+      expect(await users.findByPhone('+234843')).toBeUndefined();
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
   });
 });
 

@@ -9,8 +9,11 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { PinSessionService } from './pin-session.service.js';
 
 class AddPinProfileDto {
+  // OB-16: same device-token floor as the listing path
+  // (PIN_MIN_DEVICE_TOKEN_LENGTH = 16) — was 8, which let weak, guessable
+  // tokens enrol profiles the listing path then refused.
   @IsString()
-  @Length(8, 128)
+  @Length(16, 128)
   deviceToken!: string;
 
   @IsString()
@@ -19,8 +22,10 @@ class AddPinProfileDto {
 }
 
 class SwitchPinProfileDto {
+  // OB-16: enrollment enforces the 16-char floor, so no valid profile can
+  // exist under a shorter token; reject early for consistency.
   @IsString()
-  @Length(8, 128)
+  @Length(16, 128)
   deviceToken!: string;
 
   @IsString()

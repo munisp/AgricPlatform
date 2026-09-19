@@ -81,6 +81,22 @@ describe('PinSessionService', () => {
     expect(JSON.stringify(stored)).not.toContain('1234');
   });
 
+  it('OB-16: enrollment enforces the same device-token floor as listing (16 chars)', async () => {
+    const { service, users } = build();
+    const user = await makeUser(users, '+2349001', 'Parent One');
+    // Below PIN_MIN_DEVICE_TOKEN_LENGTH — the listing path answers 404 for
+    // such tokens; enrollment must refuse them too, on every path.
+    await expect(service.addProfile(user.id, 'short-tok', '1234')).rejects.toThrow(
+      /deviceToken must be at least 16 characters/
+    );
+    await expect(service.addProfile(user.id, 'a'.repeat(15), '1234')).rejects.toThrow(
+      /deviceToken must be at least 16 characters/
+    );
+    await expect(service.addProfile(user.id, 'a'.repeat(16), '1234')).resolves.toMatchObject({
+      profilesOnDevice: 1
+    });
+  });
+
   it('salts the hash per device and user', async () => {
     const { service } = build();
     expect(service.hashPin('device-1', 'user-1', '1234')).not.toBe(service.hashPin('device-2', 'user-1', '1234'));
