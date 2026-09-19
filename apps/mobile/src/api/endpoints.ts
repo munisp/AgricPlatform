@@ -15,6 +15,7 @@ import type {
   Order,
   OrderStatus,
   RegisterAnimalInput,
+  SelfRegistrationRole,
   User,
   VaccinationDueItem,
   WeatherSnapshot
@@ -54,6 +55,28 @@ export function verifyOtp(
 
 export function fetchSession(client: ApiClient): Promise<{ data: { user: User } }> {
   return client.apiFetch('/auth/session');
+}
+
+/** Registration input (POST /auth/register). Phone must be E.164. */
+export interface RegisterAccountInput {
+  phone: string;
+  fullName: string;
+  email?: string;
+  roles: SelfRegistrationRole[];
+  preferredLanguage: User['preferredLanguage'];
+}
+
+/**
+ * OB-01 contract: registration creates an UNVERIFIED account and returns
+ * the user plus an OTP challenge id — NO session tokens. The caller must
+ * complete verification via verifyOtp(otpRequestId, code) to obtain a
+ * session.
+ */
+export function registerAccount(
+  client: ApiClient,
+  input: RegisterAccountInput
+): Promise<{ data: { user: User; otpRequestId: string } }> {
+  return client.apiFetch('/auth/register', { method: 'POST', body: input });
 }
 
 /** Rotate a refresh token (the client also does this automatically on 401). */
