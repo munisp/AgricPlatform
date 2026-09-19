@@ -1,6 +1,17 @@
-import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  ValidateNested
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { LANGUAGE_CODES, USER_ROLES, type LanguageCode, type User, type UserRole } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -37,6 +48,63 @@ class UpdateUserDto {
   preferredLanguage?: LanguageCode;
 }
 
+/** OB-04: presence proof attestation for assisted-account onboarding. */
+class PresenceProofDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  method!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  ref!: string;
+}
+
+/**
+ * OB-04: assisted/shared-phone onboarding (V-44). The deep gates (presence,
+ * custodian active, XOR custodian kinds, agent role) live in
+ * UsersService.createAssisted — this DTO enforces shape only.
+ */
+class CreateAssistedDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  fullName!: string;
+
+  @IsIn(LANGUAGE_CODES)
+  preferredLanguage!: LanguageCode;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(USER_ROLES.length)
+  @IsIn(USER_ROLES, { each: true })
+  roles?: UserRole[];
+
+  @IsOptional()
+  @Matches(/^\+[1-9][0-9]{7,14}$/, { message: 'contactPhone must be in E.164 format' })
+  contactPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  guardianUserId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  custodianAgentId?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  relationship!: string;
+
+  @ValidateNested()
+  @Type(() => PresenceProofDto)
+  presenceProof!: PresenceProofDto;
+}
+
 /**
  * User directory endpoints. User records are personal data: listing is
  * admin-only, and per-user reads/updates require the owning user or an
@@ -56,6 +124,30 @@ export class UsersController {
   @ApiOperation({ summary: 'List users with role/search filters (admin only)' })
   list(@Query() query: ListUsersQuery) {
     return this.users.list(query);
+  }
+
+  /**
+   * OB-04: assisted/shared-phone onboarding (V-44). Field agents and admins
+   * onboard phoneless/shared-SIM dependents; the service enforces presence
+   * (actor must be the guardian/custodian or an admin), an active custodian
+   * account and a presence proof, and commits user row + guardian link
+   * atomically.
+   */
+  @Post('assisted')
+  @Roles('agent', 'admin')
+  @ApiOperation({
+    summary: 'Onboard an assisted (phoneless/shared-SIM) account via a guardian or custodian agent'
+  })
+  async createAssisted(@Body() dto: CreateAssistedDto, @CurrentUser() actor: User | null) {
+    const result = await this.users.createAssisted(dto, actor);
+    await this.audit.record({
+      actorId: actor?.id ?? 'unknown',
+      action: 'user.assisted_created',
+      entityType: 'user',
+      entityId: result.user.id,
+      metadata: { linkId: result.link.id, kind: result.link.kind }
+    });
+    return { data: result };
   }
 
   @Get(':id')

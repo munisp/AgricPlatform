@@ -1,13 +1,26 @@
 import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import { createInMemoryGuardianLinkRepository } from '../../database/repositories/guardian-link.repository.js';
+import {
+  createInMemoryGuardianLinkRepository,
+  InMemoryGuardianLinkRepository,
+  type GuardianLink
+} from '../../database/repositories/guardian-link.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { UsersService } from './users.service.js';
 
 function build() {
   const links = createInMemoryGuardianLinkRepository();
-  const users = new UsersService(createInMemoryUserRepository(), links);
+  // OB-04: the user repo holds the link store so the user-row + link write
+  // is one atomic unit (compensated in-memory, single transaction on pg).
+  const users = new UsersService(createInMemoryUserRepository(links), links);
   return { users, links };
+}
+
+/** Link store whose create always fails — exercises OB-04 atomicity. */
+class FailingGuardianLinkRepository extends InMemoryGuardianLinkRepository {
+  override async create(): Promise<GuardianLink> {
+    throw new Error('guardian_links write failed');
+  }
 }
 
 describe('UsersService assisted accounts (V-44)', () => {
@@ -160,6 +173,35 @@ describe('UsersService assisted accounts (V-44)', () => {
         guardian
       )
     ).rejects.toThrowError(/Exactly one/);
+  });
+
+  it('OB-04 atomicity: a failing link write leaves NO user row behind', async () => {
+    const links = new FailingGuardianLinkRepository();
+    const users = new UsersService(createInMemoryUserRepository(links), links);
+    const head = await users.create({
+      phone: '+2348077777777',
+      fullName: 'Household Head',
+      roles: ['farmer'],
+      preferredLanguage: 'en'
+    });
+    try {
+      await users.createAssisted(
+        {
+          fullName: 'Dependent',
+          preferredLanguage: 'en',
+          guardianUserId: head.id,
+          relationship: 'child',
+          presenceProof: { method: 'in_person_attestation', ref: 'att-x' }
+        },
+        head
+      );
+      expect.unreachable('link write must fail');
+    } catch (error) {
+      expect((error as Error).message).toMatch(/guardian_links write failed/);
+    }
+    // No orphaned assisted identity: the only users are the seeds + head.
+    const remaining = (await users.list({ page: 1, pageSize: 100 })).data;
+    expect(remaining.filter((u) => u.phone.startsWith('assisted:'))).toEqual([]);
   });
 
   it('self-service phone uniqueness is unchanged (regression)', async () => {

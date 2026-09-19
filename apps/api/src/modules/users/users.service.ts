@@ -120,6 +120,18 @@ export class UsersService {
   }
 
   /**
+   * OB-05: adds a role without disturbing the existing ones; a no-op when
+   * the user already holds it (safe for idempotent activation replays).
+   */
+  async grantRole(id: string, role: UserRole): Promise<User> {
+    const user = await this.repo.getById(id);
+    if (user.roles.includes(role)) {
+      return user;
+    }
+    return this.repo.update(id, { roles: [...user.roles, role] });
+  }
+
+  /**
    * Assisted/shared-phone onboarding (V-44). Fail closed on every gate:
    * repository wired, caller authenticated AND being the guardian/agent
    * themselves (presence), guardian/agent account active, presence proof
@@ -189,10 +201,12 @@ export class UsersService {
       isVerified: false,
       createdAt: new Date().toISOString()
     };
-    const created = await this.repo.create(user);
-    const link = await this.guardianLinks.create({
+    // OB-04: the user row and the guardian/custody link commit atomically
+    // (single transaction on the pg driver; compensated in-memory) — a
+    // link-write failure must not leave an orphaned assisted identity.
+    return this.repo.createWithGuardianLink(user, {
       id: newId('guardianlink'),
-      dependentUserId: created.id,
+      dependentUserId: id,
       guardianUserId: hasGuardian ? custodianId : undefined,
       custodianAgentId: hasAgent ? custodianId : undefined,
       kind: hasGuardian ? 'guardian' : 'agent_custody',
@@ -205,7 +219,6 @@ export class UsersService {
       },
       createdAt: new Date().toISOString()
     });
-    return { user: created, link };
   }
 
   /** Guardian/custody links for a dependent (V-44). */

@@ -7,7 +7,8 @@ import {
   mapPgError,
   type WhereClause
 } from '../pg/pg-repository.base.js';
-import { userMapper } from '../pg/row-mappers.js';
+import { guardianLinkMapper, userMapper } from '../pg/row-mappers.js';
+import type { GuardianLink } from './guardian-link.repository.js';
 import type { AccountStatus, UserCriteria, UserRepository } from './user.repository.js';
 
 const USER_SELECT = `
@@ -69,23 +70,28 @@ export class PgUserRepository implements UserRepository {
     return user;
   }
 
+  /** identity.users row + role rows on an open transaction client. */
+  private async insertUser(client: pg.PoolClient, item: User): Promise<void> {
+    const row = userMapper.toRow(item);
+    const columns = Object.keys(row);
+    await client.query(
+      `INSERT INTO identity.users (${columns.join(', ')})
+       VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
+      columns.map((column) => row[column])
+    );
+    for (const role of item.roles) {
+      await client.query('INSERT INTO identity.user_roles (user_id, role_code) VALUES ($1, $2)', [
+        item.id,
+        role
+      ]);
+    }
+  }
+
   async create(item: User): Promise<User> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const row = userMapper.toRow(item);
-      const columns = Object.keys(row);
-      await client.query(
-        `INSERT INTO identity.users (${columns.join(', ')})
-         VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`,
-        columns.map((column) => row[column])
-      );
-      for (const role of item.roles) {
-        await client.query(
-          'INSERT INTO identity.user_roles (user_id, role_code) VALUES ($1, $2)',
-          [item.id, role]
-        );
-      }
+      await this.insertUser(client, item);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -94,6 +100,36 @@ export class PgUserRepository implements UserRepository {
       client.release();
     }
     return item;
+  }
+
+  /**
+   * OB-04: assisted-account onboarding — identity.users (+ user_roles) and
+   * identity.guardian_links commit in ONE transaction, so a link-write
+   * failure rolls the user row back (no orphaned assisted identity).
+   */
+  async createWithGuardianLink(
+    user: User,
+    link: GuardianLink
+  ): Promise<{ user: User; link: GuardianLink }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.insertUser(client, user);
+      const linkRow = guardianLinkMapper.toRow(link);
+      const linkColumns = Object.keys(linkRow);
+      await client.query(
+        `INSERT INTO identity.guardian_links (${linkColumns.join(', ')})
+         VALUES (${linkColumns.map((_, i) => `$${i + 1}`).join(', ')})`,
+        linkColumns.map((column) => linkRow[column])
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      mapPgError(error);
+    } finally {
+      client.release();
+    }
+    return { user, link };
   }
 
   async update(id: string, patch: Partial<User>): Promise<User> {

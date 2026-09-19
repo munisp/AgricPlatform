@@ -1,5 +1,20 @@
-import { Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
-import type { ApiListResponse, AuditAnchor, PlatformMetric, User, UserRole } from '@agric-platform/shared';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException
+} from '@nestjs/common';
+import {
+  SELF_REGISTRATION_ROLES,
+  type ApiListResponse,
+  type AuditAnchor,
+  type LanguageCode,
+  type PlatformMetric,
+  type User,
+  type UserRole
+} from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
 import { AuditAnchorService } from '../../core/audit-anchor.service.js';
 import { AuditService, type AuditVerification } from '../../core/audit.service.js';
@@ -38,6 +53,8 @@ import {
   type VoucherStuckSweepResult
 } from '../sweepers/voucher-stuck-sweeper.service.js';
 import { UsersService } from '../users/users.service.js';
+import { PartnerAuthService } from '../partner-api/partner-auth.service.js';
+import type { PartnerClient } from '../../database/repositories/partner-api.repository.js';
 
 export type { AccountStatus };
 
@@ -82,7 +99,11 @@ export class AdminService {
     // constructions keep working; AdminModule imports SweepersModule at
     // runtime.
     @Optional() private readonly escrowExpirySweeper?: EscrowExpirySweeperService,
-    @Optional() private readonly voucherStuckSweeper?: VoucherStuckSweeperService
+    @Optional() private readonly voucherStuckSweeper?: VoucherStuckSweeperService,
+    // OB-17b: partner-organisation client provisioning. Optional so bare
+    // unit-test constructions keep working; AdminModule imports
+    // PartnerApiModule at runtime.
+    @Optional() private readonly partnerAuth?: PartnerAuthService
   ) {}
 
   /**
@@ -104,7 +125,29 @@ export class AdminService {
     return { data, total: result.total, page: result.page, pageSize: result.pageSize };
   }
 
+  /**
+   * OB-07: privileged roles (anything outside SELF_REGISTRATION_ROLES) may
+   * only be granted to a target that is BOTH active and OTP-verified — a
+   * privileged grant to an unverified or suspended/deceased account would
+   * hand operational authority to an identity nobody has confirmed. Plain
+   * self-registration roles may be granted to any active account.
+   */
   async setRoles(userId: string, roles: UserRole[], actorId: string): Promise<AdminUserView> {
+    const target = await this.users.getById(userId);
+    const status = await this.users.statusFor(userId);
+    const grantsPrivileged = roles.some(
+      (role) => !(SELF_REGISTRATION_ROLES as readonly UserRole[]).includes(role)
+    );
+    if (status !== 'active') {
+      throw new BadRequestException(
+        `Roles cannot be granted to a ${status} account; reactivate the account first`
+      );
+    }
+    if (grantsPrivileged && !target.isVerified) {
+      throw new BadRequestException(
+        'Privileged roles require an OTP-verified account; the user must complete phone verification first'
+      );
+    }
     const user = await this.users.setRoles(userId, roles);
     await this.audit.record({
       actorId,
@@ -115,6 +158,62 @@ export class AdminService {
     });
     await this.domainEvents.publish('identity.user.roles_updated', { userId, roles }, actorId);
     return { user, accountStatus: await this.users.statusFor(userId) };
+  }
+
+  /**
+   * OB-17a: admin-provisioned account. Created UNVERIFIED (isVerified=false,
+   * kycTier tier_0) exactly like self-service registration — the user must
+   * complete OTP verification on first login before privileged roles take
+   * effect (OB-07 gates privileged grants on verification). Audited.
+   */
+  async createUser(
+    input: {
+      phone: string;
+      fullName: string;
+      roles: UserRole[];
+      preferredLanguage: LanguageCode;
+      email?: string;
+    },
+    actorId: string
+  ): Promise<AdminUserView> {
+    const user = await this.users.create(input);
+    await this.audit.record({
+      actorId,
+      action: 'admin.user.created',
+      entityType: 'user',
+      entityId: user.id,
+      metadata: { roles: user.roles, phone: user.phone }
+    });
+    await this.domainEvents.publish(
+      'identity.user.created',
+      { userId: user.id, roles: user.roles, provisionedBy: 'admin' },
+      actorId
+    );
+    return { user, accountStatus: await this.users.statusFor(user.id) };
+  }
+
+  /**
+   * OB-17b: partner-organisation provisioning — registers a partner API
+   * client bound to ONE partner organisation slug (the `partners` tenant
+   * entity, migration 010/051). Returns the plaintext client secret exactly
+   * once; only the hash is persisted. Audited (secret never logged).
+   */
+  async registerPartnerClient(
+    input: { name: string; scopes: string[]; partnerId: string; rateLimitPerMin?: number },
+    actorId: string
+  ): Promise<{ client: PartnerClient; clientSecret: string }> {
+    if (!this.partnerAuth) {
+      throw new ServiceUnavailableException('Partner client provisioning is not wired');
+    }
+    const issued = await this.partnerAuth.registerClient(input);
+    await this.audit.record({
+      actorId,
+      action: 'admin.partner_client.registered',
+      entityType: 'partner_client',
+      entityId: issued.client.id,
+      metadata: { clientId: issued.client.clientId, partnerId: issued.client.partnerId }
+    });
+    return issued;
   }
 
   /**

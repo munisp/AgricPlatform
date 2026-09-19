@@ -1,7 +1,9 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import type { ApiListResponse, User, UserRole } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { ilike, InMemoryRepository } from '../../common/in-memory.repository.js';
 import { seedUsers } from '../seed-data.js';
+import type { GuardianLink, GuardianLinkRepository } from './guardian-link.repository.js';
 
 /**
  * Admin-managed account overlay; backed by identity.users.status in pg.
@@ -26,6 +28,14 @@ export interface UserRepository extends AsyncRepository<User, UserCriteria> {
   findByPhone(phone: string): Promise<User | undefined>;
   setStatus(userId: string, status: AccountStatus): Promise<void>;
   statusFor(userId: string): Promise<AccountStatus>;
+  /**
+   * OB-04: assisted-account onboarding — the user row (+ role rows) and the
+   * guardian/custody link as ONE atomic unit. On the pg driver both writes
+   * share a single transaction, so a link-write failure rolls the user row
+   * back; the in-memory implementation compensates (removes the user row) on
+   * link failure. Fails closed when the guardian-link store is not wired.
+   */
+  createWithGuardianLink(user: User, link: GuardianLink): Promise<{ user: User; link: GuardianLink }>;
 }
 
 export function userMatcher(criteria: UserCriteria): (user: User) => boolean {
@@ -40,7 +50,10 @@ export class InMemoryUserRepository
 {
   private readonly statuses = new Map<string, AccountStatus>();
 
-  constructor(seed: readonly User[] = []) {
+  constructor(
+    seed: readonly User[] = [],
+    private readonly guardianLinks?: GuardianLinkRepository
+  ) {
     super(seed, userMatcher);
   }
 
@@ -60,8 +73,35 @@ export class InMemoryUserRepository
   async statusFor(userId: string): Promise<AccountStatus> {
     return this.statuses.get(userId) ?? 'active';
   }
+
+  /**
+   * In-memory counterpart of the pg single-transaction write: the link store
+   * must be wired (fail closed otherwise) and a link-write failure compensates
+   * by removing the just-created user row, so no orphaned assisted identity
+   * persists.
+   */
+  async createWithGuardianLink(
+    user: User,
+    link: GuardianLink
+  ): Promise<{ user: User; link: GuardianLink }> {
+    if (!this.guardianLinks) {
+      throw new ServiceUnavailableException(
+        'Assisted-account onboarding is unavailable: guardian-link store not wired'
+      );
+    }
+    const created = await this.create(user);
+    try {
+      const createdLink = await this.guardianLinks.create(link);
+      return { user: created, link: createdLink };
+    } catch (error) {
+      await this.remove(user.id);
+      throw error;
+    }
+  }
 }
 
-export function createInMemoryUserRepository(): InMemoryUserRepository {
-  return new InMemoryUserRepository(seedUsers);
+export function createInMemoryUserRepository(
+  guardianLinks?: GuardianLinkRepository
+): InMemoryUserRepository {
+  return new InMemoryUserRepository(seedUsers, guardianLinks);
 }
