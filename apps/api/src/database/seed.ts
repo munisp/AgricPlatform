@@ -6,6 +6,8 @@
  *
  * Usage: DATABASE_URL=postgres://… npm run seed -w @agric-platform/api
  */
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import {
   seedAdvisory,
@@ -14,6 +16,7 @@ import {
   seedListings,
   seedOpportunities
 } from '@agric-platform/shared';
+import { isProduction } from '../common/auth/auth.config.js';
 import {
   seedAnnouncements,
   seedApplications,
@@ -77,7 +80,24 @@ async function upsertAll<T>(
   console.log(`seed: ${table} — ${items.length} row(s) ensured`);
 }
 
+/**
+ * OB-13 production guard: the seed set is DEMO data (test users, demo
+ * listings, a counter baseline). Running it against production would insert
+ * fabricated identities and records into live schemas, so the CLI refuses
+ * whenever the shared isProduction() helper says so — same fail-closed
+ * helper every other production guard routes through (casing/whitespace
+ * variants of NODE_ENV are normalised there).
+ */
+export function assertSeedEnvironment(env: NodeJS.ProcessEnv = process.env): void {
+  if (isProduction(env)) {
+    throw new Error(
+      'refusing to seed: NODE_ENV=production detected. The demo seed data is for development/staging only and must never run against a production database.'
+    );
+  }
+}
+
 async function main(): Promise<void> {
+  assertSeedEnvironment();
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is required to seed');
@@ -138,7 +158,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(`seed: FAILED — ${error instanceof Error ? error.message : error}`);
-  process.exit(1);
-});
+// Same direct-run gate as migrate.ts: importing this module (specs, other
+// tooling) must not launch a database seed as a side effect.
+const invokedDirectly =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(`seed: FAILED — ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  });
+}
