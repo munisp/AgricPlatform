@@ -1,4 +1,6 @@
 import { ConflictException } from '@nestjs/common';
+import type { LedgerAccount } from '@agric-platform/shared';
+import type { InMemoryLedgerAccountRepository } from './ledger.repository.js';
 
 /**
  * Agent-banking persistence ports (wave AGENTBANK). Rows map to the
@@ -230,6 +232,14 @@ export interface AgentTransactionCriteria {
 
 export interface AgentBankingAgentRepository {
   create(record: AgentRecord): Promise<AgentRecord>;
+  /**
+   * OB-12: agent registration + float/commission ledger-account provisioning
+   * as ONE atomic unit. On the pg driver all three writes share a single
+   * transaction (accounts use ensure semantics: INSERT ... ON CONFLICT (code)
+   * DO NOTHING), so a failed agents insert rolls the accounts back. The
+   * in-memory implementation compensates by removing accounts it created.
+   */
+  createWithLedgerAccounts(record: AgentRecord, accounts: LedgerAccount[]): Promise<AgentRecord>;
   findById(id: string): Promise<AgentRecord | undefined>;
   findByUserId(userId: string): Promise<AgentRecord | undefined>;
   find(criteria: AgentCriteria): Promise<AgentRecord[]>;
@@ -278,6 +288,13 @@ export interface AgentTransactionRepository {
 export class InMemoryAgentBankingAgentRepository implements AgentBankingAgentRepository {
   private readonly items = new Map<string, AgentRecord>();
 
+  /**
+   * @param ledgerAccounts OB-12: shared ledger-account store for the atomic
+   *   register-with-accounts write. When omitted the accounts are not
+   *   provisioned (bare unit-test constructions keep working).
+   */
+  constructor(private readonly ledgerAccounts?: InMemoryLedgerAccountRepository) {}
+
   async create(record: AgentRecord): Promise<AgentRecord> {
     for (const existing of this.items.values()) {
       if (existing.userId === record.userId) {
@@ -286,6 +303,30 @@ export class InMemoryAgentBankingAgentRepository implements AgentBankingAgentRep
     }
     this.items.set(record.id, structuredClone(record));
     return structuredClone(record);
+  }
+
+  /**
+   * In-memory counterpart of the pg single-transaction write (OB-12):
+   * provisions only accounts that do not exist yet (ensure semantics); when
+   * the agent insert fails, the accounts THIS call created are removed so no
+   * orphaned ledger accounts persist.
+   */
+  async createWithLedgerAccounts(record: AgentRecord, accounts: LedgerAccount[]): Promise<AgentRecord> {
+    const createdAccounts: string[] = [];
+    try {
+      for (const account of accounts) {
+        if (this.ledgerAccounts && !(await this.ledgerAccounts.findByCode(account.code))) {
+          await this.ledgerAccounts.create(account);
+          createdAccounts.push(account.code);
+        }
+      }
+      return await this.create(record);
+    } catch (error) {
+      for (const code of createdAccounts) {
+        await this.ledgerAccounts?.remove(code);
+      }
+      throw error;
+    }
   }
 
   async findById(id: string): Promise<AgentRecord | undefined> {
@@ -594,8 +635,10 @@ export function createInMemoryAgentReversalRepository(): InMemoryAgentReversalRe
   return new InMemoryAgentReversalRepository();
 }
 
-export function createInMemoryAgentBankingAgentRepository(): InMemoryAgentBankingAgentRepository {
-  return new InMemoryAgentBankingAgentRepository();
+export function createInMemoryAgentBankingAgentRepository(
+  ledgerAccounts?: InMemoryLedgerAccountRepository
+): InMemoryAgentBankingAgentRepository {
+  return new InMemoryAgentBankingAgentRepository(ledgerAccounts);
 }
 
 export function createInMemoryAgentFloatTopUpRepository(): InMemoryAgentFloatTopUpRepository {
