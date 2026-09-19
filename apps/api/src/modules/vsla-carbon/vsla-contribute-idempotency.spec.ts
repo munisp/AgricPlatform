@@ -22,6 +22,8 @@ import {
 } from '../../database/repositories/vsla-carbon.repository.js';
 import { LedgerService } from '../finance/ledger.service.js';
 import { H3Service } from '../geo/h3.service.js';
+import { InMemoryUserRepository } from '../../database/repositories/user.repository.js';
+import { UsersService } from '../users/users.service.js';
 import type { NdviProvider } from './ndvi.provider.js';
 import {
   groupCashAccountCode,
@@ -86,7 +88,24 @@ function makeService() {
     new H3Service(),
     events,
     stubNdvi,
-    chaptersStub as never
+    chaptersStub as never,
+    undefined,
+    undefined,
+    // OB-14: leadership grants consult the user directory; fixture actors are
+    // OTP-verified accounts here.
+    new UsersService(
+      new InMemoryUserRepository(
+        [lead, farmer, admin].map((actor, index) => ({
+          ...actor,
+          phone: `+2348000000${String(index + 10)}`,
+          fullName: actor.id,
+          preferredLanguage: 'en',
+          kycTier: 'tier_0',
+          isVerified: true,
+          createdAt: '2026-01-01T00:00:00.000Z'
+        }))
+      )
+    )
   );
   return { service, ledger, contributions };
 }
