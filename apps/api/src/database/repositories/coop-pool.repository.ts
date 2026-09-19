@@ -70,8 +70,6 @@ export interface CoopPoolRepository extends AsyncRepository<PoolListing, PoolCri
    * exists for the pool. Returns true when this call holds the claim.
    */
   claimSplitMarker(marker: PoolSplitMarker): Promise<boolean>;
-  /** Releases an uncommitted claim after a failed posting (in-memory path). */
-  releaseSplitMarker(poolId: string): Promise<void>;
 
   /**
    * PostgreSQL-only single-transaction settlement. Returns 'applied' when
@@ -154,10 +152,6 @@ export class InMemoryCoopPoolRepository
     }
     this.splitMarkers.set(marker.poolId, structuredClone(marker));
     return true;
-  }
-
-  async releaseSplitMarker(poolId: string): Promise<void> {
-    this.splitMarkers.delete(poolId);
   }
 }
 
