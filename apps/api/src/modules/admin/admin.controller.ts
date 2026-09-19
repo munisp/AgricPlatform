@@ -11,13 +11,28 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { ArrayNotEmpty, ArrayMaxSize, IsBoolean, IsIn, IsOptional } from 'class-validator';
-import { USER_ROLES, type UserRole } from '@agric-platform/shared';
+import {
+  ArrayNotEmpty,
+  ArrayMaxSize,
+  ArrayUnique,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  MaxLength,
+  Min
+} from 'class-validator';
+import { LANGUAGE_CODES, USER_ROLES, type LanguageCode, type UserRole } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import type { User } from '@agric-platform/shared';
+import { E164_PATTERN } from '../auth/auth.controller.js';
 import { AdminService, type AccountStatus } from './admin.service.js';
 
 class UpdateRolesDto {
@@ -44,6 +59,60 @@ class UpdateVerificationDto {
   isVerified!: boolean;
 }
 
+/**
+ * OB-17a: admin-provisioned account. The account is created UNVERIFIED and
+ * must complete OTP verification on first login (same flow as self-service
+ * registration, OB-01).
+ */
+class AdminCreateUserDto {
+  @Matches(E164_PATTERN, { message: 'phone must be in E.164 format (e.g. +2348012345678)' })
+  phone!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  fullName!: string;
+
+  @ArrayNotEmpty()
+  @ArrayMaxSize(USER_ROLES.length)
+  @IsIn(USER_ROLES, { each: true })
+  roles!: UserRole[];
+
+  @IsIn(LANGUAGE_CODES)
+  preferredLanguage!: LanguageCode;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  email?: string;
+}
+
+/** OB-17b: partner-organisation client provisioning (tenant-bound). */
+class AdminRegisterPartnerClientDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  name!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  partnerId!: string;
+
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  scopes!: string[];
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100_000)
+  rateLimitPerMin?: number;
+}
+
 @ApiTags('admin')
 @Controller('admin')
 @UseGuards(RolesGuard)
@@ -55,6 +124,27 @@ export class AdminController {
   @ApiOperation({ summary: 'List users with account status overlay (paginated)' })
   async users(@Query() query: AdminUsersQueryDto) {
     return { data: await this.admin.listUsers(query.role, query.page, query.pageSize) };
+  }
+
+  @Post('users')
+  @ApiOperation({
+    summary:
+      'Provision a user account directly (audited). Created unverified: the user completes OTP verification on first login.'
+  })
+  async createUser(@Body() dto: AdminCreateUserDto, @CurrentUser() actor: User | null) {
+    return { data: await this.admin.createUser(dto, actor?.id ?? 'admin') };
+  }
+
+  @Post('partner-clients')
+  @ApiOperation({
+    summary:
+      'Register a partner-organisation API client (audited; tenant-bound). The plaintext secret is returned exactly once.'
+  })
+  async registerPartnerClient(
+    @Body() dto: AdminRegisterPartnerClientDto,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.admin.registerPartnerClient(dto, actor?.id ?? 'admin') };
   }
 
   @Patch('users/:id/roles')
@@ -218,10 +308,9 @@ export class AdminController {
   @Post('sweeps/voucher-stuck')
   @ApiOperation({
     summary:
-      'Run one stuck-voucher sweeper pass (WP-G12): expires ISSUED vouchers past their ' +
-      'expiry and recovers stuck EXPIRING/VOIDING/REDEEMING claims with ledger-proof ' +
-      'compensation. Idempotent — an external scheduler (k8s CronJob) invokes this ' +
-      'endpoint periodically.'
+      'Run one stuck-voucher sweeper pass (WP-G12): expires due vouchers and recovers stuck ' +
+      'VOIDING/REDEEMING claims (TTL-doubled with a crash-silent marker). Idempotent — an ' +
+      'external scheduler (k8s CronJob) invokes this endpoint periodically.'
   })
   async sweepVoucherStuck() {
     return { data: await this.admin.sweepVoucherStuck() };
