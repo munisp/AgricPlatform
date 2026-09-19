@@ -1,912 +1,2467 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
+import type pg from 'pg';
+import { PgPoolProvider } from './pg/pg-pool.provider.js';
 import {
-  ACTIVITY_FEED_REPOSITORY,
-  AGGREGATE_REPOSITORY,
-  ALERT_PREFERENCE_REPOSITORY,
-  ANTI_FRAUD_FLAG_REPOSITORY,
-  API_PROVENANCE_REPOSITORY,
-  AUDIT_ANCHOR_REPOSITORY,
+  ADVISORY_REPOSITORY,
+  // Stage 27 (innovation 11): Price Wire persistence (additive).
+  PRICE_WIRE_REPOSITORY,
+  ANNOUNCEMENT_REPOSITORY,
+  APPLICATION_REPOSITORY,
   AUDIT_REPOSITORY,
-  AUTH_SESSION_REPOSITORY,
-  BULK_DISBURSEMENT_REPOSITORY,
-  CARBON_CREDIT_REPOSITORY,
-  CARBON_MILESTONE_REPOSITORY,
+  CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+  CAMPUS_CLUB_REPOSITORY,
+  CERTIFICATE_REPOSITORY,
+  CHAPTER_EVENT_REPOSITORY,
   CHAPTER_REPOSITORY,
-  COMMODITY_PRICE_REPOSITORY,
-  COMPLIANCE_CASE_REPOSITORY,
-  CONSENT_RECORD_REPOSITORY,
-  CONVERSATION_REPOSITORY,
-  COOP_SCORE_REPOSITORY,
-  COURSE_COMPLETION_REPOSITORY,
-  COURSE_ENROLMENT_REPOSITORY,
+  COHORT_THREAD_POST_REPOSITORY,
+  COHORT_THREAD_REPOSITORY,
+  CONSENT_REPOSITORY,
   COURSE_REPOSITORY,
   CREDIT_PROFILE_REPOSITORY,
-  CREDIT_SCORECARD_REPOSITORY,
-  DISPUTE_REPOSITORY,
-  DOCUMENT_REPOSITORY,
-  DSAR_REQUEST_REPOSITORY,
-  ESCROW_REPOSITORY,
-  FARM_PLOT_REPOSITORY,
-  FEATURE_FLAG_REPOSITORY,
-  FIELD_CHECK_REPOSITORY,
-  GRANT_APPLICATION_REPOSITORY,
-  GROUP_BUY_REPOSITORY,
+  DELETION_REQUEST_REPOSITORY,
+  SUCCESSION_CLAIM_REPOSITORY,
   GUARDIAN_LINK_REPOSITORY,
-  HOLD_REPOSITORY,
-  IDEMPOTENCY_RECORD_REPOSITORY,
-  INTEGRATION_REPOSITORY,
-  INTEROP_EXCHANGE_REPOSITORY,
-  LEADERBOARD_ENTRY_REPOSITORY,
-  LEADERBOARD_SNAPSHOT_REPOSITORY,
+  NIN_ANCHOR_REPOSITORY,
+  ACCOUNT_MERGE_REPOSITORY,
+  ERASURE_HOLD_REPOSITORY,
+  DELIVERY_LOG_REPOSITORY,
+  DOCUMENT_REPOSITORY,
+  ENROLMENT_REPOSITORY,
+  EVENT_RSVP_REPOSITORY,
+  FORUM_TOPIC_REPOSITORY,
+  JUDGE_ASSIGNMENT_REPOSITORY,
+  JUDGE_SCORE_REPOSITORY,
+  KNOWLEDGE_RESOURCE_REPOSITORY,
+  LISTING_REPOSITORY,
+  MENTOR_REQUEST_REPOSITORY,
+  MILESTONE_PROGRESS_REPOSITORY,
+  NOTIFICATION_PREFERENCE_REPOSITORY,
+  NOTIFICATION_REPOSITORY,
+  OPPORTUNITY_REPOSITORY,
+  ORDER_REPOSITORY,
+  OUTBOX_REPOSITORY,
+  PATHWAY_ENROLMENT_REPOSITORY,
+  PATHWAY_STAGE_REPOSITORY,
+  PATHWAY_TEMPLATE_REPOSITORY,
+  PG_POOL,
+  PODCAST_EPISODE_REPOSITORY,
+  PROFILE_REPOSITORY,
+  PROGRAMME_COHORT_REPOSITORY,
+  PROGRAMME_ENROLMENT_REPOSITORY,
+  PROGRAMME_MILESTONE_REPOSITORY,
+  REVIEW_REPOSITORY,
+  RUBRIC_CRITERION_REPOSITORY,
+  SEARCH_QUERY_REPOSITORY,
+  SERVICE_BOOKING_REPOSITORY,
+  SERVICE_OFFERING_REPOSITORY,
+  SERVICE_REVIEW_REPOSITORY,
+  STAGE_PROGRESS_REPOSITORY,
+  SUPPLIER_REPOSITORY,
+  TOPIC_FLAG_REPOSITORY,
+  USER_REPOSITORY,
+  COMMODITY_PRICE_REPOSITORY,
+  CREDIT_SCORE_REPOSITORY,
+  ESCROW_REPOSITORY,
+  INVOICE_REPOSITORY,
   LEDGER_ACCOUNT_REPOSITORY,
   LEDGER_ENTRY_REPOSITORY,
-  LOAN_REPOSITORY,
-  MANDATE_REPOSITORY,
-  MARKET_LINK_REPOSITORY,
-  MARKETPLACE_LISTING_REPOSITORY,
-  MARKETPLACE_ORDER_REPOSITORY,
-  MESSAGE_REPOSITORY,
-  NOTIFICATION_DELIVERY_REPOSITORY,
-  NOTIFICATION_REPOSITORY,
-  OFFLINE_ENROLMENT_TASK_REPOSITORY,
-  OPPORTUNITY_REPOSITORY,
-  OTP_CHALLENGE_REPOSITORY,
-  OUTBOX_REPOSITORY,
-  PARTNER_MEMBER_REPOSITORY,
-  PARTNER_REPOSITORY,
-  PAYMENT_REPOSITORY,
-  PIN_PROFILE_REPOSITORY,
-  PRICE_ALERT_REPOSITORY,
-  PROCESSING_JOB_REPOSITORY,
-  PROCESSING_RECORD_REPOSITORY,
-  PROVIDER_INTEGRATION_REPOSITORY,
-  PROVENANCE_AUDIT_REPOSITORY,
-  PULSE_SUBSCRIPTION_REPOSITORY,
-  RECEIPT_REPOSITORY,
-  RECONCILIATION_EXCEPTION_REPOSITORY,
-  RECONCILIATION_REPORT_REPOSITORY,
-  REFERRAL_REPOSITORY,
-  REGISTRY_ANCHOR_REPOSITORY,
-  REPAYMENT_REPOSITORY,
-  REVIEW_FLAG_REPOSITORY,
-  REWARD_TRANSACTION_REPOSITORY,
-  SAVINGS_GOAL_REPOSITORY,
-  SELLER_PROFILE_REPOSITORY,
-  SETTLEMENT_REPOSITORY,
-  STAFF_REPOSITORY,
-  STATEMENT_SNAPSHOT_REPOSITORY,
-  STORAGE_DRIVER,
-  SUBMISSION_REPOSITORY,
-  SUCCESSION_CLAIM_REPOSITORY,
-  SURVEY_REPOSITORY,
-  TOPIC_REPOSITORY,
-  TRAINING_MODULE_REPOSITORY,
-  USSD_SESSION_REPOSITORY,
-  USER_REPOSITORY,
-  VOUCHER_REPOSITORY,
-  WAREHOUSE_REPOSITORY,
-  WEBHOOK_EVENT_REPOSITORY
+  LENDER_REPOSITORY,
+  LOAN_APPLICATION_REPOSITORY,
+  REPAYMENT_SCHEDULE_REPOSITORY,
+  SHIPMENT_REPOSITORY,
+  WEBINAR_REGISTRATION_REPOSITORY,
+  WEBINAR_REPOSITORY,
+  EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+  FARM_RECORD_REPOSITORY,
+  IMPORT_BATCH_REPOSITORY,
+  IMPORT_RECORD_REPOSITORY,
+  INBOUND_EVENT_REPOSITORY,
+  BRIDGE_SYNC_STATE_REPOSITORY,
+  RECOMMENDATION_FEEDBACK_REPOSITORY,
+  ANALYTICS_MART_REPOSITORY,
+  WEBHOOK_DEDUPE_STORE,
+  ANALYTICS_STAR_REPOSITORY
 } from './persistence.tokens.js';
-import { registerPostgresRepositories } from './postgres-repositories.js';
-import { PostgresModule } from './postgres.module.js';
+import { createInMemoryAdvisoryRepository } from './repositories/advisory.repository.js';
+import { createPgAdvisoryRepository } from './repositories/advisory.pg-repository.js';
+// Stage 27 (innovation 11): Price Wire persistence (additive).
+import { createInMemoryPriceWireRepository } from './repositories/price-wire.repository.js';
+import { createPgPriceWireRepository } from './repositories/price-wire.pg-repository.js';
+import { createInMemoryAnnouncementRepository } from './repositories/announcement.repository.js';
+import { createInMemoryApplicationRepository } from './repositories/application.repository.js';
+import { createInMemoryAuditRepository } from './repositories/audit.repository.js';
+import { createInMemoryCertificateRepository } from './repositories/certificate.repository.js';
+import { createInMemoryChapterEventRepository } from './repositories/chapter-event.repository.js';
+import { createInMemoryChapterRepository } from './repositories/chapter.repository.js';
 import {
-  InMemoryActivityFeedRepository,
-  InMemoryAggregateRepository,
-  InMemoryAlertPreferenceRepository,
-  InMemoryAntiFraudFlagRepository,
-  InMemoryApiProvenanceRepository,
-  InMemoryAuditAnchorRepository,
-  InMemoryAuditRepository,
-  InMemoryAuthSessionRepository,
-  InMemoryBulkDisbursementRepository,
-  InMemoryCarbonCreditRepository,
-  InMemoryCarbonMilestoneRepository,
-  InMemoryChapterRepository,
-  InMemoryCommodityPriceRepository,
-  InMemoryComplianceCaseRepository,
-  InMemoryConsentRecordRepository,
-  InMemoryConversationRepository,
-  InMemoryCoopScoreRepository,
-  InMemoryCourseCompletionRepository,
-  InMemoryCourseEnrolmentRepository,
-  InMemoryCourseRepository,
-  InMemoryCreditProfileRepository,
-  InMemoryCreditScorecardRepository,
-  InMemoryDisputeRepository,
-  InMemoryDocumentRepository,
-  InMemoryDsarRequestRepository,
-  InMemoryEscrowRepository,
-  InMemoryFarmPlotRepository,
-  InMemoryFeatureFlagRepository,
-  InMemoryFieldCheckRepository,
-  InMemoryGrantApplicationRepository,
-  InMemoryGroupBuyRepository,
-  InMemoryGuardianLinkRepository,
-  InMemoryHoldRepository,
-  InMemoryIdempotencyRecordRepository,
-  InMemoryIntegrationRepository,
-  InMemoryInteropExchangeRepository,
-  InMemoryLeaderboardEntryRepository,
-  InMemoryLeaderboardSnapshotRepository,
-  InMemoryLedgerAccountRepository,
-  InMemoryLedgerEntryRepository,
-  InMemoryLoanRepository,
-  InMemoryMandateRepository,
-  InMemoryMarketLinkRepository,
-  InMemoryMarketplaceListingRepository,
-  InMemoryMarketplaceOrderRepository,
-  InMemoryMessageRepository,
-  InMemoryNotificationDeliveryRepository,
-  InMemoryNotificationRepository,
-  InMemoryOfflineEnrolmentTaskRepository,
-  InMemoryOpportunityRepository,
-  InMemoryOtpChallengeRepository,
-  InMemoryOutboxRepository,
-  InMemoryPartnerMemberRepository,
-  InMemoryPartnerRepository,
-  InMemoryPaymentRepository,
-  InMemoryPinProfileRepository,
-  InMemoryPriceAlertRepository,
-  InMemoryProcessingJobRepository,
-  InMemoryProcessingRecordRepository,
-  InMemoryProviderIntegrationRepository,
-  InMemoryProvenanceAuditRepository,
-  InMemoryPulseSubscriptionRepository,
-  InMemoryReceiptRepository,
-  InMemoryReconciliationExceptionRepository,
-  InMemoryReconciliationReportRepository,
-  InMemoryReferralRepository,
-  InMemoryRegistryAnchorRepository,
-  InMemoryRepaymentRepository,
-  InMemoryReviewFlagRepository,
-  InMemoryRewardTransactionRepository,
-  InMemorySavingsGoalRepository,
-  InMemorySellerProfileRepository,
-  InMemorySettlementRepository,
-  InMemoryStaffRepository,
-  InMemoryStatementSnapshotRepository,
-  InMemorySubmissionRepository,
-  InMemorySuccessionClaimRepository,
-  InMemorySurveyRepository,
-  InMemoryTopicRepository,
-  InMemoryTrainingModuleRepository,
-  InMemoryUssdSessionRepository,
-  InMemoryUserRepository,
-  InMemoryVoucherRepository,
-  InMemoryWarehouseRepository,
-  InMemoryWebhookEventRepository
-} from './repositories/index.js';
-import type { ActivityFeedRepository } from './repositories/activity-feed.repository.js';
-import type { AggregateRepository } from './repositories/aggregate.repository.js';
-import type { AlertPreferenceRepository } from './repositories/alert-preference.repository.js';
-import type { AntiFraudFlagRepository } from './repositories/anti-fraud-flag.repository.js';
-import type { ApiProvenanceRepository } from './repositories/api-provenance.repository.js';
-import type { AuditAnchorRepository } from './repositories/audit-anchor.repository.js';
-import type { AuditRepository } from './repositories/audit.repository.js';
-import type { AuthSessionRepository } from './repositories/auth-session.repository.js';
-import type { BulkDisbursementRepository } from './repositories/bulk-disbursement.repository.js';
-import type { CarbonCreditRepository } from './repositories/carbon-credit.repository.js';
-import type { CarbonMilestoneRepository } from './repositories/carbon-milestone.repository.js';
-import type { ChapterRepository } from './repositories/chapter.repository.js';
-import type { CommodityPriceRepository } from './repositories/commodity-price.repository.js';
-import type { ComplianceCaseRepository } from './repositories/compliance-case.repository.js';
-import type { ConsentRecordRepository } from './repositories/consent-record.repository.js';
-import type { ConversationRepository } from './repositories/conversation.repository.js';
-import type { CoopScoreRepository } from './repositories/coop-score.repository.js';
-import type { CourseCompletionRepository } from './repositories/course-completion.repository.js';
-import type { CourseEnrolmentRepository } from './repositories/course-enrolment.repository.js';
-import type { CourseRepository } from './repositories/course.repository.js';
-import type { CreditProfileRepository } from './repositories/credit-profile.repository.js';
-import type { CreditScorecardRepository } from './repositories/credit-scorecard.repository.js';
-import type { DisputeRepository } from './repositories/dispute.repository.js';
-import type { DocumentRepository } from './repositories/document.repository.js';
-import type { DsarRequestRepository } from './repositories/dsar-request.repository.js';
-import type { EscrowRepository } from './repositories/escrow.repository.js';
-import type { FarmPlotRepository } from './repositories/farm-plot.repository.js';
-import type { FeatureFlagRepository } from './repositories/feature-flag.repository.js';
-import type { FieldCheckRepository } from './repositories/field-check.repository.js';
-import type { GrantApplicationRepository } from './repositories/grant-application.repository.js';
-import type { GroupBuyRepository } from './repositories/group-buy.repository.js';
-import type { GuardianLinkRepository } from './repositories/guardian-link.repository.js';
-import type { HoldRepository } from './repositories/hold.repository.js';
-import type { IdempotencyRecordRepository } from './repositories/idempotency-record.repository.js';
-import type { IntegrationRepository } from './repositories/integration.repository.js';
-import type { InteropExchangeRepository } from './repositories/interop-exchange.repository.js';
-import type { LeaderboardEntryRepository } from './repositories/leaderboard-entry.repository.js';
-import type { LeaderboardSnapshotRepository } from './repositories/leaderboard-snapshot.repository.js';
-import type { LedgerAccountRepository } from './repositories/ledger-account.repository.js';
-import type { LedgerEntryRepository } from './repositories/ledger-entry.repository.js';
-import type { LoanRepository } from './repositories/loan.repository.js';
-import type { MandateRepository } from './repositories/mandate.repository.js';
-import type { MarketLinkRepository } from './repositories/market-link.repository.js';
-import type { MarketplaceListingRepository } from './repositories/marketplace-listing.repository.js';
-import type { MarketplaceOrderRepository } from './repositories/marketplace-order.repository.js';
-import type { MessageRepository } from './repositories/message.repository.js';
-import type { NotificationDeliveryRepository } from './repositories/notification-delivery.repository.js';
-import type { NotificationRepository } from './repositories/notification.repository.js';
-import type { OfflineEnrolmentTaskRepository } from './repositories/offline-enrolment-task.repository.js';
-import type { OpportunityRepository } from './repositories/opportunity.repository.js';
-import type { OtpChallengeRepository } from './repositories/otp-challenge.repository.js';
-import type { OutboxRepository } from './repositories/outbox.repository.js';
-import type { PartnerMemberRepository } from './repositories/partner-member.repository.js';
-import type { PartnerRepository } from './repositories/partner.repository.js';
-import type { PaymentRepository } from './repositories/payment.repository.js';
-import type { PinProfileRepository } from './repositories/pin-profile.repository.js';
-import type { PriceAlertRepository } from './repositories/price-alert.repository.js';
-import type { ProcessingJobRepository } from './repositories/processing-job.repository.js';
-import type { ProcessingRecordRepository } from './repositories/processing-record.repository.js';
-import type { ProviderIntegrationRepository } from './repositories/provider-integration.repository.js';
-import type { ProvenanceAuditRepository } from './repositories/provenance-audit.repository.js';
-import type { PulseSubscriptionRepository } from './repositories/pulse-subscription.repository.js';
-import type { ReceiptRepository } from './repositories/receipt.repository.js';
-import type { ReconciliationExceptionRepository } from './repositories/reconciliation-exception.repository.js';
-import type { ReconciliationReportRepository } from './repositories/reconciliation-report.repository.js';
-import type { ReferralRepository } from './repositories/referral.repository.js';
-import type { RegistryAnchorRepository } from './repositories/registry-anchor.repository.js';
-import type { RepaymentRepository } from './repositories/repayment.repository.js';
-import type { ReviewFlagRepository } from './repositories/review-flag.repository.js';
-import type { RewardTransactionRepository } from './repositories/reward-transaction.repository.js';
-import type { SavingsGoalRepository } from './repositories/savings-goal.repository.js';
-import type { SellerProfileRepository } from './repositories/seller-profile.repository.js';
-import type { SettlementRepository } from './repositories/settlement.repository.js';
-import type { StaffRepository } from './repositories/staff.repository.js';
-import type { StatementSnapshotRepository } from './repositories/statement-snapshot.repository.js';
-import type { SubmissionRepository } from './repositories/submission.repository.js';
-import type { SuccessionClaimRepository } from './repositories/succession-claim.repository.js';
-import type { SurveyRepository } from './repositories/survey.repository.js';
-import type { TopicRepository } from './repositories/topic.repository.js';
-import type { TrainingModuleRepository } from './repositories/training-module.repository.js';
-import type { UssdSessionRepository } from './repositories/ussd-session.repository.js';
-import type { UserRepository } from './repositories/user.repository.js';
-import type { VoucherRepository } from './repositories/voucher.repository.js';
-import type { WarehouseRepository } from './repositories/warehouse.repository.js';
-import type { WebhookEventRepository } from './repositories/webhook-event.repository.js';
-import { LocalStorageDriver, S3StorageDriver, type StorageDriver } from './storage-drivers.js';
+  createPgAnnouncementRepository,
+  createPgChapterEventRepository,
+  createPgChapterRepository,
+  createPgEventRsvpRepository
+} from './repositories/chapters.pg-repository.js';
+import { createInMemoryConsentRepository } from './repositories/consent.repository.js';
+import { createInMemoryCourseRepository } from './repositories/course.repository.js';
+import { createInMemoryCreditProfileRepository } from './repositories/credit-profile.repository.js';
+import { createInMemoryDeletionRequestRepository } from './repositories/deletion-request.repository.js';
+import { createInMemoryDeliveryLogRepository } from './repositories/delivery-log.repository.js';
+import { createInMemoryDocumentRepository } from './repositories/document.repository.js';
+import { createInMemoryEnrolmentRepository } from './repositories/enrolment.repository.js';
+import { createInMemoryEventRsvpRepository } from './repositories/event-rsvp.repository.js';
+import { createInMemoryForumTopicRepository } from './repositories/forum-topic.repository.js';
+import {
+  createPgCreditProfileRepository,
+  createPgDocumentRepository
+} from './repositories/finance.pg-repository.js';
+import {
+  createPgCertificateRepository,
+  createPgCourseRepository,
+  createPgEnrolmentRepository
+} from './repositories/learning.pg-repository.js';
+import { createInMemoryListingRepository } from './repositories/listing.repository.js';
+import {
+  createPgListingRepository,
+  createPgOrderRepository,
+  createPgReviewRepository
+} from './repositories/marketplace.pg-repository.js';
+import { createInMemoryMentorRequestRepository } from './repositories/mentor-request.repository.js';
+import { createInMemoryNotificationPreferenceRepository } from './repositories/notification-preference.repository.js';
+import { createInMemoryNotificationRepository } from './repositories/notification.repository.js';
+import {
+  createPgDeliveryLogRepository,
+  createPgNotificationPreferenceRepository,
+  createPgNotificationRepository
+} from './repositories/notifications.pg-repository.js';
+import { createInMemoryOpportunityRepository } from './repositories/opportunity.repository.js';
+import {
+  createPgApplicationRepository,
+  createPgOpportunityRepository
+} from './repositories/opportunities.pg-repository.js';
+import { createInMemoryOrderRepository } from './repositories/order.repository.js';
+import { createInMemoryOutboxRepository } from './repositories/outbox.repository.js';
+import { createInMemoryProfileRepository } from './repositories/profile.repository.js';
+import { createPgProfileRepository } from './repositories/profile.pg-repository.js';
+import {
+  createPgConsentRepository,
+  createPgDeletionRequestRepository
+} from './repositories/privacy.pg-repository.js';
+import { createInMemorySuccessionClaimRepository } from './repositories/succession.repository.js';
+import { createPgSuccessionClaimRepository } from './repositories/succession.pg-repository.js';
+import {
+  createInMemoryGuardianLinkRepository,
+  type GuardianLinkRepository
+} from './repositories/guardian-link.repository.js';
+import { createPgGuardianLinkRepository } from './repositories/guardian-link.pg-repository.js';
+import {
+  createInMemoryAccountMergeRepository,
+  createInMemoryNinAnchorRepository
+} from './repositories/nin-anchor.repository.js';
+import {
+  createPgAccountMergeRepository,
+  createPgNinAnchorRepository
+} from './repositories/nin-anchor.pg-repository.js';
+import { createInMemoryErasureHoldRepository } from './repositories/erasure-hold.repository.js';
+import { createPgErasureHoldRepository } from './repositories/erasure-hold.pg-repository.js';
+import {
+  createPgAuditRepository,
+  createPgOutboxRepository
+} from './repositories/core.pg-repository.js';
+import { createInMemoryReviewRepository } from './repositories/review.repository.js';
+import {
+  createPgForumTopicRepository,
+  createPgMentorRequestRepository,
+  createPgTopicFlagRepository
+} from './repositories/community.pg-repository.js';
+import { createInMemoryTopicFlagRepository } from './repositories/topic-flag.repository.js';
+import { createInMemoryUserRepository } from './repositories/user.repository.js';
+import { createPgUserRepository } from './repositories/user.pg-repository.js';
+import { createInMemoryCommodityPriceRepository } from './repositories/commodity-price.repository.js';
+import { createPgCommodityPriceRepository } from './repositories/commodity-price.pg-repository.js';
+// Engagement wave (P2b) repositories.
+import {
+  createInMemoryCampusClubMembershipRepository,
+  createInMemoryCampusClubRepository
+} from './repositories/campus-club.repository.js';
+import {
+  createInMemoryCohortThreadPostRepository,
+  createInMemoryCohortThreadRepository
+} from './repositories/cohort-thread.repository.js';
+import {
+  createInMemoryJudgeAssignmentRepository,
+  createInMemoryJudgeScoreRepository,
+  createInMemoryRubricCriterionRepository
+} from './repositories/judging.repository.js';
+import {
+  createInMemoryKnowledgeResourceRepository,
+  createInMemoryPodcastEpisodeRepository
+} from './repositories/knowledge.repository.js';
+import {
+  createPgKnowledgeResourceRepository,
+  createPgPodcastEpisodeRepository,
+  createPgWebinarRegistrationRepository,
+  createPgWebinarRepository
+} from './repositories/knowledge.pg-repository.js';
+import {
+  createInMemoryPathwayEnrolmentRepository,
+  createInMemoryStageProgressRepository
+} from './repositories/pathway-enrolment.repository.js';
+import {
+  createInMemoryPathwayStageRepository,
+  createInMemoryPathwayTemplateRepository
+} from './repositories/pathway.repository.js';
+import {
+  createPgCampusClubMembershipRepository,
+  createPgCampusClubRepository,
+  createPgPathwayEnrolmentRepository,
+  createPgPathwayStageRepository,
+  createPgPathwayTemplateRepository,
+  createPgStageProgressRepository
+} from './repositories/pathways.pg-repository.js';
+import { createInMemoryProgrammeCohortRepository } from './repositories/programme-cohort.repository.js';
+import { createInMemoryProgrammeEnrolmentRepository } from './repositories/programme-enrolment.repository.js';
+import {
+  createInMemoryMilestoneProgressRepository,
+  createInMemoryProgrammeMilestoneRepository
+} from './repositories/programme-milestone.repository.js';
+import {
+  createPgCohortThreadPostRepository,
+  createPgCohortThreadRepository,
+  createPgJudgeAssignmentRepository,
+  createPgJudgeScoreRepository,
+  createPgMilestoneProgressRepository,
+  createPgProgrammeCohortRepository,
+  createPgProgrammeEnrolmentRepository,
+  createPgProgrammeMilestoneRepository,
+  createPgRubricCriterionRepository
+} from './repositories/programmes.pg-repository.js';
+import { createInMemorySearchQueryRepository } from './repositories/search-query.repository.js';
+import {
+  createPgRecommendationFeedbackRepository,
+  createPgSearchQueryRepository
+} from './repositories/search.pg-repository.js';
+import { createInMemoryRecommendationFeedbackRepository } from './repositories/recommendation-feedback.repository.js';
+import { createInMemoryAnalyticsMartRepository } from './repositories/analytics-mart.repository.js';
+import { createPgAnalyticsMartRepository } from './repositories/analytics-mart.pg-repository.js';
+import { createInMemoryAnalyticsStarRepository } from './repositories/analytics-star.repository.js';
+import { createPgAnalyticsStarRepository } from './repositories/analytics-star.pg-repository.js';
+import { createInMemoryServiceBookingRepository } from './repositories/service-booking.repository.js';
+import { createInMemoryServiceOfferingRepository } from './repositories/service-offering.repository.js';
+import { createInMemoryServiceReviewRepository } from './repositories/service-review.repository.js';
+import {
+  createPgServiceBookingRepository,
+  createPgServiceOfferingRepository,
+  createPgServiceReviewRepository,
+  createPgSupplierRepository
+} from './repositories/services-marketplace.pg-repository.js';
+import { createInMemorySupplierRepository } from './repositories/supplier.repository.js';
+import {
+  createInMemoryEquipmentBookingRepository,
+  createInMemoryEquipmentListingRepository
+} from './repositories/mechanization.repository.js';
+import {
+  createPgEquipmentBookingRepository,
+  createPgEquipmentListingRepository
+} from './repositories/mechanization.pg-repository.js';
+import {
+  createInMemoryWebinarRegistrationRepository,
+  createInMemoryWebinarRepository
+} from './repositories/webinar.repository.js';
+// Commerce & finance wave (P2a) repositories.
+import { createInMemoryEscrowRepository } from './repositories/escrow.repository.js';
+import { createInMemoryInvoiceRepository } from './repositories/invoice.repository.js';
+import { createInMemoryShipmentRepository } from './repositories/shipment.repository.js';
+import {
+  createPgEscrowRepository,
+  createPgInvoiceRepository,
+  createPgShipmentRepository
+} from './repositories/commerce.pg-repository.js';
+import {
+  createInMemoryLedgerAccountRepository,
+  createInMemoryLedgerEntryRepository,
+  type InMemoryLedgerAccountRepository
+} from './repositories/ledger.repository.js';
+import {
+  createPgCreditScoreRepository,
+  createPgLedgerAccountRepository,
+  createPgLedgerEntryRepository
+} from './repositories/ledger.pg-repository.js';
+import { createInMemoryCreditScoreRepository } from './repositories/credit-score.repository.js';
+import { createInMemoryLenderRepository } from './repositories/lender.repository.js';
+import {
+  createInMemoryLoanApplicationRepository,
+  createInMemoryRepaymentScheduleRepository
+} from './repositories/loan.repository.js';
+import {
+  createPgLenderRepository,
+  createPgLoanApplicationRepository,
+  createPgRepaymentScheduleRepository
+} from './repositories/credit.pg-repository.js';
+// Phase-3 federated integration wave (P5a) repositories.
+import {
+  createInMemoryExternalAccountLinkRepository,
+  createInMemoryFarmRecordRepository,
+  createInMemoryImportBatchRepository,
+  createInMemoryImportRecordRepository,
+  createInMemoryInboundEventRepository
+} from './repositories/phase3.repository.js';
+import {
+  createPgExternalAccountLinkRepository,
+  createPgFarmRecordRepository,
+  createPgImportBatchRepository,
+  createPgImportRecordRepository,
+  createPgInboundEventRepository,
+  createPgWebhookDedupeStore
+} from './repositories/phase3.pg-repository.js';
+import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
+// WP-G20: bridge sync-state (Moodle/Discourse/Directus scheduled sync).
+import { createInMemoryBridgeSyncStateRepository } from './repositories/bridge-sync-state.repository.js';
+import { createPgBridgeSyncStateRepository } from './repositories/bridge-sync-state.pg-repository.js';
+// USSD channel + lightweight-channel depth wave (P5b) repositories.
+import { createInMemoryUssdSessionRepository } from './repositories/ussd-session.repository.js';
+import { createPgUssdSessionRepository } from './repositories/ussd-session.pg-repository.js';
+import { createInMemoryPinProfileRepository } from './repositories/pin-profile.repository.js';
+import { createPgPinProfileRepository } from './repositories/pin-profile.pg-repository.js';
+import {
+  PIN_PROFILE_REPOSITORY,
+  USSD_SESSION_REPOSITORY
+} from './persistence.tokens.js';
+// Wave P5d: partner API persistence (additive).
+import {
+  API_KEY_REPOSITORY,
+  PARTNER_CLIENT_REPOSITORY,
+  PARTNER_MEMBER_REPOSITORY,
+  WEBHOOK_SUBSCRIPTION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryApiKeyRepository,
+  createInMemoryPartnerClientRepository,
+  createInMemoryWebhookSubscriptionRepository
+} from './repositories/partner-api.repository.js';
+import {
+  createPgApiKeyRepository,
+  createPgPartnerClientRepository,
+  createPgWebhookSubscriptionRepository
+} from './repositories/partner-api.pg-repository.js';
+// Stage 24: partner tenant binding persistence (additive).
+import {
+  createInMemoryPartnerMemberRepository,
+  createPgPartnerMemberRepository
+} from './repositories/partner-member.repository.js';
+// Wave P6a: IVR voice channel persistence (additive).
+import { IVR_CALL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryIvrCallRepository } from './repositories/ivr-call.repository.js';
+import { createPgIvrCallRepository } from './repositories/ivr-call.pg-repository.js';
+// Wave VOICE: voice agronomist persistence (additive).
+import {
+  AGENT_CASE_REPOSITORY,
+  VOICE_SESSION_REPOSITORY,
+  VOICE_TURN_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentCaseRepository,
+  createInMemoryVoiceSessionRepository,
+  createInMemoryVoiceTurnRepository
+} from './repositories/voice.repository.js';
+import {
+  createPgAgentCaseRepository,
+  createPgVoiceSessionRepository,
+  createPgVoiceTurnRepository
+} from './repositories/voice.pg-repository.js';
+// Stage 27 innovation #19 (additive): agronomist SLA console persistence.
+import { ESCALATION_CASE_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryEscalationCaseRepository } from './repositories/escalation-console.repository.js';
+import { createPgEscalationCaseRepository } from './repositories/escalation-console.pg-repository.js';
+// Wave L1a: ALTP livestock core persistence (additive).
+import {
+  ANIMAL_REPOSITORY,
+  LOT_REPOSITORY,
+  OWNERSHIP_TRANSFER_REPOSITORY,
+  PASTORALIST_PROFILE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAnimalRepository,
+  createInMemoryLotRepository,
+  createInMemoryOwnershipTransferRepository,
+  createInMemoryPastoralistProfileRepository
+} from './repositories/livestock.repository.js';
+import {
+  createPgAnimalRepository,
+  createPgLotRepository,
+  createPgOwnershipTransferRepository,
+  createPgPastoralistProfileRepository
+} from './repositories/livestock.pg-repository.js';
+// Wave L1b: ALTP livestock health/traceability persistence (additive).
+import {
+  DISEASE_FLAG_REPOSITORY,
+  HEALTH_RECORD_REPOSITORY,
+  MOVEMENT_PERMIT_REPOSITORY,
+  MOVEMENT_REPOSITORY,
+  RECALL_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryDiseaseFlagRepository,
+  createInMemoryHealthRecordRepository,
+  createInMemoryMovementPermitRepository,
+  createInMemoryMovementRepository,
+  createInMemoryRecallRepository
+} from './repositories/livestock-health.repository.js';
+import {
+  createPgDiseaseFlagRepository,
+  createPgHealthRecordRepository,
+  createPgMovementPermitRepository,
+  createPgMovementRepository,
+  createPgRecallRepository
+} from './repositories/livestock-health.pg-repository.js';
+// Wave L1c: ALTP trade/finance/compliance persistence (additive).
+import {
+  AGGREGATION_POINT_REPOSITORY,
+  CERTIFIED_LISTING_REPOSITORY,
+  COLD_CHAIN_LOG_REPOSITORY,
+  DISBURSEMENT_REPOSITORY,
+  EXPORT_DOCUMENT_REPOSITORY,
+  INSURANCE_CLAIM_REPOSITORY,
+  INSURANCE_POLICY_REPOSITORY,
+  LIEN_REPOSITORY,
+  LIVESTOCK_DISEASE_GUARD,
+  LIVESTOCK_TRANSFER_GUARD,
+  OFFTAKE_CONTRACT_REPOSITORY,
+  OFFTAKE_TEMPLATE_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAggregationPointRepository,
+  createInMemoryCertifiedListingRepository,
+  createInMemoryColdChainLogRepository,
+  createInMemoryDisbursementRepository,
+  createInMemoryExportDocumentRepository,
+  createInMemoryInsuranceClaimRepository,
+  createInMemoryInsurancePolicyRepository,
+  createInMemoryLienRepository,
+  createInMemoryOfftakeContractRepository,
+  createInMemoryOfftakeTemplateRepository,
+  createLienTransferGuard
+} from './repositories/livestock-trade.repository.js';
+import { createDiseaseTransferGuard } from '../modules/livestock-health/disease-quarantine.js';
+import {
+  createPgAggregationPointRepository,
+  createPgCertifiedListingRepository,
+  createPgColdChainLogRepository,
+  createPgDisbursementRepository,
+  createPgExportDocumentRepository,
+  createPgInsuranceClaimRepository,
+  createPgInsurancePolicyRepository,
+  createPgLienRepository,
+  createPgOfftakeContractRepository,
+  createPgOfftakeTemplateRepository
+} from './repositories/livestock-trade.pg-repository.js';
+// Wave P: platform foundation persistence (additive).
+import {
+  AUTH_SESSION_REPOSITORY,
+  FEATURE_FLAG_REPOSITORY,
+  PROCESSED_EVENT_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAuthSessionRepository } from './repositories/auth-session.repository.js';
+import { createPgAuthSessionRepository } from './repositories/auth-session.pg-repository.js';
+import { createInMemoryFeatureFlagRepository } from './repositories/feature-flag.repository.js';
+import { createInMemoryProcessedEventRepository } from './repositories/processed-event.repository.js';
+import {
+  createPgFeatureFlagRepository,
+  createPgProcessedEventRepository
+} from './repositories/platform.pg-repository.js';
+// Wave M: marketplace commerce depth persistence (additive).
+import {
+  BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+  BUYER_GROUP_REPOSITORY,
+  DRAFT_ORDER_REPOSITORY,
+  LISTING_VARIANT_REPOSITORY,
+  ORDER_EXTENSION_REPOSITORY,
+  PRICE_LIST_ENTRY_REPOSITORY,
+  PRICE_LIST_REPOSITORY,
+  PRODUCT_REVIEW_REPOSITORY,
+  PROMOTION_REDEMPTION_REPOSITORY,
+  PROMOTION_REPOSITORY,
+  RETURN_REQUEST_REPOSITORY,
+  SELLER_RATING_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBuyerGroupMembershipRepository,
+  createInMemoryBuyerGroupRepository,
+  createInMemoryDraftOrderRepository,
+  createInMemoryListingVariantRepository,
+  createInMemoryOrderExtensionRepository,
+  createInMemoryPriceListEntryRepository,
+  createInMemoryPriceListRepository,
+  createInMemoryProductReviewRepository,
+  createInMemoryPromotionRedemptionRepository,
+  createInMemoryPromotionRepository,
+  createInMemoryReturnRequestRepository,
+  createInMemorySellerRatingRepository
+} from './repositories/commerce-depth.repository.js';
+import {
+  createPgBuyerGroupMembershipRepository,
+  createPgBuyerGroupRepository,
+  createPgDraftOrderRepository,
+  createPgListingVariantRepository,
+  createPgOrderExtensionRepository,
+  createPgPriceListEntryRepository,
+  createPgPriceListRepository,
+  createPgProductReviewRepository,
+  createPgPromotionRedemptionRepository,
+  createPgPromotionRepository,
+  createPgReturnRequestRepository,
+  createPgSellerRatingRepository
+} from './repositories/commerce-depth.pg-repository.js';
+// Wave COMP: NDPA 2023 compliance tooling persistence (additive).
+import {
+  COMPLIANCE_CONSENT_REPOSITORY,
+  DATA_SUBJECT_REQUEST_REPOSITORY,
+  RETENTION_POLICY_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryComplianceConsentRepository,
+  createInMemoryDataSubjectRequestRepository,
+  createInMemoryRetentionPolicyRepository
+} from './repositories/compliance.repository.js';
+import {
+  createPgComplianceConsentRepository,
+  createPgDataSubjectRequestRepository,
+  createPgRetentionPolicyRepository
+} from './repositories/compliance.pg-repository.js';
+// Wave SYNCSRV: record-level offline sync protocol v1 persistence (additive).
+import {
+  ENTITY_VERSION_REPOSITORY,
+  SYNC_CURSOR_REPOSITORY,
+  SYNC_MUTATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryEntityVersionRepository,
+  createInMemorySyncCursorRepository,
+  createInMemorySyncMutationRepository
+} from './repositories/sync.repository.js';
+import {
+  createPgEntityVersionRepository,
+  createPgSyncCursorRepository,
+  createPgSyncMutationRepository
+} from './repositories/sync.pg-repository.js';
+// Wave FARMS: farms & crop-production persistence (additive).
+import {
+  CROP_PLANTING_REPOSITORY,
+  FARM_EXPENSE_ALLOCATION_REPOSITORY,
+  FARM_EXPENSE_REPOSITORY,
+  FARM_PLOT_REPOSITORY,
+  HARVEST_RECORD_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCropPlantingRepository,
+  createInMemoryFarmExpenseAllocationRepository,
+  createInMemoryFarmExpenseRepository,
+  createInMemoryFarmPlotRepository,
+  createInMemoryHarvestRecordRepository
+} from './repositories/farms.repository.js';
+import {
+  createPgCropPlantingRepository,
+  createPgFarmExpenseAllocationRepository,
+  createPgFarmExpenseRepository,
+  createPgFarmPlotRepository,
+  createPgHarvestRecordRepository
+} from './repositories/farms.pg-repository.js';
+// Wave AGENTS: field-agent (enumerator) persistence (additive).
+import {
+  AGENT_ACTIVITY_LOG_REPOSITORY,
+  AGENT_ASSIGNMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentActivityLogRepository,
+  createInMemoryAgentAssignmentRepository
+} from './repositories/field-agents.repository.js';
+import {
+  createPgAgentActivityLogRepository,
+  createPgAgentAssignmentRepository
+} from './repositories/field-agents.pg-repository.js';
+// Wave GEO: geospatial pack persistence (additive).
+import {
+  GEO_BOUNDARY_REPOSITORY,
+  H3_INDEX_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryGeoBoundaryRepository,
+  createInMemoryH3IndexRepository
+} from './repositories/geo.repository.js';
+import {
+  createPgGeoBoundaryRepository,
+  createPgH3IndexRepository
+} from './repositories/geo.pg-repository.js';
+// Wave CREDIT: microfinance suite persistence (additive).
+import {
+  CREDIT_COLLATERAL_REPOSITORY,
+  CREDIT_GROUP_MEMBER_REPOSITORY,
+  CREDIT_GROUP_REPOSITORY,
+  CREDIT_GUARANTOR_REPOSITORY,
+  CREDIT_LOAN_REPOSITORY,
+  CREDIT_PRODUCT_REPOSITORY,
+  CREDIT_REPAYMENT_REPOSITORY,
+  CREDIT_RESTRUCTURE_REPOSITORY,
+  CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+  CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+  GEO_CREDIT_SHADOW_REPOSITORY,
+  SEASONAL_SCHEDULE_REPOSITORY,
+  COOP_SCORE_REPOSITORY,
+  EQUIPMENT_LISTING_REPOSITORY,
+  EQUIPMENT_BOOKING_REPOSITORY,
+  PARAMETRIC_PRODUCT_REPOSITORY,
+  PARAMETRIC_POLICY_REPOSITORY,
+  PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+  PARAMETRIC_PAYOUT_REPOSITORY,
+  // Stage 27 (Insurance-in-the-Bag, additive).
+  VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+  VOUCHER_COVER_REPOSITORY,
+  // Wave VSLACARBON (additive).
+  VSLA_GROUP_REPOSITORY,
+  VSLA_MEMBER_REPOSITORY,
+  VSLA_CYCLE_REPOSITORY,
+  VSLA_CONTRIBUTION_REPOSITORY,
+  VSLA_SHARE_OUT_REPOSITORY,
+  VSLA_SHARE_OUT_PLAN_REPOSITORY,
+  VSLA_LOAN_REPOSITORY,
+  VSLA_LOAN_REPAYMENT_REPOSITORY,
+  VSLA_MEETING_REPOSITORY,
+  VSLA_CASH_COUNT_REPOSITORY,
+  CARBON_PLOT_REPOSITORY,
+  CARBON_EVIDENCE_REPOSITORY,
+  CARBON_ESTIMATE_REPOSITORY,
+  // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+  LIVESTOCK_PASSPORT_REPOSITORY,
+  LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+  LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditCollateralRepository,
+  createInMemoryCreditGroupMemberRepository,
+  createInMemoryCreditGroupRepository,
+  createInMemoryCreditGuarantorRepository,
+  createInMemoryCreditLoanRepository,
+  createInMemoryCreditProductRepository,
+  createInMemoryCreditRepaymentRepository,
+  createInMemoryCreditRestructureRepository,
+  createInMemoryCreditSavingsAccountRepository,
+  createInMemoryCreditSavingsTransactionRepository
+} from './repositories/credit-suite.repository.js';
+import {
+  createPgCreditCollateralRepository,
+  createPgCreditGroupMemberRepository,
+  createPgCreditGroupRepository,
+  createPgCreditGuarantorRepository,
+  createPgCreditLoanRepository,
+  createPgCreditProductRepository,
+  createPgCreditRepaymentRepository,
+  createPgCreditRestructureRepository,
+  createPgCreditSavingsAccountRepository,
+  createPgCreditSavingsTransactionRepository
+} from './repositories/credit-suite.pg-repository.js';
+// Wave EUDR: traceability passport persistence (additive).
+import {
+  COMMODITY_LOT_REPOSITORY,
+  CUSTODY_EVENT_REPOSITORY,
+  LOT_PLOT_LINK_REPOSITORY,
+  TRACEABILITY_SHIPMENT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCommodityLotRepository,
+  createInMemoryCustodyEventRepository,
+  createInMemoryLotPlotLinkRepository,
+  createInMemoryTraceabilityShipmentRepository
+} from './repositories/traceability.repository.js';
+import {
+  createPgCommodityLotRepository,
+  createPgCustodyEventRepository,
+  createPgLotPlotLinkRepository,
+  createPgTraceabilityShipmentRepository
+} from './repositories/traceability.pg-repository.js';
+import { createInMemoryGeoCreditShadowRepository } from './repositories/geo-credit-shadow.repository.js';
+import { createPgGeoCreditShadowRepository } from './repositories/geo-credit-shadow.pg-repository.js';
+// SeasonSync (innovation wave 27): pinned seasonal repayment schedules.
+import { createInMemorySeasonalScheduleRepository } from './repositories/seasonal-schedule.repository.js';
+import { createPgSeasonalScheduleRepository } from './repositories/seasonal-schedule.pg-repository.js';
+import { createInMemoryCoopScoreRepository } from './repositories/coop-score.repository.js';
+import { createPgCoopScoreRepository } from './repositories/coop-score.pg-repository.js';
+// Wave AGENTBANK: agent banking persistence (additive).
+import {
+  AGENT_BANKING_AGENT_REPOSITORY,
+  AGENT_DEVICE_REPOSITORY,
+  AGENT_FLOAT_TOPUP_REPOSITORY,
+  AGENT_REVERSAL_REPOSITORY,
+  AGENT_TRANSACTION_REPOSITORY,
+  AGENT_VOUCHER_REPOSITORY,
+  FLOAT_FORECAST_REPOSITORY,
+  REBALANCE_ALERT_REPOSITORY,
+  REBALANCE_RUN_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryAgentBankingAgentRepository,
+  createInMemoryAgentDeviceRepository,
+  createInMemoryAgentFloatTopUpRepository,
+  createInMemoryAgentReversalRepository,
+  createInMemoryAgentTransactionRepository,
+  createInMemoryAgentVoucherRepository
+} from './repositories/agent-banking.repository.js';
+import {
+  createPgAgentBankingAgentRepository,
+  createPgAgentDeviceRepository,
+  createPgAgentFloatTopUpRepository,
+  createPgAgentReversalRepository,
+  createPgAgentTransactionRepository,
+  createPgAgentVoucherRepository
+} from './repositories/agent-banking.pg-repository.js';
+// Stage 27 Innovation 15 (FLOAT FORECASTER, additive): agent float forecasts
+// + rebalancing alerts (migration 073).
+import {
+  createInMemoryFloatForecastRepository,
+  createInMemoryRebalanceAlertRepository,
+  createInMemoryRebalanceRunRepository
+} from './repositories/float-forecast.repository.js';
+import {
+  createPgFloatForecastRepository,
+  createPgRebalanceAlertRepository,
+  createPgRebalanceRunRepository
+} from './repositories/float-forecast.pg-repository.js';
+// Wave-INSURANCE (additive): parametric insurance rail repositories.
+import {
+  createInMemoryParametricProductRepository,
+  createInMemoryParametricPolicyRepository,
+  createInMemoryParametricTriggerEventRepository,
+  createInMemoryParametricPayoutRepository,
+  createInMemoryVoucherProgrammeRiderRepository,
+  createInMemoryVoucherCoverRepository
+} from './repositories/insurance.repository.js';
+import {
+  createPgParametricProductRepository,
+  createPgParametricPolicyRepository,
+  createPgParametricTriggerEventRepository,
+  createPgParametricPayoutRepository,
+  createPgVoucherProgrammeRiderRepository,
+  createPgVoucherCoverRepository
+} from './repositories/insurance.pg-repository.js';
+// Wave VSLACARBON (additive): VSLA groups + carbon MRV repositories.
+import {
+  createInMemoryVslaGroupRepository,
+  createInMemoryVslaMemberRepository,
+  createInMemoryVslaCycleRepository,
+  createInMemoryVslaContributionRepository,
+  createInMemoryVslaShareOutRepository,
+  createInMemoryVslaShareOutPlanRepository,
+  createInMemoryVslaLoanRepository,
+  createInMemoryVslaLoanRepaymentRepository,
+  createInMemoryVslaMeetingRepository,
+  createInMemoryVslaCashCountRepository,
+  createInMemoryCarbonPlotRepository,
+  createInMemoryCarbonEvidenceRepository,
+  createInMemoryCarbonEstimateRepository
+} from './repositories/vsla-carbon.repository.js';
+import {
+  createPgVslaGroupRepository,
+  createPgVslaMemberRepository,
+  createPgVslaCycleRepository,
+  createPgVslaContributionRepository,
+  createPgVslaShareOutRepository,
+  createPgVslaShareOutPlanRepository,
+  createPgVslaLoanRepository,
+  createPgVslaLoanRepaymentRepository,
+  createPgVslaMeetingRepository,
+  createPgVslaCashCountRepository,
+  createPgCarbonPlotRepository,
+  createPgCarbonEvidenceRepository,
+  createPgCarbonEstimateRepository
+} from './repositories/vsla-carbon.pg-repository.js';
+// Wave LIVESTOCK-PASSPORT (additive): digital livestock passport repositories.
+import {
+  createInMemoryLivestockPassportRepository,
+  createInMemoryPassportEventRepository,
+  createInMemoryPassportTransferRepository
+} from './repositories/livestock-passport.repository.js';
+import {
+  createPgLivestockPassportRepository,
+  createPgPassportEventRepository,
+  createPgPassportTransferRepository
+} from './repositories/livestock-passport.pg-repository.js';
+// Wave NINVOUCHER (additive): input subsidy e-voucher persistence.
+import {
+  BENEFICIARY_REPOSITORY,
+  INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+  INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+  INPUT_VOUCHER_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryBeneficiaryRepository,
+  createInMemoryInputVoucherRepository,
+  createInMemoryRedemptionRepository,
+  createInMemorySubsidyProgrammeRepository
+} from './repositories/input-vouchers.repository.js';
+import {
+  createPgBeneficiaryRepository,
+  createPgInputVoucherRepository,
+  createPgRedemptionRepository,
+  createPgSubsidyProgrammeRepository
+} from './repositories/input-vouchers.pg-repository.js';
+// Wave WAREHOUSE (additive): electronic warehouse receipts persistence.
+import {
+  CERTIFIED_WAREHOUSE_REPOSITORY,
+  WAREHOUSE_DEPOSIT_REPOSITORY,
+  WAREHOUSE_RECEIPT_REPOSITORY,
+  WAREHOUSE_PLEDGE_REPOSITORY,
+  WAREHOUSE_TRANSFER_REPOSITORY,
+  // Stage 27 (innovation 4): Planting-Window Pulse persistence (additive).
+  ADVISORY_PULSE_REPOSITORY
+} from './persistence.tokens.js';
+import { createInMemoryAdvisoryPulseRepository } from './repositories/advisory-pulse.repository.js';
+import { createPgAdvisoryPulseRepository } from './repositories/advisory-pulse.pg-repository.js';
+import {
+  createInMemoryCertifiedWarehouseRepository,
+  createInMemoryWarehouseDepositRepository,
+  createInMemoryWarehouseReceiptRepository,
+  createInMemoryWarehousePledgeRepository,
+  createInMemoryWarehouseTransferRepository
+} from './repositories/warehouse.repository.js';
+import {
+  createPgCertifiedWarehouseRepository,
+  createPgWarehouseDepositRepository,
+  createPgWarehouseReceiptRepository,
+  createPgWarehousePledgeRepository,
+  createPgWarehouseTransferRepository
+} from './repositories/warehouse.pg-repository.js';
+// Innovation 10 (Stage 27): Chapter Map persistence (additive).
+import {
+  CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+  CHAPTER_MEMBER_DIRECTORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryChapterMapSnapshotRepository,
+  createInMemoryChapterMemberDirectory
+} from './repositories/chapter-map.repository.js';
+import {
+  createPgChapterMapSnapshotRepository,
+  createPgChapterMemberDirectory
+} from './repositories/chapter-map.pg-repository.js';
 
-export interface StorageResolution {
-  driver: StorageDriver;
-  /** True when the S3 driver is fully configured (credentials + endpoint present). */
-  s3Active: boolean;
-}
+// Stage 27 innovation "Float Sentinel" (additive): fraud/liquidity anomaly
+// engine persistence (fraud schema, migration 059).
+import { FRAUD_SENTINEL_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryFraudSentinelRepository } from './repositories/fraud.repository.js';
+import { createPgFraudSentinelRepository } from './repositories/fraud.pg-repository.js';
+// Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential persistence.
+import {
+  CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+  CREDIT_PASSPORT_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCreditPassportCredentialRepository,
+  createInMemoryCreditPassportDisclosureRepository
+} from './repositories/credit-passport.repository.js';
+import {
+  createPgCreditPassportCredentialRepository,
+  createPgCreditPassportDisclosureRepository
+} from './repositories/credit-passport.pg-repository.js';
+// Stage 27 / Innovation 8: Receipt LTV Guardian persistence (additive).
+import {
+  COLLATERAL_POSITION_REPOSITORY,
+  LTV_OBSERVATION_REPOSITORY
+} from './persistence.tokens.js';
+import {
+  createInMemoryCollateralPositionRepository,
+  createInMemoryLtvObservationRepository
+} from './repositories/warehouse-ltv.repository.js';
+import {
+  createPgCollateralPositionRepository,
+  createPgLtvObservationRepository
+} from './repositories/warehouse-ltv.pg-repository.js';
+// Wave DDS-STUDIO (additive, innovation 17): DDS package persistence.
+import { DDS_PACKAGE_REPOSITORY } from './persistence.tokens.js';
+import { createInMemoryDdsPackageRepository } from './repositories/dds-package.repository.js';
+import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repository.js';
 
 /**
- * WP-G15 storage driver resolution. STORAGE_DRIVER=s3 requires the full S3
- * credential set; any other flag (or none) keeps the local disk driver.
- * Fails closed: an explicit s3 flag with missing credentials falls back to
- * local rather than erroring at request time, so the API boots and the
- * missing config is visible via s3Active=false.
+ * Global persistence module. Repository tokens resolve to the pg
+ * implementations when PG_POOL is live (DATABASE_URL configured) and to the
+ * in-memory implementations otherwise. Services depend only on the port
+ * interfaces.
  */
-export function resolveStorageDriver(env: NodeJS.ProcessEnv = process.env): StorageResolution {
-  const flag = (env.STORAGE_DRIVER ?? 'local').trim().toLowerCase();
-  if (flag === 's3') {
-    const endpoint = env.S3_ENDPOINT?.trim();
-    const bucket = env.S3_BUCKET?.trim();
-    const accessKey = env.S3_ACCESS_KEY?.trim();
-    const secretKey = env.S3_SECRET_KEY?.trim();
-    if (endpoint && bucket && accessKey && secretKey) {
-      return {
-        driver: new S3StorageDriver({ endpoint, bucket, accessKey, secretKey, region: env.S3_REGION }),
-        s3Active: true
-      };
-    }
-  }
-  return { driver: new LocalStorageDriver(), s3Active: false };
-}
-
-export { DatabaseModule };
-
-/**
- * DatabaseModule — persistence driver wiring (repository pattern §1).
- *
- * Persistence drivers (Postgres pool, S3-compatible object storage) live
- * behind repository interfaces; every consumer injects a repository token,
- * never the driver. Domain modules never import pg or fs directly.
- */
+@Global()
 @Module({
-  imports: [PostgresModule],
   providers: [
+    PgPoolProvider,
+    { provide: PG_POOL, useFactory: (provider: PgPoolProvider) => provider.pool, inject: [PgPoolProvider] },
     {
       provide: USER_REPOSITORY,
-      useFactory: (pgUser?: UserRepository): UserRepository =>
-        pgUser ?? new InMemoryUserRepository(),
-      inject: [{ token: 'PG_USER_REPOSITORY', optional: true }]
+      // OB-04: the in-memory user repo needs the guardian-link store so
+      // createWithGuardianLink can compensate a failed link write.
+      useFactory: (pool: pg.Pool | null, guardianLinks: GuardianLinkRepository) =>
+        pool ? createPgUserRepository(pool) : createInMemoryUserRepository(guardianLinks),
+      inject: [PG_POOL, GUARDIAN_LINK_REPOSITORY]
     },
     {
-      provide: GUARDIAN_LINK_REPOSITORY,
-      useFactory: (pg?: GuardianLinkRepository): GuardianLinkRepository =>
-        pg ?? new InMemoryGuardianLinkRepository(),
-      inject: [{ token: 'PG_GUARDIAN_LINK_REPOSITORY', optional: true }]
+      provide: PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgProfileRepository(pool) : createInMemoryProfileRepository()),
+      inject: [PG_POOL]
     },
     {
-      provide: CHAPTER_REPOSITORY,
-      useFactory: (pg?: ChapterRepository): ChapterRepository =>
-        pg ?? new InMemoryChapterRepository(),
-      inject: [{ token: 'PG_CHAPTER_REPOSITORY', optional: true }]
+      provide: CONSENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgConsentRepository(pool) : createInMemoryConsentRepository()),
+      inject: [PG_POOL]
     },
     {
-      provide: COURSE_REPOSITORY,
-      useFactory: (pg?: CourseRepository): CourseRepository =>
-        pg ?? new InMemoryCourseRepository(),
-      inject: [{ token: 'PG_COURSE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: TRAINING_MODULE_REPOSITORY,
-      useFactory: (pg?: TrainingModuleRepository): TrainingModuleRepository =>
-        pg ?? new InMemoryTrainingModuleRepository(),
-      inject: [{ token: 'PG_TRAINING_MODULE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: COURSE_ENROLMENT_REPOSITORY,
-      useFactory: (pg?: CourseEnrolmentRepository): CourseEnrolmentRepository =>
-        pg ?? new InMemoryCourseEnrolmentRepository(),
-      inject: [{ token: 'PG_COURSE_ENROLMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: COURSE_COMPLETION_REPOSITORY,
-      useFactory: (pg?: CourseCompletionRepository): CourseCompletionRepository =>
-        pg ?? new InMemoryCourseCompletionRepository(),
-      inject: [{ token: 'PG_COURSE_COMPLETION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: OPPORTUNITY_REPOSITORY,
-      useFactory: (pg?: OpportunityRepository): OpportunityRepository =>
-        pg ?? new InMemoryOpportunityRepository(),
-      inject: [{ token: 'PG_OPPORTUNITY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: GRANT_APPLICATION_REPOSITORY,
-      useFactory: (pg?: GrantApplicationRepository): GrantApplicationRepository =>
-        pg ?? new InMemoryGrantApplicationRepository(),
-      inject: [{ token: 'PG_GRANT_APPLICATION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: TOPIC_REPOSITORY,
-      useFactory: (pg?: TopicRepository): TopicRepository => pg ?? new InMemoryTopicRepository(),
-      inject: [{ token: 'PG_TOPIC_REPOSITORY', optional: true }]
-    },
-    {
-      provide: REVIEW_FLAG_REPOSITORY,
-      useFactory: (pg?: ReviewFlagRepository): ReviewFlagRepository =>
-        pg ?? new InMemoryReviewFlagRepository(),
-      inject: [{ token: 'PG_REVIEW_FLAG_REPOSITORY', optional: true }]
-    },
-    {
-      provide: MESSAGE_REPOSITORY,
-      useFactory: (pg?: MessageRepository): MessageRepository =>
-        pg ?? new InMemoryMessageRepository(),
-      inject: [{ token: 'PG_MESSAGE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CONVERSATION_REPOSITORY,
-      useFactory: (pg?: ConversationRepository): ConversationRepository =>
-        pg ?? new InMemoryConversationRepository(),
-      inject: [{ token: 'PG_CONVERSATION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: SELLER_PROFILE_REPOSITORY,
-      useFactory: (pg?: SellerProfileRepository): SellerProfileRepository =>
-        pg ?? new InMemorySellerProfileRepository(),
-      inject: [{ token: 'PG_SELLER_PROFILE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: MARKETPLACE_LISTING_REPOSITORY,
-      useFactory: (pg?: MarketplaceListingRepository): MarketplaceListingRepository =>
-        pg ?? new InMemoryMarketplaceListingRepository(),
-      inject: [{ token: 'PG_MARKETPLACE_LISTING_REPOSITORY', optional: true }]
-    },
-    {
-      provide: MARKETPLACE_ORDER_REPOSITORY,
-      useFactory: (pg?: MarketplaceOrderRepository): MarketplaceOrderRepository =>
-        pg ?? new InMemoryMarketplaceOrderRepository(),
-      inject: [{ token: 'PG_MARKETPLACE_ORDER_REPOSITORY', optional: true }]
-    },
-    {
-      provide: GROUP_BUY_REPOSITORY,
-      useFactory: (pg?: GroupBuyRepository): GroupBuyRepository =>
-        pg ?? new InMemoryGroupBuyRepository(),
-      inject: [{ token: 'PG_GROUP_BUY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: HOLD_REPOSITORY,
-      useFactory: (pg?: HoldRepository): HoldRepository => pg ?? new InMemoryHoldRepository(),
-      inject: [{ token: 'PG_HOLD_REPOSITORY', optional: true }]
-    },
-    {
-      provide: LEDGER_ACCOUNT_REPOSITORY,
-      useFactory: (pg?: LedgerAccountRepository): LedgerAccountRepository =>
-        pg ?? new InMemoryLedgerAccountRepository(),
-      inject: [{ token: 'PG_LEDGER_ACCOUNT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: LEDGER_ENTRY_REPOSITORY,
-      useFactory: (pg?: LedgerEntryRepository): LedgerEntryRepository =>
-        pg ?? new InMemoryLedgerEntryRepository(),
-      inject: [{ token: 'PG_LEDGER_ENTRY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: SAVINGS_GOAL_REPOSITORY,
-      useFactory: (pg?: SavingsGoalRepository): SavingsGoalRepository =>
-        pg ?? new InMemorySavingsGoalRepository(),
-      inject: [{ token: 'PG_SAVINGS_GOAL_REPOSITORY', optional: true }]
-    },
-    {
-      provide: MANDATE_REPOSITORY,
-      useFactory: (pg?: MandateRepository): MandateRepository =>
-        pg ?? new InMemoryMandateRepository(),
-      inject: [{ token: 'PG_MANDATE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: LOAN_REPOSITORY,
-      useFactory: (pg?: LoanRepository): LoanRepository => pg ?? new InMemoryLoanRepository(),
-      inject: [{ token: 'PG_LOAN_REPOSITORY', optional: true }]
-    },
-    {
-      provide: REPAYMENT_REPOSITORY,
-      useFactory: (pg?: RepaymentRepository): RepaymentRepository =>
-        pg ?? new InMemoryRepaymentRepository(),
-      inject: [{ token: 'PG_REPAYMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PAYMENT_REPOSITORY,
-      useFactory: (pg?: PaymentRepository): PaymentRepository =>
-        pg ?? new InMemoryPaymentRepository(),
-      inject: [{ token: 'PG_PAYMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: SETTLEMENT_REPOSITORY,
-      useFactory: (pg?: SettlementRepository): SettlementRepository =>
-        pg ?? new InMemorySettlementRepository(),
-      inject: [{ token: 'PG_SETTLEMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: ESCROW_REPOSITORY,
-      useFactory: (pg?: EscrowRepository): EscrowRepository =>
-        pg ?? new InMemoryEscrowRepository(),
-      inject: [{ token: 'PG_ESCROW_REPOSITORY', optional: true }]
-    },
-    {
-      provide: DOCUMENT_REPOSITORY,
-      useFactory: (pg?: DocumentRepository): DocumentRepository =>
-        pg ?? new InMemoryDocumentRepository(),
-      inject: [{ token: 'PG_DOCUMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CREDIT_PROFILE_REPOSITORY,
-      useFactory: (pg?: CreditProfileRepository): CreditProfileRepository =>
-        pg ?? new InMemoryCreditProfileRepository(),
-      inject: [{ token: 'PG_CREDIT_PROFILE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CREDIT_SCORECARD_REPOSITORY,
-      useFactory: (pg?: CreditScorecardRepository): CreditScorecardRepository =>
-        pg ?? new InMemoryCreditScorecardRepository(),
-      inject: [{ token: 'PG_CREDIT_SCORECARD_REPOSITORY', optional: true }]
-    },
-    {
-      provide: VOUCHER_REPOSITORY,
-      useFactory: (pg?: VoucherRepository): VoucherRepository =>
-        pg ?? new InMemoryVoucherRepository(),
-      inject: [{ token: 'PG_VOUCHER_REPOSITORY', optional: true }]
-    },
-    {
-      provide: DISPUTE_REPOSITORY,
-      useFactory: (pg?: DisputeRepository): DisputeRepository =>
-        pg ?? new InMemoryDisputeRepository(),
-      inject: [{ token: 'PG_DISPUTE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: NOTIFICATION_REPOSITORY,
-      useFactory: (pg?: NotificationRepository): NotificationRepository =>
-        pg ?? new InMemoryNotificationRepository(),
-      inject: [{ token: 'PG_NOTIFICATION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: NOTIFICATION_DELIVERY_REPOSITORY,
-      useFactory: (pg?: NotificationDeliveryRepository): NotificationDeliveryRepository =>
-        pg ?? new InMemoryNotificationDeliveryRepository(),
-      inject: [{ token: 'PG_NOTIFICATION_DELIVERY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: ALERT_PREFERENCE_REPOSITORY,
-      useFactory: (pg?: AlertPreferenceRepository): AlertPreferenceRepository =>
-        pg ?? new InMemoryAlertPreferenceRepository(),
-      inject: [{ token: 'PG_ALERT_PREFERENCE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: AUDIT_REPOSITORY,
-      useFactory: (pg?: AuditRepository): AuditRepository => pg ?? new InMemoryAuditRepository(),
-      inject: [{ token: 'PG_AUDIT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: AUDIT_ANCHOR_REPOSITORY,
-      useFactory: (pg?: AuditAnchorRepository): AuditAnchorRepository =>
-        pg ?? new InMemoryAuditAnchorRepository(),
-      inject: [{ token: 'PG_AUDIT_ANCHOR_REPOSITORY', optional: true }]
-    },
-    {
-      provide: OUTBOX_REPOSITORY,
-      useFactory: (pg?: OutboxRepository): OutboxRepository =>
-        pg ?? new InMemoryOutboxRepository(),
-      inject: [{ token: 'PG_OUTBOX_REPOSITORY', optional: true }]
-    },
-    {
-      provide: FEATURE_FLAG_REPOSITORY,
-      useFactory: (pg?: FeatureFlagRepository): FeatureFlagRepository =>
-        pg ?? new InMemoryFeatureFlagRepository(),
-      inject: [{ token: 'PG_FEATURE_FLAG_REPOSITORY', optional: true }]
-    },
-    {
-      provide: API_PROVENANCE_REPOSITORY,
-      useFactory: (pg?: ApiProvenanceRepository): ApiProvenanceRepository =>
-        pg ?? new InMemoryApiProvenanceRepository(),
-      inject: [{ token: 'PG_API_PROVENANCE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: INTEGRATION_REPOSITORY,
-      useFactory: (pg?: IntegrationRepository): IntegrationRepository =>
-        pg ?? new InMemoryIntegrationRepository(),
-      inject: [{ token: 'PG_INTEGRATION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: WEBHOOK_EVENT_REPOSITORY,
-      useFactory: (pg?: WebhookEventRepository): WebhookEventRepository =>
-        pg ?? new InMemoryWebhookEventRepository(),
-      inject: [{ token: 'PG_WEBHOOK_EVENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PROVIDER_INTEGRATION_REPOSITORY,
-      useFactory: (pg?: ProviderIntegrationRepository): ProviderIntegrationRepository =>
-        pg ?? new InMemoryProviderIntegrationRepository(),
-      inject: [{ token: 'PG_PROVIDER_INTEGRATION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: COMPLIANCE_CASE_REPOSITORY,
-      useFactory: (pg?: ComplianceCaseRepository): ComplianceCaseRepository =>
-        pg ?? new InMemoryComplianceCaseRepository(),
-      inject: [{ token: 'PG_COMPLIANCE_CASE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: INTEROP_EXCHANGE_REPOSITORY,
-      useFactory: (pg?: InteropExchangeRepository): InteropExchangeRepository =>
-        pg ?? new InMemoryInteropExchangeRepository(),
-      inject: [{ token: 'PG_INTEROP_EXCHANGE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: COMMODITY_PRICE_REPOSITORY,
-      useFactory: (pg?: CommodityPriceRepository): CommodityPriceRepository =>
-        pg ?? new InMemoryCommodityPriceRepository(),
-      inject: [{ token: 'PG_COMMODITY_PRICE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: RECEIPT_REPOSITORY,
-      useFactory: (pg?: ReceiptRepository): ReceiptRepository =>
-        pg ?? new InMemoryReceiptRepository(),
-      inject: [{ token: 'PG_RECEIPT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: RECONCILIATION_REPORT_REPOSITORY,
-      useFactory: (pg?: ReconciliationReportRepository): ReconciliationReportRepository =>
-        pg ?? new InMemoryReconciliationReportRepository(),
-      inject: [{ token: 'PG_RECONCILIATION_REPORT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: RECONCILIATION_EXCEPTION_REPOSITORY,
-      useFactory: (pg?: ReconciliationExceptionRepository): ReconciliationExceptionRepository =>
-        pg ?? new InMemoryReconciliationExceptionRepository(),
-      inject: [{ token: 'PG_RECONCILIATION_EXCEPTION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: STATEMENT_SNAPSHOT_REPOSITORY,
-      useFactory: (pg?: StatementSnapshotRepository): StatementSnapshotRepository =>
-        pg ?? new InMemoryStatementSnapshotRepository(),
-      inject: [{ token: 'PG_STATEMENT_SNAPSHOT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: REFERRAL_REPOSITORY,
-      useFactory: (pg?: ReferralRepository): ReferralRepository =>
-        pg ?? new InMemoryReferralRepository(),
-      inject: [{ token: 'PG_REFERRAL_REPOSITORY', optional: true }]
-    },
-    {
-      provide: ACTIVITY_FEED_REPOSITORY,
-      useFactory: (pg?: ActivityFeedRepository): ActivityFeedRepository =>
-        pg ?? new InMemoryActivityFeedRepository(),
-      inject: [{ token: 'PG_ACTIVITY_FEED_REPOSITORY', optional: true }]
-    },
-    {
-      provide: AUTH_SESSION_REPOSITORY,
-      useFactory: (pg?: AuthSessionRepository): AuthSessionRepository =>
-        pg ?? new InMemoryAuthSessionRepository(),
-      inject: [{ token: 'PG_AUTH_SESSION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PIN_PROFILE_REPOSITORY,
-      useFactory: (pg?: PinProfileRepository): PinProfileRepository =>
-        pg ?? new InMemoryPinProfileRepository(),
-      inject: [{ token: 'PG_PIN_PROFILE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: USSD_SESSION_REPOSITORY,
-      useFactory: (pg?: UssdSessionRepository): UssdSessionRepository =>
-        pg ?? new InMemoryUssdSessionRepository(),
-      inject: [{ token: 'PG_USSD_SESSION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: OTP_CHALLENGE_REPOSITORY,
-      useFactory: (pg?: OtpChallengeRepository): OtpChallengeRepository =>
-        pg ?? new InMemoryOtpChallengeRepository(),
-      inject: [{ token: 'PG_OTP_CHALLENGE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: IDEMPOTENCY_RECORD_REPOSITORY,
-      useFactory: (pg?: IdempotencyRecordRepository): IdempotencyRecordRepository =>
-        pg ?? new InMemoryIdempotencyRecordRepository(),
-      inject: [{ token: 'PG_IDEMPOTENCY_RECORD_REPOSITORY', optional: true }]
-    },
-    {
-      provide: DSAR_REQUEST_REPOSITORY,
-      useFactory: (pg?: DsarRequestRepository): DsarRequestRepository =>
-        pg ?? new InMemoryDsarRequestRepository(),
-      inject: [{ token: 'PG_DSAR_REQUEST_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CONSENT_RECORD_REPOSITORY,
-      useFactory: (pg?: ConsentRecordRepository): ConsentRecordRepository =>
-        pg ?? new InMemoryConsentRecordRepository(),
-      inject: [{ token: 'PG_CONSENT_RECORD_REPOSITORY', optional: true }]
-    },
-    {
-      provide: OFFLINE_ENROLMENT_TASK_REPOSITORY,
-      useFactory: (pg?: OfflineEnrolmentTaskRepository): OfflineEnrolmentTaskRepository =>
-        pg ?? new InMemoryOfflineEnrolmentTaskRepository(),
-      inject: [{ token: 'PG_OFFLINE_ENROLMENT_TASK_REPOSITORY', optional: true }]
-    },
-    {
-      provide: SURVEY_REPOSITORY,
-      useFactory: (pg?: SurveyRepository): SurveyRepository =>
-        pg ?? new InMemorySurveyRepository(),
-      inject: [{ token: 'PG_SURVEY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: SUBMISSION_REPOSITORY,
-      useFactory: (pg?: SubmissionRepository): SubmissionRepository =>
-        pg ?? new InMemorySubmissionRepository(),
-      inject: [{ token: 'PG_SUBMISSION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: FARM_PLOT_REPOSITORY,
-      useFactory: (pg?: FarmPlotRepository): FarmPlotRepository =>
-        pg ?? new InMemoryFarmPlotRepository(),
-      inject: [{ token: 'PG_FARM_PLOT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: FIELD_CHECK_REPOSITORY,
-      useFactory: (pg?: FieldCheckRepository): FieldCheckRepository =>
-        pg ?? new InMemoryFieldCheckRepository(),
-      inject: [{ token: 'PG_FIELD_CHECK_REPOSITORY', optional: true }]
-    },
-    {
-      provide: LEADERBOARD_ENTRY_REPOSITORY,
-      useFactory: (pg?: LeaderboardEntryRepository): LeaderboardEntryRepository =>
-        pg ?? new InMemoryLeaderboardEntryRepository(),
-      inject: [{ token: 'PG_LEADERBOARD_ENTRY_REPOSITORY', optional: true }]
-    },
-    {
-      provide: LEADERBOARD_SNAPSHOT_REPOSITORY,
-      useFactory: (pg?: LeaderboardSnapshotRepository): LeaderboardSnapshotRepository =>
-        pg ?? new InMemoryLeaderboardSnapshotRepository(),
-      inject: [{ token: 'PG_LEADERBOARD_SNAPSHOT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: REWARD_TRANSACTION_REPOSITORY,
-      useFactory: (pg?: RewardTransactionRepository): RewardTransactionRepository =>
-        pg ?? new InMemoryRewardTransactionRepository(),
-      inject: [{ token: 'PG_REWARD_TRANSACTION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: STAFF_REPOSITORY,
-      useFactory: (pg?: StaffRepository): StaffRepository => pg ?? new InMemoryStaffRepository(),
-      inject: [{ token: 'PG_STAFF_REPOSITORY', optional: true }]
-    },
-    {
-      provide: BULK_DISBURSEMENT_REPOSITORY,
-      useFactory: (pg?: BulkDisbursementRepository): BulkDisbursementRepository =>
-        pg ?? new InMemoryBulkDisbursementRepository(),
-      inject: [{ token: 'PG_BULK_DISBURSEMENT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: ANTI_FRAUD_FLAG_REPOSITORY,
-      useFactory: (pg?: AntiFraudFlagRepository): AntiFraudFlagRepository =>
-        pg ?? new InMemoryAntiFraudFlagRepository(),
-      inject: [{ token: 'PG_ANTI_FRAUD_FLAG_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CARBON_CREDIT_REPOSITORY,
-      useFactory: (pg?: CarbonCreditRepository): CarbonCreditRepository =>
-        pg ?? new InMemoryCarbonCreditRepository(),
-      inject: [{ token: 'PG_CARBON_CREDIT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: CARBON_MILESTONE_REPOSITORY,
-      useFactory: (pg?: CarbonMilestoneRepository): CarbonMilestoneRepository =>
-        pg ?? new InMemoryCarbonMilestoneRepository(),
-      inject: [{ token: 'PG_CARBON_MILESTONE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: REGISTRY_ANCHOR_REPOSITORY,
-      useFactory: (pg?: RegistryAnchorRepository): RegistryAnchorRepository =>
-        pg ?? new InMemoryRegistryAnchorRepository(),
-      inject: [{ token: 'PG_REGISTRY_ANCHOR_REPOSITORY', optional: true }]
-    },
-    {
-      provide: AGGREGATE_REPOSITORY,
-      useFactory: (pg?: AggregateRepository): AggregateRepository =>
-        pg ?? new InMemoryAggregateRepository(),
-      inject: [{ token: 'PG_AGGREGATE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PARTNER_REPOSITORY,
-      useFactory: (pg?: PartnerRepository): PartnerRepository =>
-        pg ?? new InMemoryPartnerRepository(),
-      inject: [{ token: 'PG_PARTNER_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PARTNER_MEMBER_REPOSITORY,
-      useFactory: (pg?: PartnerMemberRepository): PartnerMemberRepository =>
-        pg ?? new InMemoryPartnerMemberRepository(),
-      inject: [{ token: 'PG_PARTNER_MEMBER_REPOSITORY', optional: true }]
-    },
-    {
-      provide: MARKET_LINK_REPOSITORY,
-      useFactory: (pg?: MarketLinkRepository): MarketLinkRepository =>
-        pg ?? new InMemoryMarketLinkRepository(),
-      inject: [{ token: 'PG_MARKET_LINK_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PROCESSING_RECORD_REPOSITORY,
-      useFactory: (pg?: ProcessingRecordRepository): ProcessingRecordRepository =>
-        pg ?? new InMemoryProcessingRecordRepository(),
-      inject: [{ token: 'PG_PROCESSING_RECORD_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PROCESSING_JOB_REPOSITORY,
-      useFactory: (pg?: ProcessingJobRepository): ProcessingJobRepository =>
-        pg ?? new InMemoryProcessingJobRepository(),
-      inject: [{ token: 'PG_PROCESSING_JOB_REPOSITORY', optional: true }]
-    },
-    {
-      provide: WAREHOUSE_REPOSITORY,
-      useFactory: (pg?: WarehouseRepository): WarehouseRepository =>
-        pg ?? new InMemoryWarehouseRepository(),
-      inject: [{ token: 'PG_WAREHOUSE_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PULSE_SUBSCRIPTION_REPOSITORY,
-      useFactory: (pg?: PulseSubscriptionRepository): PulseSubscriptionRepository =>
-        pg ?? new InMemoryPulseSubscriptionRepository(),
-      inject: [{ token: 'PG_PULSE_SUBSCRIPTION_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PRICE_ALERT_REPOSITORY,
-      useFactory: (pg?: PriceAlertRepository): PriceAlertRepository =>
-        pg ?? new InMemoryPriceAlertRepository(),
-      inject: [{ token: 'PG_PRICE_ALERT_REPOSITORY', optional: true }]
-    },
-    {
-      provide: PROVENANCE_AUDIT_REPOSITORY,
-      useFactory: (pg?: ProvenanceAuditRepository): ProvenanceAuditRepository =>
-        pg ?? new InMemoryProvenanceAuditRepository(),
-      inject: [{ token: 'PG_PROVENANCE_AUDIT_REPOSITORY', optional: true }]
+      provide: DELETION_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDeletionRequestRepository(pool) : createInMemoryDeletionRequestRepository(),
+      inject: [PG_POOL]
     },
     {
       provide: SUCCESSION_CLAIM_REPOSITORY,
-      useFactory: (pg?: SuccessionClaimRepository): SuccessionClaimRepository =>
-        pg ?? new InMemorySuccessionClaimRepository(),
-      inject: [{ token: 'PG_SUCCESSION_CLAIM_REPOSITORY', optional: true }]
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSuccessionClaimRepository(pool) : createInMemorySuccessionClaimRepository(),
+      inject: [PG_POOL]
     },
+    {
+      provide: GUARDIAN_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGuardianLinkRepository(pool) : createInMemoryGuardianLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: NIN_ANCHOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgNinAnchorRepository(pool) : createInMemoryNinAnchorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ACCOUNT_MERGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAccountMergeRepository(pool) : createInMemoryAccountMergeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ERASURE_HOLD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgErasureHoldRepository(pool) : createInMemoryErasureHoldRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COURSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgCourseRepository(pool) : createInMemoryCourseRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ENROLMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, certificates: unknown) =>
+        pool
+          ? createPgEnrolmentRepository(pool)
+          : createInMemoryEnrolmentRepository(
+              certificates as Parameters<typeof createInMemoryEnrolmentRepository>[0]
+            ),
+      inject: [PG_POOL, CERTIFICATE_REPOSITORY]
+    },
+    {
+      provide: CERTIFICATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertificateRepository(pool) : createInMemoryCertificateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FORUM_TOPIC_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgForumTopicRepository(pool) : createInMemoryForumTopicRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MENTOR_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMentorRequestRepository(pool) : createInMemoryMentorRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: TOPIC_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgTopicFlagRepository(pool) : createInMemoryTopicFlagRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OPPORTUNITY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOpportunityRepository(pool) : createInMemoryOpportunityRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: APPLICATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, opportunities: unknown) =>
+        pool
+          ? createPgApplicationRepository(pool)
+          : createInMemoryApplicationRepository(
+              opportunities as Parameters<typeof createInMemoryApplicationRepository>[0]
+            ),
+      inject: [PG_POOL, OPPORTUNITY_REPOSITORY]
+    },
+    {
+      provide: CHAPTER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgChapterRepository(pool) : createInMemoryChapterRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CHAPTER_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterEventRepository(pool) : createInMemoryChapterEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EVENT_RSVP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, events: unknown) =>
+        pool
+          ? createPgEventRsvpRepository(pool)
+          : createInMemoryEventRsvpRepository(
+              events as Parameters<typeof createInMemoryEventRsvpRepository>[0]
+            ),
+      inject: [PG_POOL, CHAPTER_EVENT_REPOSITORY]
+    },
+    {
+      provide: ANNOUNCEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnnouncementRepository(pool) : createInMemoryAnnouncementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ADVISORY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAdvisoryRepository(pool) : createInMemoryAdvisoryRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 4): Planting-Window Pulse repositories.
+    {
+      provide: ADVISORY_PULSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAdvisoryPulseRepository(pool) : createInMemoryAdvisoryPulseRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (innovation 11): Price Wire repositories.
+    {
+      provide: PRICE_WIRE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceWireRepository(pool) : createInMemoryPriceWireRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgListingRepository(pool) : createInMemoryListingRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ORDER_REPOSITORY,
+      // In-memory mode attaches the listing repository so placeOrder can
+      // decrement stock with the same compare-and-set guard as the pg path.
+      useFactory: (pool: pg.Pool | null, listings: unknown) =>
+        pool
+          ? createPgOrderRepository(pool)
+          : createInMemoryOrderRepository(listings as Parameters<typeof createInMemoryOrderRepository>[0]),
+      inject: [PG_POOL, LISTING_REPOSITORY]
+    },
+    {
+      provide: REVIEW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgReviewRepository(pool) : createInMemoryReviewRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditProfileRepository(pool) : createInMemoryCreditProfileRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DOCUMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDocumentRepository(pool) : createInMemoryDocumentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: NOTIFICATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, deliveryLog: unknown) =>
+        pool
+          ? createPgNotificationRepository(pool)
+          : createInMemoryNotificationRepository(
+              deliveryLog as Parameters<typeof createInMemoryNotificationRepository>[0]
+            ),
+      inject: [PG_POOL, DELIVERY_LOG_REPOSITORY]
+    },
+    {
+      provide: NOTIFICATION_PREFERENCE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgNotificationPreferenceRepository(pool) : createInMemoryNotificationPreferenceRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DELIVERY_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDeliveryLogRepository(pool) : createInMemoryDeliveryLogRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AUDIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgAuditRepository(pool) : createInMemoryAuditRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OUTBOX_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgOutboxRepository(pool) : createInMemoryOutboxRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COMMODITY_PRICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityPriceRepository(pool) : createInMemoryCommodityPriceRepository(),
+      inject: [PG_POOL]
+    },
+    // Engagement wave (P2b) providers.
+    {
+      provide: SUPPLIER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgSupplierRepository(pool) : createInMemorySupplierRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_OFFERING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceOfferingRepository(pool) : createInMemoryServiceOfferingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_BOOKING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceBookingRepository(pool) : createInMemoryServiceBookingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SERVICE_REVIEW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgServiceReviewRepository(pool) : createInMemoryServiceReviewRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_COHORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeCohortRepository(pool) : createInMemoryProgrammeCohortRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_ENROLMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeEnrolmentRepository(pool) : createInMemoryProgrammeEnrolmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROGRAMME_MILESTONE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProgrammeMilestoneRepository(pool) : createInMemoryProgrammeMilestoneRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MILESTONE_PROGRESS_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMilestoneProgressRepository(pool) : createInMemoryMilestoneProgressRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RUBRIC_CRITERION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRubricCriterionRepository(pool) : createInMemoryRubricCriterionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: JUDGE_ASSIGNMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgJudgeAssignmentRepository(pool) : createInMemoryJudgeAssignmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: JUDGE_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgJudgeScoreRepository(pool) : createInMemoryJudgeScoreRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COHORT_THREAD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCohortThreadRepository(pool) : createInMemoryCohortThreadRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COHORT_THREAD_POST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCohortThreadPostRepository(pool) : createInMemoryCohortThreadPostRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_TEMPLATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayTemplateRepository(pool) : createInMemoryPathwayTemplateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_STAGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayStageRepository(pool) : createInMemoryPathwayStageRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PATHWAY_ENROLMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPathwayEnrolmentRepository(pool) : createInMemoryPathwayEnrolmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: STAGE_PROGRESS_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgStageProgressRepository(pool) : createInMemoryStageProgressRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CAMPUS_CLUB_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCampusClubRepository(pool) : createInMemoryCampusClubRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCampusClubMembershipRepository(pool) : createInMemoryCampusClubMembershipRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: KNOWLEDGE_RESOURCE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgKnowledgeResourceRepository(pool) : createInMemoryKnowledgeResourceRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PODCAST_EPISODE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPodcastEpisodeRepository(pool) : createInMemoryPodcastEpisodeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBINAR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgWebinarRepository(pool) : createInMemoryWebinarRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBINAR_REGISTRATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWebinarRegistrationRepository(pool) : createInMemoryWebinarRegistrationRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SEARCH_QUERY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSearchQueryRepository(pool) : createInMemorySearchQueryRepository(),
+      inject: [PG_POOL]
+    },
+    // Commerce & finance wave (P2a) providers.
+    {
+      provide: ESCROW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgEscrowRepository(pool) : createInMemoryEscrowRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INVOICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgInvoiceRepository(pool) : createInMemoryInvoiceRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgShipmentRepository(pool) : createInMemoryShipmentRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerAccountRepository(pool) : createInMemoryLedgerAccountRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LEDGER_ENTRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLedgerEntryRepository(pool) : createInMemoryLedgerEntryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SCORE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditScoreRepository(pool) : createInMemoryCreditScoreRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LENDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLenderRepository(pool) : createInMemoryLenderRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOAN_APPLICATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLoanApplicationRepository(pool) : createInMemoryLoanApplicationRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REPAYMENT_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRepaymentScheduleRepository(pool) : createInMemoryRepaymentScheduleRepository(),
+      inject: [PG_POOL]
+    },
+    // Phase-3 federated integration wave (P5a) providers.
+    {
+      provide: EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgExternalAccountLinkRepository(pool) : createInMemoryExternalAccountLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FARM_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmRecordRepository(pool) : createInMemoryFarmRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: IMPORT_BATCH_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgImportBatchRepository(pool) : createInMemoryImportBatchRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: IMPORT_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgImportRecordRepository(pool) : createInMemoryImportRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INBOUND_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
+      inject: [PG_POOL]
+    },
+    // WP-G20: bridge sync-state bookkeeping (integrations.bridge_sync_state).
+    {
+      provide: BRIDGE_SYNC_STATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBridgeSyncStateRepository(pool) : createInMemoryBridgeSyncStateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      // Durable provider-webhook dedupe (funds-integrity wave): pg mode
+      // persists receipts in integrations.inbound_events; in-memory mode
+      // keeps the bounded replay cache for development.
+      provide: WEBHOOK_DEDUPE_STORE,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWebhookDedupeStore(pool) : createInMemoryWebhookDedupeStore(),
+      inject: [PG_POOL]
+    },
+    // USSD channel + lightweight-channel depth wave (P5b) providers.
+    {
+      provide: USSD_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgUssdSessionRepository(pool) : createInMemoryUssdSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PIN_PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPinProfileRepository(pool) : createInMemoryPinProfileRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5c: recommendation feedback events.
+    {
+      provide: RECOMMENDATION_FEEDBACK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgRecommendationFeedbackRepository(pool)
+          : createInMemoryRecommendationFeedbackRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5c: lakehouse-ready analytics data marts.
+    {
+      provide: ANALYTICS_MART_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsMartRepository(pool) : createInMemoryAnalyticsMartRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave B: analytics star-schema marts (analytics schema, migration 019).
+    {
+      provide: ANALYTICS_STAR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAnalyticsStarRepository(pool) : createInMemoryAnalyticsStarRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P5d: partner API repositories (appended; see partner-api module).
+    {
+      provide: PARTNER_CLIENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPartnerClientRepository(pool) : createInMemoryPartnerClientRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: API_KEY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgApiKeyRepository(pool) : createInMemoryApiKeyRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 24: partner tenant binding (user ↔ partner organisation).
+    {
+      provide: PARTNER_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPartnerMemberRepository(pool) : createInMemoryPartnerMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WEBHOOK_SUBSCRIPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgWebhookSubscriptionRepository(pool)
+          : createInMemoryWebhookSubscriptionRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave P6a: IVR voice channel (appended).
+    {
+      provide: IVR_CALL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgIvrCallRepository(pool) : createInMemoryIvrCallRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave L1a: ALTP livestock core (appended).
+    {
+      provide: OWNERSHIP_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOwnershipTransferRepository(pool) : createInMemoryOwnershipTransferRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ANIMAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transfers: unknown) =>
+        pool
+          ? createPgAnimalRepository(pool)
+          : createInMemoryAnimalRepository(
+              transfers as Parameters<typeof createInMemoryAnimalRepository>[0]
+            ),
+      inject: [PG_POOL, OWNERSHIP_TRANSFER_REPOSITORY]
+    },
+    {
+      provide: LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLotRepository(pool) : createInMemoryLotRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PASTORALIST_PROFILE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPastoralistProfileRepository(pool) : createInMemoryPastoralistProfileRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave L1b: ALTP livestock health/traceability (appended).
+    {
+      provide: HEALTH_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgHealthRecordRepository(pool) : createInMemoryHealthRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MOVEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMovementRepository(pool) : createInMemoryMovementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: MOVEMENT_PERMIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgMovementPermitRepository(pool) : createInMemoryMovementPermitRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RECALL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRecallRepository(pool) : createInMemoryRecallRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DISEASE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDiseaseFlagRepository(pool) : createInMemoryDiseaseFlagRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave L1c: ALTP trade/finance/compliance (appended).
+    {
+      provide: CERTIFIED_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedListingRepository(pool) : createInMemoryCertifiedListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_TEMPLATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeTemplateRepository(pool) : createInMemoryOfftakeTemplateRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: OFFTAKE_CONTRACT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOfftakeContractRepository(pool) : createInMemoryOfftakeContractRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EXPORT_DOCUMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgExportDocumentRepository(pool) : createInMemoryExportDocumentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIEN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) => (pool ? createPgLienRepository(pool) : createInMemoryLienRepository()),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsurancePolicyRepository(pool) : createInMemoryInsurancePolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INSURANCE_CLAIM_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInsuranceClaimRepository(pool) : createInMemoryInsuranceClaimRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DISBURSEMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDisbursementRepository(pool) : createInMemoryDisbursementRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGGREGATION_POINT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAggregationPointRepository(pool) : createInMemoryAggregationPointRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: COLD_CHAIN_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgColdChainLogRepository(pool) : createInMemoryColdChainLogRepository(),
+      inject: [PG_POOL]
+    },
+    // Lien-backed transfer guard consulted (optionally) by
+    // LivestockService.transferAnimal; registered here so the livestock core
+    // module resolves it without importing the trade module (no cycle).
+    {
+      provide: LIVESTOCK_TRANSFER_GUARD,
+      useFactory: (liens: unknown) =>
+        createLienTransferGuard(liens as Parameters<typeof createLienTransferGuard>[0]),
+      inject: [LIEN_REPOSITORY]
+    },
+    // V-12 quarantine transfer guard: blocks transfers of animals whose home
+    // state is under a confirmed in-window disease quarantine (same optional
+    // port pattern as the lien guard; no module cycle).
+    {
+      provide: LIVESTOCK_DISEASE_GUARD,
+      useFactory: (diseaseFlags: unknown, animals: unknown) =>
+        createDiseaseTransferGuard(
+          diseaseFlags as Parameters<typeof createDiseaseTransferGuard>[0],
+          animals as Parameters<typeof createDiseaseTransferGuard>[1]
+        ),
+      inject: [DISEASE_FLAG_REPOSITORY, ANIMAL_REPOSITORY]
+    },
+    // Wave P: platform foundation (appended).
+    {
+      provide: AUTH_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAuthSessionRepository(pool) : createInMemoryAuthSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FEATURE_FLAG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFeatureFlagRepository(pool) : createInMemoryFeatureFlagRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROCESSED_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProcessedEventRepository(pool) : createInMemoryProcessedEventRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave M: marketplace commerce depth providers (additive).
+    {
+      provide: LISTING_VARIANT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgListingVariantRepository(pool) : createInMemoryListingVariantRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BUYER_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBuyerGroupRepository(pool) : createInMemoryBuyerGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBuyerGroupMembershipRepository(pool) : createInMemoryBuyerGroupMembershipRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRICE_LIST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceListRepository(pool) : createInMemoryPriceListRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRICE_LIST_ENTRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPriceListEntryRepository(pool) : createInMemoryPriceListEntryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROMOTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPromotionRepository(pool) : createInMemoryPromotionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PROMOTION_REDEMPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPromotionRedemptionRepository(pool) : createInMemoryPromotionRedemptionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: ORDER_EXTENSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgOrderExtensionRepository(pool) : createInMemoryOrderExtensionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RETURN_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgReturnRequestRepository(pool) : createInMemoryReturnRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DRAFT_ORDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDraftOrderRepository(pool) : createInMemoryDraftOrderRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PRODUCT_REVIEW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgProductReviewRepository(pool) : createInMemoryProductReviewRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SELLER_RATING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSellerRatingRepository(pool) : createInMemorySellerRatingRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave COMP: NDPA 2023 compliance tooling providers (additive).
+    {
+      provide: COMPLIANCE_CONSENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgComplianceConsentRepository(pool) : createInMemoryComplianceConsentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: DATA_SUBJECT_REQUEST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDataSubjectRequestRepository(pool) : createInMemoryDataSubjectRequestRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: RETENTION_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRetentionPolicyRepository(pool) : createInMemoryRetentionPolicyRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave SYNCSRV: record-level offline sync protocol v1 (additive).
+    {
+      provide: ENTITY_VERSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEntityVersionRepository(pool) : createInMemoryEntityVersionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SYNC_CURSOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSyncCursorRepository(pool) : createInMemorySyncCursorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: SYNC_MUTATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave FARMS: farms & crop-production (appended).
+    {
+      provide: FARM_PLOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmPlotRepository(pool) : createInMemoryFarmPlotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CROP_PLANTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCropPlantingRepository(pool) : createInMemoryCropPlantingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: HARVEST_RECORD_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgHarvestRecordRepository(pool) : createInMemoryHarvestRecordRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FARM_EXPENSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFarmExpenseRepository(pool) : createInMemoryFarmExpenseRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: FARM_EXPENSE_ALLOCATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgFarmExpenseAllocationRepository(pool)
+          : createInMemoryFarmExpenseAllocationRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave AGENTS: field-agent (enumerator) providers (additive).
+    {
+      provide: AGENT_ASSIGNMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentAssignmentRepository(pool) : createInMemoryAgentAssignmentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_ACTIVITY_LOG_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentActivityLogRepository(pool) : createInMemoryAgentActivityLogRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave GEO: geospatial pack providers (additive).
+    {
+      provide: H3_INDEX_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgH3IndexRepository(pool) : createInMemoryH3IndexRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: GEO_BOUNDARY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGeoBoundaryRepository(pool) : createInMemoryGeoBoundaryRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave CREDIT: microfinance suite providers (additive). The in-memory
+    // savings account repo shares the transaction store so guarded
+    // balance+transaction bodies stay atomic in unit tests.
+    {
+      provide: CREDIT_PRODUCT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditProductRepository(pool) : createInMemoryCreditProductRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_LOAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditLoanRepository(pool) : createInMemoryCreditLoanRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_REPAYMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditRepaymentRepository(pool) : createInMemoryCreditRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave-2 V-04: loan restructure audit trail (append-only).
+    {
+      provide: CREDIT_RESTRUCTURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditRestructureRepository(pool)
+          : createInMemoryCreditRestructureRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_COLLATERAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditCollateralRepository(pool) : createInMemoryCreditCollateralRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GUARANTOR_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGuarantorRepository(pool) : createInMemoryCreditGuarantorRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGroupRepository(pool) : createInMemoryCreditGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_GROUP_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCreditGroupMemberRepository(pool) : createInMemoryCreditGroupMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditSavingsTransactionRepository(pool)
+          : createInMemoryCreditSavingsTransactionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null, transactions: unknown) =>
+        pool
+          ? createPgCreditSavingsAccountRepository(pool)
+          : createInMemoryCreditSavingsAccountRepository(
+              transactions as Parameters<typeof createInMemoryCreditSavingsAccountRepository>[0]
+            ),
+      inject: [PG_POOL, CREDIT_SAVINGS_TRANSACTION_REPOSITORY]
+    },
+    // Wave EUDR: traceability passport providers (additive).
+    {
+      provide: COMMODITY_LOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCommodityLotRepository(pool) : createInMemoryCommodityLotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CUSTODY_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCustodyEventRepository(pool) : createInMemoryCustodyEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LOT_PLOT_LINK_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLotPlotLinkRepository(pool) : createInMemoryLotPlotLinkRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: TRACEABILITY_SHIPMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgTraceabilityShipmentRepository(pool)
+          : createInMemoryTraceabilityShipmentRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave VOICE: voice agronomist repositories (appended).
+    {
+      provide: VOICE_SESSION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceSessionRepository(pool) : createInMemoryVoiceSessionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOICE_TURN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoiceTurnRepository(pool) : createInMemoryVoiceTurnRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentCaseRepository(pool) : createInMemoryAgentCaseRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 innovation #19 (additive): agronomist SLA console queue.
+    {
+      provide: ESCALATION_CASE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEscalationCaseRepository(pool) : createInMemoryEscalationCaseRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave GEOCREDIT (additive): geo-verified credit shadow scores.
+    {
+      provide: GEO_CREDIT_SHADOW_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgGeoCreditShadowRepository(pool) : createInMemoryGeoCreditShadowRepository(),
+      inject: [PG_POOL]
+    },
+    // SeasonSync (innovation wave 27, additive): pinned seasonal schedules.
+    {
+      provide: SEASONAL_SCHEDULE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSeasonalScheduleRepository(pool) : createInMemorySeasonalScheduleRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage-27 Innovation 14 (additive): cooperative scores (append-only).
     {
       provide: COOP_SCORE_REPOSITORY,
-      useFactory: (pg?: CoopScoreRepository): CoopScoreRepository =>
-        pg ?? new InMemoryCoopScoreRepository(),
-      inject: [{ token: 'PG_COOP_SCORE_REPOSITORY', optional: true }]
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCoopScoreRepository(pool) : createInMemoryCoopScoreRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave AGENTBANK (additive): agent banking (float, top-ups, vouchers, tx log).
+    {
+      provide: AGENT_BANKING_AGENT_REPOSITORY,
+      // OB-12: the in-memory agents repo shares the ledger-account store so
+      // registerAgent's three writes stay atomic (compensated) in-memory;
+      // the pg repo wraps them in a single transaction itself.
+      useFactory: (pool: pg.Pool | null, ledgerAccounts: InMemoryLedgerAccountRepository) =>
+        pool
+          ? createPgAgentBankingAgentRepository(pool)
+          : createInMemoryAgentBankingAgentRepository(ledgerAccounts),
+      inject: [PG_POOL, LEDGER_ACCOUNT_REPOSITORY]
     },
     {
-      provide: STORAGE_DRIVER,
-      useFactory: (): StorageDriver => resolveStorageDriver().driver
+      provide: AGENT_FLOAT_TOPUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentFloatTopUpRepository(pool) : createInMemoryAgentFloatTopUpRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_VOUCHER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentVoucherRepository(pool) : createInMemoryAgentVoucherRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_TRANSACTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentTransactionRepository(pool) : createInMemoryAgentTransactionRepository(),
+      inject: [PG_POOL]
+    },
+    // W2-C2 (V-08/V-41, migrations 102/104): reversal queue + device bindings.
+    {
+      provide: AGENT_REVERSAL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentReversalRepository(pool) : createInMemoryAgentReversalRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: AGENT_DEVICE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgAgentDeviceRepository(pool) : createInMemoryAgentDeviceRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 Innovation 15 (FLOAT FORECASTER, additive): float forecasts +
+    // rebalancing alert queue (migration 073).
+    {
+      provide: FLOAT_FORECAST_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFloatForecastRepository(pool) : createInMemoryFloatForecastRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_ALERT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceAlertRepository(pool) : createInMemoryRebalanceAlertRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: REBALANCE_RUN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRebalanceRunRepository(pool) : createInMemoryRebalanceRunRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave MECHANIZATION (additive): equipment hire marketplace.
+    {
+      provide: EQUIPMENT_LISTING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentListingRepository(pool) : createInMemoryEquipmentListingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: EQUIPMENT_BOOKING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgEquipmentBookingRepository(pool) : createInMemoryEquipmentBookingRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave-INSURANCE (additive): parametric insurance rail.
+    {
+      provide: PARAMETRIC_PRODUCT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricProductRepository(pool) : createInMemoryParametricProductRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_POLICY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPolicyRepository(pool) : createInMemoryParametricPolicyRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgParametricTriggerEventRepository(pool)
+          : createInMemoryParametricTriggerEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: PARAMETRIC_PAYOUT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgParametricPayoutRepository(pool) : createInMemoryParametricPayoutRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 (Insurance-in-the-Bag, additive): voucher-bundled cover.
+    {
+      provide: VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherProgrammeRiderRepository(pool) : createInMemoryVoucherProgrammeRiderRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VOUCHER_COVER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVoucherCoverRepository(pool) : createInMemoryVoucherCoverRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave VSLACARBON (additive): VSLA groups + carbon MRV.
+    {
+      provide: VSLA_GROUP_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaGroupRepository(pool) : createInMemoryVslaGroupRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaMemberRepository(pool) : createInMemoryVslaMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CYCLE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaCycleRepository(pool) : createInMemoryVslaCycleRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CONTRIBUTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaContributionRepository(pool) : createInMemoryVslaContributionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_SHARE_OUT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaShareOutRepository(pool) : createInMemoryVslaShareOutRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_SHARE_OUT_PLAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgVslaShareOutPlanRepository(pool)
+          : createInMemoryVslaShareOutPlanRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_LOAN_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaLoanRepository(pool) : createInMemoryVslaLoanRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_LOAN_REPAYMENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaLoanRepaymentRepository(pool) : createInMemoryVslaLoanRepaymentRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
+      provide: VSLA_MEETING_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaMeetingRepository(pool) : createInMemoryVslaMeetingRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: VSLA_CASH_COUNT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgVslaCashCountRepository(pool) : createInMemoryVslaCashCountRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_PLOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonPlotRepository(pool) : createInMemoryCarbonPlotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_EVIDENCE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonEvidenceRepository(pool) : createInMemoryCarbonEvidenceRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CARBON_ESTIMATE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCarbonEstimateRepository(pool) : createInMemoryCarbonEstimateRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+    {
+      provide: LIVESTOCK_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgLivestockPassportRepository(pool)
+          : createInMemoryLivestockPassportRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgPassportEventRepository(pool) : createInMemoryPassportEventRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgPassportTransferRepository(pool)
+          : createInMemoryPassportTransferRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave NINVOUCHER (additive): input subsidy e-vouchers.
+    {
+      provide: INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgSubsidyProgrammeRepository(pool) : createInMemorySubsidyProgrammeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: BENEFICIARY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgBeneficiaryRepository(pool) : createInMemoryBeneficiaryRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgInputVoucherRepository(pool) : createInMemoryInputVoucherRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgRedemptionRepository(pool) : createInMemoryRedemptionRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave WAREHOUSE (additive): electronic warehouse receipts.
+    {
+      provide: CERTIFIED_WAREHOUSE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCertifiedWarehouseRepository(pool) : createInMemoryCertifiedWarehouseRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_DEPOSIT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseDepositRepository(pool) : createInMemoryWarehouseDepositRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_RECEIPT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseReceiptRepository(pool) : createInMemoryWarehouseReceiptRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_PLEDGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehousePledgeRepository(pool) : createInMemoryWarehousePledgeRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: WAREHOUSE_TRANSFER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgWarehouseTransferRepository(pool) : createInMemoryWarehouseTransferRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 Float Sentinel (additive): fraud.sentinel rules/alerts/cases.
+    {
+      provide: FRAUD_SENTINEL_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgFraudSentinelRepository(pool) : createInMemoryFraudSentinelRepository(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 INNOVATION 7 Credit Passport (additive): verifiable farmer credential.
+    {
+      provide: CREDIT_PASSPORT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportCredentialRepository(pool)
+          : createInMemoryCreditPassportCredentialRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgCreditPassportDisclosureRepository(pool)
+          : createInMemoryCreditPassportDisclosureRepository(),
+      inject: [PG_POOL]
+    },
+    // Innovation 10 (Stage 27): Chapter Map providers (additive).
+    {
+      provide: CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMapSnapshotRepository(pool) : createInMemoryChapterMapSnapshotRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: CHAPTER_MEMBER_DIRECTORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMemberDirectory(pool) : createInMemoryChapterMemberDirectory(),
+      inject: [PG_POOL]
+    },
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    {
+      provide: COLLATERAL_POSITION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgCollateralPositionRepository(pool) : createInMemoryCollateralPositionRepository(),
+      inject: [PG_POOL]
+    },
+    {
+      provide: LTV_OBSERVATION_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgLtvObservationRepository(pool) : createInMemoryLtvObservationRepository(),
+      inject: [PG_POOL]
+    },
+    // Wave DDS-STUDIO (additive): DDS package repository (guarded status CAS).
+    {
+      provide: DDS_PACKAGE_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgDdsPackageRepository(pool) : createInMemoryDdsPackageRepository(),
+      inject: [PG_POOL]
     }
   ],
   exports: [
+    PG_POOL,
     USER_REPOSITORY,
-    GUARDIAN_LINK_REPOSITORY,
-    CHAPTER_REPOSITORY,
+    PROFILE_REPOSITORY,
+    CONSENT_REPOSITORY,
+    DELETION_REQUEST_REPOSITORY,
+  SUCCESSION_CLAIM_REPOSITORY,
+  GUARDIAN_LINK_REPOSITORY,
+  NIN_ANCHOR_REPOSITORY,
+  ACCOUNT_MERGE_REPOSITORY,
+  ERASURE_HOLD_REPOSITORY,
     COURSE_REPOSITORY,
-    TRAINING_MODULE_REPOSITORY,
-    COURSE_ENROLMENT_REPOSITORY,
-    COURSE_COMPLETION_REPOSITORY,
+    ENROLMENT_REPOSITORY,
+    CERTIFICATE_REPOSITORY,
+    FORUM_TOPIC_REPOSITORY,
+    MENTOR_REQUEST_REPOSITORY,
+    TOPIC_FLAG_REPOSITORY,
     OPPORTUNITY_REPOSITORY,
-    GRANT_APPLICATION_REPOSITORY,
-    TOPIC_REPOSITORY,
-    REVIEW_FLAG_REPOSITORY,
-    MESSAGE_REPOSITORY,
-    CONVERSATION_REPOSITORY,
-    SELLER_PROFILE_REPOSITORY,
-    MARKETPLACE_LISTING_REPOSITORY,
-    MARKETPLACE_ORDER_REPOSITORY,
-    GROUP_BUY_REPOSITORY,
-    HOLD_REPOSITORY,
+    APPLICATION_REPOSITORY,
+    CHAPTER_REPOSITORY,
+    CHAPTER_EVENT_REPOSITORY,
+    EVENT_RSVP_REPOSITORY,
+    ANNOUNCEMENT_REPOSITORY,
+    ADVISORY_REPOSITORY,
+    // Stage 27 (innovation 11): Price Wire.
+    PRICE_WIRE_REPOSITORY,
+    LISTING_REPOSITORY,
+    ORDER_REPOSITORY,
+    REVIEW_REPOSITORY,
+    CREDIT_PROFILE_REPOSITORY,
+    DOCUMENT_REPOSITORY,
+    NOTIFICATION_REPOSITORY,
+    NOTIFICATION_PREFERENCE_REPOSITORY,
+    DELIVERY_LOG_REPOSITORY,
+    AUDIT_REPOSITORY,
+    OUTBOX_REPOSITORY,
+    COMMODITY_PRICE_REPOSITORY,
+    SUPPLIER_REPOSITORY,
+    SERVICE_OFFERING_REPOSITORY,
+    SERVICE_BOOKING_REPOSITORY,
+    SERVICE_REVIEW_REPOSITORY,
+    PROGRAMME_COHORT_REPOSITORY,
+    PROGRAMME_ENROLMENT_REPOSITORY,
+    PROGRAMME_MILESTONE_REPOSITORY,
+    MILESTONE_PROGRESS_REPOSITORY,
+    RUBRIC_CRITERION_REPOSITORY,
+    JUDGE_ASSIGNMENT_REPOSITORY,
+    JUDGE_SCORE_REPOSITORY,
+    COHORT_THREAD_REPOSITORY,
+    COHORT_THREAD_POST_REPOSITORY,
+    PATHWAY_TEMPLATE_REPOSITORY,
+    PATHWAY_STAGE_REPOSITORY,
+    PATHWAY_ENROLMENT_REPOSITORY,
+    STAGE_PROGRESS_REPOSITORY,
+    CAMPUS_CLUB_REPOSITORY,
+    CAMPUS_CLUB_MEMBERSHIP_REPOSITORY,
+    KNOWLEDGE_RESOURCE_REPOSITORY,
+    PODCAST_EPISODE_REPOSITORY,
+    WEBINAR_REPOSITORY,
+    WEBINAR_REGISTRATION_REPOSITORY,
+    SEARCH_QUERY_REPOSITORY,
+    CREDIT_SCORE_REPOSITORY,
+    ESCROW_REPOSITORY,
+    INVOICE_REPOSITORY,
     LEDGER_ACCOUNT_REPOSITORY,
     LEDGER_ENTRY_REPOSITORY,
-    SAVINGS_GOAL_REPOSITORY,
-    MANDATE_REPOSITORY,
-    LOAN_REPOSITORY,
-    REPAYMENT_REPOSITORY,
-    PAYMENT_REPOSITORY,
-    SETTLEMENT_REPOSITORY,
-    ESCROW_REPOSITORY,
-    DOCUMENT_REPOSITORY,
-    CREDIT_PROFILE_REPOSITORY,
-    CREDIT_SCORECARD_REPOSITORY,
-    VOUCHER_REPOSITORY,
-    DISPUTE_REPOSITORY,
-    NOTIFICATION_REPOSITORY,
-    NOTIFICATION_DELIVERY_REPOSITORY,
-    ALERT_PREFERENCE_REPOSITORY,
-    AUDIT_REPOSITORY,
-    AUDIT_ANCHOR_REPOSITORY,
-    OUTBOX_REPOSITORY,
-    FEATURE_FLAG_REPOSITORY,
-    API_PROVENANCE_REPOSITORY,
-    INTEGRATION_REPOSITORY,
-    WEBHOOK_EVENT_REPOSITORY,
-    PROVIDER_INTEGRATION_REPOSITORY,
-    COMPLIANCE_CASE_REPOSITORY,
-    INTEROP_EXCHANGE_REPOSITORY,
-    COMMODITY_PRICE_REPOSITORY,
-    RECEIPT_REPOSITORY,
-    RECONCILIATION_REPORT_REPOSITORY,
-    RECONCILIATION_EXCEPTION_REPOSITORY,
-    STATEMENT_SNAPSHOT_REPOSITORY,
-    REFERRAL_REPOSITORY,
-    ACTIVITY_FEED_REPOSITORY,
-    AUTH_SESSION_REPOSITORY,
-    PIN_PROFILE_REPOSITORY,
+    LENDER_REPOSITORY,
+    LOAN_APPLICATION_REPOSITORY,
+    REPAYMENT_SCHEDULE_REPOSITORY,
+    SHIPMENT_REPOSITORY,
+    EXTERNAL_ACCOUNT_LINK_REPOSITORY,
+    FARM_RECORD_REPOSITORY,
+    IMPORT_BATCH_REPOSITORY,
+    IMPORT_RECORD_REPOSITORY,
+    INBOUND_EVENT_REPOSITORY,
+    BRIDGE_SYNC_STATE_REPOSITORY,
+    WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
-    OTP_CHALLENGE_REPOSITORY,
-    IDEMPOTENCY_RECORD_REPOSITORY,
-    DSAR_REQUEST_REPOSITORY,
-    CONSENT_RECORD_REPOSITORY,
-    OFFLINE_ENROLMENT_TASK_REPOSITORY,
-    SURVEY_REPOSITORY,
-    SUBMISSION_REPOSITORY,
-    FARM_PLOT_REPOSITORY,
-    FIELD_CHECK_REPOSITORY,
-    LEADERBOARD_ENTRY_REPOSITORY,
-    LEADERBOARD_SNAPSHOT_REPOSITORY,
-    REWARD_TRANSACTION_REPOSITORY,
-    STAFF_REPOSITORY,
-    BULK_DISBURSEMENT_REPOSITORY,
-    ANTI_FRAUD_FLAG_REPOSITORY,
-    CARBON_CREDIT_REPOSITORY,
-    CARBON_MILESTONE_REPOSITORY,
-    REGISTRY_ANCHOR_REPOSITORY,
-    AGGREGATE_REPOSITORY,
-    PARTNER_REPOSITORY,
+    PIN_PROFILE_REPOSITORY,
+    RECOMMENDATION_FEEDBACK_REPOSITORY,
+    ANALYTICS_MART_REPOSITORY,
+    PARTNER_CLIENT_REPOSITORY,
+    API_KEY_REPOSITORY,
+    WEBHOOK_SUBSCRIPTION_REPOSITORY,
     PARTNER_MEMBER_REPOSITORY,
-    MARKET_LINK_REPOSITORY,
-    PROCESSING_RECORD_REPOSITORY,
-    PROCESSING_JOB_REPOSITORY,
-    WAREHOUSE_REPOSITORY,
-    PULSE_SUBSCRIPTION_REPOSITORY,
-    PRICE_ALERT_REPOSITORY,
-    PROVENANCE_AUDIT_REPOSITORY,
-    SUCCESSION_CLAIM_REPOSITORY,
-    COOP_SCORE_REPOSITORY,
-    STORAGE_DRIVER
+    IVR_CALL_REPOSITORY,
+    ANIMAL_REPOSITORY,
+    LOT_REPOSITORY,
+    OWNERSHIP_TRANSFER_REPOSITORY,
+    PASTORALIST_PROFILE_REPOSITORY,
+    HEALTH_RECORD_REPOSITORY,
+    MOVEMENT_REPOSITORY,
+    MOVEMENT_PERMIT_REPOSITORY,
+    RECALL_REPOSITORY,
+    DISEASE_FLAG_REPOSITORY,
+    CERTIFIED_LISTING_REPOSITORY,
+    OFFTAKE_TEMPLATE_REPOSITORY,
+    OFFTAKE_CONTRACT_REPOSITORY,
+    EXPORT_DOCUMENT_REPOSITORY,
+    LIEN_REPOSITORY,
+    INSURANCE_POLICY_REPOSITORY,
+    INSURANCE_CLAIM_REPOSITORY,
+    DISBURSEMENT_REPOSITORY,
+    AGGREGATION_POINT_REPOSITORY,
+    COLD_CHAIN_LOG_REPOSITORY,
+    LIVESTOCK_DISEASE_GUARD,
+    LIVESTOCK_TRANSFER_GUARD,
+    LISTING_VARIANT_REPOSITORY,
+    BUYER_GROUP_REPOSITORY,
+    BUYER_GROUP_MEMBERSHIP_REPOSITORY,
+    PRICE_LIST_REPOSITORY,
+    PRICE_LIST_ENTRY_REPOSITORY,
+    PROMOTION_REPOSITORY,
+    PROMOTION_REDEMPTION_REPOSITORY,
+    ORDER_EXTENSION_REPOSITORY,
+    RETURN_REQUEST_REPOSITORY,
+    DRAFT_ORDER_REPOSITORY,
+    PRODUCT_REVIEW_REPOSITORY,
+    SELLER_RATING_REPOSITORY,
+    AUTH_SESSION_REPOSITORY,
+    FEATURE_FLAG_REPOSITORY,
+    PROCESSED_EVENT_REPOSITORY,
+    ANALYTICS_STAR_REPOSITORY,
+    COMPLIANCE_CONSENT_REPOSITORY,
+    DATA_SUBJECT_REQUEST_REPOSITORY,
+    RETENTION_POLICY_REPOSITORY,
+    ENTITY_VERSION_REPOSITORY,
+    SYNC_CURSOR_REPOSITORY,
+    SYNC_MUTATION_REPOSITORY,
+    FARM_PLOT_REPOSITORY,
+    CROP_PLANTING_REPOSITORY,
+    HARVEST_RECORD_REPOSITORY,
+    FARM_EXPENSE_REPOSITORY,
+    AGENT_ASSIGNMENT_REPOSITORY,
+    AGENT_ACTIVITY_LOG_REPOSITORY,
+    H3_INDEX_REPOSITORY,
+    GEO_BOUNDARY_REPOSITORY,
+    CREDIT_PRODUCT_REPOSITORY,
+    CREDIT_LOAN_REPOSITORY,
+    CREDIT_REPAYMENT_REPOSITORY,
+    CREDIT_RESTRUCTURE_REPOSITORY,
+    CREDIT_COLLATERAL_REPOSITORY,
+    CREDIT_GUARANTOR_REPOSITORY,
+    CREDIT_GROUP_REPOSITORY,
+    CREDIT_GROUP_MEMBER_REPOSITORY,
+    CREDIT_SAVINGS_ACCOUNT_REPOSITORY,
+    CREDIT_SAVINGS_TRANSACTION_REPOSITORY,
+    COMMODITY_LOT_REPOSITORY,
+    CUSTODY_EVENT_REPOSITORY,
+    LOT_PLOT_LINK_REPOSITORY,
+    TRACEABILITY_SHIPMENT_REPOSITORY,
+    VOICE_SESSION_REPOSITORY,
+    VOICE_TURN_REPOSITORY,
+    AGENT_CASE_REPOSITORY,
+    GEO_CREDIT_SHADOW_REPOSITORY,
+    SEASONAL_SCHEDULE_REPOSITORY,
+  COOP_SCORE_REPOSITORY,
+    AGENT_BANKING_AGENT_REPOSITORY,
+    AGENT_FLOAT_TOPUP_REPOSITORY,
+    AGENT_VOUCHER_REPOSITORY,
+    AGENT_TRANSACTION_REPOSITORY,
+    AGENT_REVERSAL_REPOSITORY,
+    AGENT_DEVICE_REPOSITORY,
+    FLOAT_FORECAST_REPOSITORY,
+    REBALANCE_ALERT_REPOSITORY,
+    REBALANCE_RUN_REPOSITORY,
+    EQUIPMENT_LISTING_REPOSITORY,
+    EQUIPMENT_BOOKING_REPOSITORY,
+    PARAMETRIC_PRODUCT_REPOSITORY,
+    PARAMETRIC_POLICY_REPOSITORY,
+    PARAMETRIC_TRIGGER_EVENT_REPOSITORY,
+    PARAMETRIC_PAYOUT_REPOSITORY,
+    // Stage 27 (Insurance-in-the-Bag, additive).
+    VOUCHER_PROGRAMME_RIDER_REPOSITORY,
+    VOUCHER_COVER_REPOSITORY,
+    // Wave VSLACARBON (additive).
+    VSLA_GROUP_REPOSITORY,
+    VSLA_MEMBER_REPOSITORY,
+    VSLA_CYCLE_REPOSITORY,
+    VSLA_CONTRIBUTION_REPOSITORY,
+    VSLA_SHARE_OUT_REPOSITORY,
+    VSLA_SHARE_OUT_PLAN_REPOSITORY,
+    VSLA_LOAN_REPOSITORY,
+    VSLA_LOAN_REPAYMENT_REPOSITORY,
+    // FP-2 W2 V-48: meetings + dual-attested cash-count reconciliation.
+    VSLA_MEETING_REPOSITORY,
+    VSLA_CASH_COUNT_REPOSITORY,
+    CARBON_PLOT_REPOSITORY,
+    CARBON_EVIDENCE_REPOSITORY,
+    CARBON_ESTIMATE_REPOSITORY,
+    // Wave LIVESTOCK-PASSPORT (additive): digital livestock passport.
+    LIVESTOCK_PASSPORT_REPOSITORY,
+    LIVESTOCK_PASSPORT_EVENT_REPOSITORY,
+    LIVESTOCK_PASSPORT_TRANSFER_REPOSITORY,
+    // Wave NINVOUCHER (additive).
+    INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+    BENEFICIARY_REPOSITORY,
+    INPUT_VOUCHER_REPOSITORY,
+    INPUT_VOUCHER_REDEMPTION_REPOSITORY,
+    CERTIFIED_WAREHOUSE_REPOSITORY,
+    WAREHOUSE_DEPOSIT_REPOSITORY,
+    WAREHOUSE_RECEIPT_REPOSITORY,
+    WAREHOUSE_PLEDGE_REPOSITORY,
+    WAREHOUSE_TRANSFER_REPOSITORY,
+    // Stage 27 Float Sentinel (additive).
+    FRAUD_SENTINEL_REPOSITORY,
+
+    // Stage 27 (innovation 4): Planting-Window Pulse.
+    ADVISORY_PULSE_REPOSITORY,
+
+    // Stage 27 INNOVATION 7 Credit Passport (additive).
+    CREDIT_PASSPORT_REPOSITORY,
+    CREDIT_PASSPORT_DISCLOSURE_REPOSITORY,
+
+    // Innovation 10 (Stage 27): Chapter Map (additive).
+    CHAPTER_MAP_SNAPSHOT_REPOSITORY,
+    CHAPTER_MEMBER_DIRECTORY,
+
+    // Stage 27 / Innovation 8: Receipt LTV Guardian (additive).
+    COLLATERAL_POSITION_REPOSITORY,
+    LTV_OBSERVATION_REPOSITORY,
+
+    // Wave DDS-STUDIO (additive).
+    DDS_PACKAGE_REPOSITORY,
+
+    // Stage 27 innovation #19 (additive): agronomist SLA console.
+    ESCALATION_CASE_REPOSITORY
   ]
 })
-class DatabaseModuleImpl {}
-
-// OB-10 wiring: PG_* optional tokens are registered by PostgresModule when
-// DATABASE_URL is set (registerPostgresRepositories); otherwise each token
-// falls back to the in-memory implementation so the API boots for dev/test.
-export { DatabaseModuleImpl as DatabaseModule };
+export class DatabaseModule {}
