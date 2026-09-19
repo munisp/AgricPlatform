@@ -187,6 +187,24 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it('rejects a deceased user presenting a still-valid bearer token (OB-06)', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await users.setStatus('user-admin', 'deceased');
+    const error = await activate().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnauthorizedException);
+    expect((error as Error).message).toBe('Account is deceased; estate frozen pending succession.');
+  });
+
+  it('rejects a deceased user presenting the development header (OB-06)', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const { activate, request, users } = makeGuard(['admin']);
+    request.headers['x-user-id'] = 'user-admin';
+    await users.setStatus('user-admin', 'deceased');
+    await expect(activate()).rejects.toThrow(/deceased/);
+  });
+
   it('restores access when the suspension is lifted', async () => {
     const { activate, request, users } = makeGuard(['admin']);
     request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;

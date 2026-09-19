@@ -4,9 +4,11 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException
 } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
+import { AuditService } from '../../core/audit.service.js';
 import { AUTH_SESSION_REPOSITORY } from '../../database/persistence.tokens.js';
 import type {
   AuthSession,
@@ -50,11 +52,31 @@ export class SessionService {
 
   constructor(
     private readonly users: UsersService,
-    @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository
+    @Inject(AUTH_SESSION_REPOSITORY) private readonly sessions: AuthSessionRepository,
+    /**
+     * Tamper-evident audit trail (OB-03). Optional so bare unit-test
+     * constructions keep working; the deployed app always wires it.
+     */
+    @Optional() private readonly audit?: AuditService
   ) {}
 
-  /** Mints the first generation of a new session family. */
+  /**
+   * Mints the first generation of a new session family.
+   *
+   * Account-status gate (OB-06): every new session family is born here, so
+   * suspended and deceased accounts are refused BEFORE a token exists —
+   * mirroring the refresh-path rejection below (a deceased estate-frozen
+   * account must not mint a fresh OTP session, V-09).
+   */
   async issue(userId: string, meta: SessionClientMeta = {}): Promise<IssuedRefreshToken> {
+    const accountStatus = await this.users.statusFor(userId);
+    if (accountStatus === 'suspended' || accountStatus === 'deceased') {
+      throw new UnauthorizedException(
+        accountStatus === 'deceased'
+          ? 'Account is deceased; estate frozen pending succession.'
+          : 'Account is suspended; new sessions are blocked.'
+      );
+    }
     return this.mint(userId, randomUUID(), 0, meta);
   }
 
@@ -131,6 +153,14 @@ export class SessionService {
       throw error;
     }
     const next = await this.mint(session.userId, session.familyId, session.generation + 1, meta);
+    // OB-03: successful rotations hit the tamper-evident audit log.
+    await this.audit?.record({
+      actorId: session.userId,
+      action: 'token.refreshed',
+      entityType: 'auth_session_family',
+      entityId: session.familyId,
+      metadata: { generation: session.generation + 1 }
+    });
     const user = await this.users.getById(session.userId);
     return { user, ...next };
   }

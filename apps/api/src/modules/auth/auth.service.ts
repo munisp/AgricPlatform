@@ -1,5 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import {
+  ConflictException,
   HttpException,
   HttpStatus,
   Inject,
@@ -12,6 +13,7 @@ import type { User } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { newId } from '../../common/async-repository.js';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
+import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { OTP_STORE } from '../../database/persistence.tokens.js';
 import type { OtpChallengeStore } from '../../redis/otp-challenge.store.js';
@@ -85,7 +87,13 @@ export class AuthService {
      * behaves like the stub driver (devCode outside production, fail-closed
      * 503 in production).
      */
-    @Optional() private readonly integrations?: IntegrationsService
+    @Optional() private readonly integrations?: IntegrationsService,
+    /**
+     * Tamper-evident audit trail (OB-03). Optional so bare unit-test
+     * constructions keep working — an absent audit service simply skips the
+     * record (the deployed app always wires it via CoreModule).
+     */
+    @Optional() private readonly audit?: AuditService
   ) {}
 
   async requestOtp(phone: string): Promise<OtpRequestResult> {
@@ -131,6 +139,14 @@ export class AuthService {
     // Phase 1 delivers via SMS (Termii); the channel label stays low-cardinality.
     this.metrics.otpRequested('sms');
     await this.events.publish('identity.otp.requested', { phone, requestId: challenge.id });
+    // OB-03: pre-auth event — the phone is the only known actor identity.
+    await this.audit?.record({
+      actorId: phone,
+      action: 'otp.requested',
+      entityType: 'otp_challenge',
+      entityId: challenge.id,
+      metadata: { phone }
+    });
     const result: OtpRequestResult = {
       requestId: challenge.id,
       expiresInSeconds: OTP_TTL_MS / 1000
@@ -150,11 +166,13 @@ export class AuthService {
     if (!challenge || challenge.expiresAt < Date.now()) {
       await this.otp.delete(requestId);
       this.metrics.otpVerification('invalid');
+      await this.auditOtpFailed(requestId, challenge?.phone, 'invalid_or_expired');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     if ((await this.otp.attemptCount(requestId)) >= OTP_MAX_ATTEMPTS) {
       await this.otp.delete(requestId);
       this.metrics.otpVerification('locked');
+      await this.auditOtpFailed(requestId, challenge.phone, 'locked');
       throw new HttpException(
         'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
         HttpStatus.TOO_MANY_REQUESTS
@@ -165,6 +183,7 @@ export class AuthService {
     const phoneFailures = await this.otp.phoneFailureCount(challenge.phone);
     if (phoneFailures >= OTP_PHONE_MAX_FAILURES) {
       this.metrics.otpVerification('locked');
+      await this.auditOtpFailed(requestId, challenge.phone, 'phone_failure_cap');
       throw new HttpException(
         'Too many failed verification attempts for this phone number. Try again later.',
         HttpStatus.TOO_MANY_REQUESTS
@@ -183,12 +202,14 @@ export class AuthService {
       if (attempts >= OTP_MAX_ATTEMPTS) {
         await this.otp.delete(requestId);
         this.metrics.otpVerification('locked');
+        await this.auditOtpFailed(requestId, challenge.phone, 'locked');
         throw new HttpException(
           'Too many incorrect attempts; this OTP challenge is locked. Request a new code.',
           HttpStatus.TOO_MANY_REQUESTS
         );
       }
       this.metrics.otpVerification('invalid');
+      await this.auditOtpFailed(requestId, challenge.phone, 'invalid_code');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     // Atomic single-use consumption: concurrent verifications of the same
@@ -196,6 +217,7 @@ export class AuthService {
     const consumed = await this.otp.consume(requestId);
     if (!consumed) {
       this.metrics.otpVerification('invalid');
+      await this.auditOtpFailed(requestId, challenge.phone, 'consume_race');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     const user = await this.users.findByPhone(consumed.phone);
@@ -204,22 +226,100 @@ export class AuthService {
       // correct code would confirm the number is unregistered — an
       // enumeration oracle. Unknown numbers and wrong codes answer alike.
       this.metrics.otpVerification('invalid');
+      await this.auditOtpFailed(requestId, consumed.phone, 'unknown_phone');
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     this.metrics.otpVerification('success');
+    // OB-01: a successful OTP verification is the phone-possession proof —
+    // activate the account BEFORE any token is issued (registration no
+    // longer issues session tokens on its own).
+    const verified = user.isVerified ? user : await this.users.setVerified(user.id, true);
+    await this.audit?.record({
+      actorId: verified.id,
+      action: 'otp.verified',
+      entityType: 'user',
+      entityId: verified.id,
+      metadata: { requestId, phone: consumed.phone, markedVerified: !user.isVerified }
+    });
     // Credential threading: the just-consumed OTP code is the verified
     // second factor; the flagged Keycloak issuer exchanges it (flag off →
     // the credential is ignored and the dev/test stub path decides).
-    return this.withRefreshToken(user, meta, code);
+    return this.withRefreshToken(verified, meta, code);
   }
 
+  /** OB-03: failed OTP verifications hit the tamper-evident log too. */
+  private async auditOtpFailed(
+    requestId: string,
+    phone: string | undefined,
+    reason: string
+  ): Promise<void> {
+    await this.audit?.record({
+      actorId: phone ?? 'anonymous',
+      action: 'otp.failed',
+      entityType: 'otp_challenge',
+      entityId: requestId,
+      metadata: { reason, ...(phone ? { phone } : {}) }
+    });
+  }
+
+  /**
+   * Verify-then-session registration (OB-01). Creates the account UNVERIFIED
+   * and issues an OTP challenge for the phone instead of session tokens —
+   * tokens are only minted by verifyOtp after phone possession is proven.
+   *
+   * Self-healing phone squatting: when the phone is already registered but
+   * the existing account was never verified (isVerified === false), the
+   * squatted record is updated in place (same id) with the new
+   * fullName/email/roles/preferredLanguage and a fresh OTP challenge is
+   * issued — the legitimate line owner reclaims the number by proving
+   * possession. A VERIFIED duplicate still conflicts, directed to OTP login.
+   */
   async register(
     input: CreateUserInput,
-    meta?: { userAgent?: string; ipAddress?: string }
-  ): Promise<{ token: string; user: User; refreshToken: string; refreshTokenExpiresAt: string }> {
-    const user = await this.users.create(input);
-    await this.events.publish('identity.user.registered', { userId: user.id, roles: user.roles }, user.id);
-    return this.withRefreshToken(user, meta);
+    _meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<{ user: User; otpRequestId: string }> {
+    let user: User;
+    let selfHealed = false;
+    try {
+      user = await this.users.create(input);
+    } catch (error) {
+      if (!(error instanceof ConflictException)) {
+        throw error;
+      }
+      const existing = await this.users.findByPhone(input.phone);
+      if (!existing) {
+        // The conflicting row vanished between create and lookup — nothing to heal.
+        throw error;
+      }
+      if (existing.isVerified) {
+        throw new ConflictException(
+          `Phone number ${input.phone} is already registered and verified. ` +
+            'Sign in with an OTP code instead (POST /auth/otp/request).'
+        );
+      }
+      // Self-heal an unverified (possibly squatted) record in place.
+      await this.users.update(existing.id, {
+        fullName: input.fullName,
+        email: input.email,
+        preferredLanguage: input.preferredLanguage
+      });
+      user = await this.users.setRoles(existing.id, input.roles);
+      selfHealed = true;
+    }
+    await this.events.publish(
+      'identity.user.registered',
+      { userId: user.id, roles: user.roles, selfHealed },
+      user.id
+    );
+    const challenge = await this.requestOtp(user.phone);
+    await this.audit?.record({
+      actorId: user.id,
+      action: 'user.registered',
+      entityType: 'user',
+      entityId: user.id,
+      metadata: { selfHealed, roles: user.roles, phone: user.phone }
+    });
+    return { user, otpRequestId: challenge.requestId };
   }
 
   async session(userId: string): Promise<{ user: User }> {

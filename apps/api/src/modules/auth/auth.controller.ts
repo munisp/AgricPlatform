@@ -33,8 +33,10 @@ class VerifyOtpDto {
   code!: string;
 }
 
-class RegisterDto {
-  @IsString()
+export class RegisterDto {
+  // OB-02: same canonical E.164 enforcement as the OTP request path — a
+  // local-format registration would fragment per-phone caps and challenges.
+  @Matches(E164_PATTERN, { message: 'phone must be in E.164 format (e.g. +2348012345678)' })
   phone!: string;
 
   @IsString()
@@ -89,7 +91,10 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
     summary:
-      'Register a new member account. Only plain member roles ' +
+      'Register a new member account (verify-then-session, OB-01): creates the account ' +
+      'UNVERIFIED and returns { user, otpRequestId } — NO session tokens are issued here; ' +
+      'complete POST /auth/otp/verify to activate the account and receive tokens. ' +
+      'Only plain member roles ' +
       `(${SELF_REGISTRATION_ROLES.join(', ')}) may be self-selected; privileged roles ` +
       'are granted by an administrator via PATCH /admin/users/:id/roles.'
   })

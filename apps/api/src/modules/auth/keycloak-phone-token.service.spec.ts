@@ -230,6 +230,9 @@ describe('AuthService phone-auth production guard (WP-G16)', () => {
   it('production + flag off: register and PIN-swap issuance also fail closed', async () => {
     process.env.NODE_ENV = 'production';
     const { auth, users } = makeAuthService();
+    // OB-01: register no longer issues tokens at all; in production it fails
+    // closed because the OTP challenge it must issue cannot be delivered
+    // with the stub SMS driver (V-16 fail-closed delivery).
     await expect(
       auth.register({
         phone: '+2348055550001',

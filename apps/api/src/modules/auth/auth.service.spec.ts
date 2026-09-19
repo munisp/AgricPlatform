@@ -1,8 +1,9 @@
-import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { validateSync } from 'class-validator';
 import { randomInt } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
+import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
@@ -13,7 +14,7 @@ import type { SmsDriver } from '../integrations/drivers/sms.drivers.js';
 import type { IntegrationsService } from '../integrations/integrations.service.js';
 import { UsersService } from '../users/users.service.js';
 import { AuthService, OTP_MAX_ATTEMPTS, OTP_PHONE_MAX_FAILURES } from './auth.service.js';
-import { RequestOtpDto } from './auth.controller.js';
+import { RegisterDto, RequestOtpDto } from './auth.controller.js';
 import { SessionService } from './session.service.js';
 
 // Spy on randomInt (passthrough by default) so the leading-zero regression
@@ -294,6 +295,171 @@ describe('AuthService OTP hardening', () => {
     // The seeded PHONE still verifies cleanly.
     const mine = await auth.requestOtp(PHONE);
     expect((await auth.verifyOtp(mine.requestId, mine.devCode!)).user.phone).toBe(PHONE);
+  });
+});
+
+/**
+ * Full stack with a spying audit sink (OB-03) for the registration
+ * verification flow (OB-01).
+ */
+function makeStack() {
+  const users = new UsersService(createInMemoryUserRepository());
+  const audit = { record: vi.fn(async (input: unknown) => input) };
+  const auth = new AuthService(
+    users,
+    new DomainEventsService(createInMemoryOutboxRepository()),
+    new MetricsService(),
+    new KeyValueOtpChallengeStore(new InMemoryKeyValueStore()),
+    new SessionService(users, createInMemoryAuthSessionRepository()),
+    undefined,
+    undefined,
+    audit as unknown as AuditService
+  );
+  return { auth, users, audit };
+}
+
+const REGISTER_INPUT = {
+  phone: '+2348070000001',
+  fullName: 'New Farmer',
+  roles: ['farmer' as const],
+  preferredLanguage: 'en' as const
+};
+
+describe('AuthService.register (OB-01 verify-then-session)', () => {
+  const savedEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('returns NO tokens — only the unverified user and an otpRequestId', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, users } = makeStack();
+    const result = await auth.register(REGISTER_INPUT);
+    expect(result.otpRequestId).toBeTruthy();
+    expect(result.user.phone).toBe(REGISTER_INPUT.phone);
+    expect(result).not.toHaveProperty('token');
+    expect(result).not.toHaveProperty('refreshToken');
+    expect(result).not.toHaveProperty('refreshTokenExpiresAt');
+    // The account starts unverified at tier_0 — no active session exists.
+    const stored = await users.findByPhone(REGISTER_INPUT.phone);
+    expect(stored?.isVerified).toBe(false);
+    expect(stored?.kycTier).toBe('tier_0');
+  });
+
+  it('self-heals a duplicate UNVERIFIED phone: new name/roles, same id, fresh OTP', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, users } = makeStack();
+    const first = await auth.register(REGISTER_INPUT);
+    const second = await auth.register({
+      ...REGISTER_INPUT,
+      fullName: 'Reclaimed Name',
+      roles: ['buyer']
+    });
+    expect(second.user.id).toBe(first.user.id);
+    expect(second.user.fullName).toBe('Reclaimed Name');
+    expect(second.user.roles).toEqual(['buyer']);
+    expect(second.otpRequestId).toBeTruthy();
+    expect(second.otpRequestId).not.toBe(first.otpRequestId);
+    // Still unverified — possession has not been proven yet.
+    expect((await users.findByPhone(REGISTER_INPUT.phone))?.isVerified).toBe(false);
+    // Only one account exists for the phone.
+    expect((await users.list({})).data.filter((u) => u.phone === REGISTER_INPUT.phone)).toHaveLength(1);
+  });
+
+  it('conflicts on a duplicate VERIFIED phone, directing to OTP login', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, users } = makeStack();
+    const first = await auth.register(REGISTER_INPUT);
+    await users.setVerified(first.user.id, true);
+    const error = await auth
+      .register({ ...REGISTER_INPUT, fullName: 'Squatter' })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as Error).message).toContain('OTP');
+    // The verified record is untouched.
+    const stored = await users.findByPhone(REGISTER_INPUT.phone);
+    expect(stored?.fullName).toBe(REGISTER_INPUT.fullName);
+  });
+
+  it('verifyOtp marks a previously unverified user verified BEFORE issuing tokens', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, users } = makeStack();
+    const { user } = await auth.register(REGISTER_INPUT);
+    expect(user.isVerified).toBe(false);
+    // The registration challenge carries no devCode on the response; the
+    // client-side equivalent here is a fresh request (non-prod devCode).
+    const { requestId, devCode } = await auth.requestOtp(REGISTER_INPUT.phone);
+    const session = await auth.verifyOtp(requestId, devCode!);
+    expect(session.token).toContain('stub-token.');
+    expect(session.user.isVerified).toBe(true);
+    expect((await users.getById(user.id)).isVerified).toBe(true);
+  });
+
+  it('records user.registered, otp.requested and otp.verified in the audit log (OB-03)', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, audit } = makeStack();
+    await auth.register(REGISTER_INPUT);
+    const actions = () => audit.record.mock.calls.map((call) => (call[0] as { action: string }).action);
+    expect(actions()).toContain('user.registered');
+    expect(actions()).toContain('otp.requested');
+    const registered = audit.record.mock.calls.find(
+      (call) => (call[0] as { action: string }).action === 'user.registered'
+    );
+    expect((registered![0] as { metadata: { selfHealed: boolean } }).metadata.selfHealed).toBe(false);
+
+    const { requestId, devCode } = await auth.requestOtp(REGISTER_INPUT.phone);
+    await auth.verifyOtp(requestId, devCode!);
+    expect(actions()).toContain('otp.verified');
+  });
+
+  it('records user.registered with selfHealed=true on the squatting-reclaim path (OB-03)', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, audit } = makeStack();
+    await auth.register(REGISTER_INPUT);
+    audit.record.mockClear();
+    await auth.register({ ...REGISTER_INPUT, fullName: 'Reclaimed Name' });
+    const registered = audit.record.mock.calls.find(
+      (call) => (call[0] as { action: string }).action === 'user.registered'
+    );
+    expect((registered![0] as { metadata: { selfHealed: boolean } }).metadata.selfHealed).toBe(true);
+  });
+
+  it('records otp.failed on a wrong code (OB-03)', async () => {
+    process.env.NODE_ENV = 'test';
+    const { auth, audit } = makeStack();
+    const { requestId, devCode } = await auth.requestOtp(REGISTER_INPUT.phone);
+    const wrong = devCode === '000000' ? '000001' : '000000';
+    await auth.verifyOtp(requestId, wrong).catch(() => undefined);
+    const failed = audit.record.mock.calls.find(
+      (call) => (call[0] as { action: string }).action === 'otp.failed'
+    );
+    expect(failed).toBeDefined();
+    expect((failed![0] as { metadata: { reason: string } }).metadata.reason).toBe('invalid_code');
+  });
+});
+
+describe('RegisterDto E.164 validation (OB-02)', () => {
+  function errorsFor(phone: string) {
+    const dto = new RegisterDto();
+    dto.phone = phone;
+    dto.fullName = 'Test User';
+    dto.roles = ['farmer'];
+    dto.preferredLanguage = 'en';
+    return validateSync(dto);
+  }
+
+  it('accepts canonical E.164 numbers', () => {
+    expect(errorsFor('+2348012345678')).toHaveLength(0);
+    expect(errorsFor('+14155552671')).toHaveLength(0);
+  });
+
+  it('rejects local format, missing plus and malformed numbers', () => {
+    for (const phone of ['08012345678', '2348012345678', '+0123', '+23480CALLME', '']) {
+      const errors = errorsFor(phone);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(JSON.stringify(errors)).toContain('E.164');
+    }
   });
 });
 

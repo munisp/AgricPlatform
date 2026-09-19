@@ -1,5 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AuditService } from '../../core/audit.service.js';
 import { createInMemoryAuthSessionRepository } from '../../database/repositories/auth-session.repository.js';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { UsersService } from '../users/users.service.js';
@@ -10,6 +11,14 @@ function build() {
   const repo = createInMemoryAuthSessionRepository();
   const service = new SessionService(users, repo);
   return { service, repo, users };
+}
+
+function buildWithAudit() {
+  const users = new UsersService(createInMemoryUserRepository());
+  const repo = createInMemoryAuthSessionRepository();
+  const audit = { record: vi.fn(async (input: unknown) => input) };
+  const service = new SessionService(users, repo, audit as unknown as AuditService);
+  return { service, repo, users, audit };
 }
 
 describe('SessionService (refresh-token sessions)', () => {
@@ -174,6 +183,38 @@ describe('SessionService (refresh-token sessions)', () => {
     await expect(service.refresh(issued.refreshToken)).resolves.toMatchObject({
       user: { id: 'user-aisha' }
     });
+  });
+
+  it('refuses to ISSUE a fresh session for a suspended account (OB-06)', async () => {
+    const { service, users } = build();
+    await users.setStatus('user-aisha', 'suspended');
+    await expect(service.issue('user-aisha')).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(service.issue('user-aisha')).rejects.toThrow(/suspended/);
+    // Nothing was minted.
+    expect(await service.listForUser('user-aisha')).toHaveLength(0);
+    // Reactivation reopens issuance.
+    await users.setStatus('user-aisha', 'active');
+    await expect(service.issue('user-aisha')).resolves.toMatchObject({ expiresAt: expect.any(String) });
+  });
+
+  it('refuses to ISSUE a fresh session for a deceased account (OB-06)', async () => {
+    const { service, users } = build();
+    await users.setStatus('user-aisha', 'deceased');
+    const error = await service.issue('user-aisha').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnauthorizedException);
+    expect((error as Error).message).toBe('Account is deceased; estate frozen pending succession.');
+    expect(await service.listForUser('user-aisha')).toHaveLength(0);
+  });
+
+  it('records token.refreshed in the audit log on successful rotation (OB-03)', async () => {
+    const { service, audit } = buildWithAudit();
+    const issued = await service.issue('user-aisha');
+    await service.refresh(issued.refreshToken);
+    const refreshed = audit.record.mock.calls.find(
+      (call) => (call[0] as { action: string }).action === 'token.refreshed'
+    );
+    expect(refreshed).toBeDefined();
+    expect((refreshed![0] as { actorId: string }).actorId).toBe('user-aisha');
   });
 });
 

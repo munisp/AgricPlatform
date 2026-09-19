@@ -141,9 +141,15 @@ export class RolesGuard implements CanActivate {
    * Suspended accounts (admin-set account status overlay) lose API access
    * immediately, regardless of how the identity was presented: a still-valid
    * Keycloak token or development header must not bypass a suspension.
+   * Deceased accounts (OB-06, V-09) are estate-frozen pending succession and
+   * are blocked with a distinct message.
    */
   private async assertActive(user: User): Promise<void> {
-    if ((await this.users.statusFor(user.id)) === 'suspended') {
+    const status = await this.users.statusFor(user.id);
+    if (status === 'deceased') {
+      throw new UnauthorizedException('Account is deceased; estate frozen pending succession.');
+    }
+    if (status === 'suspended') {
       throw new UnauthorizedException('Account is suspended');
     }
   }
