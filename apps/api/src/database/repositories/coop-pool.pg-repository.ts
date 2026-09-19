@@ -287,10 +287,6 @@ export class PgCoopPoolRepository
     return (result.rowCount ?? 0) > 0;
   }
 
-  async releaseSplitMarker(poolId: string): Promise<void> {
-    await this.pool.query(`DELETE FROM marketplace.pool_split_markers WHERE pool_id = $1`, [poolId]);
-  }
-
   /**
    * Single-transaction settlement (see file header). 'replay' means the
    * marker already existed: a previous settle committed the split, so the
