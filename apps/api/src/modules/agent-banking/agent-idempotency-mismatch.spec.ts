@@ -39,14 +39,15 @@ const ADMIN: ActorRef = { id: 'user-admin', roles: ['admin'] };
 
 async function makeService() {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const ledgerAccounts = createInMemoryLedgerAccountRepository();
   const ledger = new LedgerService(
     events,
-    createInMemoryLedgerAccountRepository(),
+    ledgerAccounts,
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
   const service = new AgentBankingService(
-    createInMemoryAgentBankingAgentRepository(),
+    createInMemoryAgentBankingAgentRepository(ledgerAccounts),
     createInMemoryAgentFloatTopUpRepository(),
     createInMemoryAgentVoucherRepository(),
     createInMemoryAgentTransactionRepository(),
