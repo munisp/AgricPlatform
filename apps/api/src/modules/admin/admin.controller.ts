@@ -308,9 +308,10 @@ export class AdminController {
   @Post('sweeps/voucher-stuck')
   @ApiOperation({
     summary:
-      'Run one stuck-voucher sweeper pass (WP-G12): expires due vouchers and recovers stuck ' +
-      'VOIDING/REDEEMING claims (TTL-doubled with a crash-silent marker). Idempotent — an ' +
-      'external scheduler (k8s CronJob) invokes this endpoint periodically.'
+      'Run one stuck-voucher sweeper pass (WP-G12): expires ISSUED vouchers past their ' +
+      'expiry and recovers stuck EXPIRING/VOIDING/REDEEMING claims with ledger-proof ' +
+      'compensation. Idempotent — an external scheduler (k8s CronJob) invokes this ' +
+      'endpoint periodically.'
   })
   async sweepVoucherStuck() {
     return { data: await this.admin.sweepVoucherStuck() };
