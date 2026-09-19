@@ -42,13 +42,14 @@ const DEVICE_TOKEN_TWO = 'device-token-abcdef0123456789';
 
 async function makeService(env: NodeJS.ProcessEnv = {}) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const ledgerAccounts = createInMemoryLedgerAccountRepository();
   const ledger = new LedgerService(
     events,
-    createInMemoryLedgerAccountRepository(),
+    ledgerAccounts,
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
-  const agents = createInMemoryAgentBankingAgentRepository();
+  const agents = createInMemoryAgentBankingAgentRepository(ledgerAccounts);
   const topUps = createInMemoryAgentFloatTopUpRepository();
   const vouchers = createInMemoryAgentVoucherRepository();
   const transactions = createInMemoryAgentTransactionRepository();
