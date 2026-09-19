@@ -24,7 +24,10 @@ import {
   createInMemoryLedgerEntryRepository
 } from '../src/database/repositories/ledger.repository.js';
 import { createInMemoryOutboxRepository } from '../src/database/repositories/outbox.repository.js';
-import { createInMemoryUserRepository } from '../src/database/repositories/user.repository.js';
+import {
+  createInMemoryUserRepository,
+  InMemoryUserRepository
+} from '../src/database/repositories/user.repository.js';
 import {
   createInMemoryCarbonEstimateRepository,
   createInMemoryCarbonEvidenceRepository,
@@ -112,6 +115,25 @@ const stubNdvi: NdviProvider = {
   status: () => Promise.resolve({ configured: true, healthy: true, detail: 'stub' })
 };
 
+// OB-14: leadership grants consult the user directory; fixture actors exist
+// here as OTP-verified accounts (leadership eligible).
+function vslaFixtureDirectory(): UsersService {
+  const actors = ['user-lead', 'user-member', 'user-admin', 'user-lead-a', 'user-lead-b'].map(
+    (id, index) =>
+      ({
+        id,
+        phone: `+2348100000${String(index + 20)}`,
+        fullName: id,
+        roles: ['farmer'],
+        preferredLanguage: 'en',
+        kycTier: 'tier_0',
+        isVerified: true,
+        createdAt: '2026-01-01T00:00:00.000Z'
+      }) as unknown as User
+  );
+  return new UsersService(new InMemoryUserRepository(actors));
+}
+
 async function makeVslaFixture() {
   const outbox = createInMemoryOutboxRepository();
   const events = new DomainEventsService(outbox);
@@ -135,7 +157,11 @@ async function makeVslaFixture() {
     ledger,
     new H3Service(),
     events,
-    stubNdvi
+    stubNdvi,
+    undefined,
+    undefined,
+    undefined,
+    vslaFixtureDirectory()
   );
   const group = await service.createGroup(lead, { name: 'Authz VSLA' });
   const memberRow = await service.addMember(lead, group.id, { userId: member.id });
