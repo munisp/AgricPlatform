@@ -4,7 +4,6 @@ import type {
   CreditCollateralStatus,
   CreditGroup,
   CreditGroupMember,
-  CreditGroupRole,
   CreditGuarantor,
   CreditGuarantorStatus,
   CreditLoanApplication,
@@ -242,7 +241,6 @@ export interface CreditGroupMemberRepository {
   listByUser(userId: string): Promise<CreditGroupMember[]>;
   find(groupId: string, userId: string): Promise<CreditGroupMember | undefined>;
   add(member: CreditGroupMember): Promise<CreditGroupMember>;
-  updateRole(groupId: string, userId: string, role: CreditGroupRole): Promise<CreditGroupMember>;
   remove(groupId: string, userId: string): Promise<boolean>;
   countByGroup(groupId: string): Promise<number>;
 }
@@ -271,20 +269,6 @@ export class InMemoryCreditGroupMemberRepository implements CreditGroupMemberRep
   async add(member: CreditGroupMember): Promise<CreditGroupMember> {
     this.items.set(`${member.groupId}:${member.userId}`, member);
     return member;
-  }
-
-  async updateRole(
-    groupId: string,
-    userId: string,
-    role: CreditGroupRole
-  ): Promise<CreditGroupMember> {
-    const existing = this.items.get(`${groupId}:${userId}`);
-    if (!existing) {
-      throw new Error(`Membership '${groupId}:${userId}' not found`);
-    }
-    const next = { ...existing, role };
-    this.items.set(`${groupId}:${userId}`, next);
-    return next;
   }
 
   async remove(groupId: string, userId: string): Promise<boolean> {
