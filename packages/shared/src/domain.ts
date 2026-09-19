@@ -48,8 +48,6 @@ export const SELF_REGISTRATION_ROLES = [
   'supplier'
 ] as const satisfies readonly UserRole[];
 
-export type SelfRegistrationRole = (typeof SELF_REGISTRATION_ROLES)[number];
-
 export const LANGUAGE_CODES = ['en', 'ha', 'yo', 'ig'] as const;
 export type LanguageCode = (typeof LANGUAGE_CODES)[number];
 
@@ -429,10 +427,6 @@ export interface ApiListResponse<T> {
   total: number;
   page: number;
   pageSize: number;
-}
-
-export interface ApiItemResponse<T> {
-  data: T;
 }
 
 /* ---------------------------------------------------------------------------
