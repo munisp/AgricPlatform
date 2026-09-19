@@ -38,13 +38,14 @@ const ADMIN: ActorRef = { id: 'user-admin', roles: ['admin'] };
 
 async function makeService(env: NodeJS.ProcessEnv = {}) {
   const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const ledgerAccounts = createInMemoryLedgerAccountRepository();
   const ledger = new LedgerService(
     events,
-    createInMemoryLedgerAccountRepository(),
+    ledgerAccounts,
     createInMemoryLedgerEntryRepository()
   );
   const users = new UsersService(createInMemoryUserRepository());
-  const agents = createInMemoryAgentBankingAgentRepository();
+  const agents = createInMemoryAgentBankingAgentRepository(ledgerAccounts);
   const topUps = createInMemoryAgentFloatTopUpRepository();
   const vouchers = createInMemoryAgentVoucherRepository();
   const transactions = createInMemoryAgentTransactionRepository();
@@ -72,7 +73,19 @@ async function makeService(env: NodeJS.ProcessEnv = {}) {
     roles: ['farmer'],
     preferredLanguage: 'en'
   });
-  return { service, ledger, users, events, agentUser, farmer, agents, topUps, vouchers, transactions };
+  return {
+    service,
+    ledger,
+    ledgerAccounts,
+    users,
+    events,
+    agentUser,
+    farmer,
+    agents,
+    topUps,
+    vouchers,
+    transactions
+  };
 }
 
 function agentActor(user: User): ActorRef {
@@ -196,6 +209,53 @@ describe('AgentBankingService — agent registry', () => {
         agentActor(ctx.agentUser)
       )
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('OB-12: a failing agents write leaves NO ledger accounts behind (atomic registration)', async () => {
+    const ctx = await makeService();
+    // Inject a failure into the agent-row write; the account provisioning
+    // must roll back with it (compensated in-memory, transactional on pg).
+    ctx.agents.create = async () => {
+      throw new Error('simulated agents insert failure');
+    };
+    await expect(
+      ctx.service.registerAgent({ userId: ctx.agentUser.id, organisation: 'Coop' }, ADMIN.id)
+    ).rejects.toThrow(/simulated agents insert failure/);
+    const leaked = (await ctx.ledgerAccounts.all()).filter((account) =>
+      account.code.startsWith('agent:')
+    );
+    expect(leaked).toEqual([]);
+  });
+
+  it('OB-05: registration alone does NOT grant the agent role; ACTIVATION does (idempotently)', async () => {
+    const ctx = await makeService();
+    const plain = await ctx.users.create({
+      phone: '+2348000000099',
+      fullName: 'Prospective Agent',
+      roles: ['farmer'],
+      preferredLanguage: 'en'
+    });
+    const agent = await ctx.service.registerAgent(
+      { userId: plain.id, organisation: 'Coop' },
+      ADMIN.id
+    );
+    // Registration creates a PENDING agent — no role yet.
+    expect((await ctx.users.getById(plain.id)).roles).toEqual(['farmer']);
+
+    await ctx.service.setAgentStatus(agent.id, 'ACTIVE', ADMIN.id);
+    expect((await ctx.users.getById(plain.id)).roles).toContain('agent');
+
+    // Double-activation is an idempotent replay: no duplicate grant.
+    await ctx.service.setAgentStatus(agent.id, 'ACTIVE', ADMIN.id);
+    const after = (await ctx.users.getById(plain.id)).roles;
+    expect(after.filter((role) => role === 'agent')).toHaveLength(1);
+
+    // Suspend → reactivate keeps the role grant a no-op (already held).
+    await ctx.service.setAgentStatus(agent.id, 'SUSPENDED', ADMIN.id);
+    await ctx.service.setAgentStatus(agent.id, 'ACTIVE', ADMIN.id);
+    expect(
+      (await ctx.users.getById(plain.id)).roles.filter((role) => role === 'agent')
+    ).toHaveLength(1);
   });
 });
 
