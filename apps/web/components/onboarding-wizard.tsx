@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import {
   NIGERIAN_STATES,
-  USER_ROLES,
+  SELF_REGISTRATION_ROLES,
   VALUE_CHAINS,
   calculateProfileCompletion,
   profileBadge
@@ -269,7 +269,10 @@ export function OnboardingWizard() {
               value={draft.role}
               onChange={(e) => patch({ role: e.target.value as UserRole })}
             >
-              {USER_ROLES.map((role) => (
+              {/* OB-10: only self-registrable roles are offered — the API
+                  rejects privileged roles at submit, so listing them here
+                  would trap the user in a doomed wizard run. */}
+              {SELF_REGISTRATION_ROLES.map((role) => (
                 <option key={role} value={role}>
                   {ROLE_LABELS[role]}
                 </option>
