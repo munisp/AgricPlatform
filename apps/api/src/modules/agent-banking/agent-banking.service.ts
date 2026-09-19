@@ -304,28 +304,43 @@ export class AgentBankingService {
     }
     // The float and commission accounts are ledger sub-accounts owned by the
     // agent's user — created up-front so every later posting finds them.
-    await this.ledger.ensureAccount({
-      code: agentFloatAccountCode(id),
-      type: 'asset',
-      ownerId: input.userId
-    });
-    await this.ledger.ensureAccount({
-      code: agentCommissionAccountCode(id),
-      type: 'liability',
-      ownerId: input.userId
-    });
-    const record = await this.agents.create({
-      id,
-      userId: input.userId,
-      organisation: input.organisation,
-      status: 'PENDING',
-      floatAccountCode: agentFloatAccountCode(id),
-      commissionAccountCode: agentCommissionAccountCode(id),
-      dailyLimitKobo,
-      lowFloatThresholdKobo,
-      createdAt: now,
-      updatedAt: now
-    });
+    // OB-12: all three writes (2 ledger accounts + agent row) commit
+    // atomically — a single transaction on the pg driver, compensated
+    // in-memory — so a failed agents insert never leaves orphaned ledger
+    // accounts. Account creation keeps ensure semantics (pre-existing codes
+    // are adopted, not duplicated).
+    const record = await this.agents.createWithLedgerAccounts(
+      {
+        id,
+        userId: input.userId,
+        organisation: input.organisation,
+        status: 'PENDING',
+        floatAccountCode: agentFloatAccountCode(id),
+        commissionAccountCode: agentCommissionAccountCode(id),
+        dailyLimitKobo,
+        lowFloatThresholdKobo,
+        createdAt: now,
+        updatedAt: now
+      },
+      [
+        {
+          id: randomUUID(),
+          code: agentFloatAccountCode(id),
+          type: 'asset',
+          ownerId: input.userId,
+          currency: 'NGN',
+          createdAt: now
+        },
+        {
+          id: randomUUID(),
+          code: agentCommissionAccountCode(id),
+          type: 'liability',
+          ownerId: input.userId,
+          currency: 'NGN',
+          createdAt: now
+        }
+      ]
+    );
     await this.events.publish('agentbank.agent.registered', { agentId: id, userId: input.userId }, actorId);
     return record;
   }
@@ -376,6 +391,13 @@ export class AgentBankingService {
       { status, updatedAt: new Date().toISOString() },
       { status: agent.status }
     );
+    if (status === 'ACTIVE') {
+      // OB-05: the 'agent' role is granted on ACTIVATION (PENDING→ACTIVE or
+      // SUSPENDED→ACTIVE), not at registration — a PENDING registration alone
+      // must not confer agent API access. grantRole is a no-op when the user
+      // already holds the role, so re-activation replays stay idempotent.
+      await this.users.grantRole(agent.userId, 'agent');
+    }
     await this.events.publish(
       'agentbank.agent.status_changed',
       { agentId: id, from: agent.status, to: status },
