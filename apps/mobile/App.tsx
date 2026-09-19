@@ -27,6 +27,7 @@ import { CoursesScreen } from './src/screens/CoursesScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { ListingDetailScreen } from './src/screens/ListingDetailScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { RegisterScreen } from './src/screens/RegisterScreen';
 import { MarketplaceScreen } from './src/screens/MarketplaceScreen';
 import { LivestockScreen } from './src/screens/LivestockScreen';
 import { FarmsScreen } from './src/screens/FarmsScreen';
@@ -56,6 +57,7 @@ import { Muted, PrimaryButton } from './src/screens/ui';
 
 export type RootStackParamList = {
   Login: undefined;
+  Register: undefined;
   Home: undefined;
   Courses: undefined;
   CourseDetail: { courseId: string };
@@ -251,7 +253,16 @@ export default function App() {
           ) : (
             <Stack.Group>
               <Stack.Screen name="Login" options={{ title: 'Sign in' }}>
-                {() => <LoginScreen tokenStore={tokenStore} onLoggedIn={setUser} />}
+                {({ navigation }) => (
+                  <LoginScreen
+                    tokenStore={tokenStore}
+                    onLoggedIn={setUser}
+                    onOpenRegister={() => navigation.navigate('Register')}
+                  />
+                )}
+              </Stack.Screen>
+              <Stack.Screen name="Register" options={{ title: 'Create account' }}>
+                {() => <RegisterScreen tokenStore={tokenStore} onRegistered={setUser} />}
               </Stack.Screen>
             </Stack.Group>
           )}
