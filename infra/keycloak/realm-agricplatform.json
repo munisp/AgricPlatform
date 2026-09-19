@@ -13,11 +13,20 @@
   "roles": {
     "realm": [
       { "name": "farmer", "description": "Registered farmer member" },
+      { "name": "student", "description": "Learning-track student member" },
       { "name": "buyer", "description": "Marketplace buyer" },
+      { "name": "supplier", "description": "Input/equipment supplier" },
       { "name": "partner", "description": "Partner organisation user" },
       { "name": "chapter_lead", "description": "Chapter leadership role" },
+      { "name": "vet", "description": "Field veterinarian (livestock health services)" },
       { "name": "lender", "description": "Credit lender staff (input-finance / MFB partners)" },
+      { "name": "insurer", "description": "Agricultural insurance provider staff" },
+      { "name": "regulator", "description": "Regulator / state-vet compliance auditor" },
+      { "name": "donor", "description": "Donor / development-partner programme oversight" },
       { "name": "enumerator", "description": "Field agent capturing farmer data" },
+      { "name": "agronomist", "description": "Agronomist working the voice-advisory escalation queue" },
+      { "name": "agent", "description": "Rural banking agent (float ledger, cash-in/cash-out)" },
+      { "name": "supervisor", "description": "Supervisor sampling agronomist answer quality" },
       { "name": "admin", "description": "Platform administrator" }
     ],
     "client": {
