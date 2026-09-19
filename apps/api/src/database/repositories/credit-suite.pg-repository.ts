@@ -509,23 +509,6 @@ export class PgCreditGroupMemberRepository implements CreditGroupMemberRepositor
     return member;
   }
 
-  async updateRole(
-    groupId: string,
-    userId: string,
-    role: CreditGroupRole
-  ): Promise<CreditGroupMember> {
-    const result = await this.pool.query(
-      `UPDATE credit.credit_group_members SET role = $3
-       WHERE group_id = $1 AND user_id = $2
-       RETURNING group_id, user_id, role, joined_at`,
-      [groupId, userId, role]
-    );
-    if (!result.rows[0]) {
-      throw new Error(`Membership '${groupId}:${userId}' not found`);
-    }
-    return memberFromRow(result.rows[0]);
-  }
-
   async remove(groupId: string, userId: string): Promise<boolean> {
     const result = await this.pool.query(
       `DELETE FROM credit.credit_group_members WHERE group_id = $1 AND user_id = $2`,
