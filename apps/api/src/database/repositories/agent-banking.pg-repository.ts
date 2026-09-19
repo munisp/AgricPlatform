@@ -1,5 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import type pg from 'pg';
+import type { LedgerAccount } from '@agric-platform/shared';
 import type {
   AgentBankingAgentRepository,
   AgentCriteria,
@@ -43,27 +44,64 @@ function toIso(value: unknown): string | undefined {
 export class PgAgentBankingAgentRepository implements AgentBankingAgentRepository {
   constructor(private readonly pool: pg.Pool) {}
 
+  /** Agent row insert (pool or open transaction client — OB-12). */
+  private async insertAgent(
+    queryable: Pick<pg.Pool, 'query'> | Pick<pg.PoolClient, 'query'>,
+    record: AgentRecord
+  ): Promise<void> {
+    await queryable.query(
+      'INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, ' +
+        'commission_account_code, daily_limit_kobo, low_float_threshold_kobo, created_at, updated_at) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+      [
+        record.id,
+        record.userId,
+        record.organisation,
+        record.status,
+        record.floatAccountCode,
+        record.commissionAccountCode,
+        record.dailyLimitKobo,
+        record.lowFloatThresholdKobo,
+        record.createdAt,
+        record.updatedAt
+      ]
+    );
+  }
+
   async create(record: AgentRecord): Promise<AgentRecord> {
     try {
-      await this.pool.query(
-        'INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, ' +
-          'commission_account_code, daily_limit_kobo, low_float_threshold_kobo, created_at, updated_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [
-          record.id,
-          record.userId,
-          record.organisation,
-          record.status,
-          record.floatAccountCode,
-          record.commissionAccountCode,
-          record.dailyLimitKobo,
-          record.lowFloatThresholdKobo,
-          record.createdAt,
-          record.updatedAt
-        ]
-      );
+      await this.insertAgent(this.pool, record);
     } catch (error) {
       assertPgUnique(error, 'This user is already registered as an agent');
+    }
+    return record;
+  }
+
+  /**
+   * OB-12: ledger float/commission accounts + the agent row commit in ONE
+   * transaction — a failed agents insert rolls the account provisioning
+   * back. Accounts keep ensure semantics (ON CONFLICT (code) DO NOTHING), so
+   * replayed/concurrent registrations converge instead of erroring.
+   */
+  async createWithLedgerAccounts(record: AgentRecord, accounts: LedgerAccount[]): Promise<AgentRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const account of accounts) {
+        await client.query(
+          'INSERT INTO finance.ledger_accounts (id, code, owner_id, account_type, currency) ' +
+            'VALUES ($1, $2, $3, $4, $5) ON CONFLICT (code) DO NOTHING',
+          [account.id, account.code, account.ownerId ?? null, account.type, account.currency]
+        );
+      }
+      await this.insertAgent(client, record);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      assertPgUnique(error, 'This user is already registered as an agent');
+      throw error;
+    } finally {
+      client.release();
     }
     return record;
   }
