@@ -29,6 +29,8 @@ import {
 import { LedgerService } from '../finance/ledger.service.js';
 import { H3Service } from '../geo/h3.service.js';
 import { ProviderRequestError } from '../integrations/drivers/http.js';
+import { InMemoryUserRepository } from '../../database/repositories/user.repository.js';
+import { UsersService } from '../users/users.service.js';
 import { CO2E_COEFFICIENT_VERSION } from './carbon-coefficients.js';
 import type { NdviProvider } from './ndvi.provider.js';
 import {
@@ -48,6 +50,24 @@ const farmer2 = { id: 'user-farmer-2', roles: ['farmer'] } as unknown as User;
 const enumerator = { id: 'user-enum', roles: ['enumerator'] } as unknown as User;
 const donor = { id: 'user-donor', roles: ['donor'] } as unknown as User;
 const admin = { id: 'user-admin', roles: ['admin'] } as unknown as User;
+
+/**
+ * OB-14: leadership grants consult the user directory — the fixture actors
+ * exist here as OTP-VERIFIED accounts (leadership eligible).
+ */
+function fixtureDirectory(): UsersService {
+  const actors = [lead, farmer, farmer2, enumerator, donor, admin];
+  const verified = (actor: User, index: number): User => ({
+    ...actor,
+    phone: `+2348000000${String(index + 10)}`,
+    fullName: actor.id,
+    preferredLanguage: 'en',
+    kycTier: 'tier_0',
+    isVerified: true,
+    createdAt: '2026-01-01T00:00:00.000Z'
+  });
+  return new UsersService(new InMemoryUserRepository(actors.map(verified)));
+}
 
 const stubNdvi: NdviProvider = {
   name: 'stub',
@@ -100,7 +120,8 @@ function makeService(ndvi: NdviProvider = stubNdvi) {
     ndvi,
     chaptersStub as never,
     createInMemoryVslaMeetingRepository(),
-    createInMemoryVslaCashCountRepository()
+    createInMemoryVslaCashCountRepository(),
+    fixtureDirectory()
   );
   return { service, ledger, events, shareOuts, shareOutPlan, loans, repayments };
 }
