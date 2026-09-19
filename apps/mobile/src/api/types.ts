@@ -12,6 +12,19 @@ export interface User {
   preferredLanguage: 'en' | 'ha' | 'yo' | 'ig';
 }
 
+/**
+ * Roles a member may self-select at registration. Mirror of
+ * SELF_REGISTRATION_ROLES in packages/shared/src/domain.ts — the mobile app
+ * carries no workspace dependency on @agric-platform/shared, so keep this
+ * list in sync with that single source of truth. Every other role is
+ * privileged and granted only by an administrator.
+ */
+export const SELF_REGISTRATION_ROLES = ['farmer', 'student', 'buyer', 'supplier'] as const;
+
+export type SelfRegistrationRole = (typeof SELF_REGISTRATION_ROLES)[number];
+
+export type PreferredLanguage = User['preferredLanguage'];
+
 export interface Course {
   id: string;
   title: string;
