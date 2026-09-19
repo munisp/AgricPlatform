@@ -147,6 +147,16 @@ export class InMemoryLedgerAccountRepository implements LedgerAccountRepository 
     return account;
   }
 
+  /**
+   * Compensation hook for the OB-12 atomic register-with-accounts write —
+   * removes an account by natural key so a failed composed write leaves no
+   * orphaned accounts. Not part of the LedgerAccountRepository port (the
+   * ledger itself never deletes accounts).
+   */
+  async remove(code: string): Promise<boolean> {
+    return this.items.delete(code);
+  }
+
   async all(): Promise<LedgerAccount[]> {
     return [...this.items.values()];
   }
