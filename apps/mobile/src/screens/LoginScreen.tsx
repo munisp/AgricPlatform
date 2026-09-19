@@ -20,10 +20,13 @@ import { ErrorNotice, PrimaryButton, styles as ui } from './ui';
  */
 export function LoginScreen({
   tokenStore,
-  onLoggedIn
+  onLoggedIn,
+  onOpenRegister
 }: {
   tokenStore: TokenStore;
   onLoggedIn: (user: User) => void;
+  /** OB-18: navigates to self-service registration. */
+  onOpenRegister?: () => void;
 }) {
   const client = useApiClient();
   const [phone, setPhone] = useState('');
@@ -113,6 +116,10 @@ export function LoginScreen({
       )}
 
       {error ? <ErrorNotice message={error} /> : null}
+
+      {onOpenRegister ? (
+        <PrimaryButton label="New here? Register" onPress={onOpenRegister} />
+      ) : null}
     </ScrollView>
     </KeyboardAvoidingView>
   );
