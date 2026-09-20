@@ -1047,7 +1047,7 @@ services:
 
   signoz-clickhouse:
     profiles: ["observability"]
-    image: clickhouse/clickhouse-server:24.1.2-alpine
+    image: clickhouse/clickhouse-server:26.8.6.5-alpine
     container_name: agric-signoz-clickhouse
     depends_on: [signoz-zookeeper]
     healthcheck:
