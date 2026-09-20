@@ -1117,7 +1117,7 @@ services:
 
   signoz-alertmanager:
     profiles: ["observability"]
-    image: signoz/alertmanager:0.23.5
+    image: signoz/alertmanager:0.23.9
     container_name: agric-signoz-alertmanager
     command:
       - --queryService.url=http://signoz-query-service:8085
