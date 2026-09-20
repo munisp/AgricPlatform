@@ -15,6 +15,23 @@ const TSX_BIN = [
   fileURLToPath(new URL('../../../../node_modules/.bin/tsx', import.meta.url))
 ].find((candidate) => existsSync(candidate));
 
+// The spawned CLI is a separate Node process WITHOUT the vitest alias that
+// maps @agric-platform/shared to source — it resolves the package main
+// (dist/index.js). The unit-test CI job never builds packages/shared, so the
+// e2e spawn can only run where a dist build exists. The unit test above pins
+// the guard logic regardless of environment.
+const SHARED_DIST = [
+  fileURLToPath(
+    new URL('../../node_modules/@agric-platform/shared/dist/index.js', import.meta.url)
+  ),
+  fileURLToPath(
+    new URL('../../../node_modules/@agric-platform/shared/dist/index.js', import.meta.url)
+  ),
+  fileURLToPath(
+    new URL('../../../../node_modules/@agric-platform/shared/dist/index.js', import.meta.url)
+  )
+].find((candidate) => existsSync(candidate));
+
 /**
  * OB-13: the seed CLI loads DEMO data (test identities, demo listings, a
  * certificate counter baseline) and must refuse to run in production.
@@ -36,9 +53,10 @@ describe('seed CLI production guard (OB-13)', () => {
   });
 
   it('the CLI exits non-zero with a clear message when NODE_ENV=production', async (context) => {
-    if (!TSX_BIN) {
-      // tsx not installed in this environment — the unit test above still
-      // pins the guard logic; the CLI path is covered by npm run seed.
+    if (!TSX_BIN || !SHARED_DIST) {
+      // tsx or the shared dist build not present in this environment — the
+      // unit test above still pins the guard logic; the CLI path is covered
+      // by npm run seed in environments that build the workspace.
       context.skip();
       return;
     }
