@@ -47,7 +47,7 @@ async function clean(): Promise<void> {
 function makePackage(id: string, overrides: Partial<DdsPackage> = {}): DdsPackage {
   return {
     id,
-    shipmentId: 'pgtest-tsh-1',
+    shipmentId: 'pgtest-dds-sh-1',
     status: 'draft',
     checklist: [],
     createdBy: OWNER,
@@ -76,7 +76,7 @@ describePg('pg dds packages (guarded status CAS / immutability after export)', (
     );
     await pool!.query(
       `INSERT INTO traceability.shipments (id, creator_id, creator_kind, reference)
-       VALUES ('pgtest-tsh-1', $1, 'user', 'EXP-PG-1') ON CONFLICT (id) DO NOTHING`,
+       VALUES ('pgtest-dds-sh-1', $1, 'user', 'EXP-PG-1') ON CONFLICT (id) DO NOTHING`,
       [OWNER]
     );
   });

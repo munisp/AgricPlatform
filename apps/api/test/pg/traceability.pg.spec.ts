@@ -36,6 +36,9 @@ const MIGRATIONS = ['029_traceability.sql', '030_traceability_dds.sql'].map((fil
 const OWNER = 'pgtest-trace-user';
 
 async function clean(): Promise<void> {
+  // dds_packages references shipments — delete child rows first. Defensive:
+  // the dds-package spec shares this database and uses pgtest-% ids too.
+  await pool!.query(`DELETE FROM traceability.dds_packages WHERE id LIKE 'pgtest-%'`);
   await pool!.query(`DELETE FROM traceability.shipment_lots WHERE id LIKE 'pgtest-%'`);
   await pool!.query(`DELETE FROM traceability.shipments WHERE id LIKE 'pgtest-%'`);
   await pool!.query(`DELETE FROM traceability.lot_plot_links WHERE id LIKE 'pgtest-%'`);
