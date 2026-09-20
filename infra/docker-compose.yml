@@ -1069,7 +1069,7 @@ services:
 
   signoz-otel-collector:
     profiles: ["observability"]
-    image: signoz/signoz-otel-collector:0.111.13
+    image: signoz/signoz-otel-collector:v0.144.10
     container_name: agric-signoz-otel-collector
     # default image config receives OTLP on 4317/4318 and writes clickhouse
     command: ["--config=/etc/otel-collector-config.yaml", "--feature-gates=-pkg.translator.prometheus.NormalizeName"]
