@@ -929,7 +929,7 @@ services:
   # and serves as the simulator counterparty for TTK test collections.
   mojaloop-ttk:
     profiles: ["mojaloop"]
-    image: mojaloop/ml-testing-toolkit:v18.19.1
+    image: mojaloop/ml-testing-toolkit:v18.19.2
     container_name: agric-mojaloop-ttk
     ports:
       - "4040:4040" # FSPIOP API surface (adapter target)
