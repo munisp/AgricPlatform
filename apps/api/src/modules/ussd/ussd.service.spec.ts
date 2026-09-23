@@ -9,7 +9,12 @@ import type { LearningService } from '../learning/learning.service.js';
 import type { OpportunitiesService } from '../opportunities/opportunities.service.js';
 import { UsersService } from '../users/users.service.js';
 import { UssdController } from './ussd.controller.js';
-import { resolveUssdDriver, UssdService, USSD_SESSION_TTL_MS } from './ussd.service.js';
+import {
+  resolveUssdDriver,
+  UssdService,
+  USSD_MENU_CACHE_TTL_MS,
+  USSD_SESSION_TTL_MS
+} from './ussd.service.js';
 
 const ENABLED_ENV = {
   USSD_DRIVER: 'live',
@@ -96,7 +101,7 @@ function build(
     undefined,
     overrides.kv ?? new InMemoryKeyValueStore()
   );
-  return { service, users, sessions, learning };
+  return { service, users, sessions, learning, prices, opportunities };
 }
 
 describe('resolveUssdDriver (fail-closed)', () => {
@@ -766,5 +771,65 @@ describe('UssdService price-wire pull (Stage 27, innovation 11)', () => {
     const turn = await service.handleCallback({ ...session, text: '6' });
     expect(turn).toContain('Price unavailable');
     expect(wireMenuData).not.toHaveBeenCalled();
+  });
+});
+
+describe('UssdService menu reference cache (perf P1-2)', () => {
+  it('serves repeat turns from the 60s cache without re-scanning the repositories', async () => {
+    const { service, prices, opportunities } = build();
+    const priceScans = vi.spyOn(prices, 'find');
+    const opportunityScans = vi.spyOn(opportunities, 'all');
+    const first = await service.handleCallback({
+      sessionId: 'sess-cache-1',
+      phoneNumber: '+234861',
+      text: ''
+    });
+    const second = await service.handleCallback({
+      sessionId: 'sess-cache-2',
+      phoneNumber: '+234862',
+      text: ''
+    });
+    // Menu content is identical for both callers…
+    expect(second).toBe(first);
+    // …and the reference data was scanned once, not once per turn.
+    expect(priceScans).toHaveBeenCalledTimes(1);
+    expect(opportunityScans).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-scans after the cache TTL expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, prices } = build();
+      const priceScans = vi.spyOn(prices, 'find');
+      await service.handleCallback({ sessionId: 'sess-ttl-1', phoneNumber: '+234863', text: '' });
+      vi.advanceTimersByTime(USSD_MENU_CACHE_TTL_MS + 1_000);
+      await service.handleCallback({ sessionId: 'sess-ttl-2', phoneNumber: '+234864', text: '' });
+      expect(priceScans).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails open on a cache outage: the menu reads through to the repositories', async () => {
+    // The menu bundle is a cache, not a store of record — a backing-store
+    // outage degrades to per-turn scans, never to a failed turn (contrast
+    // the fail-closed OB-09 registration limiter above).
+    const brokenKv = {
+      get: async () => {
+        throw new Error('redis connection refused');
+      },
+      set: async () => {
+        throw new Error('redis connection refused');
+      }
+    } as unknown as KeyValueStore;
+    const { service, prices } = build({ kv: brokenKv });
+    const priceScans = vi.spyOn(prices, 'find');
+    const body = await service.handleCallback({
+      sessionId: 'sess-cache-outage',
+      phoneNumber: '+234865',
+      text: ''
+    });
+    expect(body.startsWith('CON ')).toBe(true);
+    expect(priceScans).toHaveBeenCalledTimes(1);
   });
 });
