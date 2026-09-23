@@ -268,6 +268,60 @@ describe('SyncService.push', () => {
     ]);
     expect(results.map((r) => r.status)).toEqual(['conflict', 'applied']);
   });
+
+  it('processes different records concurrently within a batch (perf P2-7)', async () => {
+    const descriptor = h.registry.get('test_note')!;
+    const originalApply = descriptor.apply!;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    descriptor.apply = async (actor, pushed) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return await originalApply(actor, pushed);
+      } finally {
+        inFlight -= 1;
+      }
+    };
+    const results = await h.service.push(owner, [
+      item({ entityId: 'p-1', clientMutationId: 'pm-1' }),
+      item({ entityId: 'p-2', clientMutationId: 'pm-2' }),
+      item({ entityId: 'p-3', clientMutationId: 'pm-3' })
+    ]);
+    // Result order matches input order…
+    expect(results.map((r) => r.entityId)).toEqual(['p-1', 'p-2', 'p-3']);
+    expect(results.map((r) => r.status)).toEqual(['applied', 'applied', 'applied']);
+    // …but the applies overlapped (a strictly sequential loop could never).
+    expect(maxInFlight).toBe(3);
+  });
+
+  it('keeps same-record items sequential within a batch (version chain preserved)', async () => {
+    const descriptor = h.registry.get('test_note')!;
+    const originalApply = descriptor.apply!;
+    // The delay makes accidental parallelism observable as a conflict.
+    descriptor.apply = async (actor, pushed) => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return originalApply(actor, pushed);
+    };
+    const results = await h.service.push(owner, [
+      item({ entityId: 'n-1', clientMutationId: 'm-1' }),
+      item({ entityId: 'n-1', clientMutationId: 'm-2', baseVersion: 1, payload: { text: 'v2' } })
+    ]);
+    expect(results.map((r) => r.status)).toEqual(['applied', 'applied']);
+    expect(results[0].newVersion).toBe(1);
+    expect(results[1].newVersion).toBe(2);
+    expect(h.notes.get('n-1')).toMatchObject({ text: 'v2' });
+  });
+
+  it('keeps clientMutationId reuse within one batch sequential (fail-closed on reuse)', async () => {
+    const results = await h.service.push(owner, [
+      item({ entityId: 'n-1', clientMutationId: 'm-1' }),
+      item({ entityId: 'n-2', clientMutationId: 'm-1' })
+    ]);
+    expect(results[0].status).toBe('applied');
+    expect(results[1]).toMatchObject({ status: 'error', error: 'mutation_id_reused' });
+  });
 });
 
 describe('SyncService.pull', () => {
