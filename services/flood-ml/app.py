@@ -2,8 +2,10 @@
 IBM Granite Geospatial ML Service
 FastAPI application for running Granite model inference
 """
+import asyncio
 import os
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
@@ -48,11 +50,30 @@ except ImportError as e:
         """Fallback so the except-clauses below work when the preprocessing
         stack is not installed (never raised in that case)."""
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Eagerly load the flood detection model at startup (in a worker thread,
+    so the event loop never blocks) instead of on the first request.
+
+    Fail-closed semantics are preserved: a failed load is logged here and
+    leaves the global cache empty, so the first inference request retries the
+    load and surfaces HTTP 503 via get_flood_model — never a fabricated
+    prediction.
+    """
+    if FLOOD_MODEL_AVAILABLE:
+        try:
+            await asyncio.to_thread(get_flood_model)
+        except HTTPException as e:
+            print(f"Startup model load failed (requests will fail closed with 503): {e.detail}")
+    yield
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Granite Geospatial ML Service",
     description="AI-powered satellite imagery analysis for agriculture",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -261,27 +282,29 @@ async def detect_flood(request: FloodDetectionRequest):
     3. Runs inference to detect flooded areas
     4. Returns detailed flood statistics and recommendations
     """
-    # Check cache first
+    # Check cache first (Redis is a blocking client; keep it off the event loop)
     cache_key = f"flood:{request.latitude}:{request.longitude}:{request.date}:{request.bbox_size_km}"
     if REDIS_AVAILABLE and redis_client:
-        cached = redis_client.get(cache_key)
+        cached = await asyncio.to_thread(redis_client.get, cache_key)
         if cached:
             print(f"Cache hit for {cache_key}")
             return FloodDetectionResponse(**json.loads(cached))
-    
+
     try:
-        # Load models and clients
-        model = get_flood_model()
+        # Load models and clients. The model is loaded at startup (lifespan)
+        # and cached; if that failed, the per-request retry below runs in a
+        # worker thread so a slow load cannot stall the event loop.
+        model = await asyncio.to_thread(get_flood_model)
         client = get_sentinel_client()
         prep = get_preprocessor()
-        
+
         # Create bounding box
         bbox = create_bbox_from_coords(
             request.latitude,
             request.longitude,
             request.bbox_size_km
         )
-        
+
         # Determine time range
         if request.date:
             try:
@@ -290,25 +313,30 @@ async def detect_flood(request: FloodDetectionRequest):
                 raise HTTPException(status_code=400, detail="Invalid date format. Use ISO format (YYYY-MM-DD)")
         else:
             date = datetime.now()
-        
+
         time_range = (date - timedelta(days=request.days_back), date)
-        
-        # Fetch satellite imagery
-        print(f"Fetching Sentinel-2 imagery for {request.latitude}, {request.longitude}")
-        sentinel2_data = client.get_sentinel2_imagery(bbox, time_range)
-        
-        print(f"Fetching Sentinel-1 SAR imagery for {request.latitude}, {request.longitude}")
-        sentinel1_data = client.get_sentinel1_sar(bbox, time_range)
-        
-        # Preprocess
+
+        # Fetch satellite imagery: two independent, seconds-scale blocking
+        # HTTP calls — run them concurrently in worker threads so wall time
+        # is max(t_s2, t_s1) instead of t_s2 + t_s1 and the event loop (and
+        # /healthz) stays responsive.
+        print(f"Fetching Sentinel-2 and Sentinel-1 imagery for {request.latitude}, {request.longitude}")
+        sentinel2_data, sentinel1_data = await asyncio.gather(
+            asyncio.to_thread(client.get_sentinel2_imagery, bbox, time_range),
+            asyncio.to_thread(client.get_sentinel1_sar, bbox, time_range),
+        )
+
+        # Preprocess (CPU-bound; off the event loop)
         print("Preprocessing imagery...")
-        input_tensor = prep.prepare_flood_detection_input(sentinel2_data, sentinel1_data)
-        
-        # Run inference
+        input_tensor = await asyncio.to_thread(
+            prep.prepare_flood_detection_input, sentinel2_data, sentinel1_data
+        )
+
+        # Run inference (CPU/GPU-bound; off the event loop)
         print("Running flood detection inference...")
-        prediction_mask, probabilities = model.predict(input_tensor)
-        
-        # Calculate statistics
+        prediction_mask, probabilities = await asyncio.to_thread(model.predict, input_tensor)
+
+        # Calculate statistics (vectorized numpy — cheap enough inline)
         statistics = model.get_flood_statistics(prediction_mask, probabilities)
         
         # Get severity and create alert
@@ -332,9 +360,11 @@ async def detect_flood(request: FloodDetectionRequest):
             basis="live"
         )
 
-        # Cache result for 1 hour
+        # Cache result for 1 hour (blocking client; off the event loop)
         if REDIS_AVAILABLE and redis_client:
-            redis_client.setex(cache_key, 3600, response.model_dump_json())
+            await asyncio.to_thread(
+                redis_client.setex, cache_key, 3600, response.model_dump_json()
+            )
 
         return response
 
