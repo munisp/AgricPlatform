@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { formatNaira, seedListings } from '@agric-platform/shared';
 import type { MarketplaceListing } from '@agric-platform/shared';
 import { useAppState } from '@/lib/app-state';
@@ -15,8 +15,16 @@ import { ApiErrorNotice, OfflineDataNotice, QueryState } from '@/components/api-
 // Offline fallback only — live listings come from GET /api/v1/listings.
 const FALLBACK_LISTINGS: MarketplaceListing[] = seedListings;
 
-function ListingCard({ listing }: { listing: MarketplaceListing }) {
-  const { userId } = useAppState();
+// Memoized with userId passed as a primitive prop: the grid renders up to 60
+// cards, and subscribing each one to the whole app-state context re-rendered
+// every card on any context change (queue flush, role preview, hydration).
+const ListingCard = memo(function ListingCard({
+  listing,
+  userId
+}: {
+  listing: MarketplaceListing;
+  userId: string;
+}) {
   const [ordered, setOrdered] = useState<'idle' | 'sent' | 'queued'>('idle');
   const orderMutation = useApiMutation<{ quantity: number }, unknown>({
     mutationFn: ({ quantity }) =>
@@ -65,9 +73,10 @@ function ListingCard({ listing }: { listing: MarketplaceListing }) {
       {orderMutation.status === 'error' ? <ApiErrorNotice error={orderMutation.error} /> : null}
     </Card>
   );
-}
+});
 
 export function ListingBrowser() {
+  const { userId } = useAppState();
   const query = useApiQuery(
     'listings:active',
     () => listListings({ active: true, pageSize: 60 }).then((res) => res.data),
@@ -85,7 +94,7 @@ export function ListingBrowser() {
       >
         <div className="grid grid-3">
           {(query.data ?? []).map((listing) => (
-            <ListingCard key={listing.id} listing={listing} />
+            <ListingCard key={listing.id} listing={listing} userId={userId} />
           ))}
         </div>
       </QueryState>
