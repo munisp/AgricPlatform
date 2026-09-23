@@ -68,12 +68,15 @@ function entry(idempotencyKey: string): LedgerJournalEntry {
 
 /** Success-path behavior; the balance check verdict is parameterised. */
 function behaviorWithBalanceCheck(balanced: boolean, postingCount: number) {
-  return (text: string): QueryOutcome => {
+  return (text: string, params: unknown[]): QueryOutcome => {
     if (text.includes('finance.transfer_is_balanced')) {
       return { rows: [{ balanced, posting_count: postingCount }] };
     }
-    if (text.startsWith('SELECT id FROM finance.ledger_accounts')) {
-      return { rows: [{ id: `acct-${text.length}` }] };
+    // P2 perf: account codes are resolved set-based (ONE … WHERE code = ANY
+    // query per entry) instead of one SELECT per posting.
+    if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+      const codes = (params[0] as string[] | undefined) ?? [];
+      return { rows: codes.map((code) => ({ code, id: `acct-${code}` })) };
     }
     return { rows: [] };
   };
@@ -141,10 +144,16 @@ describe('pg ledger balance enforcement (query spy)', () => {
 
     await repo.findUnbalancedEntries();
 
-    const query = calls.find((call) => call.text.includes('finance.transfer_is_balanced'));
+    // P2 perf: the drift query is a set-based grouped aggregate equivalent
+    // of transfer_is_balanced (debits <> credits) OR the <2-postings
+    // minimum (posting_count < 2, including zero-posting transfers) — one
+    // pass over ledger_entries instead of a per-row PL/pgSQL call.
+    const query = calls.find((call) => call.text.includes('FROM finance.ledger_transfers'));
     expect(query).toBeDefined();
-    expect(query!.text).toContain('WHERE NOT finance.transfer_is_balanced(t.id)');
-    expect(query!.text).toContain('< 2');
+    expect(query!.text).toContain('GROUP BY e.transfer_id');
+    expect(query!.text).toContain('s.debits <> s.credits');
+    expect(query!.text).toContain('s.posting_count < 2');
+    expect(query!.text).toContain('s.transfer_id IS NULL');
   });
 });
 
