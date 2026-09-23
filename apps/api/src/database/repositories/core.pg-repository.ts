@@ -4,7 +4,11 @@ import { chainTimestamp, GENESIS_HASH, linkAuditEvent } from '../../core/audit-c
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import { auditMapper, outboxMapper } from '../pg/row-mappers.js';
 import type { AuditCriteria, AuditRepository } from './audit.repository.js';
-import type { OutboxRecord, OutboxRepository } from './outbox.repository.js';
+import {
+  boundOutboxListLimit,
+  type OutboxRecord,
+  type OutboxRepository
+} from './outbox.repository.js';
 
 /** Tail ordering for the audit chain: created_at with a deterministic id tiebreaker. */
 const AUDIT_TAIL_SQL =
@@ -155,17 +159,25 @@ export class PgOutboxRepository implements OutboxRepository {
     return event;
   }
 
-  async list(): Promise<DomainEvent[]> {
+  /**
+   * P2 perf: bounded read — the outbox is append-only and grows until the
+   * retention sweep, so the list is capped (default
+   * OUTBOX_LIST_DEFAULT_LIMIT, oldest rows first).
+   */
+  async list(limit?: number): Promise<DomainEvent[]> {
     const result = await this.pool.query(
-      `SELECT ${outboxMapper.columns.join(', ')} FROM events.outbox ORDER BY occurred_at`
+      `SELECT ${outboxMapper.columns.join(', ')} FROM events.outbox ORDER BY occurred_at LIMIT $1`,
+      [boundOutboxListLimit(limit)]
     );
     return result.rows.map((row) => outboxMapper.fromRow(row));
   }
 
-  async listRecords(): Promise<OutboxRecord[]> {
+  /** Bounded like list() above; repeated sweeps drain a deeper backlog. */
+  async listRecords(limit?: number): Promise<OutboxRecord[]> {
     const result = await this.pool.query(
       `SELECT ${outboxMapper.columns.join(', ')}, published_at, attempts, dead_lettered_at
-         FROM events.outbox ORDER BY occurred_at`
+         FROM events.outbox ORDER BY occurred_at LIMIT $1`,
+      [boundOutboxListLimit(limit)]
     );
     return result.rows.map((row) => ({
       event: outboxMapper.fromRow(row),
