@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { toString as qrToString } from 'qrcode';
 import { useApiQuery } from '@/lib/api/hooks';
 import { fetchEventAttendanceCode } from '@/lib/api/endpoints';
 import { ForbiddenError } from '@/lib/api/errors';
@@ -29,7 +28,11 @@ export function AttendanceQr({ eventId }: { eventId: string }) {
   useEffect(() => {
     if (!code) return;
     let cancelled = false;
-    void qrToString(code, { type: 'svg', margin: 1, width: 220 })
+    // Lazy-load the qrcode package only when a QR is actually rendered
+    // (same pattern as the jsqr import in qr-scanner.tsx) — otherwise it
+    // ships in the /chapters bundle for a click-gated feature.
+    void import('qrcode')
+      .then((mod) => mod.toString(code, { type: 'svg', margin: 1, width: 220 }))
       .then((markup) => {
         if (!cancelled) setSvg(markup);
       })
