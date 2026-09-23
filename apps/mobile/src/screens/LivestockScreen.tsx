@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import {
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
@@ -8,6 +9,7 @@ import {
   Text,
   TextInput
 } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { listMyAnimals, registerAnimal } from '../api/endpoints';
 import type { Animal, AnimalSex, LivestockSpecies } from '../api/types';
@@ -26,6 +28,42 @@ const BREEDS: Record<LivestockSpecies, string[]> = {
   pig: ['Large White', 'Landrace', 'Duroc']
 };
 
+const AnimalCard = memo(function AnimalCard({ animal }: { animal: Animal }) {
+  return (
+    <Card>
+      <Text style={styles.line}>
+        {animal.species} · {animal.breed} · {animal.sex}
+      </Text>
+      <Muted>
+        {animal.id}
+        {animal.tagId ? ` · tag ${animal.tagId}` : ''} · {animal.status}
+      </Muted>
+    </Card>
+  );
+});
+
+/** Memoized form option button: skips re-render unless its selection flips. */
+const OptionButton = memo(function OptionButton({
+  option,
+  selected,
+  onSelect
+}: {
+  option: string;
+  selected: boolean;
+  onSelect: (option: string) => void;
+}) {
+  return (
+    <PrimaryButton
+      label={selected ? `✓ ${option}` : option}
+      onPress={() => onSelect(option)}
+    />
+  );
+});
+
+function animalKey(animal: Animal): string {
+  return animal.id;
+}
+
 /**
  * My livestock: registered animals (GET /livestock/animals/mine) with a
  * minimal register-animal form (POST /livestock/animals). Registration is
@@ -43,23 +81,35 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
   const [tagId, setTagId] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await listMyAnimals(client);
-      setAnimals(res.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load your animals');
-    }
-  }, [client]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await listMyAnimals(client, { signal });
+        if (signal?.aborted) return;
+        setAnimals(res.data);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load your animals');
+      }
+    },
+    [client]
+  );
 
   // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
   const { refreshing, refresh } = useListRefresh(load);
 
-  function pickSpecies(next: LivestockSpecies) {
-    setSpecies(next);
-    setBreed(BREEDS[next][0]);
-  }
+  const pickSpecies = useCallback((next: string) => {
+    const nextSpecies = next as LivestockSpecies;
+    setSpecies(nextSpecies);
+    setBreed(BREEDS[nextSpecies][0]);
+  }, []);
+
+  const pickSex = useCallback((next: string) => {
+    setSex(next as AnimalSex);
+  }, []);
+
+  const toggleForm = useCallback(() => setShowForm((open) => !open), []);
 
   async function submit() {
     setBusy(true);
@@ -76,6 +126,7 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
       setTagId('');
       await load();
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : 'Could not register the animal');
     } finally {
       setBusy(false);
@@ -93,94 +144,98 @@ export function LivestockScreen({ state = 'Kano' }: { state?: string }) {
     return <Loading />;
   }
 
+  const form = showForm ? (
+    <Card>
+      <CardTitle>Register an animal</CardTitle>
+
+      <Text style={styles.label}>Species</Text>
+      {SPECIES.map((option) => (
+        <OptionButton
+          key={option}
+          option={option}
+          selected={option === species}
+          onSelect={pickSpecies}
+        />
+      ))}
+
+      <Text style={styles.label}>Breed</Text>
+      {BREEDS[species].map((option) => (
+        <OptionButton
+          key={option}
+          option={option}
+          selected={option === breed}
+          onSelect={setBreed}
+        />
+      ))}
+
+      <Text style={styles.label}>Sex</Text>
+      {SEXES.map((option) => (
+        <OptionButton key={option} option={option} selected={option === sex} onSelect={pickSex} />
+      ))}
+
+      <Text style={styles.label}>Ear tag (optional)</Text>
+      <TextInput
+        accessibilityLabel="Ear tag"
+        placeholder="e.g. KD-1234"
+        value={tagId}
+        onChangeText={setTagId}
+        style={styles.input}
+        editable={!busy}
+      />
+
+      <Text style={ui.muted}>Registered in {state} — the national ID is issued automatically.</Text>
+      <PrimaryButton
+        label={busy ? 'Registering…' : 'Submit registration'}
+        onPress={() => void submit()}
+        disabled={busy}
+      />
+    </Card>
+  ) : null;
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-    <ScrollView
+    <FlatList
       contentContainerStyle={styles.container}
       keyboardShouldPersistTaps="handled"
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
-    >
-      {error ? <ErrorNotice message={error} /> : null}
-
-      <Card>
-        <CardTitle>My animals ({animals.length})</CardTitle>
-        {animals.length === 0 ? (
-          <Muted>No animals registered yet — register your first animal below.</Muted>
-        ) : (
-          animals.map((animal) => (
-            <Card key={animal.id}>
-              <Text style={styles.line}>
-                {animal.species} · {animal.breed} · {animal.sex}
-              </Text>
-              <Muted>
-                {animal.id}
-                {animal.tagId ? ` · tag ${animal.tagId}` : ''} · {animal.status}
-              </Muted>
-            </Card>
-          ))
-        )}
-        <PrimaryButton
-          label={showForm ? 'Close form' : 'Register animal'}
-          onPress={() => setShowForm((open) => !open)}
-        />
-      </Card>
-
-      {showForm ? (
-        <Card>
-          <CardTitle>Register an animal</CardTitle>
-
-          <Text style={styles.label}>Species</Text>
-          {SPECIES.map((option) => (
+      data={animals}
+      keyExtractor={animalKey}
+      ListHeaderComponent={
+        <>
+          {error ? <ErrorNotice message={error} /> : null}
+          <Card>
+            <CardTitle>My animals ({animals.length})</CardTitle>
+            {animals.length === 0 ? (
+              <Muted>No animals registered yet — register your first animal below.</Muted>
+            ) : null}
+          </Card>
+        </>
+      }
+      renderItem={renderAnimal}
+      ListFooterComponent={
+        <>
+          <Card>
             <PrimaryButton
-              key={option}
-              label={option === species ? `✓ ${option}` : option}
-              onPress={() => pickSpecies(option)}
+              label={showForm ? 'Close form' : 'Register animal'}
+              onPress={toggleForm}
             />
-          ))}
-
-          <Text style={styles.label}>Breed</Text>
-          {BREEDS[species].map((option) => (
-            <PrimaryButton
-              key={option}
-              label={option === breed ? `✓ ${option}` : option}
-              onPress={() => setBreed(option)}
-            />
-          ))}
-
-          <Text style={styles.label}>Sex</Text>
-          {SEXES.map((option) => (
-            <PrimaryButton
-              key={option}
-              label={option === sex ? `✓ ${option}` : option}
-              onPress={() => setSex(option)}
-            />
-          ))}
-
-          <Text style={styles.label}>Ear tag (optional)</Text>
-          <TextInput
-            accessibilityLabel="Ear tag"
-            placeholder="e.g. KD-1234"
-            value={tagId}
-            onChangeText={setTagId}
-            style={styles.input}
-            editable={!busy}
-          />
-
-          <Text style={ui.muted}>Registered in {state} — the national ID is issued automatically.</Text>
-          <PrimaryButton
-            label={busy ? 'Registering…' : 'Submit registration'}
-            onPress={() => void submit()}
-            disabled={busy}
-          />
-        </Card>
-      ) : null}
-    </ScrollView>
+          </Card>
+          {form}
+        </>
+      }
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={7}
+      removeClippedSubviews
+    />
     </KeyboardAvoidingView>
   );
 }
+
+const renderAnimal = ({ item }: { item: Animal }) => <AnimalCard animal={item} />;
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
