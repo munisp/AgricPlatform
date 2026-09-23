@@ -45,6 +45,16 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// 500 Internal Server Error — unexpected internal failure (e.g. a
+    /// blocking compute task failed to join).
+    pub fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
