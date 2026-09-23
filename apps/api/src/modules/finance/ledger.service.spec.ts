@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   createInMemoryLedgerAccountRepository,
@@ -153,5 +153,45 @@ describe('LedgerService', () => {
     await expect(
       service.createAccount({ code: 'member:user-adamu:wallet', type: 'liability' })
     ).rejects.toThrowError(ConflictException);
+  });
+
+  it('resolves each unique account code once per posting batch (perf P2-10)', async () => {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const accounts = createInMemoryLedgerAccountRepository();
+    const service = new LedgerService(events, accounts, createInMemoryLedgerEntryRepository());
+    const lookups = vi.spyOn(accounts, 'findByCode');
+    const entry = await service.postEntry(
+      {
+        idempotencyKey: 'k-dedupe',
+        postings: [
+          { accountCode: 'platform:cash', direction: 'debit', amountKobo: 700 },
+          { accountCode: 'platform:cash', direction: 'debit', amountKobo: 300 },
+          { accountCode: 'platform:interest_income', direction: 'credit', amountKobo: 1000 }
+        ]
+      },
+      ADMIN
+    );
+    expect(entry.postings).toHaveLength(3);
+    // Three postings, two unique codes → two lookups, not three.
+    expect(lookups.mock.calls.map(([code]) => code).sort()).toEqual([
+      'platform:cash',
+      'platform:interest_income'
+    ]);
+  });
+
+  it('still rejects the FIRST missing account in posting order when batched', async () => {
+    const { service } = makeService();
+    await expect(
+      service.postEntry(
+        {
+          idempotencyKey: 'k-missing-order',
+          postings: [
+            { accountCode: 'missing:first', direction: 'debit', amountKobo: 100 },
+            { accountCode: 'missing:second', direction: 'credit', amountKobo: 100 }
+          ]
+        },
+        ADMIN
+      )
+    ).rejects.toThrowError("Ledger account 'missing:first' not found");
   });
 });
