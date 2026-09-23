@@ -145,5 +145,67 @@ class TestLiveProviderFailClosed(unittest.TestCase):
             )
 
 
+class TestLiveProviderAsyncPath(unittest.IsolatedAsyncioTestCase):
+    """fetch_series_async: same timeout/retry/breaker/fail-closed semantics
+    as the sync path, via the async client."""
+
+    def _provider(self, async_factory, settings=None, clock=None):
+        kwargs = {"async_client_factory": async_factory}
+        if clock is not None:
+            kwargs["clock"] = clock
+        return LiveImageryProvider(settings or live_settings(), mock.Mock(), **kwargs)
+
+    async def test_transport_error_raises_and_retries(self):
+        async_factory = mock.Mock()
+        async_factory.return_value.post = mock.AsyncMock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        provider = self._provider(async_factory)
+        with self.assertRaises(ImageryProviderError) as ctx:
+            await provider.fetch_series_async("plot-1", "2024")
+        self.assertEqual(ctx.exception.code, "IMAGERY_PROVIDER_UNAVAILABLE")
+        # 1 attempt + 1 retry, all on the async client
+        self.assertEqual(async_factory.return_value.post.await_count, 2)
+
+    async def test_success_path_parses_series(self):
+        async_factory = mock.Mock()
+        async_factory.return_value.post = mock.AsyncMock(
+            return_value=mock.Mock(
+                status_code=200,
+                json=lambda: {
+                    "series": [
+                        {"date": "2024-03-01", "red": 0.2, "nir": 0.5},
+                        {"date": "2024-03-06", "red": 0.2, "nir": 0.5},
+                    ]
+                },
+            )
+        )
+        provider = self._provider(async_factory)
+        series = await provider.fetch_series_async("plot-1", "2024")
+        self.assertEqual(len(series), 2)
+        self.assertEqual(series[0].red, 0.2)
+
+    async def test_circuit_opens_and_fails_fast(self):
+        async_factory = mock.Mock()
+        async_factory.return_value.post = mock.AsyncMock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        now = [1000.0]
+        provider = self._provider(
+            async_factory,
+            settings=live_settings(http_retries=0, circuit_fail_threshold=2),
+            clock=lambda: now[0],
+        )
+        for _ in range(2):
+            with self.assertRaises(ImageryProviderError):
+                await provider.fetch_series_async("plot-1", "2024")
+        self.assertEqual(provider.circuit_state(), "open")
+        calls_before = async_factory.return_value.post.await_count
+        with self.assertRaises(ImageryProviderError) as ctx:
+            await provider.fetch_series_async("plot-1", "2024")
+        self.assertEqual(ctx.exception.code, "IMAGERY_CIRCUIT_OPEN")
+        self.assertEqual(async_factory.return_value.post.await_count, calls_before)
+
+
 if __name__ == "__main__":
     unittest.main()
