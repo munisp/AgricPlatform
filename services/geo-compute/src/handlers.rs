@@ -236,27 +236,36 @@ async fn polygon_metrics(
     ValidatedJson(req): ValidatedJson<PolygonMetricsRequest>,
 ) -> Result<Json<PolygonMetricsResponse>, ApiError> {
     let ring = geo::normalize_ring(&req.polygon)?;
-    let ring = geo::to_ccw(&ring); // winding normalization
+    let basis = state.config.mode.basis();
+    // The O(n^2) self-intersection scan plus the metric passes are CPU-bound
+    // (10s-100s of ms near the vertex cap): run them on the blocking pool so
+    // one large polygon cannot stall a Tokio worker thread.
+    let resp = tokio::task::spawn_blocking(move || {
+        let ring = geo::to_ccw(&ring); // winding normalization (borrows if already CCW)
 
-    let errors: Vec<String> = geo::self_intersections(&ring)
-        .iter()
-        .map(|(i, j)| format!("self-intersection between segments {i} and {j}"))
-        .collect();
+        let errors: Vec<String> = geo::self_intersections(&ring)
+            .iter()
+            .map(|(i, j)| format!("self-intersection between segments {i} and {j}"))
+            .collect();
 
-    let c = geo::centroid(&ring);
-    Ok(Json(PolygonMetricsResponse {
-        area_hectares: geo::round_dp(geo::area_m2(&ring) / 10_000.0, 6),
-        perimeter_km: geo::round_dp(geo::perimeter_m(&ring) / 1_000.0, 6),
-        centroid: CentroidResponse {
-            lat: geo::round_dp(c.lat, 9),
-            lng: geo::round_dp(c.lng, 9),
-        },
-        bbox: geo::bbox(&ring),
-        valid: errors.is_empty(),
-        errors,
-        winding: "ccw",
-        basis: state.config.mode.basis(),
-    }))
+        let c = geo::centroid(&ring);
+        PolygonMetricsResponse {
+            area_hectares: geo::round_dp(geo::area_m2(&ring) / 10_000.0, 6),
+            perimeter_km: geo::round_dp(geo::perimeter_m(&ring) / 1_000.0, 6),
+            centroid: CentroidResponse {
+                lat: geo::round_dp(c.lat, 9),
+                lng: geo::round_dp(c.lng, 9),
+            },
+            bbox: geo::bbox(&ring),
+            valid: errors.is_empty(),
+            errors,
+            winding: "ccw",
+            basis,
+        }
+    })
+    .await
+    .map_err(|e| ApiError::internal("COMPUTE_JOIN", format!("compute task failed to join: {e}")))?;
+    Ok(Json(resp))
 }
 
 // ---------- POST /v1/geo/geofence/batch ----------
@@ -302,7 +311,10 @@ pub fn geofence_check(
             ),
         ));
     }
-    let mut seen = HashSet::with_capacity(points.len());
+    // Borrowed duplicate check (no allocation) plus one owned clone per id
+    // shared between inside/outside and the distances key: 2 allocations per
+    // point instead of 3.
+    let mut seen: HashSet<&str> = HashSet::with_capacity(points.len());
     let mut inside = Vec::new();
     let mut outside = Vec::new();
     let mut distances = BTreeMap::new();
@@ -313,7 +325,7 @@ pub fn geofence_check(
                 "point id must be a non-empty string",
             ));
         }
-        if !seen.insert(pt.id.clone()) {
+        if !seen.insert(pt.id.as_str()) {
             return Err(ApiError::unprocessable(
                 "DUPLICATE_POINT_ID",
                 format!("duplicate point id '{}'", pt.id),
@@ -327,15 +339,14 @@ pub fn geofence_check(
             lat: pt.lat,
             lng: pt.lng,
         };
+        let dist = geo::round_dp(geo::distance_to_boundary_m(p, ring), 3);
+        let id = pt.id.clone();
         if geo::point_in_ring(p, ring) {
-            inside.push(pt.id.clone());
+            inside.push(id.clone());
         } else {
-            outside.push(pt.id.clone());
+            outside.push(id.clone());
         }
-        distances.insert(
-            pt.id.clone(),
-            geo::round_dp(geo::distance_to_boundary_m(p, ring), 3),
-        );
+        distances.insert(id, dist);
     }
     Ok((inside, outside, distances))
 }
@@ -345,26 +356,35 @@ async fn geofence_batch(
     ValidatedJson(req): ValidatedJson<GeofenceBatchRequest>,
 ) -> Result<Json<GeofenceBatchResponse>, ApiError> {
     let ring = geo::normalize_ring(&req.polygon)?;
-    // Ray casting is ill-defined on a self-intersecting ring: reject.
-    let hits = geo::self_intersections(&ring);
-    if !hits.is_empty() {
-        return Err(ApiError::unprocessable(
-            "INVALID_POLYGON",
-            format!(
-                "geofence polygon must not self-intersect (segments {} and {})",
-                hits[0].0, hits[0].1
-            ),
-        ));
-    }
-    let (inside, outside, distances_m) =
-        geofence_check(&req.points, &ring, state.config.max_points)?;
+    let max_points = state.config.max_points;
+    let basis = state.config.mode.basis();
+    let points = req.points;
+    // The self-intersection scan plus the per-point ray casting / distance
+    // loop are CPU-bound (up to 10k points x 10k segments): run them on the
+    // blocking pool so one large batch cannot stall a Tokio worker thread.
+    let (inside, outside, distances_m) = tokio::task::spawn_blocking(move || {
+        // Ray casting is ill-defined on a self-intersecting ring: reject.
+        let hits = geo::self_intersections(&ring);
+        if !hits.is_empty() {
+            return Err(ApiError::unprocessable(
+                "INVALID_POLYGON",
+                format!(
+                    "geofence polygon must not self-intersect (segments {} and {})",
+                    hits[0].0, hits[0].1
+                ),
+            ));
+        }
+        geofence_check(&points, &ring, max_points)
+    })
+    .await
+    .map_err(|e| ApiError::internal("COMPUTE_JOIN", format!("compute task failed to join: {e}")))??;
     let count = inside.len() + outside.len();
     Ok(Json(GeofenceBatchResponse {
         inside,
         outside,
         distances_m,
         count,
-        basis: state.config.mode.basis(),
+        basis,
     }))
 }
 
