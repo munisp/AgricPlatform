@@ -40,7 +40,12 @@ function makeGuard(options: {
 }): MetricsAccessGuard {
   const users = {
     findById: async (id: string) => options.users?.[id],
-    statusFor: async () => 'active'
+    statusFor: async () => 'active',
+    // Perf P1-1: RolesGuard resolves identity via the folded read.
+    findByIdWithStatus: async (id: string) => {
+      const user = options.users?.[id];
+      return user ? { user, status: 'active' as const } : undefined;
+    }
   } as unknown as UsersService;
   const oidc = {
     verify:
