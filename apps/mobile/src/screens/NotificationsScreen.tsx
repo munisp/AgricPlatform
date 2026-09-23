@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useState } from 'react';
+import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { fetchSession, listNotifications, markNotificationRead } from '../api/endpoints';
 import type { NotificationMessage } from '../api/types';
@@ -17,6 +18,42 @@ function asNotification(payload: unknown): NotificationMessage | null {
   return candidate as NotificationMessage;
 }
 
+const NotificationCard = memo(function NotificationCard({
+  item,
+  marking,
+  anyMarking,
+  onMarkRead
+}: {
+  item: NotificationMessage;
+  marking: boolean;
+  anyMarking: boolean;
+  onMarkRead: (item: NotificationMessage) => void;
+}) {
+  return (
+    <Card>
+      <Text style={styles.title}>
+        {item.status === 'read' ? '' : '● '}
+        {item.title}
+      </Text>
+      <Muted>{item.body}</Muted>
+      <Muted>
+        {item.channel} · {new Date(item.createdAt).toLocaleDateString('en-NG')} · {item.status}
+      </Muted>
+      {item.status !== 'read' ? (
+        <PrimaryButton
+          label={marking ? 'Marking…' : 'Mark read'}
+          onPress={() => onMarkRead(item)}
+          disabled={anyMarking}
+        />
+      ) : null}
+    </Card>
+  );
+});
+
+function notificationKey(item: NotificationMessage): string {
+  return item.id;
+}
+
 /**
  * Notifications inbox, backed by the record-level sync cache
  * (Wave SYNCCLIENT, docs/sync-protocol.md):
@@ -31,7 +68,9 @@ function asNotification(payload: unknown): NotificationMessage | null {
  *
  * "Mark read" stays a direct API call (notifications are read-only in sync
  * v1 — the server is the only writer); the list re-syncs afterwards so the
- * cache picks up the server-side version bump.
+ * cache picks up the server-side version bump. The tapped row flips to read
+ * optimistically as soon as the POST resolves, without waiting for the
+ * re-sync round trip.
  */
 export function NotificationsScreen() {
   const client = useApiClient();
@@ -49,48 +88,80 @@ export function NotificationsScreen() {
       .filter((item): item is NotificationMessage => item !== null);
   }, [store]);
 
-  const load = useCallback(async () => {
-    setError(null);
-    const summary = await store.syncNow([SYNC_ENTITY]);
-    const pullFailed = summary.errors.some((entry) => entry.phase === 'pull');
-    const cached = readCache();
-    if (!pullFailed) {
-      setItems(cached);
-      setFromCache(false);
-      return;
-    }
-    if (cached.length > 0) {
-      // Offline (or server unreachable): cached records, no data loss.
-      setItems(cached);
-      setFromCache(true);
-      return;
-    }
-    // Nothing cached yet — legacy direct read before giving up.
-    try {
-      const session = await fetchSession(client);
-      const res = await listNotifications(client, session.data.user.id);
-      setItems(res.data);
-      setFromCache(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load notifications');
-    }
-  }, [client, store, readCache]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      const summary = await store.syncNow([SYNC_ENTITY]);
+      if (signal?.aborted) return;
+      const pullFailed = summary.errors.some((entry) => entry.phase === 'pull');
+      const cached = readCache();
+      if (!pullFailed) {
+        setItems(cached);
+        setFromCache(false);
+        return;
+      }
+      if (cached.length > 0) {
+        // Offline (or server unreachable): cached records, no data loss.
+        setItems(cached);
+        setFromCache(true);
+        return;
+      }
+      // Nothing cached yet — legacy direct read before giving up.
+      try {
+        const session = await fetchSession(client, { signal });
+        const res = await listNotifications(client, session.data.user.id, { signal });
+        if (signal?.aborted) return;
+        setItems(res.data);
+        setFromCache(false);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load notifications');
+      }
+    },
+    [client, store, readCache]
+  );
 
   // Re-sync on mount + on focus, plus pull-to-refresh (audit P1-9).
   const { refreshing, refresh } = useListRefresh(load);
 
-  async function markRead(item: NotificationMessage) {
-    setMarking(item.id);
-    setError(null);
-    try {
-      await markNotificationRead(client, item.id);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not mark as read');
-    } finally {
-      setMarking(null);
-    }
-  }
+  const markRead = useCallback(
+    async (item: NotificationMessage) => {
+      setMarking(item.id);
+      setError(null);
+      try {
+        await markNotificationRead(client, item.id);
+        // Optimistic: clear the unread dot immediately, then re-sync the
+        // cache so the server-side version bump is picked up (the re-sync
+        // is part of the contract — see the sync notifications tests).
+        setItems((current) =>
+          current
+            ? current.map((entry) =>
+                entry.id === item.id ? { ...entry, status: 'read' } : entry
+              )
+            : current
+        );
+        await load();
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not mark as read');
+      } finally {
+        setMarking(null);
+      }
+    },
+    [client, load]
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: NotificationMessage }) => (
+      <NotificationCard
+        item={item}
+        marking={marking === item.id}
+        anyMarking={marking !== null}
+        onMarkRead={markRead}
+      />
+    ),
+    [marking, markRead]
+  );
 
   if (error && !items) {
     return (
@@ -107,46 +178,36 @@ export function NotificationsScreen() {
   }
 
   return (
-    <ScrollView
+    <FlatList
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
-    >
-      <SyncBadge status={status} />
-      {error ? <ErrorNotice message={error} /> : null}
-      {fromCache ? (
-        <View style={uiStyles.notice}>
-          <Text style={uiStyles.noticeText}>
-            You appear to be offline — showing your last synced notifications.
-          </Text>
-        </View>
-      ) : null}
-      {items.length === 0 ? (
+      data={items}
+      keyExtractor={notificationKey}
+      ListHeaderComponent={
+        <>
+          <SyncBadge status={status} />
+          {error ? <ErrorNotice message={error} /> : null}
+          {fromCache ? (
+            <View style={uiStyles.notice}>
+              <Text style={uiStyles.noticeText}>
+                You appear to be offline — showing your last synced notifications.
+              </Text>
+            </View>
+          ) : null}
+        </>
+      }
+      ListEmptyComponent={
         <Card>
           <CardTitle>Notifications</CardTitle>
           <Muted>No notifications yet — recalls, order updates and advisories appear here.</Muted>
         </Card>
-      ) : (
-        items.map((item) => (
-          <Card key={item.id}>
-            <Text style={styles.title}>
-              {item.status === 'read' ? '' : '● '}
-              {item.title}
-            </Text>
-            <Muted>{item.body}</Muted>
-            <Muted>
-              {item.channel} · {new Date(item.createdAt).toLocaleDateString('en-NG')} · {item.status}
-            </Muted>
-            {item.status !== 'read' ? (
-              <PrimaryButton
-                label={marking === item.id ? 'Marking…' : 'Mark read'}
-                onPress={() => void markRead(item)}
-                disabled={marking !== null}
-              />
-            ) : null}
-          </Card>
-        ))
-      )}
-    </ScrollView>
+      }
+      renderItem={renderItem}
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={7}
+      removeClippedSubviews
+    />
   );
 }
 
