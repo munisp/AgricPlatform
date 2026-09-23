@@ -81,6 +81,26 @@ export class UsersService {
     return this.repo.findById(id);
   }
 
+  /**
+   * Folded identity + account-status read (perf P1-1): one repository round
+   * trip on drivers implementing the folded read; otherwise findById and
+   * statusFor run in ONE parallel round instead of two sequential ones.
+   * `statusFor` resolves 'active' for unknown ids on every driver, so the
+   * fallback is behavior-identical when the user does not exist.
+   */
+  async findByIdWithStatus(
+    id: string
+  ): Promise<{ user: User; status: AccountStatus } | undefined> {
+    if (this.repo.findByIdWithStatus) {
+      return this.repo.findByIdWithStatus(id);
+    }
+    const [user, status] = await Promise.all([
+      this.repo.findById(id),
+      this.repo.statusFor(id)
+    ]);
+    return user ? { user, status } : undefined;
+  }
+
   async getById(id: string): Promise<User> {
     return this.repo.getById(id);
   }
