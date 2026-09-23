@@ -150,9 +150,14 @@ describe('W2-C2 V-08/V-41 agent reversal + device persistence (query spy)', () =
   });
 
   it('reversal daily-limit correction UPDATEs the counter inside the posting transaction', async () => {
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
       if (text.includes('posting_count')) {
         return { rows: [{ balanced: true, posting_count: 2 }] }; // assertTransferBalancedTx
+      }
+      // P2 perf: set-based account-code resolution (ONE … code = ANY query).
+      if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+        const codes = (params[0] as string[] | undefined) ?? [];
+        return { rows: codes.map((code) => ({ code, id: randomUUID() })) };
       }
       if (text.includes('FROM finance.ledger_accounts')) {
         return { rows: [{ id: randomUUID() }] };
