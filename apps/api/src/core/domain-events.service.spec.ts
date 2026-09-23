@@ -41,6 +41,30 @@ describe('DomainEventsService', () => {
     await expect(service.publish('certificateIssued', {})).rejects.toThrow(/taxonomy/);
     await expect(service.publish('too.many.segments.here', {})).rejects.toThrow(/taxonomy/);
   });
+
+  it('publish() does not wait for the markPublished round trip (perf P1-6)', async () => {
+    const outbox = new InMemoryOutboxRepository();
+    let markStarted = false;
+    // A markPublished UPDATE that never completes must not hold the caller;
+    // the sweeper is the documented backstop for the row.
+    vi.spyOn(outbox, 'markPublished').mockImplementation(() => {
+      markStarted = true;
+      return new Promise<void>(() => {});
+    });
+    const service = new DomainEventsService(outbox);
+    const seen: string[] = [];
+    service.on('learning.certificate.issued', (e) => seen.push(e.id));
+
+    const event = await service.publish(
+      'learning.certificate.issued',
+      { certificateId: 'cert-9' },
+      'user-1'
+    );
+    // Fan-out and append stayed ordered before the (fire-and-forget) mark…
+    expect(seen).toEqual([event.id]);
+    expect(markStarted).toBe(true);
+    expect((await outbox.listRecords()).find((row) => row.event.id === event.id)).toBeDefined();
+  });
 });
 
 describe('DomainEventsService.emitAwaitable (audit C2)', () => {
