@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { fetchSession, logoutSession } from '../api/endpoints';
 import type { TokenStore } from '../api/token-store';
@@ -24,18 +25,25 @@ export function ProfileScreen({
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await fetchSession(client);
-      setUser(res.data.user);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load your profile');
-    }
-  }, [client]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await fetchSession(client, { signal });
+        if (signal?.aborted) return;
+        setUser(res.data.user);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load your profile');
+      }
+    },
+    [client]
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   async function signOut() {
