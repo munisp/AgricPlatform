@@ -9,15 +9,43 @@ export interface OutboxRecord {
 }
 
 /**
+ * Default bound for outbox list reads (P2 perf): the outbox is append-only
+ * and grows until the compliance retention sweep, so an unbounded
+ * SELECT … ORDER BY occurred_at fully materializes the table. List reads
+ * are capped at this many oldest rows unless the caller passes an explicit
+ * limit; callers draining a deeper backlog rely on repeated sweeps — each
+ * pass publishes or dead-letters the oldest rows, shrinking the queue head.
+ */
+export const OUTBOX_LIST_DEFAULT_LIMIT = 1000;
+/** Hard ceiling for an explicit outbox list limit. */
+export const OUTBOX_LIST_MAX_LIMIT = 10_000;
+
+/** Clamps an optional outbox list limit to [1, OUTBOX_LIST_MAX_LIMIT]. */
+export function boundOutboxListLimit(limit?: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return OUTBOX_LIST_DEFAULT_LIMIT;
+  }
+  return Math.min(OUTBOX_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
+}
+
+/**
  * Domain event outbox (events.outbox). append/list preserve the original
  * contract; the record-level methods power the Wave P sweeper (retry
  * stalled rows with backoff, dead-letter after max attempts).
  */
 export interface OutboxRepository {
   append(event: DomainEvent): Promise<DomainEvent>;
-  list(): Promise<DomainEvent[]>;
-  /** All rows with relay state, ordered by occurred_at. */
-  listRecords(): Promise<OutboxRecord[]>;
+  /**
+   * Oldest events first (occurred_at order), bounded by `limit`
+   * (default OUTBOX_LIST_DEFAULT_LIMIT).
+   */
+  list(limit?: number): Promise<DomainEvent[]>;
+  /**
+   * Oldest rows (occurred_at order) with relay state, bounded by `limit`
+   * (default OUTBOX_LIST_DEFAULT_LIMIT). Callers needing the full backlog
+   * must page via repeated sweeps.
+   */
+  listRecords(limit?: number): Promise<OutboxRecord[]>;
   markPublished(id: string, publishedAt: string): Promise<void>;
   /** Increments the attempt counter; returns the new count. */
   recordAttempt(id: string): Promise<number>;
@@ -52,12 +80,12 @@ export class InMemoryOutboxRepository implements OutboxRepository {
     return event;
   }
 
-  async list(): Promise<DomainEvent[]> {
-    return [...this.events];
+  async list(limit?: number): Promise<DomainEvent[]> {
+    return this.events.slice(0, boundOutboxListLimit(limit));
   }
 
-  async listRecords(): Promise<OutboxRecord[]> {
-    return this.events.map((event) => {
+  async listRecords(limit?: number): Promise<OutboxRecord[]> {
+    return this.events.slice(0, boundOutboxListLimit(limit)).map((event) => {
       const state = this.state.get(event.id) ?? { attempts: 0 };
       return {
         event,
