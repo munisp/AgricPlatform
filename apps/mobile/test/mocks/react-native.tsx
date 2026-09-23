@@ -63,20 +63,36 @@ interface FlatListProps<T> {
   renderItem: (args: { item: T; index: number }) => ReactNode;
   keyExtractor?: (item: T, index: number) => string;
   ListEmptyComponent?: ReactNode;
+  ListHeaderComponent?: ReactNode;
+  ListFooterComponent?: ReactNode;
   contentContainerStyle?: unknown;
+  refreshControl?: ReactNode;
 }
 
-export function FlatList<T>({ data, renderItem, keyExtractor, ListEmptyComponent }: FlatListProps<T>) {
-  if (data.length === 0) {
-    return <rn-flat-list>{ListEmptyComponent ?? null}</rn-flat-list>;
-  }
+export function FlatList<T>({
+  data,
+  renderItem,
+  keyExtractor,
+  ListEmptyComponent,
+  ListHeaderComponent,
+  ListFooterComponent,
+  refreshControl
+}: FlatListProps<T>) {
+  // Like the real FlatList (and the ScrollView mock above), the RefreshControl
+  // is mounted so tests can locate it and invoke its onRefresh; header/footer
+  // render alongside the rows (or the empty component) as they do natively.
   return (
     <rn-flat-list>
-      {data.map((item, index) => (
-        <rn-flatlist-item key={keyExtractor ? keyExtractor(item, index) : String(index)}>
-          {renderItem({ item, index })}
-        </rn-flatlist-item>
-      ))}
+      {refreshControl ? refreshControl : null}
+      {ListHeaderComponent ?? null}
+      {data.length === 0
+        ? (ListEmptyComponent ?? null)
+        : data.map((item, index) => (
+            <rn-flatlist-item key={keyExtractor ? keyExtractor(item, index) : String(index)}>
+              {renderItem({ item, index })}
+            </rn-flatlist-item>
+          ))}
+      {ListFooterComponent ?? null}
     </rn-flat-list>
   );
 }
