@@ -1,6 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { TrendingQuery } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { MAX_PAGE_SIZE } from '../../common/pagination.js';
 import { SEARCH_QUERY_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { SearchQueryRepository } from '../../database/repositories/search-query.repository.js';
 import { AdvisoryService } from '../advisory/advisory.service.js';
@@ -34,6 +35,15 @@ export const TRENDING_HALF_LIFE_DAYS = 2;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Per-source scan cap (perf P1-4): each domain contributes at most one
+ * bounded page (the platform-wide maximum page size, so the pg driver
+ * applies LIMIT in SQL) to the JS scorer instead of an unbounded
+ * full-table scan. Final ranking is score-then-title, so result order does
+ * not depend on source ordering.
+ */
+export const SEARCH_SOURCE_SCAN_CAP = MAX_PAGE_SIZE;
+
 interface TaggableItem {
   type: SearchResultType;
   id: string;
@@ -53,6 +63,8 @@ interface TaggableItem {
  */
 @Injectable()
 export class SearchService {
+  private readonly logger = new Logger(SearchService.name);
+
   constructor(
     private readonly learning: LearningService,
     private readonly opportunities: OpportunitiesService,
@@ -71,7 +83,15 @@ export class SearchService {
   ): Promise<SearchResult[]> {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    await this.recordQuery(q);
+    // The query log is analytics, not request-critical (perf P1-4): write
+    // fire-and-forget like the other telemetry-side writes (cf. the
+    // emit()/markPublished pattern in DomainEventsService); a logging-store
+    // failure is logged, never surfaced to the searcher.
+    void this.recordQuery(q).catch((error: unknown) =>
+      this.logger.warn(
+        `search query log write failed: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
     const wanted = types?.length ? new Set(types) : null;
     const results: SearchResult[] = [];
 
@@ -84,12 +104,34 @@ export class SearchService {
 
     const [courses, opportunities, listings, advisoryItems, chapterList, topics] =
       await Promise.all([
-        !wanted || wanted.has('course') ? this.learning.allCourses() : Promise.resolve([]),
-        !wanted || wanted.has('opportunity') ? this.opportunities.all() : Promise.resolve([]),
-        !wanted || wanted.has('listing') ? this.marketplace.allListings() : Promise.resolve([]),
-        !wanted || wanted.has('advisory') ? this.advisory.all() : Promise.resolve([]),
-        !wanted || wanted.has('chapter') ? this.chapters.all() : Promise.resolve([]),
-        !wanted || wanted.has('topic') ? this.community.allTopics() : Promise.resolve([])
+        !wanted || wanted.has('course')
+          ? this.learning
+              .listCourses({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+              .then((page) => page.data)
+          : Promise.resolve([]),
+        !wanted || wanted.has('opportunity')
+          ? this.opportunities
+              .searchPage({}, 1, SEARCH_SOURCE_SCAN_CAP)
+              .then((page) => page.data)
+          : Promise.resolve([]),
+        !wanted || wanted.has('listing')
+          ? this.marketplace.listingsPage(1, SEARCH_SOURCE_SCAN_CAP).then((page) => page.data)
+          : Promise.resolve([]),
+        !wanted || wanted.has('advisory')
+          ? this.advisory
+              .list({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+              .then((page) => page.data)
+          : Promise.resolve([]),
+        !wanted || wanted.has('chapter')
+          ? this.chapters
+              .list({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+              .then((page) => page.data)
+          : Promise.resolve([]),
+        !wanted || wanted.has('topic')
+          ? this.community
+              .listTopics({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+              .then((page) => page.data)
+          : Promise.resolve([])
       ]);
 
     for (const course of courses) {
@@ -224,12 +266,16 @@ export class SearchService {
   private async collectTaggableItems(): Promise<TaggableItem[]> {
     const [courses, opportunities, listings, advisoryItems, chapterList, topics] =
       await Promise.all([
-        this.learning.allCourses(),
-        this.opportunities.all(),
-        this.marketplace.allListings(),
-        this.advisory.all(),
-        this.chapters.all(),
-        this.community.allTopics()
+        this.learning
+          .listCourses({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+          .then((page) => page.data),
+        this.opportunities.searchPage({}, 1, SEARCH_SOURCE_SCAN_CAP).then((page) => page.data),
+        this.marketplace.listingsPage(1, SEARCH_SOURCE_SCAN_CAP).then((page) => page.data),
+        this.advisory.list({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP }).then((page) => page.data),
+        this.chapters.list({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP }).then((page) => page.data),
+        this.community
+          .listTopics({ page: 1, pageSize: SEARCH_SOURCE_SCAN_CAP })
+          .then((page) => page.data)
       ]);
     const norm = (value: string | undefined): string[] =>
       value ? [value.trim().toLowerCase()] : [];
