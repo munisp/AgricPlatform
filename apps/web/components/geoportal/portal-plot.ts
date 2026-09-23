@@ -131,6 +131,44 @@ export function pointInPolygonGeometry(
   });
 }
 
+/** Axis-aligned bbox of a polygon geometry (WGS84 degrees). */
+function geometryBbox(geometry: GeoJsonPolygonGeometry): Bbox {
+  const polygons =
+    geometry.type === 'Polygon'
+      ? ([geometry.coordinates] as number[][][][])
+      : (geometry.coordinates as number[][][][]);
+  let minLong = Infinity;
+  let minLat = Infinity;
+  let maxLong = -Infinity;
+  let maxLat = -Infinity;
+  for (const rings of polygons) {
+    for (const ring of rings) {
+      for (const [long = 0, lat = 0] of ring) {
+        if (long < minLong) minLong = long;
+        if (lat < minLat) minLat = lat;
+        if (long > maxLong) maxLong = long;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+  }
+  return { minLong, minLat, maxLong, maxLat };
+}
+
+/**
+ * Per-state bboxes, computed once per boundary array and memoized by array
+ * identity (the pinned geojson is parsed once per page load). Avoids
+ * re-walking all ~19k ring vertices for every carbon plot lookup.
+ */
+const stateBboxCache = new WeakMap<StateBoundaryFeature[], Bbox[]>();
+
+function stateBboxes(states: StateBoundaryFeature[]): Bbox[] {
+  const cached = stateBboxCache.get(states);
+  if (cached) return cached;
+  const bboxes = states.map((feature) => geometryBbox(feature.geometry));
+  stateBboxCache.set(states, bboxes);
+  return bboxes;
+}
+
 /**
  * Tag a centroid with the canonical name of the state boundary containing
  * it (used for carbon plots, which carry no state column). Returns
@@ -141,7 +179,13 @@ export function stateForPoint(
   lat: number,
   states: StateBoundaryFeature[]
 ): string | undefined {
-  for (const feature of states) {
+  const bboxes = stateBboxes(states);
+  for (const [index, feature] of states.entries()) {
+    // Cheap bbox reject before ray-casting every ring vertex.
+    const bbox = bboxes[index]!;
+    if (long < bbox.minLong || long > bbox.maxLong || lat < bbox.minLat || lat > bbox.maxLat) {
+      continue;
+    }
     if (pointInPolygonGeometry(long, lat, feature.geometry)) {
       const name = feature.properties?.name;
       return name ? canonicalStateName(name) : undefined;
