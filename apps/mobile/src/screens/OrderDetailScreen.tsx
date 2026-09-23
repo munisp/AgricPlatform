@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { fetchOrder } from '../api/endpoints';
 import { ORDER_STATUSES, type Order, type OrderStatus } from '../api/types';
@@ -32,18 +33,25 @@ export function OrderDetailScreen({ orderId }: { orderId: string }) {
   const [order, setOrder] = useState<Order | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await fetchOrder(client, orderId);
-      setOrder(res.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the order');
-    }
-  }, [client, orderId]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await fetchOrder(client, orderId, { signal });
+        if (signal?.aborted) return;
+        setOrder(res.data);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load the order');
+      }
+    },
+    [client, orderId]
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   if (error) {
