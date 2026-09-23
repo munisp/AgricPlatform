@@ -28,6 +28,7 @@
 //! but antimeridian-crossing polygons are NOT specially handled.
 
 use crate::error::ApiError;
+use std::borrow::Cow;
 
 /// IUGG mean Earth radius, metres.
 pub const EARTH_RADIUS_M: f64 = 6_371_008.8;
@@ -132,12 +133,14 @@ pub fn signed_planar_area(ring: &[GeoPoint]) -> f64 {
     sum / 2.0
 }
 
-/// Winding normalization: return a CCW copy of the ring (reversed if needed).
-pub fn to_ccw(ring: &[GeoPoint]) -> Vec<GeoPoint> {
+/// Winding normalization: return the ring as CCW, borrowing when it is
+/// already CCW (the common case) and only allocating a reversed copy when
+/// the input is CW.
+pub fn to_ccw(ring: &[GeoPoint]) -> Cow<'_, [GeoPoint]> {
     if signed_planar_area(ring) < 0.0 {
-        ring.iter().rev().copied().collect()
+        Cow::Owned(ring.iter().rev().copied().collect())
     } else {
-        ring.to_vec()
+        Cow::Borrowed(ring)
     }
 }
 
@@ -326,10 +329,12 @@ pub fn point_in_ring(p: GeoPoint, ring: &[GeoPoint]) -> bool {
 /// endpoints), metres.
 pub fn distance_point_to_segment_m(p: GeoPoint, a: GeoPoint, b: GeoPoint) -> f64 {
     let seg_m = haversine_m(a, b);
+    // haversine(a, p) is needed on every path below: compute it once.
+    let d_ap = haversine_m(a, p);
     if seg_m < 1e-9 {
-        return haversine_m(a, p);
+        return d_ap;
     }
-    let d13 = haversine_m(a, p) / EARTH_RADIUS_M;
+    let d13 = d_ap / EARTH_RADIUS_M;
     if d13 < 1e-15 {
         return 0.0;
     }
@@ -337,11 +342,11 @@ pub fn distance_point_to_segment_m(p: GeoPoint, a: GeoPoint, b: GeoPoint) -> f64
     let t12 = bearing_rad(a, b);
     let xt = (d13.sin() * (t13 - t12).sin()).asin();
     if (t13 - t12).cos() < 0.0 {
-        return haversine_m(a, p); // p is "behind" a: nearest endpoint is a
+        return d_ap; // p is "behind" a: nearest endpoint is a
     }
     let cos_xt = xt.cos();
     if cos_xt.abs() < 1e-15 {
-        return haversine_m(a, p); // degenerate (near-antipodal), fail safe
+        return d_ap; // degenerate (near-antipodal), fail safe
     }
     let at_m = (d13.cos() / cos_xt).clamp(-1.0, 1.0).acos() * EARTH_RADIUS_M;
     if at_m > seg_m {
