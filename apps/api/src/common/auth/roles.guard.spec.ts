@@ -3,7 +3,7 @@ import type { ExecutionContext } from '@nestjs/common';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet } from 'jose';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UserRole } from '@agric-platform/shared';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { UsersService } from '../../modules/users/users.service.js';
@@ -203,6 +203,55 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     request.headers['x-user-id'] = 'user-admin';
     await users.setStatus('user-admin', 'deceased');
     await expect(activate()).rejects.toThrow(/deceased/);
+  });
+
+  it('pays ONE folded user lookup per authenticated request (perf P1-1)', async () => {
+    const { activate, request, users } = makeGuard(['admin']);
+    const folded = vi.spyOn(users, 'findByIdWithStatus');
+    const byId = vi.spyOn(users, 'findById');
+    const status = vi.spyOn(users, 'statusFor');
+    request.headers['authorization'] = `Bearer ${await sign({ realm_access: { roles: ['admin'] } })}`;
+    await expect(activate()).resolves.toBe(true);
+    expect(folded).toHaveBeenCalledTimes(1);
+    expect(byId).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  it('drivers without the folded read still enforce suspension via the parallel fallback', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const repo = createInMemoryUserRepository();
+    // Simulate a driver lacking the folded read (the pg fallback path).
+    (repo as { findByIdWithStatus?: unknown }).findByIdWithStatus = undefined;
+    const users = new UsersService(repo);
+    const reflector = new Reflector();
+    reflector.getAllAndOverride = () => ['admin'];
+    const request = { headers: { 'x-user-id': 'user-admin' } };
+    const guard = new RolesGuard(
+      reflector,
+      users,
+      OidcService.forConfig({
+        issuer: ISSUER,
+        jwksUri: 'unused-in-tests',
+        audience: AUDIENCE,
+        jwksJson: JSON.stringify(jwks)
+      })
+    );
+    const context = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({ getRequest: () => request })
+    } as unknown as ExecutionContext;
+    const byId = vi.spyOn(repo, 'findById');
+    const status = vi.spyOn(repo, 'statusFor');
+    await users.setStatus('user-admin', 'suspended');
+    byId.mockClear();
+    status.mockClear();
+    await expect(guard.canActivate(context)).rejects.toThrow('Account is suspended');
+    expect(byId).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenCalledTimes(1);
+    await users.setStatus('user-admin', 'active');
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 
   it('restores access when the suspension is lifted', async () => {
