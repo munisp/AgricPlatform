@@ -66,10 +66,60 @@ export class SyncService {
   ) {}
 
   async push(actor: User, items: readonly SyncPushItem[]): Promise<SyncPushItemResult[]> {
-    const results: SyncPushItemResult[] = [];
-    for (const item of items) {
-      results.push(await this.pushItem(actor, item));
+    // Perf P2-7: independent items process concurrently instead of strictly
+    // sequentially. Ordering IS contract-relevant within one (entity,
+    // entityId) — a later push must observe the earlier push's version bump
+    // and a replayed clientMutationId must see the recorded outcome — so
+    // same-record items keep their original sequential order while
+    // different records run in parallel. Results land at their original
+    // indices, per-item failure isolation is unchanged (pushItem resolves
+    // per-item error results), and a thrown infrastructure error still
+    // rejects the batch as before.
+    interface Group {
+      records: Set<string>;
+      mutationIds: Set<string>;
+      entries: Array<{ item: SyncPushItem; index: number }>;
     }
+    const groups: Group[] = [];
+    items.forEach((item, index) => {
+      const recordKey = `${item.entity}${item.entityId}`;
+      // An item joins EVERY group it collides with (same record or same
+      // clientMutationId); multiple collisions merge the groups so ordering
+      // is preserved transitively.
+      let target: Group | undefined;
+      for (const group of groups) {
+        if (group.records.has(recordKey) || group.mutationIds.has(item.clientMutationId)) {
+          if (!target) {
+            target = group;
+          } else {
+            for (const key of group.records) target.records.add(key);
+            for (const id of group.mutationIds) target.mutationIds.add(id);
+            target.entries.push(...group.entries);
+            group.entries = [];
+            group.records.clear();
+            group.mutationIds.clear();
+          }
+        }
+      }
+      if (!target) {
+        target = { records: new Set(), mutationIds: new Set(), entries: [] };
+        groups.push(target);
+      }
+      target.records.add(recordKey);
+      target.mutationIds.add(item.clientMutationId);
+      target.entries.push({ item, index });
+    });
+    const results: SyncPushItemResult[] = new Array(items.length);
+    await Promise.all(
+      groups
+        .filter((group) => group.entries.length > 0)
+        .map(async (group) => {
+          group.entries.sort((a, b) => a.index - b.index);
+          for (const { item, index } of group.entries) {
+            results[index] = await this.pushItem(actor, item);
+          }
+        })
+    );
     return results;
   }
 
