@@ -203,13 +203,19 @@ export class MarketplaceService {
       return page;
     }
     // Wave M: expose the materialized seller rating in search responses.
+    // Perf P1-3: the per-seller reads are independent point lookups, so they
+    // run concurrently (one parallel round) instead of sequentially — the
+    // map-and-merge below is unchanged.
+    const sellerIds = [...new Set(page.data.map((listing) => listing.sellerId))];
+    const found = await Promise.all(
+      sellerIds.map((sellerId) => this.sellerRatings!.findById(sellerId))
+    );
     const ratings = new Map<string, SellerRating>();
-    for (const sellerId of new Set(page.data.map((listing) => listing.sellerId))) {
-      const rating = await this.sellerRatings.findById(sellerId);
+    found.forEach((rating, index) => {
       if (rating) {
-        ratings.set(sellerId, rating);
+        ratings.set(sellerIds[index], rating);
       }
-    }
+    });
     return {
       ...page,
       data: page.data.map((listing) => ({ ...listing, sellerRating: ratings.get(listing.sellerId) }))
@@ -218,6 +224,15 @@ export class MarketplaceService {
 
   async allListings(): Promise<MarketplaceListing[]> {
     return this.listings.all();
+  }
+
+  /**
+   * Bounded listing page for fan-out consumers (perf P1-4, global search):
+   * the LIMIT is applied by the driver instead of loading the whole table,
+   * and unlike listListings the seller-rating enrichment is skipped.
+   */
+  async listingsPage(page = 1, pageSize = 100): Promise<ApiListResponse<MarketplaceListing>> {
+    return this.listings.searchPage({}, page, pageSize);
   }
 
   async getListing(id: string): Promise<MarketplaceListing> {
