@@ -35,6 +35,7 @@ class LiveImageryProvider(ImageryProvider):
         settings: Settings,
         client_factory: Callable[..., httpx.Client] = httpx.Client,
         clock: Callable[[], float] = time.monotonic,
+        async_client_factory: Callable[..., httpx.AsyncClient] = httpx.AsyncClient,
     ) -> None:
         if not settings.live_configured:
             raise ImageryProviderError(
@@ -43,11 +44,16 @@ class LiveImageryProvider(ImageryProvider):
             )
         self._settings = settings
         self._clock = clock
-        self._client = client_factory(
+        client_kwargs = dict(
             base_url=settings.sentinel_stats_url.rstrip("/"),
             headers={"Authorization": f"Bearer {settings.sentinel_stats_token}"},
             timeout=httpx.Timeout(settings.http_timeout_seconds),
         )
+        self._client = client_factory(**client_kwargs)
+        # Async twin of the sync client (identical base URL / auth / timeout):
+        # used by fetch_series_async so the async request path never blocks
+        # the event loop on upstream waits.
+        self._async_client = async_client_factory(**client_kwargs)
         self._consecutive_failures = 0
         self._circuit_opened_at: float | None = None
 
@@ -70,18 +76,45 @@ class LiveImageryProvider(ImageryProvider):
         if self._consecutive_failures >= self._settings.circuit_fail_threshold:
             self._circuit_opened_at = self._clock()
 
-    def fetch_series(
-        self,
-        plot_id: str,
-        season: str,
-        geometry: dict[str, Any] | None = None,
-    ) -> list[BandSample]:
+    def _check_circuit(self) -> None:
         if self._circuit_is_open():
             raise ImageryProviderError(
                 "IMAGERY_CIRCUIT_OPEN",
                 f"imagery circuit open after {self._consecutive_failures} "
                 "consecutive failures; fail-fast until cooldown elapses",
             )
+
+    @staticmethod
+    def _interpret(resp: httpx.Response) -> tuple[list[BandSample] | None, str | None, bool]:
+        """Map an upstream response to (series, error, may_retry).
+
+        5xx -> retryable; other non-200 -> terminal; malformed payload ->
+        terminal. Identical rules for the sync and async fetch paths.
+        """
+        if resp.status_code >= 500:
+            return None, f"upstream HTTP {resp.status_code}", True
+        if resp.status_code != 200:
+            return None, f"upstream HTTP {resp.status_code} (non-retryable)", False
+        try:
+            data = resp.json()
+            return [BandSample(**item) for item in data["series"]], None, False
+        except (ValueError, KeyError, TypeError) as exc:
+            return None, f"malformed upstream payload: {exc!r}", False
+
+    def _unavailable(self, last_error: str) -> ImageryProviderError:
+        self._record_failure()
+        return ImageryProviderError(
+            "IMAGERY_PROVIDER_UNAVAILABLE",
+            f"live imagery stats unavailable: {last_error}",
+        )
+
+    def fetch_series(
+        self,
+        plot_id: str,
+        season: str,
+        geometry: dict[str, Any] | None = None,
+    ) -> list[BandSample]:
+        self._check_circuit()
 
         payload = {"plot_id": plot_id, "season": season, "geometry": geometry}
         attempts = 1 + self._settings.http_retries
@@ -92,23 +125,44 @@ class LiveImageryProvider(ImageryProvider):
             except httpx.HTTPError as exc:
                 last_error = f"transport error: {exc!r}"
                 continue
-            if resp.status_code >= 500:
-                last_error = f"upstream HTTP {resp.status_code}"
-                continue
-            if resp.status_code != 200:
-                last_error = f"upstream HTTP {resp.status_code} (non-retryable)"
+            series, error, may_retry = self._interpret(resp)
+            if series is not None:
+                self._record_success()
+                return series
+            last_error = error or last_error
+            if not may_retry:
                 break
-            try:
-                data = resp.json()
-                series = [BandSample(**item) for item in data["series"]]
-            except (ValueError, KeyError, TypeError) as exc:
-                last_error = f"malformed upstream payload: {exc!r}"
-                break
-            self._record_success()
-            return series
 
-        self._record_failure()
-        raise ImageryProviderError(
-            "IMAGERY_PROVIDER_UNAVAILABLE",
-            f"live imagery stats unavailable: {last_error}",
-        )
+        raise self._unavailable(last_error)
+
+    async def fetch_series_async(
+        self,
+        plot_id: str,
+        season: str,
+        geometry: dict[str, Any] | None = None,
+    ) -> list[BandSample]:
+        """Async twin of fetch_series via httpx.AsyncClient.
+
+        Same timeout, retry count, circuit-breaker and fail-closed error
+        semantics as the synchronous path — only the wait is non-blocking.
+        """
+        self._check_circuit()
+
+        payload = {"plot_id": plot_id, "season": season, "geometry": geometry}
+        attempts = 1 + self._settings.http_retries
+        last_error: str = "unknown upstream failure"
+        for _ in range(attempts):
+            try:
+                resp = await self._async_client.post(STATS_PATH, json=payload)
+            except httpx.HTTPError as exc:
+                last_error = f"transport error: {exc!r}"
+                continue
+            series, error, may_retry = self._interpret(resp)
+            if series is not None:
+                self._record_success()
+                return series
+            last_error = error or last_error
+            if not may_retry:
+                break
+
+        raise self._unavailable(last_error)
