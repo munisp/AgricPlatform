@@ -82,7 +82,7 @@ export class SyncService {
     }
     const groups: Group[] = [];
     items.forEach((item, index) => {
-      const recordKey = `${item.entity} ${item.entityId}`;
+      const recordKey = JSON.stringify([item.entity, item.entityId]);
       // An item joins EVERY group it collides with (same record or same
       // clientMutationId); multiple collisions merge the groups so ordering
       // is preserved transitively.
