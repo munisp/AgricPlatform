@@ -1,4 +1,4 @@
-import type { ApiClient } from './client';
+import type { ApiClient, ApiRequestOptions } from './client';
 import type {
   AgentAssignment,
   Animal,
@@ -26,7 +26,13 @@ import type {
  * client in apps/web/lib/api/endpoints.ts). Item endpoints unwrap
  * `{ data: T }`; list endpoints return the pagination envelope unless the
  * controller returns a plain `{ data: T[] }` (noted per function).
+ *
+ * GET wrappers accept an optional trailing `options` carrying an
+ * AbortSignal so screens can cancel in-flight reads on unmount.
  */
+
+/** Caller cancellation options for idempotent GET reads. */
+export type ReadOptions = Pick<ApiRequestOptions, 'signal'>;
 
 /* ------------------------------- auth ---------------------------------- */
 
@@ -53,8 +59,11 @@ export function verifyOtp(
   return client.apiFetch('/auth/otp/verify', { method: 'POST', body: { requestId, code } });
 }
 
-export function fetchSession(client: ApiClient): Promise<{ data: { user: User } }> {
-  return client.apiFetch('/auth/session');
+export function fetchSession(
+  client: ApiClient,
+  options?: ReadOptions
+): Promise<{ data: { user: User } }> {
+  return client.apiFetch('/auth/session', { ...options });
 }
 
 /** Registration input (POST /auth/register). Phone must be E.164. */
@@ -99,26 +108,36 @@ export function logoutSession(
 
 export function listCourses(
   client: ApiClient,
-  params: { category?: string; page?: number; pageSize?: number } = {}
+  params: { category?: string; page?: number; pageSize?: number } = {},
+  options?: ReadOptions
 ): Promise<ApiListResponse<Course>> {
-  return client.apiFetch('/courses', { query: { ...params } });
+  return client.apiFetch('/courses', { query: { ...params }, ...options });
 }
 
-export function fetchCourse(client: ApiClient, id: string): Promise<{ data: Course }> {
-  return client.apiFetch(`/courses/${encodeURIComponent(id)}`);
+export function fetchCourse(
+  client: ApiClient,
+  id: string,
+  options?: ReadOptions
+): Promise<{ data: Course }> {
+  return client.apiFetch(`/courses/${encodeURIComponent(id)}`, { ...options });
 }
 
 /* ----------------------------- marketplace ------------------------------ */
 
 export function listListings(
   client: ApiClient,
-  params: { kind?: MarketplaceListing['kind']; state?: string; page?: number; pageSize?: number } = {}
+  params: { kind?: MarketplaceListing['kind']; state?: string; page?: number; pageSize?: number } = {},
+  options?: ReadOptions
 ): Promise<ApiListResponse<MarketplaceListing>> {
-  return client.apiFetch('/listings', { query: { ...params } });
+  return client.apiFetch('/listings', { query: { ...params }, ...options });
 }
 
-export function fetchListing(client: ApiClient, id: string): Promise<{ data: MarketplaceListing }> {
-  return client.apiFetch(`/listings/${encodeURIComponent(id)}`);
+export function fetchListing(
+  client: ApiClient,
+  id: string,
+  options?: ReadOptions
+): Promise<{ data: MarketplaceListing }> {
+  return client.apiFetch(`/listings/${encodeURIComponent(id)}`, { ...options });
 }
 
 /* ------------------------------- orders -------------------------------- */
@@ -127,21 +146,27 @@ export function fetchListing(client: ApiClient, id: string): Promise<{ data: Mar
 export function listMyOrders(
   client: ApiClient,
   buyerId: string,
-  status?: OrderStatus
+  status?: OrderStatus,
+  options?: ReadOptions
 ): Promise<{ data: Order[] }> {
-  return client.apiFetch('/orders', { query: { buyerId, status } });
+  return client.apiFetch('/orders', { query: { buyerId, status }, ...options });
 }
 
-export function fetchOrder(client: ApiClient, id: string): Promise<{ data: Order }> {
-  return client.apiFetch(`/orders/${encodeURIComponent(id)}`);
+export function fetchOrder(
+  client: ApiClient,
+  id: string,
+  options?: ReadOptions
+): Promise<{ data: Order }> {
+  return client.apiFetch(`/orders/${encodeURIComponent(id)}`, { ...options });
 }
 
 /** Draft orders created for the buyer by an agent (Wave M). Plain list. */
 export function listDraftOrders(
   client: ApiClient,
-  buyerId: string
+  buyerId: string,
+  options?: ReadOptions
 ): Promise<{ data: DraftOrder[] }> {
-  return client.apiFetch('/draft-orders', { query: { buyerId } });
+  return client.apiFetch('/draft-orders', { query: { buyerId }, ...options });
 }
 
 /** Buyer confirms a draft order into a normal order. */
@@ -157,9 +182,10 @@ export function confirmDraftOrder(
 /** Own notifications, newest first. Plain `{ data: NotificationMessage[] }`. */
 export function listNotifications(
   client: ApiClient,
-  userId: string
+  userId: string,
+  options?: ReadOptions
 ): Promise<{ data: NotificationMessage[] }> {
-  return client.apiFetch('/notifications', { query: { userId } });
+  return client.apiFetch('/notifications', { query: { userId }, ...options });
 }
 
 export function markNotificationRead(
@@ -172,8 +198,11 @@ export function markNotificationRead(
 /* ------------------------------ livestock ------------------------------- */
 
 /** Own registered animals. Plain `{ data: Animal[] }`. */
-export function listMyAnimals(client: ApiClient): Promise<{ data: Animal[] }> {
-  return client.apiFetch('/livestock/animals/mine');
+export function listMyAnimals(
+  client: ApiClient,
+  options?: ReadOptions
+): Promise<{ data: Animal[] }> {
+  return client.apiFetch('/livestock/animals/mine', { ...options });
 }
 
 export function registerAnimal(
@@ -196,29 +225,36 @@ export function listActiveRecalls(client: ApiClient): Promise<{ data: HealthReca
  */
 export function listDueVaccinations(
   client: ApiClient,
-  days = 30
+  days = 30,
+  options?: ReadOptions
 ): Promise<{ data: VaccinationDueItem[] }> {
-  return client.apiFetch('/livestock-health/vaccinations/due', { query: { days } });
+  return client.apiFetch('/livestock-health/vaccinations/due', { query: { days }, ...options });
 }
 
 /* ------------------------------ dashboard ------------------------------- */
 
 /** Training progress source: own pathway enrolments. Plain `{ data: T[] }`. */
 export function listMyPathwayEnrolments(
-  client: ApiClient
+  client: ApiClient,
+  options?: ReadOptions
 ): Promise<{ data: MyPathwayEnrolmentSummary[] }> {
-  return client.apiFetch('/pathway-enrolments/mine');
+  return client.apiFetch('/pathway-enrolments/mine', { ...options });
 }
 
 export function listOpportunities(
   client: ApiClient,
-  params: { type?: string; page?: number; pageSize?: number } = {}
+  params: { type?: string; page?: number; pageSize?: number } = {},
+  options?: ReadOptions
 ): Promise<ApiListResponse<Opportunity>> {
-  return client.apiFetch('/opportunities', { query: { ...params } });
+  return client.apiFetch('/opportunities', { query: { ...params }, ...options });
 }
 
-export function fetchWeather(client: ApiClient, state: string): Promise<{ data: WeatherSnapshot }> {
-  return client.apiFetch(`/advisory/weather/${encodeURIComponent(state)}`);
+export function fetchWeather(
+  client: ApiClient,
+  state: string,
+  options?: ReadOptions
+): Promise<{ data: WeatherSnapshot }> {
+  return client.apiFetch(`/advisory/weather/${encodeURIComponent(state)}`, { ...options });
 }
 
 /* --------------------- sync protocol v1 (Wave SYNCSRV) -------------------- */
@@ -294,8 +330,11 @@ export function syncStatus(client: ApiClient): Promise<{ data: SyncStatusEntry[]
  * Own farm plots (GET /farms/plots — owner-scoped server-side, so the
  * caller only ever receives their own). Plain `{ data: FarmPlot[] }`.
  */
-export function listMyFarmPlots(client: ApiClient): Promise<{ data: FarmPlot[] }> {
-  return client.apiFetch('/farms/plots');
+export function listMyFarmPlots(
+  client: ApiClient,
+  options?: ReadOptions
+): Promise<{ data: FarmPlot[] }> {
+  return client.apiFetch('/farms/plots', { ...options });
 }
 
 /**
@@ -315,9 +354,10 @@ export function createFarmPlot(
 
 /** Enumerator's own open assignment queue. Plain `{ data: T[] }` envelope. */
 export function listMyAgentAssignments(
-  client: ApiClient
+  client: ApiClient,
+  options?: ReadOptions
 ): Promise<{ data: AgentAssignment[] }> {
-  return client.apiFetch('/field-agents/assignments/mine');
+  return client.apiFetch('/field-agents/assignments/mine', { ...options });
 }
 
 /**
