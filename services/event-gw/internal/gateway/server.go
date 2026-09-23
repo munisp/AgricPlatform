@@ -66,7 +66,44 @@ func (s *Server) StartBackground(ctx context.Context) {
 	s.fanout.StartDrainLoop(ctx, s.cfg.DrainInterval)
 }
 
-func writeJSON(w http.ResponseWriter, status int, body map[string]any) {
+// Response bodies as typed structs (field order is alphabetical so the
+// marshalled bytes are identical to the previous map[string]any output,
+// which Go sorts by key). This avoids per-request map + reflection work.
+type rejectResponse struct {
+	Provider string `json:"provider,omitempty"`
+	Reason   string `json:"reason"`
+	Status   string `json:"status"`
+}
+
+type acceptedResponse struct {
+	Delivery string `json:"delivery"`
+	EventID  string `json:"eventId"`
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
+}
+
+type errorResponse struct {
+	EventID  string `json:"eventId"`
+	Provider string `json:"provider"`
+	Reason   string `json:"reason"`
+	Status   string `json:"status"`
+}
+
+type healthResponse struct {
+	Mode           string `json:"mode"`
+	ProvidersKnown int    `json:"providersKnown"`
+	Status         string `json:"status"`
+	UptimeSeconds  int64  `json:"uptimeSeconds"`
+}
+
+type readyResponse struct {
+	Breaker      string `json:"breaker"`
+	Mode         string `json:"mode"`
+	SpoolBacklog int    `json:"spoolBacklog"`
+	Status       string `json:"status"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	enc, _ := json.Marshal(body)
@@ -75,7 +112,7 @@ func writeJSON(w http.ResponseWriter, status int, body map[string]any) {
 
 func (s *Server) reject(w http.ResponseWriter, provider string, status int, reason string) {
 	s.metrics.Inc(MetricRejected, provider)
-	writeJSON(w, status, map[string]any{"status": "rejected", "provider": provider, "reason": reason})
+	writeJSON(w, status, rejectResponse{Status: "rejected", Provider: provider, Reason: reason})
 }
 
 // handleWebhook ingests one external provider webhook.
@@ -89,7 +126,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.cfg.Providers[provider]
 	if !ok {
 		// Unknown provider: no per-provider metrics (cardinality guard).
-		writeJSON(w, http.StatusNotFound, map[string]any{"status": "rejected", "reason": "unknown provider"})
+		writeJSON(w, http.StatusNotFound, rejectResponse{Status: "rejected", Reason: "unknown provider"})
 		return
 	}
 	s.metrics.Inc(MetricReceived, provider)
@@ -110,7 +147,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, provider, http.StatusRequestEntityTooLarge, "body too large")
 		return
 	}
-	obj, err := validateShape(body)
+	eventID, err := validateShape(body)
 	if err != nil {
 		s.reject(w, provider, http.StatusBadRequest, err.Error())
 		return
@@ -146,58 +183,116 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	env := Envelope{
 		Provider:   provider,
-		EventID:    extractEventID(obj),
+		EventID:    eventID,
 		ReceivedAt: s.Now().UTC().Format(time.RFC3339),
 		Payload:    json.RawMessage(body),
+	}
+	if env.EventID == "" {
+		env.EventID = generateEventID()
 	}
 	outcome, err := s.fanout.Deliver(env)
 	if err != nil {
 		s.logger.Printf("ERROR: fanout for provider %q event %q: %v", provider, env.EventID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status": "error", "provider": provider, "eventId": env.EventID,
-			"reason": "delivery failed and dead-letter spool write failed",
+		writeJSON(w, http.StatusInternalServerError, errorResponse{
+			Status: "error", Provider: provider, EventID: env.EventID,
+			Reason: "delivery failed and dead-letter spool write failed",
 		})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"status": "accepted", "provider": provider, "eventId": env.EventID, "delivery": outcome,
+	writeJSON(w, http.StatusAccepted, acceptedResponse{
+		Status: "accepted", Provider: provider, EventID: env.EventID, Delivery: outcome,
 	})
 }
 
 // validateShape enforces the minimal event shape: a non-empty JSON object.
-// It returns the decoded object for event-id extraction.
-func validateShape(body []byte) (map[string]json.RawMessage, error) {
+// It streams the top-level keys, decoding values into a single reused buffer,
+// and returns the provider-supplied event id ("eventId", "event_id" or "id",
+// as a string or number; last occurrence wins, matching map semantics) or ""
+// when none is usable. The full payload is still validated for well-formedness.
+func validateShape(body []byte) (string, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("empty body")
+		return "", fmt.Errorf("empty body")
 	}
 	if trimmed[0] != '{' {
-		return nil, fmt.Errorf("payload must be a JSON object")
+		return "", fmt.Errorf("payload must be a JSON object")
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &obj); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %v", err)
+	eventID, err := scanEventID(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid JSON: %v", err)
 	}
-	return obj, nil
+	return eventID, nil
 }
 
-// extractEventID uses a provider-supplied id field when present
-// ("eventId", "event_id" or "id", as a string or number), else generates one.
-func extractEventID(obj map[string]json.RawMessage) string {
-	for _, field := range []string{"eventId", "event_id", "id"} {
-		raw, ok := obj[field]
+// scanEventID streams the top-level object members and extracts the event id
+// candidates without materialising a map of the whole payload.
+func scanEventID(data []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if _, err := dec.Token(); err != nil { // opening '{'
+		return "", err
+	}
+	var raws [3]json.RawMessage // eventId, event_id, id
+	var raw json.RawMessage
+	for dec.More() {
+		ktok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		key, ok := ktok.(string)
 		if !ok {
-			continue
+			return "", fmt.Errorf("invalid object key")
 		}
-		var str string
-		if err := json.Unmarshal(raw, &str); err == nil && str != "" {
-			return str
+		raw = raw[:0] // reuse the backing array across values
+		if err := dec.Decode(&raw); err != nil {
+			return "", err
 		}
-		var num json.Number
-		if err := json.Unmarshal(raw, &num); err == nil && num != "" {
-			return num.String()
+		switch key {
+		case "eventId":
+			raws[0] = append(raws[0][:0], raw...)
+		case "event_id":
+			raws[1] = append(raws[1][:0], raw...)
+		case "id":
+			raws[2] = append(raws[2][:0], raw...)
 		}
 	}
+	if _, err := dec.Token(); err != nil { // closing '}'
+		return "", err
+	}
+	// Nothing may follow the top-level object (json.Unmarshal parity).
+	if tok, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("unexpected data after top-level value: %v", tok)
+	}
+	for _, cand := range raws {
+		if cand == nil {
+			continue
+		}
+		if id, ok := idFromRaw(cand); ok {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// idFromRaw extracts an event id from a raw JSON value: a non-empty string
+// or a non-empty number, matching the historical extraction rules.
+func idFromRaw(raw json.RawMessage) (string, bool) {
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str != "" {
+		return str, true
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw, &num); err == nil && num != "" {
+		return num.String(), true
+	}
+	return "", false
+}
+
+// generateEventID builds a random event id when the payload has no usable
+// provider-supplied id field.
+func generateEventID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		// crypto/rand failure is effectively unreachable; fall back to time.
@@ -218,11 +313,11 @@ func replayKey(provider string, body []byte, sig, ts string) string {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "ok",
-		"mode":           s.cfg.Mode,
-		"uptimeSeconds":  int64(time.Since(s.started).Seconds()),
-		"providersKnown": len(s.cfg.Providers),
+	writeJSON(w, http.StatusOK, healthResponse{
+		Status:         "ok",
+		Mode:           s.cfg.Mode,
+		UptimeSeconds:  int64(time.Since(s.started).Seconds()),
+		ProvidersKnown: len(s.cfg.Providers),
 	})
 }
 
@@ -236,11 +331,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusServiceUnavailable
 		readiness = "degraded"
 	}
-	writeJSON(w, status, map[string]any{
-		"status":       readiness,
-		"mode":         s.cfg.Mode,
-		"breaker":      string(breaker),
-		"spoolBacklog": backlog,
+	writeJSON(w, status, readyResponse{
+		Status:       readiness,
+		Mode:         s.cfg.Mode,
+		Breaker:      string(breaker),
+		SpoolBacklog: backlog,
 	})
 }
 
