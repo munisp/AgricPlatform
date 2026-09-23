@@ -96,9 +96,13 @@ export class DomainEventsService {
       fanOutSpanAttributes(event.name),
       () => this.fanOut(event)
     );
-    // Deterministic publish marking on the non-transactional path (the
-    // transactional path's post-commit emit marks fire-and-forget).
-    await this.markPublished(event.id);
+    // Deterministic publish marking on the non-transactional path. Perf
+    // P1-6: fired without awaiting, exactly like the transactional path's
+    // post-commit emit — the outbox row is already durable and the sweeper
+    // is the documented backstop, so the caller need not pay the UPDATE
+    // round trip. Call ordering (append → bus → fan-out → mark) is
+    // unchanged, and markPublished itself stays best-effort.
+    void this.markPublished(event.id);
   }
 
   /** Listener fan-out only — for events already persisted transactionally. */
