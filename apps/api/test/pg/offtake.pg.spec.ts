@@ -105,7 +105,7 @@ function fakePool(behavior: (text: string, params: unknown[]) => QueryOutcome): 
   return { pool, calls };
 }
 
-function sagaBehavior(text: string): QueryOutcome {
+function sagaBehavior(text: string, params: unknown[]): QueryOutcome {
   if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
     return { rows: [] };
   }
@@ -117,6 +117,13 @@ function sagaBehavior(text: string): QueryOutcome {
   }
   if (text.includes('UPDATE marketplace.offtake_milestones')) {
     return { rows: [MILESTONE_ROW], rowCount: 1 };
+  }
+  // P2 perf: set-based account-code resolution (ONE … code = ANY query).
+  if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+    const codes = (params[0] as string[] | undefined) ?? [];
+    return {
+      rows: codes.map((code) => ({ code, id: '2c1f2a58-0000-4000-8000-000000000099' }))
+    };
   }
   if (text.includes('FROM finance.ledger_accounts')) {
     return { rows: [{ id: '2c1f2a58-0000-4000-8000-000000000099' }] };
@@ -186,11 +193,11 @@ describe('pg offtake delivery saga (query spy)', () => {
   });
 
   it('answers replay when the idempotency key was already committed (nothing re-posted)', async () => {
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
       if (text.includes('INSERT INTO marketplace.offtake_deliveries')) {
         return { rows: [], rowCount: 0 }; // claim lost: already committed
       }
-      return sagaBehavior(text);
+      return sagaBehavior(text, params);
     });
     const repo = new PgOfftakeContractRepository(pool);
     const outcome = await repo.recordDeliveryTx(sagaInput());
@@ -202,11 +209,11 @@ describe('pg offtake delivery saga (query spy)', () => {
   });
 
   it('rolls the whole step back when the journal fails the balanced invariant', async () => {
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
       if (text.includes('finance.transfer_is_balanced')) {
         return { rows: [{ balanced: false }] };
       }
-      return sagaBehavior(text);
+      return sagaBehavior(text, params);
     });
     const repo = new PgOfftakeContractRepository(pool);
     await expect(repo.recordDeliveryTx(sagaInput())).rejects.toThrow(/transfer_is_balanced/);
