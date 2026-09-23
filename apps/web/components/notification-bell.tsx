@@ -45,8 +45,10 @@ export function NotificationBell() {
   const sourceRef = useRef<EventSource | null>(null);
 
   // Polling fallback (also the initial snapshot before the first push).
+  // Shares the `notifications:${userId}` cache key with the dashboard's
+  // LiveNotifications panel — same endpoint, one fetch and one cache entry.
   const query = useApiQuery(
-    `notifications:bell:${userId}`,
+    `notifications:${userId}`,
     () => listNotifications(userId).then((res) => res.data),
     { enabled: hydrated && Boolean(userId), staleTimeMs: 30_000 }
   );
