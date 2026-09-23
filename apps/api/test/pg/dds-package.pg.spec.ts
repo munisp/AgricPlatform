@@ -36,12 +36,12 @@ const MIGRATIONS = [
 const OWNER = 'pgtest-dds-user';
 
 async function clean(): Promise<void> {
-  await pool!.query(`DELETE FROM traceability.dds_packages WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.shipment_lots WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.shipments WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.lot_plot_links WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.custody_events WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.commodity_lots WHERE id LIKE 'pgtest-%'`);
+  await pool!.query(`DELETE FROM traceability.dds_packages WHERE id LIKE 'pgtest-dds-%'`);
+  await pool!.query(`DELETE FROM traceability.shipment_lots WHERE id LIKE 'pgtest-dds-%'`);
+  await pool!.query(`DELETE FROM traceability.shipments WHERE id LIKE 'pgtest-dds-%'`);
+  await pool!.query(`DELETE FROM traceability.lot_plot_links WHERE id LIKE 'pgtest-dds-%'`);
+  await pool!.query(`DELETE FROM traceability.custody_events WHERE id LIKE 'pgtest-dds-%'`);
+  await pool!.query(`DELETE FROM traceability.commodity_lots WHERE id LIKE 'pgtest-dds-%'`);
 }
 
 function makePackage(id: string, overrides: Partial<DdsPackage> = {}): DdsPackage {
@@ -70,7 +70,7 @@ describePg('pg dds packages (guarded status CAS / immutability after export)', (
     await pool!.query(
       `INSERT INTO traceability.commodity_lots
          (id, owner_user_id, crop, harvest_window_start, harvest_window_end, quantity, unit)
-       VALUES ('pgtest-lot-1', $1, 'Cocoa', '2026-01-01T00:00:00Z', '2026-03-01T00:00:00Z', 500, 'kg')
+       VALUES ('pgtest-dds-lot-1', $1, 'Cocoa', '2026-01-01T00:00:00Z', '2026-03-01T00:00:00Z', 500, 'kg')
        ON CONFLICT (id) DO NOTHING`,
       [OWNER]
     );
@@ -154,7 +154,7 @@ describePg('pg dds packages (guarded status CAS / immutability after export)', (
         requirement: 'lot_geolocation_snapshot',
         passed: false,
         basis: 'no linked production plot',
-        missing: ['lot:pgtest-lot-1:plot_snapshot']
+        missing: ['lot:pgtest-dds-lot-1:plot_snapshot']
       }
     ]);
     const revalidated = await repo.saveChecklist('pgtest-dds-4', 'validated', [
