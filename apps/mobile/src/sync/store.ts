@@ -619,13 +619,30 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
     notify();
     const summary: SyncSummary = { pulled: [], pushed: null, errors: [] };
     try {
-      for (const entity of entities) {
-        try {
-          summary.pulled.push(await pullEntity(entity));
-        } catch (error) {
-          // Pull failure keeps the cache intact (state applied so far stays
-          // valid); record the failure and move on to the next entity.
-          summary.errors.push({ phase: 'pull', entity, message: errorMessage(error) });
+      // Pull all entities in parallel: each pull is an idempotent upsert
+      // keyed per record, and Promise.all preserves input order, so the
+      // summary lists results/failures in entity order exactly as the
+      // sequential loop did — but sync latency is max(...) not sum(...).
+      const outcomes = await Promise.all(
+        entities.map(async (entity) => {
+          try {
+            return { entity, pulled: await pullEntity(entity), error: null };
+          } catch (error) {
+            // Pull failure keeps the cache intact (state applied so far stays
+            // valid); record the failure and move on to the next entity.
+            return { entity, pulled: null, error: errorMessage(error) };
+          }
+        })
+      );
+      for (const outcome of outcomes) {
+        if (outcome.pulled) {
+          summary.pulled.push(outcome.pulled);
+        } else {
+          summary.errors.push({
+            phase: 'pull',
+            entity: outcome.entity,
+            message: outcome.error ?? 'unknown pull error'
+          });
         }
       }
       try {
