@@ -1,10 +1,33 @@
-import { useCallback, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
+import { memo, useCallback, useState } from 'react';
+import { FlatList, RefreshControl, ScrollView, StyleSheet, Text } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { listMyFarmPlots } from '../api/endpoints';
 import type { FarmPlot } from '../api/types';
 import { useListRefresh } from './use-list-refresh';
 import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './ui';
+
+const PlotCard = memo(function PlotCard({ plot }: { plot: FarmPlot }) {
+  return (
+    <Card>
+      <Text style={styles.line}>{plot.name}</Text>
+      <Muted>
+        {plot.lga}, {plot.state} · {plot.sizeHectares} ha
+        {plot.soilType ? ` · ${plot.soilType}` : ''}
+      </Muted>
+      <Muted>
+        {plot.centroidLat.toFixed(5)}, {plot.centroidLong.toFixed(5)}
+        {plot.boundaryGeojson ? ' · boundary captured' : ''} · v{plot.version}
+      </Muted>
+    </Card>
+  );
+});
+
+function plotKey(plot: FarmPlot): string {
+  return plot.id;
+}
+
+const renderPlot = ({ item }: { item: FarmPlot }) => <PlotCard plot={item} />;
 
 /**
  * My farm plots (GET /farms/plots — owner-scoped server-side). The capture
@@ -15,15 +38,20 @@ export function FarmsScreen({ onCapturePlot }: { onCapturePlot?: () => void }) {
   const [plots, setPlots] = useState<FarmPlot[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await listMyFarmPlots(client);
-      setPlots(res.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load your plots');
-    }
-  }, [client]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await listMyFarmPlots(client, { signal });
+        if (signal?.aborted) return;
+        setPlots(res.data);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load your plots');
+      }
+    },
+    [client]
+  );
 
   // Reload on mount + whenever this screen regains focus (e.g. after
   // PlotCapture onSaved → goBack), plus pull-to-refresh (audit P1-9).
@@ -44,33 +72,35 @@ export function FarmsScreen({ onCapturePlot }: { onCapturePlot?: () => void }) {
   }
 
   return (
-    <ScrollView
+    <FlatList
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
-    >
-      {error ? <ErrorNotice message={error} /> : null}
-      <Card>
-        <CardTitle>My plots ({plots.length})</CardTitle>
-        {plots.length === 0 ? (
-          <Muted>No plots yet — capture your first plot below.</Muted>
-        ) : (
-          plots.map((plot) => (
-            <Card key={plot.id}>
-              <Text style={styles.line}>{plot.name}</Text>
-              <Muted>
-                {plot.lga}, {plot.state} · {plot.sizeHectares} ha
-                {plot.soilType ? ` · ${plot.soilType}` : ''}
-              </Muted>
-              <Muted>
-                {plot.centroidLat.toFixed(5)}, {plot.centroidLong.toFixed(5)}
-                {plot.boundaryGeojson ? ' · boundary captured' : ''} · v{plot.version}
-              </Muted>
-            </Card>
-          ))
-        )}
-        {onCapturePlot ? <PrimaryButton label="Capture plot" onPress={onCapturePlot} /> : null}
-      </Card>
-    </ScrollView>
+      data={plots}
+      keyExtractor={plotKey}
+      ListHeaderComponent={
+        <>
+          {error ? <ErrorNotice message={error} /> : null}
+          <Card>
+            <CardTitle>My plots ({plots.length})</CardTitle>
+            {plots.length === 0 ? (
+              <Muted>No plots yet — capture your first plot below.</Muted>
+            ) : null}
+          </Card>
+        </>
+      }
+      renderItem={renderPlot}
+      ListFooterComponent={
+        onCapturePlot ? (
+          <Card>
+            <PrimaryButton label="Capture plot" onPress={onCapturePlot} />
+          </Card>
+        ) : undefined
+      }
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={7}
+      removeClippedSubviews
+    />
   );
 }
 
