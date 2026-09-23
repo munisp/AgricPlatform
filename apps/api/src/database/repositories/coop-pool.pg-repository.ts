@@ -271,7 +271,7 @@ export class PgCoopPoolRepository
   async claimSplitMarker(marker: PoolSplitMarker): Promise<boolean> {
     const result = await this.pool.query(
       `INSERT INTO marketplace.pool_split_markers
-         (pool_id, escrow_id, ledger_entry_id, total_kobo, member_count, idempotency_key)
+           (pool_id, escrow_id, ledger_entry_id, total_kobo, member_count, idempotency_key)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING
        RETURNING pool_id`,
@@ -376,12 +376,20 @@ export class PgCoopPoolRepository
         );
       }
       // 6. Member payouts recorded on the contributions in the same tx.
-      for (const payout of input.payouts) {
+      //    P2 perf: ONE set-based UPDATE over the (id, amount) pairs
+      //    instead of a per-payout round-trip; same transaction, same
+      //    rollback semantics.
+      if (input.payouts.length > 0) {
         await client.query(
-          `UPDATE marketplace.pool_contributions
-              SET status = 'paid', amount_kobo = $2, updated_at = now()
-            WHERE id = $1 AND pool_id = $3`,
-          [payout.contributionId, payout.amountKobo, input.poolId]
+          `UPDATE marketplace.pool_contributions c
+              SET status = 'paid', amount_kobo = p.amount_kobo, updated_at = now()
+             FROM unnest($1::text[], $2::bigint[]) AS p(id, amount_kobo)
+            WHERE c.id = p.id AND c.pool_id = $3`,
+          [
+            input.payouts.map((payout) => payout.contributionId),
+            input.payouts.map((payout) => payout.amountKobo),
+            input.poolId
+          ]
         );
       }
       return 'applied' as const;
