@@ -156,9 +156,7 @@ export class LedgerService {
       return existing; // idempotent replay of a posting retry
     }
     this.assertBalanced(input.postings);
-    for (const posting of input.postings) {
-      await this.getAccountByCode(posting.accountCode);
-    }
+    await this.assertAccountsExist(input.postings);
     const entry: LedgerJournalEntry = {
       id: randomUUID(),
       idempotencyKey: input.idempotencyKey,
@@ -253,9 +251,7 @@ export class LedgerService {
       return { entry: existing, replayed: true };
     }
     this.assertBalanced(input.postings);
-    for (const posting of input.postings) {
-      await this.getAccountByCode(posting.accountCode);
-    }
+    await this.assertAccountsExist(input.postings);
     const entry: LedgerJournalEntry = {
       id: randomUUID(),
       idempotencyKey: input.idempotencyKey,
@@ -362,6 +358,28 @@ export class LedgerService {
   async balance(accountCode: string): Promise<LedgerBalance> {
     await this.getAccountByCode(accountCode);
     return this.entries.balance(accountCode);
+  }
+
+  /**
+   * Account-existence check (perf P2-10): each unique account code is
+   * resolved ONCE per posting batch and the lookups run concurrently,
+   * replacing the sequential per-posting getAccountByCode round trips.
+   * Postings are then validated in their original order, so the first
+   * missing code throws the exact same NotFoundException as before; the
+   * in-transaction resolution and solvency guard are untouched.
+   */
+  private async assertAccountsExist(postings: LedgerPosting[]): Promise<void> {
+    const codes = [...new Set(postings.map((posting) => posting.accountCode))];
+    const resolved = new Map(
+      await Promise.all(
+        codes.map(async (code) => [code, await this.accounts.findByCode(code)] as const)
+      )
+    );
+    for (const posting of postings) {
+      if (!resolved.get(posting.accountCode)) {
+        throw new NotFoundException(`Ledger account '${posting.accountCode}' not found`);
+      }
+    }
   }
 
   /** Balance invariant: ≥2 postings, positive integer kobo, debits === credits. */
