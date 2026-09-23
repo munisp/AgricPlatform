@@ -31,5 +31,11 @@ tracing-opentelemetry = "0.33.0"
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+# panic = "abort": nothing in this service (or its framework stack usage)
+# relies on catch_unwind, and it is a stateless compute sidecar running
+# behind a container supervisor, so aborting on panic — and letting the
+# supervisor restart a fresh process — is an acceptable tradeoff for the
+# smaller binary and the removed landing pads on the geometry hot loops.
+panic = "abort"
