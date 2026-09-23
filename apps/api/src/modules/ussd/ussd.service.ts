@@ -51,6 +51,16 @@ export const USSD_REGISTER_WINDOW_MS = 60 * 60 * 1000;
 
 const USSD_PROVIDER = 'africastalking-ussd';
 
+/**
+ * Perf P1-2: TTL for the phone-independent menu reference bundle (latest
+ * prices, active opportunities, course list) cached in the shared
+ * KeyValueStore. Menus are top-N slices of slowly changing reference data,
+ * so a 60 s staleness window is invisible to callers while collapsing
+ * 3 full-table scans per turn into one read per window.
+ */
+export const USSD_MENU_CACHE_TTL_MS = 60_000;
+const USSD_MENU_CACHE_KEY = 'ussd:menu-reference:v1';
+
 export type UssdDriverMode = 'stub' | 'sandbox' | 'live';
 
 export interface UssdDriverConfig {
@@ -324,12 +334,37 @@ export class UssdService {
 
   /** Gathers the menu data for one turn (latest price per crop, etc.). */
   private async menuData(phone: string): Promise<UssdMenuData> {
-    const [priceRows, opportunities, courses, plantingPulse, priceWire] = await Promise.all([
-      this.prices.find({}),
-      this.opportunities.all(),
-      this.learning.allCourses(),
+    const [reference, plantingPulse, priceWire] = await Promise.all([
+      this.menuReferenceData(),
       this.plantingPulseFor(phone),
       this.priceWireFor(phone)
+    ]);
+    return {
+      ...reference,
+      ...(plantingPulse ? { plantingPulse } : {}),
+      ...(priceWire ? { priceWire } : {})
+    };
+  }
+
+  /**
+   * Phone-independent menu bundle (perf P1-2). Served from the shared
+   * KeyValueStore with a 60 s TTL; this is a CACHE, not a store of record,
+   * so it FAILS OPEN — a miss, parse error or store outage reads through to
+   * the repositories. (Contrast the registration rate limiter above, an
+   * anti-probing control that stays fail-closed.) The cache write happens
+   * off the hot path and never breaks a turn.
+   */
+  private async menuReferenceData(): Promise<
+    Pick<UssdMenuData, 'prices' | 'opportunities' | 'courses'>
+  > {
+    const cached = await this.readMenuCache();
+    if (cached) {
+      return cached;
+    }
+    const [priceRows, opportunities, courses] = await Promise.all([
+      this.prices.find({}),
+      this.opportunities.all(),
+      this.learning.allCourses()
     ]);
     const latestByCrop = new Map<string, (typeof priceRows)[number]>();
     for (const row of priceRows) {
@@ -338,7 +373,7 @@ export class UssdService {
         latestByCrop.set(row.commodity, row);
       }
     }
-    return {
+    const bundle: Pick<UssdMenuData, 'prices' | 'opportunities' | 'courses'> = {
       prices: [...latestByCrop.values()]
         .sort((a, b) => a.commodity.localeCompare(b.commodity))
         .slice(0, 6)
@@ -363,10 +398,46 @@ export class UssdService {
         .slice()
         .sort((a, b) => a.id.localeCompare(b.id))
         .slice(0, 25)
-        .map((course) => ({ id: course.id, title: course.title })),
-      ...(plantingPulse ? { plantingPulse } : {}),
-      ...(priceWire ? { priceWire } : {})
+        .map((course) => ({ id: course.id, title: course.title }))
     };
+    if (this.kv) {
+      // try/catch (not just .catch): a minimal store double that lacks set()
+      // throws synchronously, and that must not break the turn either.
+      try {
+        void this.kv
+          .set(USSD_MENU_CACHE_KEY, JSON.stringify(bundle), USSD_MENU_CACHE_TTL_MS)
+          .catch((error: unknown) =>
+            this.logger.warn(
+              `USSD menu cache write failed: ${error instanceof Error ? error.message : String(error)}`
+            )
+          );
+      } catch (error) {
+        this.logger.warn(
+          `USSD menu cache write failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return bundle;
+  }
+
+  /** Cache read for the menu bundle; any failure degrades to a miss. */
+  private async readMenuCache(): Promise<
+    Pick<UssdMenuData, 'prices' | 'opportunities' | 'courses'> | undefined
+  > {
+    if (!this.kv) {
+      return undefined;
+    }
+    try {
+      const raw = await this.kv.get(USSD_MENU_CACHE_KEY);
+      return raw
+        ? (JSON.parse(raw) as Pick<UssdMenuData, 'prices' | 'opportunities' | 'courses'>)
+        : undefined;
+    } catch (error) {
+      this.logger.warn(
+        `USSD menu cache read failed (reading through): ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
   }
 
   /**
