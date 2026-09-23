@@ -69,24 +69,37 @@ func failThenOKServer(failures int, calls *atomic.Int64) *httptest.Server {
 	}))
 }
 
-func TestFanoutRetriesThenSucceeds(t *testing.T) {
+// Deliver makes a single inline attempt; on failure the event is spooled and
+// the drain loop performs the redelivery (at-least-once via the spool).
+func TestFanoutSingleAttemptThenDrainDelivers(t *testing.T) {
 	var calls atomic.Int64
-	srv := failThenOKServer(2, &calls) // fail, fail, then succeed
+	srv := failThenOKServer(1, &calls) // fail once, then healthy
 	defer srv.Close()
 
-	f, _, _, metrics := newTestFanout(t, testConfig(srv.URL))
+	f, _, spool, metrics := newTestFanout(t, testConfig(srv.URL))
 	outcome, err := f.Deliver(testEnvelope())
 	if err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
-	if outcome != DeliveryDelivered {
-		t.Fatalf("outcome = %q, want delivered", outcome)
+	if outcome != DeliverySpooled {
+		t.Fatalf("outcome = %q, want spooled after single failed attempt", outcome)
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("attempts = %d, want 3 (2 failures + success)", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (single inline attempt, no request-path retries)", got)
+	}
+	if got := spool.Backlog(); got != 1 {
+		t.Fatalf("spool backlog = %d, want 1", got)
+	}
+
+	stats, err := f.DrainSpool()
+	if err != nil {
+		t.Fatalf("DrainSpool: %v", err)
+	}
+	if stats.Sent != 1 || stats.SendFailed {
+		t.Fatalf("stats = %+v, want Sent=1", stats)
 	}
 	if got := metrics.Value(MetricFanned, "weather"); got != 1 {
-		t.Fatalf("fanned = %d, want 1", got)
+		t.Fatalf("fanned = %d, want 1 (drain delivery counted)", got)
 	}
 }
 
@@ -108,7 +121,7 @@ func TestFanoutBackoffSchedule(t *testing.T) {
 	}
 }
 
-func TestFanoutSpoolsAfterExhaustingRetries(t *testing.T) {
+func TestFanoutSpoolsAfterFailedInlineAttempt(t *testing.T) {
 	var calls atomic.Int64
 	srv := failThenOKServer(1<<30, &calls) // always fails
 	defer srv.Close()
@@ -121,8 +134,8 @@ func TestFanoutSpoolsAfterExhaustingRetries(t *testing.T) {
 	if outcome != DeliverySpooled {
 		t.Fatalf("outcome = %q, want spooled", outcome)
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("attempts = %d, want 3 (maxAttempts)", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (single inline attempt, retries moved to drain loop)", got)
 	}
 	if got := spool.Backlog(); got != 1 {
 		t.Fatalf("spool backlog = %d, want 1", got)
