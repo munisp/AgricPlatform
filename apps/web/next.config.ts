@@ -121,6 +121,19 @@ const nextConfig: NextConfig = {
         headers: [{ key: 'Cache-Control', value: 'public, max-age=86400' }]
       },
       {
+        // Pinned, provenance-versioned boundary data (public/geo/*.geojson,
+        // e.g. nigeria-states.geojson ~315KB fetched client-side on /map).
+        // Filenames are NOT content-hashed, so not immutable: cache for a
+        // day and revalidate in the background for a week after that.
+        source: '/geo/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=86400, stale-while-revalidate=604800'
+          }
+        ]
+      },
+      {
         source: '/:path*',
         headers: securityHeaders
       }
