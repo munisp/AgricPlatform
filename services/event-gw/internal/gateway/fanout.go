@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"time"
 )
@@ -45,10 +46,27 @@ type Fanout struct {
 }
 
 func NewFanout(cfg *Config, breaker *Breaker, spool *Spool, metrics *Metrics, logger *log.Logger) *Fanout {
+	// Explicit transport cloning Go's defaults but with a connection pool
+	// sized to fanout concurrency: all traffic targets a single ingress
+	// host, and DefaultTransport's MaxIdleConnsPerHost=2 would force a fresh
+	// TCP/TLS handshake per concurrent delivery beyond the second.
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   64,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Fanout{
 		url:         cfg.IngressURL,
 		token:       cfg.InternalToken,
-		client:      &http.Client{Timeout: 10 * time.Second},
+		client:      &http.Client{Timeout: 10 * time.Second, Transport: transport},
 		breaker:     breaker,
 		spool:       spool,
 		metrics:     metrics,
@@ -108,12 +126,13 @@ func (f *Fanout) postOnce(env Envelope) error {
 	return nil
 }
 
-// Deliver tries to deliver env to the API ingress. With the circuit breaker
-// open it fails fast straight to the spool. Otherwise it retries up to
-// maxAttempts with exponential backoff; a cycle that exhausts its attempts
-// counts as one consecutive failure towards the breaker and the envelope is
-// appended to the on-disk spool. The returned error is non-nil only when the
-// event could be neither delivered nor spooled.
+// Deliver tries to deliver env to the API ingress exactly once inline. With
+// the circuit breaker open it fails fast straight to the spool; on a failed
+// inline attempt the envelope is appended to the on-disk spool immediately
+// (no backoff sleep on the request path) and the background drain loop
+// performs the redelivery attempts. A failed attempt counts as one
+// consecutive failure towards the breaker. The returned error is non-nil
+// only when the event could be neither delivered nor spooled.
 func (f *Fanout) Deliver(env Envelope) (string, error) {
 	if !f.breaker.Allow() {
 		if err := f.spool.Append(env); err != nil {
@@ -122,23 +141,18 @@ func (f *Fanout) Deliver(env Envelope) (string, error) {
 		f.metrics.Inc(MetricDeadlettered, env.Provider)
 		return DeliverySpooled, nil
 	}
-	var lastErr error
-	for attempt := 0; attempt < f.maxAttempts; attempt++ {
-		if attempt > 0 {
-			f.Sleep(f.backoff(attempt - 1))
+	if err := f.postOnce(env); err == nil {
+		f.breaker.OnSuccess()
+		f.metrics.Inc(MetricFanned, env.Provider)
+		return DeliveryDelivered, nil
+	} else {
+		f.breaker.OnFailure()
+		if serr := f.spool.Append(env); serr != nil {
+			return "", fmt.Errorf("fanout failed (%v) and spool append failed: %w", err, serr)
 		}
-		if lastErr = f.postOnce(env); lastErr == nil {
-			f.breaker.OnSuccess()
-			f.metrics.Inc(MetricFanned, env.Provider)
-			return DeliveryDelivered, nil
-		}
+		f.metrics.Inc(MetricDeadlettered, env.Provider)
+		return DeliverySpooled, nil
 	}
-	f.breaker.OnFailure()
-	if err := f.spool.Append(env); err != nil {
-		return "", fmt.Errorf("fanout failed (%v) and spool append failed: %w", lastErr, err)
-	}
-	f.metrics.Inc(MetricDeadlettered, env.Provider)
-	return DeliverySpooled, nil
 }
 
 // DrainSpool re-delivers spooled entries when the breaker is not open.
