@@ -271,7 +271,7 @@ export class PgCoopPoolRepository
   async claimSplitMarker(marker: PoolSplitMarker): Promise<boolean> {
     const result = await this.pool.query(
       `INSERT INTO marketplace.pool_split_markers
-           (pool_id, escrow_id, ledger_entry_id, total_kobo, member_count, idempotency_key)
+         (pool_id, escrow_id, ledger_entry_id, total_kobo, member_count, idempotency_key)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT DO NOTHING
        RETURNING pool_id`,
