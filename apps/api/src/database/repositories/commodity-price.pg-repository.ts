@@ -59,6 +59,9 @@ export function commodityPriceCriteriaSql(criteria: CommodityPriceCriteria): Whe
   );
 }
 
+/** Rows per upsertMany statement — keeps pg bind params far below the 65535 limit. */
+const UPSERT_CHUNK_SIZE = 500;
+
 export class PgCommodityPriceRepository
   extends PgRepositoryBase<CommodityPrice, CommodityPriceCriteria>
   implements CommodityPriceRepository
@@ -78,14 +81,28 @@ export class PgCommodityPriceRepository
    * feed rows; DO NOTHING keeps the scheduler replay-safe.
    */
   async upsertMany(items: CommodityPrice[]): Promise<number> {
+    // P2 perf: chunked multi-row INSERT (one statement per chunk) instead of
+    // a per-item round-trip; ON CONFLICT DO NOTHING keeps the identical
+    // dedupe semantics and rowCount still counts only inserted rows.
     let inserted = 0;
-    for (const item of items) {
-      const row = commodityPriceMapper.toRow(item);
-      const columns = Object.keys(row);
-      const values = columns.map((column) => row[column]);
-      const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+    for (let start = 0; start < items.length; start += UPSERT_CHUNK_SIZE) {
+      const rows = items
+        .slice(start, start + UPSERT_CHUNK_SIZE)
+        .map((item) => commodityPriceMapper.toRow(item));
+      if (rows.length === 0) {
+        break;
+      }
+      const columns = Object.keys(rows[0]);
+      const values: unknown[] = [];
+      const tuples = rows.map((row) => {
+        const placeholders = columns.map((column) => {
+          values.push(row[column]);
+          return `$${values.length}`;
+        });
+        return `(${placeholders.join(', ')})`;
+      });
       const result = await this.pool.query(
-        `INSERT INTO advisory.commodity_prices (${columns.join(', ')}) VALUES (${placeholders}) ` +
+        `INSERT INTO advisory.commodity_prices (${columns.join(', ')}) VALUES ${tuples.join(', ')} ` +
           'ON CONFLICT (commodity, market, source, observed_at) DO NOTHING',
         values
       );
