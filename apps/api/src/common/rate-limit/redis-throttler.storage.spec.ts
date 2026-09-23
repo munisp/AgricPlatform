@@ -33,6 +33,29 @@ function fakeRedis() {
       }
       values.set(key, { value, expiresAt: now + ms });
       return 'OK';
+    }),
+    // Pipelined execution (perf P3-11): queued commands run through the
+    // same mocked command implementations, so mockResolvedValueOnce on a
+    // command (e.g. pttl) intercepts pipelined calls too.
+    pipeline: vi.fn(() => {
+      const commands: Array<() => Promise<unknown>> = [];
+      const pipe = {
+        incr: (key: string) => (commands.push(() => redis.incr(key)), pipe),
+        pexpire: (key: string, ms: number) => (commands.push(() => redis.pexpire(key, ms)), pipe),
+        pttl: (key: string) => (commands.push(() => redis.pttl(key)), pipe),
+        set: (key: string, value: string, px: 'PX', ms: number, nx: 'NX') => (
+          commands.push(() => redis.set(key, value, px, ms, nx)),
+          pipe
+        ),
+        exec: async () => {
+          const out: Array<[null, unknown]> = [];
+          for (const command of commands) {
+            out.push([null, await command()]);
+          }
+          return out;
+        }
+      };
+      return pipe;
     })
   } as unknown as Redis;
   return { redis, advance: (ms: number) => (now += ms) };
