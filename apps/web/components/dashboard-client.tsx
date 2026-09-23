@@ -36,6 +36,19 @@ function widgetListLabel(item: unknown): string {
   return String(item);
 }
 
+/** Stable React key for a widget list row — widget data can reorder between
+ * revalidations, so prefer a data field over the array index. */
+function widgetListKey(item: unknown, index: number): string {
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>;
+    // 'status' is deliberately excluded: statuses repeat across rows.
+    for (const key of ['id', 'courseId', 'opportunityId', 'title']) {
+      if (typeof record[key] === 'string') return record[key];
+    }
+  }
+  return `row-${index}`;
+}
+
 function DashboardWidgetCard({ widget }: { widget: DashboardWidget }) {
   if (widget.kind === 'metric' && widget.data && typeof widget.data === 'object') {
     const data = widget.data as Record<string, unknown>;
@@ -65,7 +78,7 @@ function DashboardWidgetCard({ widget }: { widget: DashboardWidget }) {
         ) : (
           <ul className="row-list">
             {widget.data.slice(0, 5).map((item, index) => (
-              <li className="row-item" key={index}>
+              <li className="row-item" key={widgetListKey(item, index)}>
                 <div className="row-main">
                   <div className="row-title">{widgetListLabel(item)}</div>
                 </div>
