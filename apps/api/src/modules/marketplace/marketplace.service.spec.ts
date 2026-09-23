@@ -423,6 +423,61 @@ describe('MarketplaceService listing search seller ratings (Wave M)', () => {
     expect(page.data.length).toBeGreaterThan(0);
     expect(page.data[0].sellerRating).toBeUndefined();
   });
+
+  it('fetches the per-seller ratings concurrently, not sequentially (perf P1-3)', async () => {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const listings = createInMemoryListingRepository();
+    const ratings = createInMemorySellerRatingRepository();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const original = ratings.findById.bind(ratings);
+    const spy = vi.spyOn(ratings, 'findById').mockImplementation(async (id: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return await original(id);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const marketplace = new MarketplaceService(
+      events,
+      listings,
+      createInMemoryOrderRepository(listings),
+      createInMemoryReviewRepository(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ratings
+    );
+    for (const sellerId of ['seller-a', 'seller-b', 'seller-c']) {
+      await listings.create({
+        id: `listing-${sellerId}`,
+        sellerId,
+        kind: 'produce',
+        title: `Produce from ${sellerId}`,
+        quantity: 5,
+        unit: 'bags',
+        priceNaira: 1000,
+        location: { state: 'Kano', lga: 'Nassarawa' },
+        isActive: true
+      });
+    }
+    const page = await marketplace.listListings({ pageSize: 100 });
+    const distinctSellers = new Set(page.data.map((listing) => listing.sellerId)).size;
+    expect(distinctSellers).toBeGreaterThan(1);
+    // Sequential lookups could never overlap; parallel ones all overlap.
+    expect(maxInFlight).toBe(distinctSellers);
+    expect(spy).toHaveBeenCalledTimes(distinctSellers);
+    // …and the merge contract is unchanged (rating keyed to the right seller).
+    await ratings.applyReview('seller-b', 4);
+    const enriched = await marketplace.listListings({ pageSize: 100 });
+    const fromB = enriched.data.find((listing) => listing.sellerId === 'seller-b');
+    expect(fromB?.sellerRating?.average).toBe(4);
+    expect(enriched.data.find((listing) => listing.sellerId === 'seller-a')?.sellerRating).toBeUndefined();
+  });
 });
 
 describe('MarketplaceService orders channel filter (G19)', () => {
