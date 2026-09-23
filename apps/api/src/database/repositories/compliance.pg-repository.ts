@@ -136,17 +136,23 @@ export class PgComplianceConsentRepository implements ComplianceConsentRepositor
        WHERE revoked_at IS NOT NULL AND revoked_at < $1`,
       [cutoff]
     );
-    let changed = 0;
-    for (const row of candidates.rows as Array<{ id: string; user_id: string }>) {
-      const tombstone = pseudonymFor(row.user_id);
-      if (tombstone === row.user_id) continue;
-      const result = await this.pool.query(
-        `UPDATE compliance.consent_records SET user_id = $2 WHERE id = $1`,
-        [row.id, tombstone]
-      );
-      changed += result.rowCount ?? 0;
+    // P2 perf: ONE set-based UPDATE over the (id, tombstone) pairs instead
+    // of a per-row round-trip; the pseudonymisation function still runs in
+    // JS per row, identical to the in-memory path. Rows whose tombstone
+    // equals the current user_id are skipped, exactly as before.
+    const changedPairs = (candidates.rows as Array<{ id: string; user_id: string }>)
+      .map((row) => ({ id: row.id, tombstone: pseudonymFor(row.user_id), userId: row.user_id }))
+      .filter((pair) => pair.tombstone !== pair.userId);
+    if (changedPairs.length === 0) {
+      return 0;
     }
-    return changed;
+    const result = await this.pool.query(
+      `UPDATE compliance.consent_records c SET user_id = p.tombstone
+         FROM unnest($1::text[], $2::text[]) AS p(id, tombstone)
+        WHERE c.id = p.id`,
+      [changedPairs.map((pair) => pair.id), changedPairs.map((pair) => pair.tombstone)]
+    );
+    return result.rowCount ?? 0;
   }
 
   async purgeRevokedBefore(cutoff: string): Promise<number> {
@@ -293,17 +299,22 @@ export class PgDataSubjectRequestRepository implements DataSubjectRequestReposit
       `SELECT id, user_id FROM compliance.data_subject_requests WHERE ${CLOSED_BEFORE_WHERE}`,
       [cutoff]
     );
-    let changed = 0;
-    for (const row of candidates.rows as Array<{ id: string; user_id: string }>) {
-      const tombstone = pseudonymFor(row.user_id);
-      if (tombstone === row.user_id) continue;
-      const result = await this.pool.query(
-        `UPDATE compliance.data_subject_requests SET user_id = $2 WHERE id = $1`,
-        [row.id, tombstone]
-      );
-      changed += result.rowCount ?? 0;
+    // P2 perf: ONE set-based UPDATE over the (id, tombstone) pairs instead
+    // of a per-row round-trip; no-op tombstones are skipped, exactly as
+    // before.
+    const changedPairs = (candidates.rows as Array<{ id: string; user_id: string }>)
+      .map((row) => ({ id: row.id, tombstone: pseudonymFor(row.user_id), userId: row.user_id }))
+      .filter((pair) => pair.tombstone !== pair.userId);
+    if (changedPairs.length === 0) {
+      return 0;
     }
-    return changed;
+    const result = await this.pool.query(
+      `UPDATE compliance.data_subject_requests c SET user_id = p.tombstone
+         FROM unnest($1::text[], $2::text[]) AS p(id, tombstone)
+        WHERE c.id = p.id`,
+      [changedPairs.map((pair) => pair.id), changedPairs.map((pair) => pair.tombstone)]
+    );
+    return result.rowCount ?? 0;
   }
 
   async purgeClosedBefore(cutoff: string): Promise<number> {
