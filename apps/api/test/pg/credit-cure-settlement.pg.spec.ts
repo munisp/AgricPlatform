@@ -158,9 +158,14 @@ describe('pg credit cure/settlement (query spy)', () => {
         }
       ]
     };
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
       if (text.includes('finance.transfer_is_balanced')) {
         return { rows: [{ balanced: true, posting_count: 3 }] };
+      }
+      // P2 perf: set-based account-code resolution (ONE … code = ANY query).
+      if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+        const codes = (params[0] as string[] | undefined) ?? [];
+        return { rows: codes.map((code) => ({ code, id: `acct-${code}` })) };
       }
       if (text.startsWith('SELECT id FROM finance.ledger_accounts')) {
         return { rows: [{ id: `acct-${randomUUID()}` }] };
@@ -170,17 +175,24 @@ describe('pg credit cure/settlement (query spy)', () => {
     const repo = new PgLedgerEntryRepository(pool);
     await repo.postEntry(entry);
 
-    // The legs as persisted: debits (cash + loan_losses) == credit (receivable).
+    // The legs as persisted: debits (cash + loan_losses) == credit
+    // (receivable). P2 perf: ONE bulk INSERT … SELECT carries all legs as
+    // parallel arrays (params[1]=codes, [2]=directions, [3]=amounts).
     const postings = calls.filter((call) =>
       call.text.startsWith('INSERT INTO finance.ledger_entries')
     );
-    expect(postings).toHaveLength(3);
-    const debits = postings
-      .filter((call) => call.params[2] === 'debit')
-      .reduce((sum, call) => sum + Number(call.params[3]), 0);
-    const credits = postings
-      .filter((call) => call.params[2] === 'credit')
-      .reduce((sum, call) => sum + Number(call.params[3]), 0);
+    expect(postings).toHaveLength(1);
+    const directions = postings[0].params[2] as string[];
+    const amounts = postings[0].params[3] as number[];
+    expect(directions).toHaveLength(3);
+    const debits = directions
+      .map((direction, index) => ({ direction, amount: amounts[index] }))
+      .filter((leg) => leg.direction === 'debit')
+      .reduce((sum, leg) => sum + Number(leg.amount), 0);
+    const credits = directions
+      .map((direction, index) => ({ direction, amount: amounts[index] }))
+      .filter((leg) => leg.direction === 'credit')
+      .reduce((sum, leg) => sum + Number(leg.amount), 0);
     expect(debits).toBe(outstandingKobo);
     expect(credits).toBe(outstandingKobo);
 
@@ -198,9 +210,14 @@ describe('pg credit cure/settlement (query spy)', () => {
   });
 
   it('an unbalanced settlement posting ROLLBACKs — the write-down never commits', async () => {
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
       if (text.includes('finance.transfer_is_balanced')) {
         return { rows: [{ balanced: false, posting_count: 3 }] };
+      }
+      // P2 perf: set-based account-code resolution (ONE … code = ANY query).
+      if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+        const codes = (params[0] as string[] | undefined) ?? [];
+        return { rows: codes.map((code) => ({ code, id: `acct-${code}` })) };
       }
       if (text.startsWith('SELECT id FROM finance.ledger_accounts')) {
         return { rows: [{ id: `acct-${randomUUID()}` }] };
