@@ -29,6 +29,14 @@ export interface UserRepository extends AsyncRepository<User, UserCriteria> {
   setStatus(userId: string, status: AccountStatus): Promise<void>;
   statusFor(userId: string): Promise<AccountStatus>;
   /**
+   * Folded identity read for the auth hot path (perf P1-1): the user row
+   * AND the account-status overlay in ONE logical lookup, so an
+   * authenticated request pays a single repository round trip instead of
+   * findById + statusFor. Optional: drivers without a folded read fall back
+   * to the parallel pair in UsersService.findByIdWithStatus.
+   */
+  findByIdWithStatus?(id: string): Promise<{ user: User; status: AccountStatus } | undefined>;
+  /**
    * OB-04: assisted-account onboarding — the user row (+ role rows) and the
    * guardian/custody link as ONE atomic unit. On the pg driver both writes
    * share a single transaction, so a link-write failure rolls the user row
@@ -72,6 +80,17 @@ export class InMemoryUserRepository
 
   async statusFor(userId: string): Promise<AccountStatus> {
     return this.statuses.get(userId) ?? 'active';
+  }
+
+  /** Single-read counterpart of the pg folded query (perf P1-1). */
+  async findByIdWithStatus(
+    id: string
+  ): Promise<{ user: User; status: AccountStatus } | undefined> {
+    const user = await this.findById(id);
+    if (!user) {
+      return undefined;
+    }
+    return { user, status: this.statuses.get(id) ?? 'active' };
   }
 
   /**
