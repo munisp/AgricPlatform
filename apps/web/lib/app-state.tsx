@@ -116,7 +116,10 @@ function QueueProvider({ children }: { children: ReactNode }) {
     flushingRef.current = true;
     try {
       const next = await flushQueue(queue, sendQueuedItem);
-      updateQueue(next);
+      // flushQueue returns the same array reference when nothing changed
+      // (empty queue or all items terminal) — skip the state update and the
+      // JSON.stringify + localStorage write in that case.
+      if (next !== queue) updateQueue(next);
     } finally {
       flushingRef.current = false;
     }
