@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { fetchListing } from '../api/endpoints';
 import type { MarketplaceListing } from '../api/types';
@@ -10,18 +11,25 @@ export function ListingDetailScreen({ listingId }: { listingId: string }) {
   const [listing, setListing] = useState<MarketplaceListing | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await fetchListing(client, listingId);
-      setListing(res.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load this listing');
-    }
-  }, [client, listingId]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await fetchListing(client, listingId, { signal });
+        if (signal?.aborted) return;
+        setListing(res.data);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load this listing');
+      }
+    },
+    [client, listingId]
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   if (error) {
