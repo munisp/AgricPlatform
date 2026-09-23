@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { NavigationContext } from '@react-navigation/native';
 
 /**
@@ -12,33 +12,44 @@ import { NavigationContext } from '@react-navigation/native';
  * NavigationContext (not useFocusEffect) is read directly so the hook also
  * works when a screen is rendered WITHOUT a navigation container — unit
  * tests and previews then get the mount-load only.
+ *
+ * Cancellation: the hook owns one AbortController per mounted lifetime and
+ * passes its signal to `load`; on unmount the signal aborts so in-flight
+ * GETs are cancelled instead of setState-ing a dead tree.
  */
 interface FocusListenerNavigation {
   addListener?: (type: 'focus', callback: () => void) => () => void;
 }
 
-export function useListRefresh(load: () => Promise<void> | void): {
+export function useListRefresh(load: (signal?: AbortSignal) => Promise<void> | void): {
   refreshing: boolean;
   refresh: () => Promise<void>;
 } {
   const navigation = useContext(NavigationContext) as FocusListenerNavigation | undefined;
   const [refreshing, setRefreshing] = useState(false);
+  const signalRef = useRef<AbortSignal | undefined>(undefined);
 
   // Initial load (also covers screens mounted outside a navigator).
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    signalRef.current = controller.signal;
+    void load(controller.signal);
+    return () => {
+      controller.abort();
+      signalRef.current = undefined;
+    };
   }, [load]);
 
   // Refetch whenever the screen comes back into focus.
   useEffect(() => {
     if (!navigation || typeof navigation.addListener !== 'function') return undefined;
-    return navigation.addListener('focus', () => void load());
+    return navigation.addListener('focus', () => void load(signalRef.current));
   }, [navigation, load]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await load();
+      await load(signalRef.current);
     } finally {
       setRefreshing(false);
     }
