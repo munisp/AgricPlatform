@@ -82,6 +82,31 @@ const tokenStore: TokenStore = createSecureStoreTokenStore(SecureStore);
 const offlineQueue = createOfflineQueue(AsyncStorage);
 const locationService = createExpoLocationService();
 
+// Cold-start latency (perf): begin the secure-store refresh-token read at
+// module scope so storage latency overlaps JS init/first render instead of
+// serializing ahead of it. The promise is single-use (consumed by the first
+// mount); later probes (e.g. the storage-error "Try again") read the store
+// fresh so a recovered keystore is actually re-read. The wrap into a result
+// object keeps a rejection handler attached from creation.
+interface TokenRead {
+  token: string | null;
+  error: unknown;
+}
+let coldStartTokenRead: Promise<TokenRead> | null = tokenStore.getRefreshToken().then(
+  (token): TokenRead => ({ token, error: null }),
+  (error): TokenRead => ({ token: null, error })
+);
+
+function readRefreshToken(): Promise<TokenRead> {
+  const pending = coldStartTokenRead;
+  coldStartTokenRead = null;
+  if (pending) return pending;
+  return tokenStore.getRefreshToken().then(
+    (token): TokenRead => ({ token, error: null }),
+    (error): TokenRead => ({ token: null, error })
+  );
+}
+
 /** Entities pulled by the connectivity/foreground sync (see sync/entities). */
 
 /** Flushes the shared offline queue + pulls sync entities on reconnect/foreground. */
@@ -116,7 +141,10 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const refreshToken = await tokenStore.getRefreshToken();
+        // The first mount reuses the module-scope read started at import
+        // time; re-probes after a storage error read the store fresh.
+        const { token: refreshToken, error: readError } = await readRefreshToken();
+        if (readError) throw readError;
         if (refreshToken) {
           // No access token after a restart: the client rotates the stored
           // refresh token on the first 401 and retries transparently.
