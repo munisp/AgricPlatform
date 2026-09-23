@@ -85,12 +85,15 @@ def create_app(
             provider={"mode": current.name, "circuit": current.circuit_state()},
         )
 
+    # CPU-bound endpoints are plain `def`: FastAPI runs them in a threadpool,
+    # so synchronous numpy/scipy compute cannot block the event loop. No
+    # awaits exist anywhere in these call chains.
     @app.post("/v1/crop/seasonality", response_model=SeasonalityResponse)
-    async def seasonality(req: SeasonalityRequest) -> SeasonalityResponse:
+    def seasonality(req: SeasonalityRequest) -> SeasonalityResponse:
         return service.seasonality_analysis(req.plot_id, req.series, req.reference)
 
     @app.post("/v1/crop/health-score", response_model=HealthScoreResponse)
-    async def health_score(req: HealthScoreRequest) -> HealthScoreResponse:
+    def health_score(req: HealthScoreRequest) -> HealthScoreResponse:
         return service.health_score_analysis(req.plot_id, req.current, req.baseline)
 
     @app.post("/v1/crop/assess-plot", response_model=AssessPlotResponse)
@@ -101,7 +104,9 @@ def create_app(
                 "IMAGERY_MISCONFIGURED",
                 "imagery provider is not configured; see /readyz",
             )
-        return service.assess_plot(current, req.plot_id, req.season, req.geometry)
+        # Non-blocking provider fetch where available + compute in a worker
+        # thread; the event loop stays responsive throughout.
+        return await service.assess_plot_async(current, req.plot_id, req.season, req.geometry)
 
     return app
 
