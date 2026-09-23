@@ -23,9 +23,33 @@ interface CacheEntry<T> {
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
+/** In-flight fetches by cache key — concurrent consumers of the same key
+ * share one request instead of firing N identical GETs on the same tick. */
+const inflight = new Map<string, Promise<unknown>>();
+
 /** Test hook: clear the in-memory query cache. */
 export function clearApiCache(): void {
   cache.clear();
+  inflight.clear();
+}
+
+/**
+ * Run `fetcher` for `key`, reusing an identical request already in flight.
+ * The single underlying promise writes the cache entry once on success.
+ */
+function fetchDeduped<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const promise = fetcher()
+    .then((result) => {
+      cache.set(key, { data: result, updatedAt: Date.now() });
+      return result;
+    })
+    .finally(() => {
+      inflight.delete(key);
+    });
+  inflight.set(key, promise);
+  return promise;
 }
 
 /** Drop specific cache keys so the next `useApiQuery` mount revalidates (e.g. after a mutation). */
@@ -100,11 +124,9 @@ export function useApiQuery<T>(
       setIsValidating(true);
     }
 
-    fetcherRef
-      .current()
+    fetchDeduped(key, fetcherRef.current)
       .then((result) => {
         if (cancelled) return;
-        cache.set(key, { data: result, updatedAt: Date.now() });
         setData(result);
         setSource('api');
         setError(undefined);
