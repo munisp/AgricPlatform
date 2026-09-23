@@ -326,18 +326,36 @@ async function postLedgerEntryTx(
   } catch (error) {
     mapPgError(error);
   }
-  for (const posting of entry.postings) {
-    const account = await client.query(
-      `SELECT id FROM finance.ledger_accounts WHERE code = $1`,
-      [posting.accountCode]
+  // P2 perf: set-based posting — resolve every account code in ONE
+  // round-trip and bulk-insert with a single INSERT … SELECT, mirroring the
+  // batched PgLedgerEntryRepository path. Unknown-code error and rollback
+  // semantics are identical to the per-row loop.
+  if (entry.postings.length > 0) {
+    const codes = [...new Set(entry.postings.map((posting) => posting.accountCode))];
+    const accounts = await client.query(
+      `SELECT code, id FROM finance.ledger_accounts WHERE code = ANY($1::text[])`,
+      [codes]
     );
-    if (!account.rows[0]) {
-      throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+    const accountIdByCode = new Map<string, string>(
+      accounts.rows.map((row) => [row.code as string, row.id as string])
+    );
+    for (const posting of entry.postings) {
+      if (!accountIdByCode.has(posting.accountCode)) {
+        throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+      }
     }
     await client.query(
       `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
-       VALUES ($1, $2, $3, $4)`,
-      [entry.id, account.rows[0].id, posting.direction, posting.amountKobo]
+       SELECT $1, resolved.id, posting.direction, posting.amount_kobo
+         FROM unnest($2::text[], $3::text[], $4::bigint[])
+              AS posting(account_code, direction, amount_kobo)
+         JOIN finance.ledger_accounts resolved ON resolved.code = posting.account_code`,
+      [
+        entry.id,
+        entry.postings.map((posting) => posting.accountCode),
+        entry.postings.map((posting) => posting.direction),
+        entry.postings.map((posting) => posting.amountKobo)
+      ]
     );
   }
 }
