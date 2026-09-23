@@ -85,9 +85,15 @@ const RESERVATION = {
 };
 
 /** Success-path behavior: every statement returns a benign result. */
-const successBehavior = (text: string): QueryOutcome => {
+const successBehavior = (text: string, params: unknown[]): QueryOutcome => {
   if (text.startsWith('INSERT INTO agent_banking.agent_daily_limits')) {
     return { rows: [{ used_amount_kobo: RESERVATION.amountKobo }] };
+  }
+  // P2 perf: account codes resolve set-based (ONE … WHERE code = ANY query
+  // per entry) instead of one SELECT per posting.
+  if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+    const codes = (params[0] as string[] | undefined) ?? [];
+    return { rows: codes.map((code) => ({ code, id: `acct-${code}` })) };
   }
   if (text.startsWith('SELECT id FROM finance.ledger_accounts')) {
     return { rows: [{ id: `acct-${text.length}` }] };
@@ -134,10 +140,10 @@ describe('pg agent daily limit reservation (query spy)', () => {
   });
 
   it('rejects with the standard limit-exceeded error and rolls back when the upsert returns no row', async () => {
-    const { pool, calls } = fakePool((text) =>
+    const { pool, calls } = fakePool((text, params) =>
       text.startsWith('INSERT INTO agent_banking.agent_daily_limits')
         ? { rows: [] } // cap would be breached: conditional upsert matched nothing
-        : successBehavior(text)
+        : successBehavior(text, params)
     );
     const repo = new PgLedgerEntryRepository(pool);
 
@@ -156,10 +162,10 @@ describe('pg agent daily limit reservation (query spy)', () => {
   it('rolls the reservation back when the money posting fails after it', async () => {
     const uniqueViolation = (): Error & { code: string } =>
       Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
-    const { pool, calls } = fakePool((text) =>
+    const { pool, calls } = fakePool((text, params) =>
       text.startsWith('INSERT INTO finance.ledger_transfers')
         ? uniqueViolation()
-        : successBehavior(text)
+        : successBehavior(text, params)
     );
     const repo = new PgLedgerEntryRepository(pool);
 
