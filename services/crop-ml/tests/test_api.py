@@ -141,13 +141,21 @@ class TestAssessPlotApi(unittest.TestCase):
     def test_live_mode_fail_closed_503(self):
         factory = mock.Mock()
         factory.return_value.post.side_effect = httpx.ConnectError("down")
+        # The endpoint uses the provider's async fetch path; mock it too so
+        # the test stays hermetic (no real network access).
+        async_factory = mock.Mock()
+        async_factory.return_value.post = mock.AsyncMock(
+            side_effect=httpx.ConnectError("down")
+        )
         settings = Settings(
             imagery_provider="live",
             sentinel_stats_url="https://stats.example.test",
             sentinel_stats_token="token-123",
             http_retries=0,
         )
-        provider = LiveImageryProvider(settings, factory)
+        provider = LiveImageryProvider(
+            settings, factory, async_client_factory=async_factory
+        )
         client = TestClient(create_app(settings=settings, provider=provider))
         resp = client.post(
             "/v1/crop/assess-plot", json={"plot_id": "plot-9", "season": "2024"}
