@@ -36,14 +36,15 @@ const MIGRATIONS = ['029_traceability.sql', '030_traceability_dds.sql'].map((fil
 const OWNER = 'pgtest-trace-user';
 
 async function clean(): Promise<void> {
-  // dds_packages references shipments — delete child rows first. Defensive:
-  // the dds-package spec shares this database and uses pgtest-% ids too.
-  await pool!.query(`DELETE FROM traceability.dds_packages WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.shipment_lots WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.shipments WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.lot_plot_links WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.custody_events WHERE id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM traceability.commodity_lots WHERE id LIKE 'pgtest-%'`);
+  // dds_packages references shipments — delete child rows first. Suites use
+  // disjoint prefixes (pgtest-trace-% here, pgtest-dds-% in the DDS spec) so
+  // cleanup is safe when vitest runs specs concurrently on one CI database.
+  await pool!.query(`DELETE FROM traceability.dds_packages WHERE id LIKE 'pgtest-trace-%'`);
+  await pool!.query(`DELETE FROM traceability.shipment_lots WHERE id LIKE 'pgtest-trace-%'`);
+  await pool!.query(`DELETE FROM traceability.shipments WHERE id LIKE 'pgtest-trace-%'`);
+  await pool!.query(`DELETE FROM traceability.lot_plot_links WHERE id LIKE 'pgtest-trace-%'`);
+  await pool!.query(`DELETE FROM traceability.custody_events WHERE id LIKE 'pgtest-trace-%'`);
+  await pool!.query(`DELETE FROM traceability.commodity_lots WHERE id LIKE 'pgtest-trace-%'`);
 }
 
 describePg('pg traceability repositories (parity with in-memory)', () => {
@@ -89,7 +90,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
     const links = createPgLotPlotLinkRepository(pool!);
     const now = new Date().toISOString();
     await lots.create({
-      id: 'pgtest-lot-1',
+      id: 'pgtest-trace-lot-1',
       ownerUserId: OWNER,
       crop: 'Cocoa',
       harvestWindowStart: now,
@@ -102,7 +103,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
       updatedAt: now
     });
     const unsigned = {
-      lotId: 'pgtest-lot-1',
+      lotId: 'pgtest-trace-lot-1',
       seq: 0,
       type: 'CREATED' as const,
       actorId: OWNER,
@@ -113,15 +114,15 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
       prevEventHash: GENESIS_PREV_HASH
     };
     await custody.append({
-      id: 'pgtest-evt-1',
+      id: 'pgtest-trace-evt-1',
       ...unsigned,
       eventHash: computeEventHash(hashPayloadOf(unsigned)),
       createdAt: now
     });
     await links.create({
-      id: 'pgtest-lpl-1',
-      lotId: 'pgtest-lot-1',
-      plotId: 'pgtest-plot-1',
+      id: 'pgtest-trace-lpl-1',
+      lotId: 'pgtest-trace-lot-1',
+      plotId: 'pgtest-trace-plot-1',
       plotOwnerUserId: OWNER,
       plotName: 'Zaria North',
       latitude: 11.0855,
@@ -129,10 +130,10 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
       linkedAt: now,
       linkedBy: OWNER
     });
-    expect((await lots.getById('pgtest-lot-1')).crop).toBe('Cocoa');
-    expect(await custody.countByLot('pgtest-lot-1')).toBe(1);
-    expect((await custody.listByLot('pgtest-lot-1'))[0].prevEventHash).toBe(GENESIS_PREV_HASH);
-    expect((await links.find({ lotId: 'pgtest-lot-1' }))[0].latitude).toBeCloseTo(11.0855);
+    expect((await lots.getById('pgtest-trace-lot-1')).crop).toBe('Cocoa');
+    expect(await custody.countByLot('pgtest-trace-lot-1')).toBe(1);
+    expect((await custody.listByLot('pgtest-trace-lot-1'))[0].prevEventHash).toBe(GENESIS_PREV_HASH);
+    expect((await links.find({ lotId: 'pgtest-trace-lot-1' }))[0].latitude).toBeCloseTo(11.0855);
   });
 
   it('enforces event_hash uniqueness at the database level', async () => {
@@ -140,7 +141,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
     const custody = createPgCustodyEventRepository(pool!);
     const now = new Date().toISOString();
     await lots.create({
-      id: 'pgtest-lot-2',
+      id: 'pgtest-trace-lot-2',
       ownerUserId: OWNER,
       crop: 'Cocoa',
       harvestWindowStart: now,
@@ -153,7 +154,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
       updatedAt: now
     });
     const unsigned = {
-      lotId: 'pgtest-lot-2',
+      lotId: 'pgtest-trace-lot-2',
       seq: 0,
       type: 'CREATED' as const,
       actorId: OWNER,
@@ -164,13 +165,13 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
       prevEventHash: GENESIS_PREV_HASH
     };
     const event = {
-      id: 'pgtest-evt-2',
+      id: 'pgtest-trace-evt-2',
       ...unsigned,
       eventHash: computeEventHash(hashPayloadOf(unsigned)),
       createdAt: now
     };
     await custody.append(event);
-    await expect(custody.append({ ...event, id: 'pgtest-evt-3' })).rejects.toBeInstanceOf(Error);
+    await expect(custody.append({ ...event, id: 'pgtest-trace-evt-3' })).rejects.toBeInstanceOf(Error);
   });
 
   it('creates a shipment with its lot composition transactionally', async () => {
@@ -178,7 +179,7 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
     const shipments = createPgTraceabilityShipmentRepository(pool!);
     const now = new Date().toISOString();
     await lots.create({
-      id: 'pgtest-lot-3',
+      id: 'pgtest-trace-lot-3',
       ownerUserId: OWNER,
       crop: 'Sesame',
       harvestWindowStart: now,
@@ -192,17 +193,17 @@ describePg('pg traceability repositories (parity with in-memory)', () => {
     });
     await shipments.create(
       {
-        id: 'pgtest-tsh-1',
+        id: 'pgtest-trace-sh-1',
         creatorId: `partner:${OWNER}`,
         creatorKind: 'partner',
         status: 'created',
         createdAt: now,
         updatedAt: now
       },
-      [{ id: 'pgtest-tsl-1', shipmentId: 'pgtest-tsh-1', lotId: 'pgtest-lot-3', position: 0 }]
+      [{ id: 'pgtest-trace-slt-1', shipmentId: 'pgtest-trace-sh-1', lotId: 'pgtest-trace-lot-3', position: 0 }]
     );
-    expect((await shipments.listLots('pgtest-tsh-1'))[0].lotId).toBe('pgtest-lot-3');
-    await shipments.updateStatus('pgtest-tsh-1', 'exported');
-    expect((await shipments.getById('pgtest-tsh-1')).status).toBe('exported');
+    expect((await shipments.listLots('pgtest-trace-sh-1'))[0].lotId).toBe('pgtest-trace-lot-3');
+    await shipments.updateStatus('pgtest-trace-sh-1', 'exported');
+    expect((await shipments.getById('pgtest-trace-sh-1')).status).toBe('exported');
   });
 });
