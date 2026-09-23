@@ -7,8 +7,9 @@ import type { MetricsService } from '../metrics/metrics.service.js';
 /**
  * Redis-backed throttler storage (Wave P). Replaces the default in-memory
  * store when REDIS_URL is configured so rate limits hold across API
- * replicas (docs/production-readiness.md). Uses plain INCR + PEXPIRE —
- * atomic enough for fixed-window limiting without Lua.
+ * replicas (docs/production-readiness.md). Uses INCR + PEXPIRE + PTTL in a
+ * single pipelined round trip (perf P3-11) — atomic enough for
+ * fixed-window limiting without Lua.
  *
  * Behaviour: identical fixed-window semantics to the built-in
  * ThrottlerStorageService; when REDIS_URL is absent the app keeps the
@@ -61,32 +62,72 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     throttlerName: string
   ): Promise<ThrottlerStorageRecord> {
     const namespaced = `throttle:${throttlerName}:${key}`;
-    const totalHits = await this.redis.incr(namespaced);
-    if (totalHits === 1) {
-      await this.redis.pexpire(namespaced, ttl);
+    const blockKey = `${namespaced}:blocked`;
+    // Perf P3-11: the three read-side commands ride ONE pipelined round
+    // trip (INCR + PTTL window + PTTL block marker) instead of three
+    // sequential ones. Fixed-window semantics are identical; the
+    // conditional writes (PEXPIRE on first hit / TTL-loss race, SET NX
+    // block marker) follow in a second pipeline only when needed.
+    const reads = await this.redis
+      .pipeline()
+      .incr(namespaced)
+      .pttl(namespaced)
+      .pttl(blockKey)
+      .exec();
+    if (!reads) {
+      throw new Error('redis pipeline returned no results');
     }
-    let timeToExpire = await this.redis.pttl(namespaced);
-    if (timeToExpire < 0) {
-      // Key lost its TTL race (expired between INCR and PTTL): reset the window.
-      await this.redis.pexpire(namespaced, ttl);
+    const [totalHits, windowTtl, blockTtlAtRead] = reads.map(([error, value]) => {
+      if (error) {
+        throw error;
+      }
+      return value;
+    }) as [number, number, number];
+
+    let timeToExpire: number;
+    let needsWindowExpire = false;
+    if (totalHits === 1) {
+      // First hit in the window: anchor the fixed window.
+      needsWindowExpire = true;
       timeToExpire = ttl;
+    } else if (windowTtl < 0) {
+      // Key lost its TTL race (expired between INCR and PTTL): reset the window.
+      needsWindowExpire = true;
+      timeToExpire = ttl;
+    } else {
+      timeToExpire = windowTtl;
     }
 
-    const blockKey = `${namespaced}:blocked`;
+    const overLimit = totalHits > limit && blockDuration > 0;
     let isBlocked = false;
     let timeToBlockExpire = 0;
-    if (totalHits > limit && blockDuration > 0) {
-      // Set the block marker once; its TTL is the remaining block time.
-      const set = await this.redis.set(blockKey, '1', 'PX', blockDuration, 'NX');
-      if (set !== null) {
+    if (needsWindowExpire || overLimit) {
+      const writes = this.redis.pipeline();
+      if (needsWindowExpire) {
+        writes.pexpire(namespaced, ttl);
+      }
+      if (overLimit) {
+        // Set the block marker once; its TTL is the remaining block time.
+        writes.set(blockKey, '1', 'PX', blockDuration, 'NX');
+      }
+      const written = await writes.exec();
+      if (!written) {
+        throw new Error('redis pipeline returned no results');
+      }
+      const values = written.map(([error, value]) => {
+        if (error) {
+          throw error;
+        }
+        return value;
+      });
+      if (overLimit && values[values.length - 1] !== null) {
         isBlocked = true;
         timeToBlockExpire = blockDuration;
       }
     }
-    const blockTtl = await this.redis.pttl(blockKey);
-    if (blockTtl > 0) {
+    if (!isBlocked && blockTtlAtRead > 0) {
       isBlocked = true;
-      timeToBlockExpire = blockTtl;
+      timeToBlockExpire = blockTtlAtRead;
     }
 
     return { totalHits, timeToExpire, isBlocked, timeToBlockExpire };
