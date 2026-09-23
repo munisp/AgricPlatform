@@ -22,6 +22,12 @@ export interface ApiRequestOptions {
   query?: Record<string, QueryValue>;
   idempotencyKey?: string;
   timeoutMs?: number;
+  /**
+   * Caller-owned abort signal (e.g. a screen unmounting). Aborted requests
+   * reject with an AbortError (`isAbortError`) instead of TimeoutError; the
+   * timeout behaviour is unchanged.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ApiClientOptions {
@@ -63,6 +69,18 @@ export class TimeoutError extends Error {
     super(`Request timed out after ${timeoutMs}ms`);
     this.name = 'TimeoutError';
   }
+}
+
+/** Raised when a caller-provided AbortSignal cancels a request (unmount). */
+export class AbortError extends Error {
+  constructor() {
+    super('Request aborted');
+    this.name = 'AbortError';
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -157,7 +175,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     const timeoutMs = request.timeoutMs ?? defaultTimeoutMs;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    // Link a caller-provided signal (screen unmount) into the same controller
+    // so one fetch is cancelled by either the timeout or the caller.
+    const callerSignal = request.signal;
+    const onCallerAbort = () => controller.abort();
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort();
+      else callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (request.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -180,12 +211,17 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         signal: controller.signal
       });
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (timedOut) {
         throw new TimeoutError(timeoutMs);
+      }
+      if (controller.signal.aborted) {
+        // Cancelled by the caller's signal (or a pre-aborted one).
+        throw new AbortError();
       }
       throw new NetworkError(error);
     } finally {
       clearTimeout(timeout);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
     }
     return response;
   }
