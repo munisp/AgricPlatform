@@ -11,6 +11,7 @@ import { UsersService } from '../../modules/users/users.service.js';
 import { devHeaderAuthAllowed } from './auth.config.js';
 import { OidcService, type OidcIdentity } from './oidc.service.js';
 import { ROLES_KEY } from './roles.decorator.js';
+import type { AccountStatus } from '../../database/repositories/user.repository.js';
 
 interface AuthenticatedRequest {
   headers: Record<string, string | string[] | undefined>;
@@ -95,10 +96,12 @@ export class RolesGuard implements CanActivate {
         request.headers['x-user-id'] ??
         (queryCredentialsAllowed ? request.query?.['x-user-id'] : undefined);
       const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
-      const user = userId ? await this.users.findById(userId) : undefined;
-      if (user) {
-        await this.assertActive(user);
-        return user;
+      // Perf P1-1: ONE folded user+status read per request (parallel-round
+      // fallback on drivers without the folded read).
+      const resolved = userId ? await this.users.findByIdWithStatus(userId) : undefined;
+      if (resolved) {
+        this.assertActive(resolved.status);
+        return resolved.user;
       }
       throw new UnauthorizedException(
         userId
@@ -118,10 +121,10 @@ export class RolesGuard implements CanActivate {
    * claims so RBAC still applies (accounts may live only in Keycloak).
    */
   private async userFromToken(identity: OidcIdentity): Promise<User> {
-    const existing = await this.users.findById(identity.subject);
-    if (existing) {
-      await this.assertActive(existing);
-      return existing;
+    const resolved = await this.users.findByIdWithStatus(identity.subject);
+    if (resolved) {
+      this.assertActive(resolved.status);
+      return resolved.user;
     }
     const now = new Date().toISOString();
     return {
@@ -142,10 +145,11 @@ export class RolesGuard implements CanActivate {
    * immediately, regardless of how the identity was presented: a still-valid
    * Keycloak token or development header must not bypass a suspension.
    * Deceased accounts (OB-06, V-09) are estate-frozen pending succession and
-   * are blocked with a distinct message.
+   * are blocked with a distinct message. The status arrives with the folded
+   * identity read (perf P1-1), so the check stays per-request (immediate
+   * suspension) without a second round trip.
    */
-  private async assertActive(user: User): Promise<void> {
-    const status = await this.users.statusFor(user.id);
+  private assertActive(status: AccountStatus): void {
     if (status === 'deceased') {
       throw new UnauthorizedException('Account is deceased; estate frozen pending succession.');
     }
