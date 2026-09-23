@@ -420,10 +420,18 @@ export class PgTraceabilityShipmentRepository implements TraceabilityShipmentRep
           shipment.updatedAt
         ]
       );
-      for (const lot of lots) {
+      // P2 perf: ONE multi-row INSERT for the shipment's lots instead of a
+      // per-lot round-trip; same transaction, same UNIQUE violation path.
+      if (lots.length > 0) {
         await client.query(
-          `INSERT INTO ${PgTraceabilityShipmentRepository.LOT_TABLE} (${SHIPMENT_LOT_COLS}) VALUES ($1,$2,$3,$4)`,
-          [lot.id, lot.shipmentId, lot.lotId, lot.position]
+          `INSERT INTO ${PgTraceabilityShipmentRepository.LOT_TABLE} (${SHIPMENT_LOT_COLS})
+           SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::integer[])`,
+          [
+            lots.map((lot) => lot.id),
+            lots.map((lot) => lot.shipmentId),
+            lots.map((lot) => lot.lotId),
+            lots.map((lot) => lot.position)
+          ]
         );
       }
       await client.query('COMMIT');
