@@ -592,20 +592,24 @@ export class PgVslaShareOutPlanRepository implements VslaShareOutPlanRepository 
       await client.query('DELETE FROM vsla_carbon.vsla_share_out_plan WHERE cycle_id = $1', [
         cycleId
       ]);
-      for (const row of rows) {
+      // P2 perf: ONE multi-row INSERT for the full plan instead of a
+      // per-member round-trip; same transaction, same conflict/marker
+      // semantics (a failure still rolls the marker back with everything).
+      if (rows.length > 0) {
         await client.query(
           'INSERT INTO vsla_carbon.vsla_share_out_plan (id, cycle_id, member_id, share_kobo, ' +
             'contributed_kobo, residual_kobo, arrears_withheld_kobo, created_at) ' +
-            'VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+            'SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], ' +
+            '$5::bigint[], $6::bigint[], $7::bigint[], $8::timestamptz[])',
           [
-            row.id,
-            row.cycleId,
-            row.memberId,
-            row.shareKobo,
-            row.contributedKobo,
-            row.residualKobo,
-            row.arrearsWithheldKobo ?? 0,
-            row.createdAt
+            rows.map((row) => row.id),
+            rows.map((row) => row.cycleId),
+            rows.map((row) => row.memberId),
+            rows.map((row) => row.shareKobo),
+            rows.map((row) => row.contributedKobo),
+            rows.map((row) => row.residualKobo),
+            rows.map((row) => row.arrearsWithheldKobo ?? 0),
+            rows.map((row) => row.createdAt)
           ]
         );
       }
