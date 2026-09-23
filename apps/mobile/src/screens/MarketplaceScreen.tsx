@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { listListings } from '../api/endpoints';
 import type { MarketplaceListing } from '../api/types';
@@ -8,6 +9,29 @@ import { Card, CardTitle, ErrorNotice, Loading, Muted, PrimaryButton } from './u
 
 function formatNaira(amount: number): string {
   return `₦${amount.toLocaleString('en-NG')}`;
+}
+
+const ListingCard = memo(function ListingCard({
+  listing,
+  onOpen
+}: {
+  listing: MarketplaceListing;
+  onOpen: (listingId: string) => void;
+}) {
+  return (
+    <Card>
+      <CardTitle>{listing.title}</CardTitle>
+      <Muted>
+        {listing.kind} · {listing.quantity} {listing.unit} · {formatNaira(listing.priceNaira)} ·{' '}
+        {listing.location.state}
+      </Muted>
+      <PrimaryButton label="View listing" onPress={() => onOpen(listing.id)} />
+    </Card>
+  );
+});
+
+function listingKey(listing: MarketplaceListing): string {
+  return listing.id;
 }
 
 export function MarketplaceScreen({
@@ -19,18 +43,31 @@ export function MarketplaceScreen({
   const [listings, setListings] = useState<MarketplaceListing[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const res = await listListings(client, { pageSize: 50 });
-      setListings(res.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load listings');
-    }
-  }, [client]);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setError(null);
+      try {
+        const res = await listListings(client, { pageSize: 50 }, { signal });
+        if (signal?.aborted) return;
+        setListings(res.data);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        setError(err instanceof Error ? err.message : 'Could not load listings');
+      }
+    },
+    [client]
+  );
 
   // Reload on mount + on focus, plus pull-to-refresh (audit P1-9).
   const { refreshing, refresh } = useListRefresh(load);
+
+  // Stable across `refreshing`/`error` flips so memoized rows skip re-renders.
+  const renderItem = useCallback(
+    ({ item }: { item: MarketplaceListing }) => (
+      <ListingCard listing={item} onOpen={onOpenListing} />
+    ),
+    [onOpenListing]
+  );
 
   if (error) {
     return (
@@ -48,23 +85,18 @@ export function MarketplaceScreen({
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />}
       data={listings}
-      keyExtractor={(listing) => listing.id}
+      keyExtractor={listingKey}
       ListEmptyComponent={
         <Card>
           <CardTitle>No listings right now</CardTitle>
           <Muted>Produce, inputs and services will appear here.</Muted>
         </Card>
       }
-      renderItem={({ item }) => (
-        <Card>
-          <CardTitle>{item.title}</CardTitle>
-          <Muted>
-            {item.kind} · {item.quantity} {item.unit} · {formatNaira(item.priceNaira)} ·{' '}
-            {item.location.state}
-          </Muted>
-          <PrimaryButton label="View listing" onPress={() => onOpenListing(item.id)} />
-        </Card>
-      )}
+      renderItem={renderItem}
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={7}
+      removeClippedSubviews
     />
   );
 }
