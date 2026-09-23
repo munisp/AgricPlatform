@@ -211,18 +211,38 @@ export async function postLedgerEntryTx(
   } catch (error) {
     mapPgError(error);
   }
-  for (const posting of entry.postings) {
-    const account = await client.query(
-      `SELECT id FROM finance.ledger_accounts WHERE code = $1`,
-      [posting.accountCode]
+  // P2 perf: set-based posting — resolve every account code in ONE
+  // round-trip and bulk-insert the posting rows with a single
+  // INSERT … SELECT, instead of a SELECT+INSERT per posting (N+1). The
+  // unknown-code error and the insertion result are identical to the
+  // per-row loop: the first unknown code in posting order aborts the
+  // transaction before any row is written.
+  if (entry.postings.length > 0) {
+    const codes = [...new Set(entry.postings.map((posting) => posting.accountCode))];
+    const accounts = await client.query(
+      `SELECT code, id FROM finance.ledger_accounts WHERE code = ANY($1::text[])`,
+      [codes]
     );
-    if (!account.rows[0]) {
-      throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+    const accountIdByCode = new Map<string, string>(
+      accounts.rows.map((row) => [row.code as string, row.id as string])
+    );
+    for (const posting of entry.postings) {
+      if (!accountIdByCode.has(posting.accountCode)) {
+        throw new BadRequestException(`Unknown ledger account code '${posting.accountCode}'`);
+      }
     }
     await client.query(
       `INSERT INTO finance.ledger_entries (transfer_id, account_id, direction, amount_kobo)
-       VALUES ($1, $2, $3, $4)`,
-      [entry.id, account.rows[0].id, posting.direction, posting.amountKobo]
+       SELECT $1, resolved.id, posting.direction, posting.amount_kobo
+         FROM unnest($2::text[], $3::text[], $4::bigint[])
+              AS posting(account_code, direction, amount_kobo)
+         JOIN finance.ledger_accounts resolved ON resolved.code = posting.account_code`,
+      [
+        entry.id,
+        entry.postings.map((posting) => posting.accountCode),
+        entry.postings.map((posting) => posting.direction),
+        entry.postings.map((posting) => posting.amountKobo)
+      ]
     );
   }
       // WP-G13: mandatory in-transaction balance assertion — an unbalanced
@@ -232,21 +252,37 @@ export async function postLedgerEntryTx(
   // non-negative AFTER this entry. The balance is computed inside the
   // posting transaction with the account rows locked (above), so an
   // underfunded disbursement rolls the whole entry back atomically.
-  for (const accountCode of requireSolventAccounts ?? []) {
-    const balance = await client.query(
-      `SELECT
-         COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
-         COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
-       FROM finance.ledger_entries e
-       JOIN finance.ledger_accounts a ON a.id = e.account_id
-       WHERE a.code = $1`,
-      [accountCode]
+  // P2 perf: ONE grouped aggregate for all protected accounts instead of a
+  // per-account round-trip. The guard semantics are unchanged: balances are
+  // the same SUM over ledger_entries, evaluated inside the posting
+  // transaction with the account rows locked above, and the first negative
+  // account (in caller order) throws the identical error.
+  const solventCodes = [...new Set(requireSolventAccounts ?? [])];
+  if (solventCodes.length > 0) {
+    const balances = await client.query(
+      `SELECT a.code,
+             COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
+             COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
+       FROM finance.ledger_accounts a
+       LEFT JOIN finance.ledger_entries e ON e.account_id = a.id
+       WHERE a.code = ANY($1::text[])
+       GROUP BY a.code`,
+      [solventCodes]
     );
-    const balanceKobo = num(balance.rows[0]?.debits ?? 0) - num(balance.rows[0]?.credits ?? 0);
-    if (balanceKobo < 0) {
-      throw new BadRequestException(
-        `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
-      );
+    const totalsByCode = new Map<string, { debits: unknown; credits: unknown }>(
+      balances.rows.map((row) => [
+        row.code as string,
+        { debits: row.debits, credits: row.credits }
+      ])
+    );
+    for (const accountCode of requireSolventAccounts ?? []) {
+      const totals = totalsByCode.get(accountCode);
+      const balanceKobo = num(totals?.debits ?? 0) - num(totals?.credits ?? 0);
+      if (balanceKobo < 0) {
+        throw new BadRequestException(
+          `Insufficient funds: posting would take ledger account '${accountCode}' negative (${balanceKobo} kobo)`
+        );
+      }
     }
   }
   if (outboxEvent) {
@@ -270,35 +306,44 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
 
   constructor(private readonly pool: pg.Pool) {}
 
+  /**
+   * P2 perf: set-based fan-out — one query for the postings of ALL matched
+   * transfers (WHERE transfer_id = ANY) grouped in memory, instead of one
+   * query per transfer row (N+1). Per-transfer posting order stays
+   * (created_at, id), identical to the per-row queries.
+   */
   private async withPostings(rows: TransferRow[]): Promise<LedgerJournalEntry[]> {
-    const entries: LedgerJournalEntry[] = [];
-    for (const row of rows) {
+    const postingsByTransfer = new Map<string, LedgerPosting[]>();
+    if (rows.length > 0) {
       const postings = await this.pool.query(
-        `SELECT a.code AS account_code, e.direction, e.amount_kobo
+        `SELECT e.transfer_id, a.code AS account_code, e.direction, e.amount_kobo
            FROM finance.ledger_entries e
            JOIN finance.ledger_accounts a ON a.id = e.account_id
-          WHERE e.transfer_id = $1
-          ORDER BY e.created_at, e.id`,
-        [row.id]
+          WHERE e.transfer_id = ANY($1::uuid[])
+          ORDER BY e.transfer_id, e.created_at, e.id`,
+        [rows.map((row) => row.id)]
       );
-      entries.push({
-        id: row.id,
-        idempotencyKey: row.idempotency_key,
-        referenceType: row.reference_type ?? undefined,
-        referenceId: row.reference_id ?? undefined,
-        description: row.description ?? undefined,
-        reversesEntryId: row.reverses_transfer_id ?? undefined,
-        postedAt: ts(row.posted_at),
-        postings: postings.rows.map(
-          (posting): LedgerPosting => ({
-            accountCode: posting.account_code as string,
-            direction: posting.direction as LedgerPosting['direction'],
-            amountKobo: num(posting.amount_kobo)
-          })
-        )
-      });
+      for (const posting of postings.rows) {
+        const transferId = posting.transfer_id as string;
+        const list = postingsByTransfer.get(transferId) ?? [];
+        list.push({
+          accountCode: posting.account_code as string,
+          direction: posting.direction as LedgerPosting['direction'],
+          amountKobo: num(posting.amount_kobo)
+        });
+        postingsByTransfer.set(transferId, list);
+      }
     }
-    return entries;
+    return rows.map((row) => ({
+      id: row.id,
+      idempotencyKey: row.idempotency_key,
+      referenceType: row.reference_type ?? undefined,
+      referenceId: row.reference_id ?? undefined,
+      description: row.description ?? undefined,
+      reversesEntryId: row.reverses_transfer_id ?? undefined,
+      postedAt: ts(row.posted_at),
+      postings: postingsByTransfer.get(row.id) ?? []
+    }));
   }
 
   private async findOneWhere(where: string, params: unknown[]): Promise<LedgerJournalEntry | undefined> {
@@ -401,10 +446,26 @@ export class PgLedgerEntryRepository implements LedgerEntryRepository {
    * drift alert.
    */
   async findUnbalancedEntries(): Promise<LedgerJournalEntry[]> {
+    // P2 perf: set-based rewrite of the per-row predicate
+    // `NOT finance.transfer_is_balanced(t.id) OR (SELECT count(*) …) < 2`.
+    // transfer_is_balanced (001_init.sql) is
+    // COALESCE(Σ debits,0) = COALESCE(Σ credits,0) — never NULL — so the
+    // disjunction is exactly: no posting rows at all (count 0 < 2), fewer
+    // than two postings, or debits <> credits. One grouped aggregate pass
+    // replaces the per-row PL/pgSQL call + correlated count subquery.
     const result = await this.pool.query(
       `${TRANSFER_SELECT}
-        WHERE NOT finance.transfer_is_balanced(t.id)
-           OR (SELECT count(*) FROM finance.ledger_entries e WHERE e.transfer_id = t.id) < 2
+        LEFT JOIN (
+          SELECT e.transfer_id,
+                 count(*) AS posting_count,
+                 COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'debit'), 0) AS debits,
+                 COALESCE(sum(e.amount_kobo) FILTER (WHERE e.direction = 'credit'), 0) AS credits
+            FROM finance.ledger_entries e
+           GROUP BY e.transfer_id
+        ) s ON s.transfer_id = t.id
+        WHERE s.transfer_id IS NULL
+           OR s.posting_count < 2
+           OR s.debits <> s.credits
         ORDER BY t.posted_at, t.id`
     );
     return this.withPostings(result.rows as TransferRow[]);
