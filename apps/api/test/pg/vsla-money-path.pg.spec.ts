@@ -198,9 +198,14 @@ describe('pg vsla money path (query spy)', () => {
     expect(calls.some((call) => call.text.includes('DELETE FROM vsla_carbon.vsla_share_out_plan'))).toBe(
       true
     );
-    expect(
-      calls.filter((call) => call.text.includes('INSERT INTO vsla_carbon.vsla_share_out_plan ('))
-    ).toHaveLength(2);
+    // P2 perf: ONE multi-row INSERT carries the full plan (parallel arrays)
+    // instead of one INSERT per member row.
+    const planInserts = calls.filter((call) =>
+      call.text.includes('INSERT INTO vsla_carbon.vsla_share_out_plan (')
+    );
+    expect(planInserts).toHaveLength(1);
+    expect(planInserts[0].text).toContain('unnest');
+    expect(planInserts[0].params[2]).toEqual(['member-1', 'member-2']);
   });
 
   it('replacePlan loses the marker race: ROLLBACK + false, no rows touched', async () => {
@@ -222,7 +227,12 @@ describe('pg vsla money path (query spy)', () => {
   });
 
   it('ledger postEntryInTx keeps lock order, solvency guard and outbox on the caller client', async () => {
-    const { pool, calls } = fakePool((text) => {
+    const { pool, calls } = fakePool((text, params) => {
+      // P2 perf: set-based account-code resolution (ONE … code = ANY query).
+      if (text.includes('FROM finance.ledger_accounts WHERE code = ANY')) {
+        const codes = (params[0] as string[] | undefined) ?? [];
+        return { rows: codes.map((code) => ({ code, id: `acct-${code}` })) };
+      }
       if (text.includes('SELECT id FROM finance.ledger_accounts')) {
         return { rows: [{ id: 'acct-1' }] };
       }
@@ -231,7 +241,8 @@ describe('pg vsla money path (query spy)', () => {
         return { rows: [{ balanced: true, posting_count: 2 }] };
       }
       if (text.includes('COALESCE')) {
-        return { rows: [{ debits: 100_000, credits: 40_000 }] };
+        // P2 perf: the solvency guard is ONE grouped aggregate keyed by code.
+        return { rows: [{ code: 'vsla:group-1:cash', debits: 100_000, credits: 40_000 }] };
       }
       return { rows: [] };
     });
