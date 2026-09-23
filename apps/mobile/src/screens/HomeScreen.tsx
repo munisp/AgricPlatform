@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import {
   fetchSession,
@@ -107,28 +108,32 @@ export function HomeScreen({
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
     setError(null);
     try {
+      // One session fetch per load, shared by the hub-role ordering and the
+      // active-orders count (previously fetched twice per dashboard load).
+      const sessionPromise = fetchSession(client, { signal })
+        .then((res) => res.data)
+        .catch(() => null); // session is best-effort on the dashboard
       const [pathways, opportunities, weather, session, farm] = await Promise.all([
-        listMyPathwayEnrolments(client).then((res) => res.data),
-        listOpportunities(client, { pageSize: 1 }).then((res) => res.total),
-        fetchWeather(client, state)
+        listMyPathwayEnrolments(client, { signal }).then((res) => res.data),
+        listOpportunities(client, { pageSize: 1 }, { signal }).then((res) => res.total),
+        fetchWeather(client, state, { signal })
           .then((res) => res.data)
           .catch(() => null), // weather is best-effort on the dashboard
-        fetchSession(client)
-          .then((res) => res.data)
-          .catch(() => null), // roles only order the hub — best-effort
+        sessionPromise,
         // Farmer summary (animals, pending health tasks, active orders) is
         // best-effort: each source falls back to null independently.
         (async () => {
           const [animals, health, orders] = await Promise.all([
-            listMyAnimals(client)
+            listMyAnimals(client, { signal })
               .then((res) => res.data.length)
               .catch(() => null),
             // Pending health tasks = vaccinations due or overdue (the recalls
             // list is regulator/admin-only and was never a valid proxy).
-            listDueVaccinations(client)
+            listDueVaccinations(client, 30, { signal })
               .then((res) => {
                 const pending = res.data.filter((item) => item.status !== 'upcoming');
                 return {
@@ -137,14 +142,19 @@ export function HomeScreen({
                 };
               })
               .catch(() => null),
-            fetchSession(client)
-              .then((res) => listMyOrders(client, res.data.user.id))
-              .then((res) => res.data.filter((order) => ACTIVE_ORDER_STATUSES.has(order.status)).length)
+            sessionPromise
+              .then((sessionData) =>
+                sessionData ? listMyOrders(client, sessionData.user.id, undefined, { signal }) : null
+              )
+              .then((res) =>
+                res ? res.data.filter((order) => ACTIVE_ORDER_STATUSES.has(order.status)).length : null
+              )
               .catch(() => null)
           ]);
           return { animals, health, orders };
         })()
       ]);
+      if (signal?.aborted) return;
       setData({
         pathways,
         opportunitiesTotal: opportunities,
@@ -156,12 +166,18 @@ export function HomeScreen({
         roles: session?.user.roles ?? []
       });
     } catch (err) {
+      if (isAbortError(err)) return;
       setError(err instanceof Error ? err.message : 'Could not load your dashboard');
     }
-  }, [client, state]);
+  },
+    [client, state]
+  );
 
+  // Cancel the in-flight dashboard reads when the screen unmounts.
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   if (error) {
