@@ -1,14 +1,21 @@
 /**
  * Crop-intel clients (wave-geocredit): the crop-ml sidecar
- * (services/crop-ml, FastAPI, port 8100) is an OPTIONAL integration, built
- * by a sibling wave against the FIXED contract below — do not diverge:
+ * (services/crop-ml, FastAPI, port 8100) is an OPTIONAL integration. The
+ * contract below mirrors the SHIPPED sidecar schemas
+ * (services/crop-ml/app/models.py — AssessPlotRequest/AssessPlotResponse)
+ * — do not diverge:
  *
  *   POST /v1/crop/assess-plot
- *     request  { plot_id: string, geometry?: object, season?: string }
- *     response { plot_id, season, health_score: number (0-100),
- *                phenology: { sos, eos, peak }, classification:
- *                'normal'|'delayed'|'stressed', drivers: string[],
- *                basis: 'stub'|'live' }
+ *     request  { plot_id: string, geometry?: object,
+ *                season: string  // REQUIRED, pattern ^\d{4}(-(wet|dry))?$ }
+ *     response { plot_id, season, provider: 'stub'|'live',
+ *                seasonality: { phenology: { sos_date, eos_date, peak_date,
+ *                                 peak_value, ... },
+ *                               classification: { label:
+ *                                 'normal'|'delayed'|'stressed',
+ *                                 reason_codes: string[] } },
+ *                health: { score: number (0-100),
+ *                          drivers: [{ code, impact, detail }] } }
  *   GET /healthz
  *
  * The stub client is the default (CROP_ML_DRIVER unset) and returns a
@@ -48,7 +55,7 @@ export interface CropAssessInput {
 export interface CropPlotAssessment {
   plotId: string;
   season: string | null;
-  /** 0–100 vegetation health from the fixed contract. */
+  /** 0–100 vegetation health from the sidecar's `health.score`. */
   healthScore: number;
   phenology: {
     sos: string | null;
@@ -56,8 +63,13 @@ export interface CropPlotAssessment {
     peak: { date: string; value: number } | null;
   };
   classification: 'normal' | 'delayed' | 'stressed';
+  /**
+   * Human-readable driver lines flattened from the sidecar's structured
+   * `health.drivers` objects (`code`, `impact`, `detail`) — code, impact and
+   * detail are all preserved in each line.
+   */
   drivers: string[];
-  /** Honest provenance label from the sidecar itself. */
+  /** Honest provenance label from the sidecar's own `provider` field. */
   basis: 'stub' | 'live';
 }
 
@@ -121,18 +133,50 @@ export class StubCropIntelClient implements CropIntelClient {
   }
 }
 
+/**
+ * The REAL crop-ml sidecar response shape (services/crop-ml/app/models.py
+ * AssessPlotResponse). Fields are optional here only so a malformed payload
+ * is detected and fails closed in mapAssessment instead of silently
+ * degrading to score 0 / 'stressed' / basis 'stub' (GAP-C01).
+ */
 interface CropMlAssessResponse {
   plot_id?: string;
   season?: string | null;
-  health_score?: number;
-  phenology?: {
-    sos?: string | null;
-    eos?: string | null;
-    peak?: { date: string; value: number } | null;
+  /** Sidecar imagery-provider name; the shipped sidecar uses 'stub'|'live'. */
+  provider?: string;
+  seasonality?: {
+    phenology?: {
+      sos_date?: string | null;
+      eos_date?: string | null;
+      peak_date?: string | null;
+      peak_value?: number | null;
+    } | null;
+    classification?: {
+      label?: string;
+      reason_codes?: string[];
+    } | null;
   } | null;
-  classification?: string;
-  drivers?: string[];
-  basis?: string;
+  health?: {
+    score?: number;
+    drivers?: Array<{ code: string; impact: number; detail: string }>;
+  } | null;
+}
+
+/** Flattens structured health drivers without dropping any field. */
+function mapHealthDrivers(
+  drivers: Array<{ code: string; impact: number; detail: string }> | undefined
+): string[] {
+  if (!Array.isArray(drivers)) return [];
+  return drivers.map((driver) => `${driver.code} (-${driver.impact}): ${driver.detail}`);
+}
+
+/** Fail-closed contract violation — never fabricate a score or provenance. */
+function contractViolation(detail: string): ProviderRequestError {
+  return new ProviderRequestError(
+    'crop-ml',
+    'network',
+    new Error(`malformed assess-plot response: ${detail}`)
+  );
 }
 
 /**
@@ -235,26 +279,38 @@ export class HttpCropIntelClient implements CropIntelClient {
     input: CropAssessInput,
     response: CropMlAssessResponse
   ): CropPlotAssessment {
-    const rawScore = Number(response.health_score ?? 0);
+    // Fail closed on contract violations: a missing score or an unknown
+    // provenance label must surface as 'unavailable' upstream, never as a
+    // fabricated 0/'stressed'/'stub' assessment.
+    const rawScore = response.health?.score;
+    if (typeof rawScore !== 'number' || !Number.isFinite(rawScore)) {
+      throw contractViolation('missing numeric health.score');
+    }
+    if (response.provider !== 'live' && response.provider !== 'stub') {
+      throw contractViolation(`unknown provider provenance '${String(response.provider)}'`);
+    }
     const healthScore = Math.min(100, Math.max(0, Math.round(rawScore)));
+    const label = response.seasonality?.classification?.label;
     const classification =
-      response.classification === 'normal' ||
-      response.classification === 'delayed' ||
-      response.classification === 'stressed'
-        ? response.classification
+      label === 'normal' || label === 'delayed' || label === 'stressed'
+        ? label
         : classificationFor(healthScore);
+    const phenology = response.seasonality?.phenology;
     return {
       plotId: response.plot_id ?? input.plotId,
       season: response.season ?? input.season ?? null,
       healthScore,
       phenology: {
-        sos: response.phenology?.sos ?? null,
-        eos: response.phenology?.eos ?? null,
-        peak: response.phenology?.peak ?? null
+        sos: phenology?.sos_date ?? null,
+        eos: phenology?.eos_date ?? null,
+        peak:
+          typeof phenology?.peak_date === 'string' && typeof phenology?.peak_value === 'number'
+            ? { date: phenology.peak_date, value: phenology.peak_value }
+            : null
       },
       classification,
-      drivers: Array.isArray(response.drivers) ? response.drivers : [],
-      basis: response.basis === 'live' ? 'live' : 'stub'
+      drivers: mapHealthDrivers(response.health?.drivers),
+      basis: response.provider
     };
   }
 }
