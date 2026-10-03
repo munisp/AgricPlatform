@@ -54,17 +54,58 @@ describe('NDVI provider port (crop-ml contract)', () => {
     expect(() => createNdviProvider(process.env)).toThrow(ProviderConfigError);
   });
 
-  it('live mode maps the crop-ml assess-plot response (basis live)', async () => {
+  it('live mode maps the real crop-ml assess-plot response (basis live)', async () => {
     process.env.CROP_ML_DRIVER = 'http';
     process.env.CROP_ML_URL = 'http://crop-ml.test';
+    // Mirrors the shipped sidecar schema (services/crop-ml/app/models.py
+    // AssessPlotResponse): score at health.score, label under
+    // seasonality.classification, provenance via top-level provider.
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           plot_id: 'plot-1',
           season: '2026-wet',
-          health_score: 71.6,
-          classification: 'normal',
-          basis: 'live'
+          provider: 'live',
+          seasonality: {
+            plot_id: 'plot-1',
+            acquisitions: 8,
+            ndvi: [{ date: '2026-06-15', ndvi: 0.81 }],
+            phenology: {
+              sos_date: '2026-04-10',
+              eos_date: '2026-09-01',
+              peak_date: '2026-06-15',
+              peak_value: 0.81,
+              base_value: 0.2,
+              amplitude: 0.61,
+              season_length_days: 144
+            },
+            mean_ndvi: 0.55,
+            reference_phenology: null,
+            classification: { label: 'normal', reason_codes: ['within_baseline'] }
+          },
+          health: {
+            plot_id: 'plot-1',
+            score: 71.6,
+            drivers: [{ code: 'ndvi_deficit', impact: 9.4, detail: 'mean NDVI below baseline' }],
+            current_phenology: {
+              sos_date: '2026-04-10',
+              eos_date: '2026-09-01',
+              peak_date: '2026-06-15',
+              peak_value: 0.81,
+              base_value: 0.2,
+              amplitude: 0.61,
+              season_length_days: 144
+            },
+            baseline_phenology: {
+              sos_date: '2026-04-01',
+              eos_date: '2026-09-05',
+              peak_date: '2026-06-10',
+              peak_value: 0.88,
+              base_value: 0.19,
+              amplitude: 0.69,
+              season_length_days: 157
+            }
+          }
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
