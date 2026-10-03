@@ -1,12 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  NotFoundException,
   UnauthorizedException
 } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryAnnouncementRepository } from '../../database/repositories/announcement.repository.js';
 import { createInMemoryChapterEventRepository } from '../../database/repositories/chapter-event.repository.js';
+import { createInMemoryChapterMemberRepository } from '../../database/repositories/chapter-member.repository.js';
 import { createInMemoryChapterRepository } from '../../database/repositories/chapter.repository.js';
 import { createInMemoryEventRsvpRepository } from '../../database/repositories/event-rsvp.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
@@ -23,6 +25,7 @@ function makeService() {
   const chapters = new ChaptersService(
     new DomainEventsService(createInMemoryOutboxRepository()),
     createInMemoryChapterRepository(),
+    createInMemoryChapterMemberRepository(),
     events,
     rsvps,
     createInMemoryAnnouncementRepository()
@@ -104,6 +107,7 @@ describe('ChaptersService event roster (G7)', () => {
     const chapters = new ChaptersService(
       new DomainEventsService(createInMemoryOutboxRepository()),
       createInMemoryChapterRepository(),
+      createInMemoryChapterMemberRepository(),
       events,
       rsvps,
       createInMemoryAnnouncementRepository(),
@@ -122,6 +126,7 @@ describe('ChaptersService event roster (G7)', () => {
     const chapters = new ChaptersService(
       new DomainEventsService(createInMemoryOutboxRepository()),
       createInMemoryChapterRepository(),
+      createInMemoryChapterMemberRepository(),
       events,
       rsvps,
       createInMemoryAnnouncementRepository(),
@@ -131,5 +136,104 @@ describe('ChaptersService event roster (G7)', () => {
     const roster = await chapters.eventRoster(EVENT_ID);
     expect(roster[0]?.status).toBe('attended');
     await expect(chapters.eventRoster('event-missing')).rejects.toThrow();
+  });
+});
+
+describe('ChaptersService membership writes (GAP-M19)', () => {
+  function makeMembershipService() {
+    const events = createInMemoryChapterEventRepository();
+    const rsvps = createInMemoryEventRsvpRepository(events);
+    const members = createInMemoryChapterMemberRepository();
+    const chapters = new ChaptersService(
+      new DomainEventsService(createInMemoryOutboxRepository()),
+      createInMemoryChapterRepository(),
+      members,
+      events,
+      rsvps,
+      createInMemoryAnnouncementRepository(),
+      createInMemoryUserRepository()
+    );
+    return { chapters, members };
+  }
+
+  it('adds a member and lists the roster with role + joinedAt', async () => {
+    const { chapters } = makeMembershipService();
+    const member = await chapters.addMember('chapter-kaduna', MEMBER, 'secretary');
+    expect(member).toMatchObject({
+      chapterId: 'chapter-kaduna',
+      userId: MEMBER,
+      role: 'secretary'
+    });
+    expect(member.joinedAt).toBeTruthy();
+    const roster = await chapters.listMembers('chapter-kaduna');
+    expect(roster).toHaveLength(1);
+    expect(roster[0].userId).toBe(MEMBER);
+  });
+
+  it('defaults the role to member and upserts on a repeated join', async () => {
+    const { chapters } = makeMembershipService();
+    const first = await chapters.addMember('chapter-kaduna', MEMBER);
+    expect(first.role).toBe('member');
+    const again = await chapters.addMember('chapter-kaduna', MEMBER, 'lead');
+    expect(again.role).toBe('lead');
+    expect(again.joinedAt).toBe(first.joinedAt);
+    expect(await chapters.listMembers('chapter-kaduna')).toHaveLength(1);
+  });
+
+  it('removes a member and 404s when the membership does not exist', async () => {
+    const { chapters } = makeMembershipService();
+    await chapters.addMember('chapter-kaduna', MEMBER);
+    await expect(chapters.removeMember('chapter-kaduna', MEMBER)).resolves.toEqual({
+      removed: true
+    });
+    expect(await chapters.listMembers('chapter-kaduna')).toHaveLength(0);
+    await expect(chapters.removeMember('chapter-kaduna', MEMBER)).rejects.toThrowError(
+      NotFoundException
+    );
+  });
+
+  it('404s membership writes against unknown chapters and unknown users', async () => {
+    const { chapters } = makeMembershipService();
+    await expect(chapters.addMember('chapter-missing', MEMBER)).rejects.toThrowError(
+      NotFoundException
+    );
+    await expect(
+      chapters.addMember('chapter-kaduna', 'user-missing')
+    ).rejects.toThrowError(NotFoundException);
+    await expect(chapters.listMembers('chapter-missing')).rejects.toThrowError(
+      NotFoundException
+    );
+  });
+});
+
+describe('ChaptersService event/chapter detail columns (GAP-L12)', () => {
+  it('persists description, endsAt and createdBy on event creation', async () => {
+    const { chapters } = makeService();
+    const event = await chapters.createEvent('chapter-kaduna', {
+      title: 'Wet-season planning',
+      type: 'meeting',
+      startsAt: '2026-05-01T09:00:00.000Z',
+      endsAt: '2026-05-01T11:00:00.000Z',
+      location: 'Kaduna Secretariat',
+      description: 'Agenda: input distribution and planting windows.'
+    }, 'user-lead-kaduna');
+    expect(event.description).toBe('Agenda: input distribution and planting windows.');
+    expect(event.endsAt).toBe('2026-05-01T11:00:00.000Z');
+    expect(event.createdBy).toBe('user-lead-kaduna');
+    const stored = await chapters.getEvent(event.id);
+    expect(stored.createdBy).toBe('user-lead-kaduna');
+    expect(stored.endsAt).toBe('2026-05-01T11:00:00.000Z');
+  });
+
+  it('persists the ward on chapter creation', async () => {
+    const { chapters } = makeService();
+    const chapter = await chapters.create({
+      name: 'Kawo Ward Chapter',
+      level: 'ward',
+      state: 'Kaduna',
+      lga: 'Kaduna North',
+      ward: 'Kawo'
+    });
+    expect(chapter.ward).toBe('Kawo');
   });
 });

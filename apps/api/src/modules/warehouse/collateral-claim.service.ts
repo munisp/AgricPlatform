@@ -2,6 +2,8 @@ import { Inject, Injectable, Logger, OnModuleInit, Optional } from '@nestjs/comm
 import { effectiveReceiptWeightKg } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   COLLATERAL_POSITION_REPOSITORY,
   WAREHOUSE_PLEDGE_REPOSITORY,
@@ -58,23 +60,35 @@ export class WarehouseCollateralClaimService implements OnModuleInit {
     private readonly pledges: WarehousePledgeRepository,
     @Inject(COLLATERAL_POSITION_REPOSITORY)
     private readonly positions: CollateralPositionRepository,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never re-runs the liquidation. @Optional with
+    // an in-memory fallback so bare unit constructions keep working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   onModuleInit(): void {
     this.events.on('credit.collateral.claimed', (event) => {
-      void this.handleCollateralClaimed(
-        event.payload as CollateralClaimedPayload,
-        event.actorId
-      ).catch((error: unknown) => {
-        // Best-effort listener, same doctrine as the offtake escrow hook:
-        // the failure is logged for reconciliation, never thrown back into
-        // the fan-out. The settlement is re-drivable (idempotency-keyed).
-        this.logger.error(
-          `warehouse collateral claim handling failed (event ${event.id}): ` +
-            `${(error as Error)?.message ?? error}`
-        );
-      });
+      // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+      // already-liquidated claim is a no-op; a failed settlement stays
+      // unrecorded so re-drive retries it (the settlement journal is
+      // idempotency-keyed per collateralId, so re-execution converges).
+      void this.dedup
+        .runOnce('warehouse-collateral-claim', event.id, () =>
+          this.handleCollateralClaimed(event.payload as CollateralClaimedPayload, event.actorId)
+        )
+        .catch((error: unknown) => {
+          // Best-effort listener, same doctrine as the offtake escrow hook:
+          // the failure is logged for reconciliation, never thrown back into
+          // the fan-out. The settlement is re-drivable (idempotency-keyed).
+          this.logger.error(
+            `warehouse collateral claim handling failed (event ${event.id}): ` +
+              `${(error as Error)?.message ?? error}`
+          );
+        });
     });
   }
 
