@@ -6,7 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException
 } from '@nestjs/common';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CreditLoanApplication, FarmPlot, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../../core/domain-events.service.js';
 import {
@@ -31,7 +31,7 @@ import { CreditService } from '../credit.service.js';
 import { StubFloodRiskDriver } from '../../geo-intel/flood-risk.drivers.js';
 import { StubCropIntelClient } from './crop-intel.drivers.js';
 import { computeGeoCreditFactor, floodBandFromSeverity } from './geo-credit-factor.js';
-import { GeoVerificationService } from './geo-verification.service.js';
+import { deriveSeasonForDate, GeoVerificationService } from './geo-verification.service.js';
 
 const admin: Pick<User, 'id' | 'roles'> = { id: 'user-admin', roles: ['admin'] };
 const lender: Pick<User, 'id' | 'roles'> = { id: 'user-lender', roles: ['lender'] };
@@ -103,6 +103,27 @@ afterEach(() => {
     if (savedEnv[key] === undefined) delete process.env[key];
     else process.env[key] = savedEnv[key];
   }
+  vi.unstubAllGlobals();
+});
+
+describe('deriveSeasonForDate (GAP-C02)', () => {
+  it('maps April–October to the wet season and November–March to dry', () => {
+    expect(deriveSeasonForDate('2026-04-01T00:00:00.000Z')).toBe('2026-wet');
+    expect(deriveSeasonForDate('2026-10-31T23:59:59.000Z')).toBe('2026-wet');
+    expect(deriveSeasonForDate('2026-06-15T12:00:00.000Z')).toBe('2026-wet');
+    expect(deriveSeasonForDate('2026-11-01T00:00:00.000Z')).toBe('2026-dry');
+    expect(deriveSeasonForDate('2026-03-01T00:00:00.000Z')).toBe('2026-dry');
+    expect(deriveSeasonForDate('2026-01-15T00:00:00.000Z')).toBe('2026-dry');
+    expect(deriveSeasonForDate('2026-12-31T00:00:00.000Z')).toBe('2026-dry');
+  });
+
+  it('always produces a value matching the crop-ml season pattern', () => {
+    const pattern = /^\d{4}(-(wet|dry))?$/;
+    for (let month = 0; month < 12; month += 1) {
+      const iso = new Date(Date.UTC(2026, month, 15)).toISOString();
+      expect(deriveSeasonForDate(iso)).toMatch(pattern);
+    }
+  });
 });
 
 describe('GeoVerificationService.computeForApplication (stub providers)', () => {
@@ -116,7 +137,11 @@ describe('GeoVerificationService.computeForApplication (stub providers)', () => 
     // stub providers (flood stub for the plot centroid, crop stub for the
     // plot id) through the pure factor.
     const flood = await new StubFloodRiskDriver().assess({ latitude: 11.0855, longitude: 7.7199 });
-    const crop = await new StubCropIntelClient().assessPlot({ plotId: 'plot-1' });
+    const crop = await new StubCropIntelClient().assessPlot({
+      plotId: 'plot-1',
+      // The service derives the season from `now` (2026-03-01 → dry season).
+      season: deriveSeasonForDate(now)
+    });
     const expected = computeGeoCreditFactor(
       {
         plotVerified: true,
@@ -241,6 +266,104 @@ describe('fail-closed live providers', () => {
     await expect(service.getShadowScore('cla-1', admin)).rejects.toThrow(
       ServiceUnavailableException
     );
+  });
+});
+
+describe('live crop-ml contract (GAP-C01/GAP-C02)', () => {
+  /** Realistic sidecar payload — mirrors services/crop-ml/app/models.py. */
+  const SIDECAR_RESPONSE = {
+    plot_id: 'plot-1',
+    season: '2026-dry',
+    provider: 'live',
+    seasonality: {
+      plot_id: 'plot-1',
+      acquisitions: 10,
+      ndvi: [{ date: '2026-01-10', ndvi: 0.4 }],
+      phenology: {
+        sos_date: '2025-11-10',
+        eos_date: '2026-03-01',
+        peak_date: '2026-01-05',
+        peak_value: 0.78,
+        base_value: 0.19,
+        amplitude: 0.59,
+        season_length_days: 111
+      },
+      mean_ndvi: 0.52,
+      reference_phenology: null,
+      classification: { label: 'normal', reason_codes: ['within_baseline'] }
+    },
+    health: {
+      plot_id: 'plot-1',
+      score: 72,
+      drivers: [{ code: 'ndvi_deficit', impact: 10, detail: 'mean NDVI below baseline' }],
+      current_phenology: {
+        sos_date: '2025-11-10',
+        eos_date: '2026-03-01',
+        peak_date: '2026-01-05',
+        peak_value: 0.78,
+        base_value: 0.19,
+        amplitude: 0.59,
+        season_length_days: 111
+      },
+      baseline_phenology: {
+        sos_date: '2025-11-01',
+        eos_date: '2026-03-05',
+        peak_date: '2026-01-01',
+        peak_value: 0.82,
+        base_value: 0.18,
+        amplitude: 0.64,
+        season_length_days: 124
+      }
+    }
+  };
+
+  it('sends a derived season and maps the real response into the shadow factor', async () => {
+    process.env.CROP_ML_DRIVER = 'http';
+    process.env.CROP_ML_URL = 'http://crop-ml.test';
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(SIDECAR_RESPONSE), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { service } = makeService();
+    const now = '2026-03-01T00:00:00.000Z'; // March → 2026-dry
+    const result = await service.computeForApplication(loan(), now);
+
+    // GAP-C02: a valid season is sent to the sidecar.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://crop-ml.test/v1/crop/assess-plot');
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      plot_id: 'plot-1',
+      season: '2026-dry'
+    });
+
+    // GAP-C01: the real health.score drives the factor — no 0/stressed/stub
+    // degradation and honest live provenance.
+    expect(result.status).toBe('computed');
+    expect(result.basis.crop).toBe('live');
+    expect(result.breakdown.cropHealth).toBe(Math.round((72 / 100) * 30));
+    expect(result.factorScore).toBeGreaterThan(0);
+  });
+
+  it('fails closed (status unavailable) when the sidecar payload is malformed', async () => {
+    process.env.CROP_ML_DRIVER = 'http';
+    process.env.CROP_ML_URL = 'http://crop-ml.test';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ plot_id: 'plot-1', provider: 'live' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        })
+      )
+    );
+    const { service } = makeService();
+    const result = await service.computeForApplication(loan(), '2026-03-01T00:00:00.000Z');
+    expect(result.status).toBe('unavailable');
+    expect(result.basis.crop).toBe('unavailable');
+    expect(result.factorScore).toBeNull();
   });
 });
 
