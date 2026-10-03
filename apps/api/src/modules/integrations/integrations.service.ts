@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { IntegrationStatus, NotificationChannel } from '@agric-platform/shared';
 import { isProduction } from '../../common/auth/auth.config.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -95,6 +95,36 @@ function webhookSignatureScheme(provider: string): WebhookSignatureScheme {
     (WEBHOOK_SIGNATURE_SCHEMES as Record<string, WebhookSignatureScheme>)[provider] ??
     'hmac-sha256'
   );
+}
+
+/**
+ * Envelope POSTed by the event-gw sidecar to POST /api/v1/internal/events
+ * (GAP-C03/GAP-H01; mirrors services/event-gw/internal/gateway/fanout.go).
+ * The sidecar verifies provider-native signatures at the edge and strips
+ * the original headers, so this envelope carries NO trustworthy
+ * provider-native signature — authenticity comes solely from the
+ * X-Internal-Token shared credential (see internal-token.guard.ts).
+ */
+export interface EventGwEnvelope {
+  provider: string;
+  eventId: string;
+  /** RFC3339 UTC timestamp assigned by the sidecar on receipt. */
+  receivedAt: string;
+  /** Raw provider event body, forwarded unmodified. */
+  payload: unknown;
+}
+
+/**
+ * Dedupe record persisted for an internal event: the raw payload plus its
+ * provenance (source sidecar, event id, sidecar receipt timestamp), so the
+ * durable integrations.inbound_events row keeps the full envelope context
+ * (GAP-H01: explicitly record provider/eventId/receivedAt provenance).
+ */
+export interface InternalEventRecord {
+  source: 'event-gw';
+  eventId: string;
+  receivedAt: string;
+  payload: unknown;
 }
 
 export interface WebhookReceipt {
@@ -310,6 +340,16 @@ export class IntegrationsService {
       throw new NotFoundException(`Unknown integration provider '${provider}'`);
     }
     return adapter;
+  }
+
+  /**
+   * Non-throwing adapter lookup. The event-gw internal ingress accepts
+   * provider names outside the API adapter registry (the sidecar has its
+   * own provider namespace, e.g. 'payments'/'imagery') — rejecting them
+   * with 404 would re-create the spool-forever loop GAP-C03 fixes.
+   */
+  find(provider: string): IntegrationAdapter | undefined {
+    return this.adapters.get(provider);
   }
 
   status(provider: string): IntegrationStatus {
@@ -570,8 +610,43 @@ export class IntegrationsService {
   ): Promise<WebhookReceipt> {
     this.get(provider); // validates the provider exists
     const digest = this.webhookDigest(payload, signatureDigest);
+    return this.recordDeduped(provider, digest, payload);
+  }
+
+  /**
+   * Records an event-gw internal event (GAP-C03/GAP-H01). The envelope is
+   * schema-validated (fail-closed 400 on a malformed envelope) and deduped
+   * on an INTERNAL digest of provider + eventId + canonical payload — the
+   * exact-replay semantics of recordWebhook, keyed by the sidecar-assigned
+   * event id instead of a provider-native signature (which this path never
+   * consults; any signature material inside the payload is opaque data).
+   * The persisted record keeps the raw payload plus its provenance
+   * (eventId/receivedAt/source) so the durable row is self-describing.
+   *
+   * The provider name is NOT required to exist in the API adapter
+   * registry: the sidecar's namespace is broader (e.g. 'payments',
+   * 'imagery'), and a 404 here would be a non-2xx fanout response — the
+   * exact spool-forever loop this ingress exists to close. Unknown
+   * providers are still recorded, audited and published; consumers
+   * subscribe by provider name.
+   */
+  async recordInternalEvent(envelope: EventGwEnvelope): Promise<WebhookReceipt> {
+    const valid = assertInternalEventEnvelope(envelope);
+    return this.recordDeduped(
+      valid.provider,
+      internalEventDigest(valid),
+      internalEventRecord(valid)
+    );
+  }
+
+  /** Shared check-and-record for both webhook ingress paths (audit C2 semantics). */
+  private async recordDeduped(
+    provider: string,
+    digest: string,
+    storedPayload: unknown
+  ): Promise<WebhookReceipt> {
     const store = this.dedupe ?? this.fallbackDedupe;
-    const isNew = await store.recordIfNew(provider, digest, payload);
+    const isNew = await store.recordIfNew(provider, digest, storedPayload);
     if (isNew) {
       return { received: true, provider };
     }
@@ -596,6 +671,19 @@ export class IntegrationsService {
   }
 
   /**
+   * Marks a recorded internal event processed. Call ONLY after the side
+   * effects (audit + domain-event publish) succeeded — until then a replay
+   * is re-driven (same crash-recovery contract as markWebhookProcessed).
+   */
+  async markInternalEventProcessed(envelope: EventGwEnvelope): Promise<void> {
+    const valid = assertInternalEventEnvelope(envelope);
+    await (this.dedupe ?? this.fallbackDedupe).markProcessed(
+      valid.provider,
+      internalEventDigest(valid)
+    );
+  }
+
+  /**
    * Crash-recovery reprocessor (audit C2): re-publishes recorded webhooks
    * whose processing never completed, marking each row processed only after
    * the event is accepted. Failures stay unprocessed for the next sweep.
@@ -613,7 +701,10 @@ export class IntegrationsService {
         }
         await this.events.publish('integration.webhook.received', {
           provider: record.provider,
-          payload: record.payload
+          // Internal-event rows persist the envelope provenance wrapper;
+          // consumers always receive the RAW provider payload, identical to
+          // the live-path publish.
+          payload: unwrapInternalEventRecord(record.payload)
         });
         await store.markProcessed(record.provider, record.digest);
         result.reprocessed += 1;
@@ -635,6 +726,74 @@ export class IntegrationsService {
       createHmac('sha256', 'unsigned').update(stableStringify(payload)).digest('hex')
     );
   }
+}
+
+/**
+ * Fail-closed schema validation for the event-gw envelope (defense in
+ * depth behind the controller DTO so direct service callers get the same
+ * 400s). Returns the envelope narrowed to valid fields.
+ */
+function assertInternalEventEnvelope(envelope: EventGwEnvelope): EventGwEnvelope {
+  if (!envelope || typeof envelope !== 'object') {
+    throw new BadRequestException('event-gw envelope must be a JSON object');
+  }
+  const { provider, eventId, receivedAt, payload } = envelope;
+  if (typeof provider !== 'string' || provider.trim() === '') {
+    throw new BadRequestException("event-gw envelope requires a non-empty string 'provider'");
+  }
+  if (typeof eventId !== 'string' || eventId.trim() === '') {
+    throw new BadRequestException("event-gw envelope requires a non-empty string 'eventId'");
+  }
+  if (typeof receivedAt !== 'string' || Number.isNaN(Date.parse(receivedAt))) {
+    throw new BadRequestException(
+      "event-gw envelope requires an RFC3339 timestamp 'receivedAt'"
+    );
+  }
+  if (payload === undefined) {
+    throw new BadRequestException("event-gw envelope requires a 'payload' field");
+  }
+  return envelope;
+}
+
+/** Provenance-preserving record persisted in the dedupe store for an internal event. */
+function internalEventRecord(envelope: EventGwEnvelope): InternalEventRecord {
+  return {
+    source: 'event-gw',
+    eventId: envelope.eventId,
+    receivedAt: envelope.receivedAt,
+    payload: envelope.payload
+  };
+}
+
+/**
+ * Dedupe digest for the internal path: an INTERNAL HMAC-SHA256 over
+ * provider + eventId + the canonical payload. Provider-native signatures
+ * are never consulted here — the sidecar verified them at the edge and
+ * stripped the headers, so any signature bytes inside the payload are
+ * opaque data, not proof of authenticity (GAP-H01).
+ */
+function internalEventDigest(envelope: EventGwEnvelope): string {
+  return createHmac('sha256', 'event-gw-internal')
+    .update(`${envelope.provider}\n${envelope.eventId}\n${stableStringify(envelope.payload)}`)
+    .digest('hex');
+}
+
+/**
+ * Unwraps a persisted internal-event record to the raw provider payload;
+ * public-webhook payloads (no event-gw marker) pass through unchanged.
+ */
+function unwrapInternalEventRecord(payload: unknown): unknown {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const record = payload as Partial<InternalEventRecord>;
+    if (
+      record.source === 'event-gw' &&
+      typeof record.eventId === 'string' &&
+      'payload' in record
+    ) {
+      return record.payload;
+    }
+  }
+  return payload;
 }
 
 function firstHeader(
