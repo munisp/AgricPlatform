@@ -30,11 +30,14 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.base.json ./
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
+# NEXT_PUBLIC_API_BASE_URL is inlined into the client bundle at build time
+# (apps/web/lib/api/config.ts); it must include the API global prefix
+# (/api/v1) — the app does not append it.
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:3001/api/v1
 ARG NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8080
 ARG NEXT_PUBLIC_KEYCLOAK_REALM=agric-platform
 ARG NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=agric-web
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
     NEXT_PUBLIC_KEYCLOAK_URL=$NEXT_PUBLIC_KEYCLOAK_URL \
     NEXT_PUBLIC_KEYCLOAK_REALM=$NEXT_PUBLIC_KEYCLOAK_REALM \
     NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=$NEXT_PUBLIC_KEYCLOAK_CLIENT_ID \
