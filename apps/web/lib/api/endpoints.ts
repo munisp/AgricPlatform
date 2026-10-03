@@ -40,6 +40,7 @@ import type {
   HarvestQualityGrade,
   HarvestRecord,
   HarvestUnit,
+  PlantingFailureReason,
   PlantingStatus,
   SoilType,
   ForumTopic,
@@ -2752,14 +2753,20 @@ export function listCropPlantings(plotId: string): Promise<{ data: CropPlanting[
   return apiFetch(`/farms/plots/${encodeURIComponent(plotId)}/plantings`);
 }
 
+/**
+ * PATCH a planting's status. `options.failureReason` is optional in the
+ * wrapper so existing callers keep compiling, but the API rejects
+ * status='failed' without one (and rejects it on any other transition).
+ */
 export function transitionCropPlanting(
   id: string,
   status: PlantingStatus,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  options?: { failureReason?: PlantingFailureReason }
 ): Promise<{ data: CropPlanting }> {
   return apiFetch(`/farms/plantings/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: { status },
+    body: options?.failureReason ? { status, failureReason: options.failureReason } : { status },
     idempotencyKey
   });
 }
@@ -3027,261 +3034,119 @@ export function checkGeoContains(input: {
 
 export interface FloodRiskStatus {
   driver: 'stub' | 'http';
+  /** True only when the HTTP sidecar driver is configured (live inference). */
+  liveInference: boolean;
   configured: boolean;
   healthy: boolean;
-  /** True only when assessments come from the real flood-ml sidecar. */
-  liveInference: boolean;
   detail: string;
 }
 
 export interface FloodRiskAssessment {
-  floodDetected: boolean;
-  severity: string;
-  floodPercentage: number;
-  floodAreaKm2: number;
-  confidence: number;
-  source: string;
+  latitude: number;
+  longitude: number;
+  severity: 'none' | 'low' | 'moderate' | 'high' | 'severe';
+  score: number;
+  drivers: string[];
+  basis: 'stub' | 'live';
   assessedAt: string;
-  message: string;
-  recommendedActions: string[];
-  assessedLocation: { latitude: number; longitude: number };
-  driver: 'stub' | 'http';
-  plot?: { id: string; name: string; distanceKm: number };
 }
 
-/** Honest driver/config status for the flood-risk integration. */
+export interface ChapterRiskMapEntry {
+  chapterId: string;
+  chapterName: string;
+  state: string;
+  memberCount: number;
+  farmsAssessed: number;
+  highRiskFarms: number;
+  maxSeverity: FloodRiskAssessment['severity'];
+  basis: 'stub' | 'live';
+}
+
+/** Honest sidecar status (driver + liveInference tell stub from live). */
 export function fetchFloodRiskStatus(): Promise<{ data: FloodRiskStatus }> {
   return apiFetch('/geo-intel/flood-risk/status');
 }
 
-/**
- * Flood-risk assessment. Without lat/long the API assesses the caller's own
- * farm plot (nearest/first with coordinates); with them it assesses the
- * point and attaches the nearest own plot when close by.
- */
-export function fetchFloodRisk(params?: {
-  lat?: number;
-  long?: number;
+/** Assess one coordinate (403 for viewers; 503 when live sidecar is unreachable). */
+export function assessFloodRisk(params: {
+  latitude: number;
+  longitude: number;
 }): Promise<{ data: FloodRiskAssessment }> {
-  return apiFetch('/geo-intel/flood-risk', { query: { ...params } });
+  return apiFetch('/geo-intel/flood-risk/assess', { query: { ...params } });
 }
 
-/* ------------------------------ credit suite ---------------------------- */
-/* Wave CREDIT: microfinance (products, applications, repayments, groups,  */
-/* savings, portfolio). Plain `{ data: T }` envelopes throughout.           */
-
-export interface CreditGroupWithMembers {
-  group: CreditGroup;
-  members: CreditGroupMember[];
+/** Manager-only per-chapter risk rollup (batched server-side). */
+export function fetchChapterRiskMap(): Promise<{ data: ChapterRiskMapEntry[] }> {
+  return apiFetch('/geo-intel/chapter-risk-map');
 }
 
-export interface SavingsTransactionResult {
-  account: CreditSavingsAccount;
-  transaction: CreditSavingsTransaction;
-  replay: boolean;
+/* ========================================================================
+ * Geo-verified credit shadow scores (wave-geocredit, union-append).
+ * Mirrors apps/api/src/modules/credit/geo-verification
+ * (geo-verification.controller). SHADOW MODE ONLY: scores never influence
+ * the live approve/decline path.
+ * ====================================================================== */
+
+export interface GeoCreditFactorBreakdown {
+  plotVerification: number;
+  areaPlausibility: number;
+  floodRisk: number;
+  cropHealth: number;
+  dataFreshness: number;
 }
 
-/* -- products -- */
-
-export function listCreditProducts(all = false): Promise<{ data: CreditLoanProduct[] }> {
-  return apiFetch('/credit/products', { query: all ? { all: 'true' } : {} });
+export interface GeoCreditShadowScoreView {
+  applicationId: string;
+  /** 0-100 shadow factor; null when status is 'unavailable'. */
+  factorScore: number | null;
+  status: 'computed' | 'unavailable';
+  breakdown: GeoCreditFactorBreakdown;
+  /** Honest provenance: whether each geospatial input is live sidecar data or the deterministic simulated fixture. */
+  basis: { flood: 'stub' | 'live'; crop: 'stub' | 'live' | 'unavailable' };
+  inputFingerprint: string;
+  computedAt: string;
 }
 
-export function createCreditProduct(
-  input: Omit<CreditLoanProduct, 'id' | 'createdAt'>,
-  idempotencyKey?: string
-): Promise<{ data: CreditLoanProduct }> {
-  return apiFetch('/credit/products', { method: 'POST', body: input, idempotencyKey });
+export interface GeoShadowRecomputeReport {
+  mode: 'off' | 'shadow';
+  applications: number;
+  recomputed: number;
+  skipped: number;
+  /** Stub-derived score in production: computed but NOT persisted. */
+  suppressed: number;
+  unavailable: number;
+  failed: number;
+  computedAt: string;
 }
 
-/* -- applications -- */
-
-export function applyForCreditLoan(input: {
-  productId: string;
-  principalKobo: number;
-  purpose?: string;
-}): Promise<{ data: CreditLoanApplication }> {
-  return apiFetch('/credit/applications', { method: 'POST', body: input });
+/** Credit reviewer (admin|lender) shadow view for one application. */
+export function fetchGeoShadowScore(
+  applicationId: string
+): Promise<{ data: GeoCreditShadowScoreView }> {
+  return apiFetch(`/credit/applications/${encodeURIComponent(applicationId)}/geo-shadow`);
 }
 
-export function applyForGroupCreditLoan(input: {
-  productId: string;
-  principalKobo: number;
-  groupId: string;
-  purpose?: string;
-}): Promise<{ data: CreditLoanApplication }> {
-  return apiFetch('/credit/applications/group', { method: 'POST', body: input });
+/** Admin batch shadow recompute for open applications (idempotent). */
+export function recomputeGeoShadowScores(): Promise<{ data: GeoShadowRecomputeReport }> {
+  return apiFetch('/credit/geo-shadow/recompute', { method: 'POST' });
 }
 
-export function listCreditLoans(params?: {
-  status?: string;
-  applicantUserId?: string;
-  groupId?: string;
-}): Promise<{ data: CreditLoanApplication[] }> {
-  return apiFetch('/credit/applications', { query: { ...params } });
-}
+/* ========================================================================
+ * Voice agronomist + agronomist console (voice wave).
+ * Mirrors apps/api/src/modules/voice (voice.controller, console.controller).
+ * ====================================================================== */
 
-export function fetchCreditLoan(id: string): Promise<{ data: CreditLoanApplication }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(id)}`);
-}
-
-function creditLoanAction(id: string, action: string): Promise<{ data: CreditLoanApplication }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
-}
-
-export function submitCreditLoan(id: string) {
-  return creditLoanAction(id, 'submit');
-}
-export function scoreCreditLoan(id: string) {
-  return creditLoanAction(id, 'score');
-}
-export function approveCreditLoan(id: string) {
-  return creditLoanAction(id, 'approve');
-}
-export function rejectCreditLoan(id: string) {
-  return creditLoanAction(id, 'reject');
-}
-export function disburseCreditLoan(id: string) {
-  return creditLoanAction(id, 'disburse');
-}
-export function startCreditRepayment(id: string) {
-  return creditLoanAction(id, 'start-repayment');
-}
-export function defaultCreditLoan(id: string) {
-  return creditLoanAction(id, 'default');
-}
-
-/* -- repayments -- */
-
-export function fetchCreditSchedule(loanId: string): Promise<{ data: CreditRepayment[] }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/schedule`);
-}
-
-export function payCreditInstallment(
-  loanId: string,
-  sequence: number
-): Promise<{ data: CreditRepayment }> {
-  return apiFetch(
-    `/credit/applications/${encodeURIComponent(loanId)}/repayments/${sequence}/pay`,
-    { method: 'POST' }
-  );
-}
-
-/* -- collateral + guarantors -- */
-
-export function listCreditCollateral(loanId: string): Promise<{ data: CreditCollateral[] }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/collateral`);
-}
-
-export function listCreditGuarantors(loanId: string): Promise<{ data: CreditGuarantor[] }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(loanId)}/guarantors`);
-}
-
-/* -- groups -- */
-
-export function listCreditGroups(): Promise<{ data: CreditGroup[] }> {
-  return apiFetch('/credit/groups');
-}
-
-export function listMyCreditGroups(): Promise<{ data: CreditGroupWithMembers[] }> {
-  return apiFetch('/credit/groups/mine');
-}
-
-export function createCreditGroup(input: {
-  name: string;
-  chapterId?: string;
-}): Promise<{ data: CreditGroupWithMembers }> {
-  return apiFetch('/credit/groups', { method: 'POST', body: input });
-}
-
-export function joinCreditGroup(groupId: string): Promise<{ data: CreditGroupMember }> {
-  return apiFetch(`/credit/groups/${encodeURIComponent(groupId)}/join`, { method: 'POST' });
-}
-
-/* -- savings -- */
-
-export function fetchOwnSavingsAccount(): Promise<{ data: CreditSavingsAccount }> {
-  return apiFetch('/credit/savings/accounts/mine');
-}
-
-export function fetchOwnSavingsTransactions(): Promise<{ data: CreditSavingsTransaction[] }> {
-  return apiFetch('/credit/savings/accounts/mine/transactions');
-}
-
-export function depositOwnSavings(
-  amountKobo: number,
-  ref: string
-): Promise<{ data: SavingsTransactionResult }> {
-  return apiFetch('/credit/savings/accounts/mine/deposits', {
-    method: 'POST',
-    body: { amountKobo, ref }
-  });
-}
-
-export function withdrawOwnSavings(
-  amountKobo: number,
-  ref: string
-): Promise<{ data: SavingsTransactionResult }> {
-  return apiFetch('/credit/savings/accounts/mine/withdrawals', {
-    method: 'POST',
-    body: { amountKobo, ref }
-  });
-}
-
-/* -- portfolio + scoring -- */
-
-export function fetchCreditPortfolio(): Promise<{ data: CreditPortfolioReport }> {
-  return apiFetch('/credit/portfolio');
-}
-
-export function fetchCreditScoreAssessment(
-  userId: string
-): Promise<{ data: CreditScoreAssessment }> {
-  return apiFetch(`/credit/score/${encodeURIComponent(userId)}`);
-}
-
-/* ------------------------- voice agronomist (wave-voice) ---------------- */
-/* Mirrors apps/api/src/modules/voice (voice.controller). Plain `{ data: T } */
-/* envelopes throughout. Agent-assist console endpoints are role-gated        */
-/* (agronomist/admin) server-side.                                            */
-
-export type VoiceChannel = 'ivr' | 'ussd' | 'assisted';
-export type VoiceSessionState = 'intake' | 'triage' | 'advisory' | 'escalated' | 'resolved';
-export type VoiceAgentCaseStatus = 'open' | 'assigned' | 'responded' | 'resolved';
-export type VoiceAgentCaseReason = 'requested' | 'low_confidence' | 'no_grounding';
-
-export interface VoiceAgentCase {
-  id: string;
-  sessionId: string;
-  farmerUserId?: string;
-  phone: string;
-  channel: VoiceChannel;
-  status: VoiceAgentCaseStatus;
-  reason: VoiceAgentCaseReason;
-  priority: 'normal' | 'high';
-  slaDueAt: string;
-  assignedAgentId?: string;
-  suggestedAnswer?: string;
-  citationChunkIds: string[];
-  response?: string;
-  respondedAt?: string;
-  createdAt: string;
-  updatedAt: string;
-}
+export type VoiceSessionStatus = 'active' | 'ended';
+export type VoiceLocale = 'en-NG' | 'ha-NG' | 'yo-NG' | 'ig-NG';
 
 export interface VoiceSession {
   id: string;
-  channel: VoiceChannel;
-  state: VoiceSessionState;
-  phone: string;
-  ninRef?: string;
-  farmerUserId?: string;
-  locale: string;
-  crop?: string;
-  symptomCategory?: string;
-  activeCaseId?: string;
-  createdAt: string;
-  updatedAt: string;
+  userId: string;
+  msisdn: string;
+  locale: VoiceLocale;
+  status: VoiceSessionStatus;
+  startedAt: string;
+  endedAt?: string;
 }
 
 export interface VoiceTurn {
@@ -3295,595 +3160,338 @@ export interface VoiceTurn {
   createdAt: string;
 }
 
-export interface VoiceAgentCaseDetail {
-  agentCase: VoiceAgentCase;
-  session: VoiceSession;
-  turns: VoiceTurn[];
+export interface VoiceAnswer {
+  sessionId: string;
+  turn: VoiceTurn;
+  answerText: string;
+  audioUrl?: string;
+  citedChunkIds: string[];
+  confidence: number;
+  /** True when the audio was synthesised by the deterministic stub TTS driver. */
+  stubAudio: boolean;
 }
 
-/** Agent queue, ordered by SLA deadline (soonest first). */
-export function fetchVoiceAgentCases(filter?: {
-  status?: VoiceAgentCaseStatus;
-  overdue?: boolean;
-}): Promise<{ data: VoiceAgentCase[] }> {
-  return apiFetch('/voice/agent-cases', {
-    query: { status: filter?.status, overdue: filter?.overdue ? 'true' : undefined }
-  });
+export interface StartVoiceSessionInput {
+  msisdn: string;
+  locale?: VoiceLocale;
 }
 
-/** Case detail: case + session + full transcript with RAG citations. */
-export function fetchVoiceAgentCase(id: string): Promise<{ data: VoiceAgentCaseDetail }> {
-  return apiFetch(`/voice/agent-cases/${encodeURIComponent(id)}`);
+/** Start (or resume) a voice session for an MSISDN. */
+export function startVoiceSession(
+  input: StartVoiceSessionInput
+): Promise<{ data: VoiceSession }> {
+  return apiFetch('/voice/sessions', { method: 'POST', body: input });
 }
 
-/** Agent first response; resolve=true closes the case and the session. */
-export function respondVoiceAgentCase(
+export function fetchVoiceSession(id: string): Promise<{ data: VoiceSession }> {
+  return apiFetch(`/voice/sessions/${encodeURIComponent(id)}`);
+}
+
+export function endVoiceSession(id: string): Promise<{ data: VoiceSession }> {
+  return apiFetch(`/voice/sessions/${encodeURIComponent(id)}/end`, { method: 'POST' });
+}
+
+/** Ask a question inside a session (sync STT->RAG->TTS round trip). */
+export function askVoiceSession(
   id: string,
-  body: { response: string; resolve?: boolean }
-): Promise<{ data: { agentCase: VoiceAgentCase; session: VoiceSession } }> {
-  return apiFetch(`/voice/agent-cases/${encodeURIComponent(id)}/respond`, {
+  input: { text: string }
+): Promise<{ data: VoiceAnswer }> {
+  return apiFetch(`/voice/sessions/${encodeURIComponent(id)}/ask`, {
     method: 'POST',
-    body
+    body: input
   });
 }
 
-/* -- geo-verified credit (wave-geocredit, SHADOW MODE — never used in decisions) -- */
-
-export function fetchGeoCreditShadow(id: string): Promise<{ data: GeoCreditShadowScore }> {
-  return apiFetch(`/credit/applications/${encodeURIComponent(id)}/geo-shadow`);
+/** Plain `{ data: T[] }` envelope. */
+export function listVoiceTurns(sessionId: string): Promise<{ data: VoiceTurn[] }> {
+  return apiFetch(`/voice/sessions/${encodeURIComponent(sessionId)}/turns`);
 }
 
-export interface GeoShadowRecomputeReport {
-  mode: 'off' | 'shadow';
-  applications: number;
-  recomputed: number;
-  skipped: number;
-  unavailable: number;
-  failed: number;
-  computedAt: string;
-}
+export type EscalationCaseStatus = 'queued' | 'assigned' | 'answered' | 'closed';
 
-export function recomputeGeoCreditShadow(): Promise<{ data: GeoShadowRecomputeReport }> {
-  return apiFetch('/credit/geo-shadow/recompute', { method: 'POST' });
-}
-
-/* =================================================================
- * Parametric insurance rail (wave-insurance).
- * Mirrors apps/api/src/modules/insurance (insurance.controller). Plain
- * `{ data: T }` envelopes throughout. Admin/cron endpoints (evaluate-
- * triggers, expire, payout confirm) are role-gated server-side and not
- * called from the farmer UI.
- * ====================================================================== */
-
-export type { ParametricPayout, ParametricPolicy, ParametricProduct, ParametricQuote, ParametricTriggerEvent };
-
-export interface ParametricQuoteInput {
-  productCode: string;
-  plotId: string;
-  season: string;
-  sumInsuredKobo: number;
-}
-
-export interface ParametricQuoteResponse {
-  quote: ParametricQuote;
-  policy: ParametricPolicy;
-}
-
-export function fetchInsuranceProducts(): Promise<{ data: ParametricProduct[] }> {
-  return apiFetch('/insurance/products');
-}
-
-export function quoteParametricPolicy(
-  input: ParametricQuoteInput,
-  idempotencyKey?: string
-): Promise<{ data: ParametricQuoteResponse }> {
-  return apiFetch('/insurance/quotes', { method: 'POST', body: input, idempotencyKey });
-}
-
-export function issueInsurancePolicy(id: string): Promise<{ data: ParametricPolicy }> {
-  return apiFetch(`/insurance/policies/${encodeURIComponent(id)}/issue`, { method: 'POST' });
-}
-
-export function fetchMyInsurancePolicies(): Promise<{ data: ParametricPolicy[] }> {
-  return apiFetch('/insurance/policies/mine');
-}
-
-export function fetchMyInsuranceTriggerEvents(): Promise<{ data: ParametricTriggerEvent[] }> {
-  return apiFetch('/insurance/trigger-events');
-}
-
-export function fetchMyInsurancePayouts(): Promise<{ data: ParametricPayout[] }> {
-  return apiFetch('/insurance/payouts');
-}
-/* -- EUDR traceability passport (wave-eudr) -- */
-
-export type CustodyEventType =
-  | 'CREATED'
-  | 'AGGREGATED'
-  | 'SPLIT'
-  | 'TRANSFORMED'
-  | 'SHIPPED'
-  | 'RECEIVED';
-
-export interface CommodityLot {
+export interface EscalationCase {
   id: string;
-  ownerUserId: string;
-  crop: string;
-  variety?: string;
-  harvestWindowStart: string;
-  harvestWindowEnd: string;
-  quantity: number;
-  unit: string;
-  status: 'active' | 'aggregated' | 'split' | 'shipped' | 'received';
-  parentLotIds: string[];
+  sessionId?: string;
+  farmerUserId: string;
+  questionText: string;
+  cohort?: string;
+  status: EscalationCaseStatus;
+  assigneeUserId?: string;
+  answerText?: string;
+  qualityScore?: number;
+  slaDueAt: string;
+  slaBreached: boolean;
+  deliveryAttempts: number;
+  deliveryFailed: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface EscalationSlaReportRow {
+  cohort: string;
+  total: number;
+  answered: number;
+  breached: number;
+  answerRate: number;
+  breachRate: number;
+}
+
+/** Agronomist/supervisor queue, ordered by SLA deadline. */
+export function listEscalationCases(params?: {
+  status?: EscalationCaseStatus;
+  cohort?: string;
+}): Promise<{ data: EscalationCase[] }> {
+  return apiFetch('/agronomist/cases', { query: { ...params } });
+}
+
+export function fetchEscalationCase(id: string): Promise<{ data: EscalationCase }> {
+  return apiFetch(`/agronomist/cases/${encodeURIComponent(id)}`);
+}
+
+/** CAS claim: exactly one concurrent claimant wins (loser gets 409). */
+export function claimEscalationCase(id: string): Promise<{ data: EscalationCase }> {
+  return apiFetch(`/agronomist/cases/${encodeURIComponent(id)}/claim`, { method: 'POST' });
+}
+
+/** Record + dispatch the answer via SMS; case only closes when the channel confirms. */
+export function answerEscalationCase(
+  id: string,
+  input: { answerText: string }
+): Promise<{ data: EscalationCase }> {
+  return apiFetch(`/agronomist/cases/${encodeURIComponent(id)}/answer`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/** Supervisor quality sampling (score 1-5; close=true closes the case). */
+export function scoreEscalationCaseQuality(
+  id: string,
+  input: { score: number; close?: boolean }
+): Promise<{ data: EscalationCase }> {
+  return apiFetch(`/agronomist/cases/${encodeURIComponent(id)}/quality`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function fetchEscalationSlaReport(
+  cohort?: string
+): Promise<{ data: EscalationSlaReportRow[] }> {
+  return apiFetch('/agronomist/sla-report', { query: cohort ? { cohort } : {} });
+}
+
+/* ========================================================================
+ * Traceability & EUDR DDS (traceability wave).
+ * Mirrors apps/api/src/modules/traceability (traceability.controller).
+ * ====================================================================== */
+
+export type TraceabilityLotStatus = 'active' | 'aggregated' | 'shipped' | 'closed';
+
+export interface TraceabilityLot {
+  id: string;
+  commodity: string;
+  quantityKg: number;
+  originPlotId?: string;
+  parentLotIds: string[];
+  status: TraceabilityLotStatus;
+  createdBy: string;
+  createdAt: string;
 }
 
 export interface CustodyEvent {
   id: string;
   lotId: string;
-  seq: number;
-  type: CustodyEventType;
-  actorId: string;
-  occurredAt: string;
-  latitude: number;
-  longitude: number;
-  h3Cell?: string;
-  quantity?: number;
-  unit?: string;
-  parentLotIds: string[];
-  note?: string;
-  prevEventHash: string;
-  eventHash: string;
-  createdAt: string;
+  fromActorId: string;
+  toActorId: string;
+  locationText?: string;
+  recordedAt: string;
 }
 
-export interface EventVerification {
-  eventId: string;
-  lotId: string;
-  seq: number;
-  type: CustodyEventType;
-  hashValid: boolean;
-  prevLinkValid: boolean;
-  valid: boolean;
-  expectedHash: string;
-  storedHash: string;
-}
-
-export interface ChainVerification {
-  lotId: string;
-  eventCount: number;
-  valid: boolean;
-  events: EventVerification[];
-}
-
-export interface LotTimeline {
-  lot: CommodityLot;
-  events: CustodyEvent[];
-  verification: ChainVerification;
-}
-
-export interface TraceabilityShipment {
+export interface DueDiligenceStatement {
   id: string;
-  creatorId: string;
-  creatorKind: 'user' | 'partner';
-  reference?: string;
-  status: 'created' | 'exported';
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface EudrDds {
-  statementVersion: '1.0';
-  generatedAt: string;
-  ddsReference: string;
-  operator: {
-    status: 'TO_BE_COMPLETED_BY_EXPORTER';
-    legalName: string | null;
-    eori: string | null;
-    address: string | null;
-    note: string;
-  };
-  commodity: { description: string; crops: string[] };
-  quantity: { value: number; unit: string };
-  countryOfProduction: 'NG';
-  productionPlots: Array<{
-    plotId: string;
-    lotId: string;
-    latitude: number;
-    longitude: number;
-    h3Cell?: string;
-    snapshotAt: string;
-  }>;
-  harvestWindow: { start: string; end: string };
-  custodySummary: {
-    lotCount: number;
-    eventCount: number;
-    firstEventAt?: string;
-    lastEventAt?: string;
-    eventTypes: string[];
-  };
-  deforestationRisk: {
-    basis: 'live' | 'stub' | 'unavailable' | 'none';
-    note: string;
-    assessments: Array<{
-      plotId: string;
-      basis: string;
-      floodDetected?: boolean;
-      severity?: string;
-      source?: string;
-      detail?: string;
-    }>;
-  };
-  chainIntegrity: {
-    verified: boolean;
-    eventCount: number;
-    lots: Array<{ lotId: string; valid: boolean; eventCount: number; headHash?: string }>;
-    verifiedAt: string;
-  };
-  disclaimers: string[];
-}
-
-export interface ShipmentVerification {
   shipmentId: string;
-  allValid: boolean;
-  eventCount: number;
-  lots: ChainVerification[];
+  referenceNumber: string;
+  status: 'draft' | 'validated' | 'exported';
+  geojsonValidated: boolean;
+  validatedAt?: string;
+  exportedAt?: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }
 
-export interface CreateCommodityLotInput {
-  crop: string;
-  variety?: string;
-  harvestWindowStart: string;
-  harvestWindowEnd: string;
-  quantity: number;
-  unit: string;
-}
-
-export interface AddCustodyEventInput {
-  type: CustodyEventType;
-  occurredAt: string;
-  latitude: number;
-  longitude: number;
-  h3Cell?: string;
-  quantity?: number;
-  unit?: string;
-  note?: string;
-}
-
-export function listCommodityLots(): Promise<{ data: CommodityLot[] }> {
-  return apiFetch('/traceability/lots');
-}
-
-export function createCommodityLot(
-  input: CreateCommodityLotInput,
+export function createTraceabilityLot(
+  input: { commodity: string; quantityKg: number; originPlotId?: string },
   idempotencyKey?: string
-): Promise<{ data: CommodityLot }> {
+): Promise<{ data: TraceabilityLot }> {
   return apiFetch('/traceability/lots', { method: 'POST', body: input, idempotencyKey });
 }
 
-export function fetchLotTimeline(lotId: string): Promise<{ data: LotTimeline }> {
-  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/timeline`);
+/** Plain `{ data: T[] }` envelope. */
+export function listTraceabilityLots(params?: {
+  status?: TraceabilityLotStatus;
+}): Promise<{ data: TraceabilityLot[] }> {
+  return apiFetch('/traceability/lots', { query: { ...params } });
 }
 
-export function addCustodyEvent(
+export function fetchTraceabilityLot(id: string): Promise<{ data: TraceabilityLot }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(id)}`);
+}
+
+export function recordCustodyEvent(
   lotId: string,
-  input: AddCustodyEventInput,
+  input: { toActorId: string; locationText?: string },
   idempotencyKey?: string
 ): Promise<{ data: CustodyEvent }> {
-  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/events`, {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/custody`, {
     method: 'POST',
     body: input,
     idempotencyKey
   });
 }
 
-export function createTraceabilityShipment(
-  input: { lotIds: string[]; reference?: string },
+/** Plain `{ data: T[] }` envelope. */
+export function listCustodyEvents(lotId: string): Promise<{ data: CustodyEvent[] }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(lotId)}/custody`);
+}
+
+export function aggregateTraceabilityLots(
+  input: { parentLotIds: string[]; commodity: string },
   idempotencyKey?: string
-): Promise<{ data: { shipment: TraceabilityShipment; lots: CommodityLot[] } }> {
+): Promise<{ data: TraceabilityLot }> {
+  return apiFetch('/traceability/lots/aggregate', {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function splitTraceabilityLot(
+  id: string,
+  input: { quantitiesKg: number[] },
+  idempotencyKey?: string
+): Promise<{ data: TraceabilityLot[] }> {
+  return apiFetch(`/traceability/lots/${encodeURIComponent(id)}/split`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export interface ShipmentVerification {
+  shipmentId: string;
+  ddsId: string;
+  referenceNumber: string;
+  valid: boolean;
+  checks: Array<{ name: string; passed: boolean; detail?: string }>;
+}
+
+export function createTraceabilityShipment(
+  input: { lotIds: string[]; destinationCountry: string; eudr: boolean },
+  idempotencyKey?: string
+): Promise<{ data: { id: string } }> {
   return apiFetch('/traceability/shipments', { method: 'POST', body: input, idempotencyKey });
 }
 
-export function fetchShipmentDds(shipmentId: string): Promise<{ data: EudrDds }> {
-  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds`);
+export function createShipmentDds(
+  shipmentId: string
+): Promise<{ data: DueDiligenceStatement }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds`, {
+    method: 'POST'
+  });
+}
+
+export function validateShipmentDds(
+  shipmentId: string
+): Promise<{ data: DueDiligenceStatement }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/validate`, {
+    method: 'POST'
+  });
+}
+
+export function exportShipmentDds(
+  shipmentId: string
+): Promise<{ data: DueDiligenceStatement }> {
+  return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/export`, {
+    method: 'POST'
+  });
 }
 
 export function verifyShipmentDds(shipmentId: string): Promise<{ data: ShipmentVerification }> {
   return apiFetch(`/traceability/shipments/${encodeURIComponent(shipmentId)}/dds/verify`);
 }
 
-/* -------- mechanization marketplace (wave-mechanization) -------- */
+/* ========================================================================
+ * Agent banking float + vouchers (wave-agentbank).
+ * Mirrors apps/api/src/modules/agent-banking (agent-banking.controller).
+ * ====================================================================== */
 
-import type {
-  EquipmentBooking,
-  EquipmentListing,
-  EquipmentType,
-  MechBookingStatus,
-  OperatorVerificationStatus,
-  OwnerUtilizationStats
-} from '@agric-platform/shared';
+export type AgentVoucherStatus = 'issued' | 'redeemed' | 'refunded' | 'voided' | 'refund_due';
+export type AgentTopUpStatus = 'requested' | 'decided' | 'settled';
+export type AgentReversalStatus = 'initiated' | 'posted' | 'rejected';
 
-export function listEquipmentListings(params: {
-  type?: EquipmentType;
-  h3Cell?: string;
-  lat?: number;
-  long?: number;
-  availableFrom?: string;
-  availableTo?: string;
-} = {}): Promise<{ data: EquipmentListing[] }> {
-  return apiFetch('/mechanization/listings', { query: { ...params } });
+export interface AgentVoucher {
+  id: string;
+  agentId: string;
+  amountKobo: number;
+  status: AgentVoucherStatus;
+  qrPayload: string;
+  issuedAt: string;
+  redeemedAt?: string;
+  refundedAt?: string;
+  voidedAt?: string;
 }
 
-export function fetchEquipmentListing(id: string): Promise<{ data: EquipmentListing }> {
-  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}`);
+export interface AgentTopUp {
+  id: string;
+  agentId: string;
+  amountKobo: number;
+  status: AgentTopUpStatus;
+  decision?: 'approved' | 'declined';
+  decisionReason?: string;
+  createdAt: string;
+  settledAt?: string;
 }
 
-export function createEquipmentListing(input: {
-  ownerType: EquipmentListing['ownerType'];
-  type: EquipmentType;
-  title: string;
-  description?: string;
-  specs?: Record<string, unknown>;
-  baseLat: number;
-  baseLong: number;
-  serviceAreaResolution: number;
-  serviceAreaRing: number;
-  rates: EquipmentListing['rates'];
-  availability: { start: string; end: string }[];
-  operatorLicenseRef?: string;
-}): Promise<{ data: EquipmentListing }> {
-  return apiFetch('/mechanization/listings', { method: 'POST', body: input });
+export interface AgentReversal {
+  id: string;
+  voucherId: string;
+  reason: string;
+  status: AgentReversalStatus;
+  createdAt: string;
+  resolvedAt?: string;
 }
 
-export function listMyEquipmentListings(): Promise<{ data: EquipmentListing[] }> {
-  return apiFetch('/mechanization/listings/mine');
+export interface AgentFloatForecast {
+  agentId: string;
+  horizonDays: number;
+  projectedShortfallKobo: number;
+  recommendedTopUpKobo: number;
+  basis: 'stub' | 'live';
 }
 
-export function setEquipmentListingStatus(
-  id: string,
-  status: EquipmentListing['status']
-): Promise<{ data: EquipmentListing }> {
-  return apiFetch(`/mechanization/listings/${encodeURIComponent(id)}/status`, {
-    method: 'POST',
-    body: { status }
-  });
+export interface AgentRebalanceAlert {
+  id: string;
+  agentId: string;
+  shortfallKobo: number;
+  raisedAt: string;
+  resolvedAt?: string;
 }
 
-export function requestEquipmentBooking(
-  listingId: string,
-  input: {
-    plotId?: string;
-    plotLat: number;
-    plotLong: number;
-    areaHa: number;
-    estimatedHours?: number;
-    windowStart: string;
-    windowEnd: string;
-  },
+/** Issue a float voucher for an agent (idempotent). */
+export function issueAgentVoucher(
+  agentId: string,
+  input: { amountKobo: number },
   idempotencyKey?: string
-): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/listings/${encodeURIComponent(listingId)}/bookings`, {
+): Promise<{ data: AgentVoucher }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/vouchers`, {
     method: 'POST',
     body: input,
     idempotencyKey
   });
 }
 
-/** Own bookings (farmer), newest first. Plain `{ data: T[] }` envelope. */
-export function listMyEquipmentBookings(): Promise<{ data: EquipmentBooking[] }> {
-  return apiFetch('/mechanization/bookings/mine');
-}
-
-/** Owner booking queue. Plain `{ data: T[] }` envelope. */
-export function listOwnerEquipmentBookings(params: {
-  status?: MechBookingStatus;
-} = {}): Promise<{ data: EquipmentBooking[] }> {
-  return apiFetch('/mechanization/bookings/queue', { query: { ...params } });
-}
-
-export function fetchEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}`);
-}
-
-export function quoteEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/quote`, { method: 'POST' });
-}
-
-export function confirmEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
-}
-
-export function startEquipmentService(id: string): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/start`, { method: 'POST' });
-}
-
-export function completeEquipmentBooking(id: string): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/complete`, { method: 'POST' });
-}
-
-export function cancelEquipmentBooking(
-  id: string,
-  reason?: string
-): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/cancel`, {
-    method: 'POST',
-    body: { reason }
-  });
-}
-
-export function rateEquipmentBooking(
-  id: string,
-  rating: number,
-  comment?: string
-): Promise<{ data: EquipmentBooking }> {
-  return apiFetch(`/mechanization/bookings/${encodeURIComponent(id)}/rate`, {
-    method: 'POST',
-    body: { rating, comment }
-  });
-}
-
-export function fetchOwnerUtilization(): Promise<{ data: OwnerUtilizationStats }> {
-  return apiFetch('/mechanization/owner/stats');
-}
-
-export type { EquipmentBooking, EquipmentListing, MechBookingStatus, OperatorVerificationStatus };
-
-/* --- agent banking (wave-agentbank) --- */
-
-export type AgentBankingStatus = 'PENDING' | 'ACTIVE' | 'SUSPENDED';
-export type AgentTopUpStatus = 'REQUESTED' | 'APPROVED' | 'SETTLED' | 'REJECTED';
-export type AgentVoucherStatus = 'ISSUED' | 'REDEEMED' | 'EXPIRED' | 'VOIDED';
-export type AgentTransactionType = 'cash_in' | 'cash_out' | 'voucher_redemption';
-
-export interface AgentBankingAgent {
-  id: string;
-  userId: string;
-  organisation: string;
-  status: AgentBankingStatus;
-  floatAccountCode: string;
-  commissionAccountCode: string;
-  dailyLimitKobo: number;
-  lowFloatThresholdKobo: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface AgentFloatBalance {
-  agentId: string;
-  floatAccountCode: string;
-  balanceKobo: number;
-  lowFloatThresholdKobo: number;
-  lowFloat: boolean;
-}
-
-export interface AgentFloatTopUp {
-  id: string;
-  agentId: string;
-  amountKobo: number;
-  status: AgentTopUpStatus;
-  requestedBy: string;
-  decidedBy?: string;
-  decidedAt?: string;
-  settledAt?: string;
-  ledgerEntryId?: string;
-  rejectionReason?: string;
-  createdAt: string;
-}
-
-export interface AgentTransaction {
-  id: string;
-  agentId: string;
-  farmerId: string;
-  type: AgentTransactionType;
-  amountKobo: number;
-  commissionKobo: number;
-  idempotencyKey: string;
-  ledgerEntryId: string;
-  voucherId?: string;
-  createdAt: string;
-}
-
-export interface AgentVoucher {
-  id: string;
-  agentId: string;
-  farmerId: string;
-  amountKobo: number;
-  expiresAt: string;
-  nonce: string;
-  signature: string;
-  status: AgentVoucherStatus;
-  redeemedAt?: string;
-  ledgerEntryId?: string;
-  createdAt: string;
-}
-
-export interface AgentCommissionStatement {
-  agentId: string;
-  month: string;
-  rows: Array<{
-    type: AgentTransactionType;
-    count: number;
-    volumeKobo: number;
-    commissionKobo: number;
-  }>;
-  totalCommissionKobo: number;
-  commissionPayableKobo: number;
-}
-
-export interface AgentReconciliation {
-  agentId: string;
-  date: string;
-  openingFloatKobo: number;
-  closingFloatKobo: number;
-  volumeByType: Record<'cash_in' | 'cash_out' | 'voucher_redemption' | 'float_topup', number>;
-  commissionAccruedKobo: number;
-  transactionCount: number;
-}
-
-/** Own agent profile (agent self-service). */
-export function fetchMyAgentProfile(): Promise<{ data: AgentBankingAgent }> {
-  return apiFetch('/agent-banking/agents/me');
-}
-
-export function fetchAgentFloat(agentId: string): Promise<{ data: AgentFloatBalance }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/float`);
-}
-
-export function requestAgentTopUp(
-  agentId: string,
-  amountKobo: number
-): Promise<{ data: AgentFloatTopUp }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/top-ups`, {
-    method: 'POST',
-    body: { amountKobo }
-  });
-}
-
-export function fetchAgentTopUps(agentId: string): Promise<{ data: AgentFloatTopUp[] }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/top-ups`);
-}
-
-/** Supervisor/admin approval queue. */
-export function fetchTopUpQueue(status?: AgentTopUpStatus): Promise<{ data: AgentFloatTopUp[] }> {
-  return apiFetch('/agent-banking/top-ups', { query: { status } });
-}
-
-export function approveTopUp(id: string): Promise<{ data: AgentFloatTopUp }> {
-  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/approve`, { method: 'POST' });
-}
-
-export function rejectTopUp(id: string, reason: string): Promise<{ data: AgentFloatTopUp }> {
-  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/reject`, {
-    method: 'POST',
-    body: { reason }
-  });
-}
-
-export function settleTopUp(id: string): Promise<{ data: AgentFloatTopUp }> {
-  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(id)}/settle`, { method: 'POST' });
-}
-
-export function fetchAgentTransactions(
-  agentId: string,
-  filter?: { type?: AgentTransactionType; from?: string; to?: string }
-): Promise<{ data: AgentTransaction[] }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/transactions`, {
-    query: { type: filter?.type, from: filter?.from, to: filter?.to }
-  });
-}
-
-export function issueAgentVoucher(
-  agentId: string,
-  input: { farmerId: string; amountKobo: number }
-): Promise<{ data: AgentVoucher }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/vouchers`, {
-    method: 'POST',
-    body: input
-  });
-}
-
+/** Plain `{ data: T[] }` envelope. */
 export function fetchAgentVouchers(
   agentId: string,
   status?: AgentVoucherStatus
@@ -3894,285 +3502,170 @@ export function fetchAgentVouchers(
 }
 
 export function redeemAgentVoucher(
-  id: string,
-  signature?: string
-): Promise<{ data: { voucher: AgentVoucher; transaction: AgentTransaction } }> {
-  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(id)}/redeem`, {
+  voucherId: string,
+  idempotencyKey?: string
+): Promise<{ data: AgentVoucher }> {
+  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(voucherId)}/redeem`, {
     method: 'POST',
-    body: { signature }
+    idempotencyKey
   });
 }
 
-export function fetchAgentCommissionStatement(
-  agentId: string,
-  month: string
-): Promise<{ data: AgentCommissionStatement }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/commissions`, {
-    query: { month }
-  });
-}
-
-export function fetchAgentReconciliation(
-  agentId: string,
-  date: string
-): Promise<{ data: AgentReconciliation }> {
-  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/reconciliation`, {
-    query: { date }
-  });
-}
-
-/* --- end agent banking (wave-agentbank) --- */
-
-/* --- input vouchers (wave-nin-vouchers) --- */
-
-export type SubsidyProgrammeStatus = 'DRAFT' | 'ACTIVE' | 'CLOSED';
-export type SubsidyVoucherStatus = 'ISSUED' | 'REDEEMED' | 'EXPIRED' | 'VOIDED';
-export type IdentityBasis = 'stub' | 'live';
-
-export interface SubsidyProgramme {
-  id: string;
-  name: string;
-  sponsor: string;
-  description?: string;
-  status: SubsidyProgrammeStatus;
-  perFarmerCapKobo: number;
-  budgetKobo: number;
-  eligibleStates: string[];
-  eligibleCrops: string[];
-  liabilityAccountCode: string;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SubsidyBeneficiary {
-  id: string;
-  programmeId: string;
-  farmerId: string;
-  /** Salted HMAC hash — the plaintext NIN is never stored or returned. */
-  ninHash: string;
-  ninMask: string;
-  verificationBasis: IdentityBasis;
-  nameMatchScore?: number;
-  state?: string;
-  primaryCrop?: string;
-  verifiedAt: string;
-  createdAt: string;
-}
-
-export interface SubsidyVoucher {
-  id: string;
-  programmeId: string;
-  beneficiaryId: string;
-  farmerId: string;
-  amountKobo: number;
-  status: SubsidyVoucherStatus;
-  idempotencyKey: string;
-  expiresAt: string;
-  distributedAt?: string;
-  redeemedAt?: string;
-  voidedAt?: string;
-  ledgerEntryId?: string;
-  createdAt: string;
-}
-
-export interface SubsidyRedemption {
-  id: string;
-  voucherId: string;
-  programmeId: string;
-  supplierId: string;
-  invoiceRef: string;
-  amountKobo: number;
-  idempotencyKey: string;
-  ledgerEntryId: string;
-  createdAt: string;
-}
-
-export interface SubsidyReconciliation {
-  programmeId: string;
-  budgetKobo: number;
-  totals: {
-    vouchersIssued: number;
-    allocatedKobo: number;
-    outstandingCount: number;
-    outstandingKobo: number;
-    redeemedCount: number;
-    redeemedKobo: number;
-    expiredCount: number;
-    expiredKobo: number;
-    voidedCount: number;
-    voidedKobo: number;
-    beneficiariesVerified: number;
-  };
-  byState: Array<{
-    state: string;
-    vouchersIssued: number;
-    outstandingKobo: number;
-    redeemedKobo: number;
-  }>;
-  ledger: {
-    liabilityAccountCode: string;
-    liabilityKobo: number;
-    expectedLiabilityKobo: number;
-    discrepancyKobo: number;
-  };
-  generatedAt: string;
-}
-
-export interface SubsidyIdentityStatus {
-  driver: IdentityBasis;
-  configured: boolean;
-  detail: string;
-}
-
-/** Programmes (admin create; admin/regulator/donor read). */
-export function fetchSubsidyProgrammes(status?: SubsidyProgrammeStatus): Promise<{ data: SubsidyProgramme[] }> {
-  return apiFetch('/input-vouchers/programmes', { query: { status } });
-}
-
-export function createSubsidyProgramme(input: {
-  name: string;
-  sponsor: string;
-  description?: string;
-  perFarmerCapKobo: number;
-  budgetKobo: number;
-  eligibleStates?: string[];
-  eligibleCrops?: string[];
-}): Promise<{ data: SubsidyProgramme }> {
-  return apiFetch('/input-vouchers/programmes', { method: 'POST', body: input });
-}
-
-export function activateSubsidyProgramme(id: string): Promise<{ data: SubsidyProgramme }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-}
-
-export function closeSubsidyProgramme(id: string): Promise<{ data: SubsidyProgramme }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(id)}/close`, { method: 'POST' });
-}
-
-/** Beneficiary enrolment (admin; NIN verified then discarded — hash + mask only). */
-export function verifySubsidyBeneficiary(
-  programmeId: string,
-  input: { farmerId: string; nin: string; fullName: string; state?: string; primaryCrop?: string }
-): Promise<{ data: SubsidyBeneficiary }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/beneficiaries`, {
+export function refundAgentVoucher(
+  voucherId: string,
+  idempotencyKey?: string
+): Promise<{ data: AgentVoucher }> {
+  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(voucherId)}/refund`, {
     method: 'POST',
-    body: input
+    idempotencyKey
   });
 }
 
-export function fetchSubsidyBeneficiaries(programmeId: string): Promise<{ data: SubsidyBeneficiary[] }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/beneficiaries`);
-}
-
-/** Voucher lifecycle. */
-export function allocateSubsidyVoucher(
-  programmeId: string,
-  input: { farmerId: string; amountKobo: number; idempotencyKey: string; expiresAt?: string }
-): Promise<{ data: SubsidyVoucher }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/vouchers`, {
-    method: 'POST',
-    body: input
-  });
-}
-
-export function fetchProgrammeVouchers(
-  programmeId: string,
-  status?: SubsidyVoucherStatus
-): Promise<{ data: SubsidyVoucher[] }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/vouchers`, {
-    query: { status }
-  });
-}
-
-export function fetchMySubsidyVouchers(status?: SubsidyVoucherStatus): Promise<{ data: SubsidyVoucher[] }> {
-  return apiFetch('/input-vouchers/farmers/me/vouchers', { query: { status } });
-}
-
-export function distributeSubsidyVoucher(id: string): Promise<{ data: SubsidyVoucher }> {
-  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/distribute`, { method: 'POST' });
-}
-
-export function redeemSubsidyVoucher(
-  id: string,
-  invoiceRef: string
-): Promise<{ data: { voucher: SubsidyVoucher; redemption: SubsidyRedemption } }> {
-  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/redeem`, {
-    method: 'POST',
-    body: { invoiceRef }
-  });
-}
-
-export function voidSubsidyVoucher(id: string): Promise<{ data: SubsidyVoucher }> {
-  return apiFetch(`/input-vouchers/vouchers/${encodeURIComponent(id)}/void`, { method: 'POST' });
-}
-
-/** Reconciliation export (admin/regulator/donor) + identity adapter diagnostics (admin). */
-export function fetchSubsidyReconciliation(programmeId: string): Promise<{ data: SubsidyReconciliation }> {
-  return apiFetch(`/input-vouchers/programmes/${encodeURIComponent(programmeId)}/reconciliation`);
-}
-
-export function fetchSubsidyIdentityStatus(): Promise<{ data: SubsidyIdentityStatus }> {
-  return apiFetch('/input-vouchers/identity/status');
-}
-
-/* --- end input vouchers (wave-nin-vouchers) --- */
-/* --- warehouse receipts (wave-warehouse) --- */
-
-import type {
-  CertifiedWarehouse,
-  WarehouseCertificationStatus,
-  WarehouseDeposit,
-  WarehouseGrade,
-  WarehousePledge,
-  WarehouseReceipt,
-  WarehouseReceiptTransfer,
-  WarehouseRegistryExport
-} from '@agric-platform/shared';
-
-export interface WarehouseIntegrationStatus {
-  certificationDriver: 'stub' | 'live';
-  collateralRegistryDriver: 'stub' | 'live';
-}
-
-export function listWarehouses(params: {
-  state?: string;
-  lga?: string;
-  certificationStatus?: WarehouseCertificationStatus;
-} = {}): Promise<{ data: CertifiedWarehouse[] }> {
-  return apiFetch('/warehouse/warehouses', { query: { ...params } });
-}
-
-export function fetchWarehouse(id: string): Promise<{ data: CertifiedWarehouse }> {
-  return apiFetch(`/warehouse/warehouses/${encodeURIComponent(id)}`);
-}
-
-export function registerWarehouse(input: {
-  name: string;
-  state: string;
-  lga: string;
-  latitude: number;
-  longitude: number;
-  capacityTonnes: number;
-  operatorLicenseRef?: string;
-}): Promise<{ data: CertifiedWarehouse }> {
-  return apiFetch('/warehouse/warehouses', { method: 'POST', body: input });
-}
-
-export function refreshWarehouseCertification(id: string): Promise<{ data: CertifiedWarehouse }> {
-  return apiFetch(`/warehouse/warehouses/${encodeURIComponent(id)}/certification`, {
+export function voidAgentVoucher(voucherId: string): Promise<{ data: AgentVoucher }> {
+  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(voucherId)}/void`, {
     method: 'POST'
   });
 }
 
-export function createWarehouseDeposit(input: {
-  warehouseId: string;
-  lotId?: string;
-  crop: string;
-}): Promise<{ data: WarehouseDeposit }> {
-  return apiFetch('/warehouse/deposits', { method: 'POST', body: input });
+export function requestAgentTopUp(
+  agentId: string,
+  input: { amountKobo: number },
+  idempotencyKey?: string
+): Promise<{ data: AgentTopUp }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/top-ups`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
 }
 
+export function decideAgentTopUp(
+  topUpId: string,
+  input: { decision: 'approved' | 'declined'; reason?: string }
+): Promise<{ data: AgentTopUp }> {
+  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(topUpId)}/decision`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+export function settleAgentTopUp(topUpId: string): Promise<{ data: AgentTopUp }> {
+  return apiFetch(`/agent-banking/top-ups/${encodeURIComponent(topUpId)}/settle`, {
+    method: 'POST'
+  });
+}
+
+export function initiateAgentReversal(
+  voucherId: string,
+  input: { reason: string },
+  idempotencyKey?: string
+): Promise<{ data: AgentReversal }> {
+  return apiFetch(`/agent-banking/vouchers/${encodeURIComponent(voucherId)}/reversals`, {
+    method: 'POST',
+    body: input,
+    idempotencyKey
+  });
+}
+
+export function resolveAgentReversal(
+  reversalId: string,
+  input: { outcome: 'posted' | 'rejected' }
+): Promise<{ data: AgentReversal }> {
+  return apiFetch(`/agent-banking/reversals/${encodeURIComponent(reversalId)}/resolve`, {
+    method: 'POST',
+    body: input
+  });
+}
+
+/** Forecast horizon in days (default 7); basis label is honest stub/live. */
+export function fetchAgentFloatForecast(
+  agentId: string,
+  horizonDays?: number
+): Promise<{ data: AgentFloatForecast }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/forecast`, {
+    query: { horizonDays }
+  });
+}
+
+/** Plain `{ data: T[] }` envelope. */
+export function fetchAgentRebalanceAlerts(
+  agentId: string
+): Promise<{ data: AgentRebalanceAlert[] }> {
+  return apiFetch(`/agent-banking/agents/${encodeURIComponent(agentId)}/rebalance-alerts`);
+}
+
+/* ========================================================================
+ * Warehouse receipts (wave-warehouse).
+ * Mirrors apps/api/src/modules/warehouse (warehouse.controller).
+ * ====================================================================== */
+
+export type WarehouseGrade = 'A' | 'B' | 'C';
+export type WarehouseReceiptStatus = 'issued' | 'pledged' | 'released' | 'redeemed' | 'split' | 'transferred';
+export type WarehousePledgeStatus = 'active' | 'released' | 'defaulted';
+
+export interface WarehouseDeposit {
+  id: string;
+  warehouseId: string;
+  ownerUserId: string;
+  commodity: string;
+  bagCount: number;
+  weightKg: number;
+  grade?: WarehouseGrade;
+  moisturePercent?: number;
+  receivedAt: string;
+  gradedAt?: string;
+}
+
+export interface WarehouseReceipt {
+  id: string;
+  depositId: string;
+  receiptNumber: string;
+  ownerUserId: string;
+  status: WarehouseReceiptStatus;
+  issuedAt: string;
+  updatedAt: string;
+}
+
+export interface WarehousePledge {
+  id: string;
+  receiptId: string;
+  lenderUserId: string;
+  principalKobo: number;
+  status: WarehousePledgeStatus;
+  terms?: string;
+  createdAt: string;
+  releasedAt?: string;
+}
+
+export interface WarehouseReceiptTransfer {
+  id: string;
+  receiptId: string;
+  fromOwnerId: string;
+  toOwnerId: string;
+  note?: string;
+  transferredAt: string;
+}
+
+export interface WarehouseRegistryExport {
+  generatedAt: string;
+  receipts: WarehouseReceipt[];
+  pledges: WarehousePledge[];
+}
+
+export interface WarehouseIntegrationStatus {
+  registry: { configured: boolean; driver: string };
+  valuation: { configured: boolean; driver: string };
+}
+
+/** Register a deposit (before grading). */
+export function createWarehouseDeposit(
+  input: { warehouseId: string; commodity: string; bagCount: number; weightKg: number },
+  idempotencyKey?: string
+): Promise<{ data: WarehouseDeposit }> {
+  return apiFetch('/warehouse/deposits', { method: 'POST', body: input, idempotencyKey });
+}
+
+/** Plain `{ data: T[] }` envelope. */
 export function listMyWarehouseDeposits(): Promise<{ data: WarehouseDeposit[] }> {
   return apiFetch('/warehouse/deposits/mine');
 }
@@ -4181,6 +3674,7 @@ export function fetchWarehouseDeposit(id: string): Promise<{ data: WarehouseDepo
   return apiFetch(`/warehouse/deposits/${encodeURIComponent(id)}`);
 }
 
+/** Grade a deposit (warehouse operator/admin). */
 export function gradeWarehouseDeposit(
   id: string,
   input: { grade: WarehouseGrade; moisturePercent: number; bagCount: number; weightKg: number }
