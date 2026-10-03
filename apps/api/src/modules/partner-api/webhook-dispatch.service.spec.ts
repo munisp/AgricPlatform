@@ -24,7 +24,8 @@ const PUBLIC_LOOKUP: WebhookDnsLookup = async () => [{ address: '93.184.216.34',
 function makeService(
   subscriptions: Array<Partial<import('../../database/repositories/partner-api.repository.js').WebhookSubscription>>,
   fetchImpl: WebhookFetch,
-  lookup: WebhookDnsLookup = PUBLIC_LOOKUP
+  lookup: WebhookDnsLookup = PUBLIC_LOOKUP,
+  outbox: DomainEvent[] = []
 ) {
   const repo = createInMemoryWebhookSubscriptionRepository(
     subscriptions.map((sub, index) => ({
@@ -39,7 +40,7 @@ function makeService(
       createdAt: new Date().toISOString()
     }))
   );
-  const events = { on: vi.fn(), publish: vi.fn() };
+  const events = { on: vi.fn(), publish: vi.fn(), listOutbox: async () => outbox };
   const service = new WebhookDispatchService(
     events as never,
     repo,
@@ -159,6 +160,162 @@ describe('WebhookDispatchService', () => {
       await service.dispatchOnce('disbursement.recorded', ev);
       await service.dispatchOnce('disbursement.recorded', ev);
       expect(calls).toBe(0);
+    });
+  });
+
+  describe('redriveFailed (GAP-H06)', () => {
+    function outboxEvent(id: string, name: string, payload: unknown): DomainEvent {
+      return { id, name, payload, occurredAt: new Date().toISOString() };
+    }
+
+    it('re-drives a failed delivery from the outbox and marks it processed', async () => {
+      const deliveryIds: string[] = [];
+      let calls = 0;
+      const fetchImpl: WebhookFetch = async (_url, init) => {
+        calls += 1;
+        deliveryIds.push(init.headers['x-agric-delivery']);
+        return { status: 200 };
+      };
+      const ev = outboxEvent('event-redrive-1', 'partner.disbursement.recorded', { id: 'disb-9' });
+      const { service } = makeService(
+        [{ eventTypes: ['disbursement.recorded'], targetUrl: 'https://a.example/hook' }],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        [ev]
+      );
+
+      // The original dispatch failed (event never marked processed) — the
+      // outbox row exists but the delivery was lost on the stub-bus path.
+      const result = await service.redriveFailed();
+      expect(result).toEqual({ scanned: 1, attempted: 1, redelivered: 1, failed: 0 });
+      expect(calls).toBe(1);
+      // Stable per-event delivery id: the receiver dedupes the re-drive
+      // against the original attempt.
+      expect(deliveryIds).toEqual([`whd_${ev.id}`]);
+
+      // Now marked processed: a subsequent pass does not re-deliver.
+      const second = await service.redriveFailed();
+      expect(second).toEqual({ scanned: 1, attempted: 0, redelivered: 0, failed: 0 });
+      expect(calls).toBe(1);
+    });
+
+    it('skips events already delivered (marked processed)', async () => {
+      const fetchImpl = vi.fn(async () => ({ status: 200 }));
+      const ev = outboxEvent('event-done-1', 'learning.enrolment.created', {});
+      const { service } = makeService(
+        [{ eventTypes: ['enrolment.created'] }],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        [ev]
+      );
+      await service.dispatchOnce('enrolment.created', ev);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      const result = await service.redriveFailed();
+      expect(result).toEqual({ scanned: 1, attempted: 0, redelivered: 0, failed: 0 });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries the full fan-out when only some subscriptions failed (partial fan-out)', async () => {
+      const seen: Array<{ url: string; deliveryId: string }> = [];
+      let aOk = false;
+      const fetchImpl: WebhookFetch = async (url, init) => {
+        seen.push({ url, deliveryId: init.headers['x-agric-delivery'] });
+        return { status: url === 'https://a.example/hook' && !aOk ? 500 : 200 };
+      };
+      const ev = outboxEvent('event-partial-1', 'partner.disbursement.recorded', { id: 'disb-7' });
+      const { service } = makeService(
+        [
+          { eventTypes: ['disbursement.recorded'], targetUrl: 'https://a.example/hook' },
+          { eventTypes: ['disbursement.recorded'], targetUrl: 'https://b.example/hook' }
+        ],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        [ev]
+      );
+
+      // 1 of 2 deliveries fails: the event stays unprocessed.
+      const first = await service.redriveFailed();
+      expect(first).toEqual({ scanned: 1, attempted: 1, redelivered: 0, failed: 1 });
+
+      aOk = true;
+      const second = await service.redriveFailed();
+      expect(second).toEqual({ scanned: 1, attempted: 1, redelivered: 1, failed: 0 });
+
+      // At-least-once fan-out: the already-delivered subscription sees the
+      // delivery again under the SAME stable delivery id (receiver dedupes).
+      const bDeliveries = seen.filter((s) => s.url === 'https://b.example/hook');
+      expect(bDeliveries).toHaveLength(2);
+      expect(bDeliveries.map((s) => s.deliveryId)).toEqual([`whd_${ev.id}`, `whd_${ev.id}`]);
+
+      // Marked processed now: no further deliveries.
+      const third = await service.redriveFailed();
+      expect(third.attempted).toBe(0);
+      expect(seen).toHaveLength(4);
+    });
+
+    it('ignores outbox events with no partner webhook mapping', async () => {
+      const fetchImpl = vi.fn(async () => ({ status: 200 }));
+      const unmapped = outboxEvent('event-unmapped-1', 'identity.user.created', { userId: 'u-1' });
+      const { service } = makeService(
+        [{ eventTypes: ['enrolment.created'] }],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        [unmapped]
+      );
+      const result = await service.redriveFailed();
+      expect(result).toEqual({ scanned: 0, attempted: 0, redelivered: 0, failed: 0 });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('counts per-event failures without aborting the pass', async () => {
+      const fetchImpl: WebhookFetch = async (url) => ({
+        status: url === 'https://a.example/hook' ? 500 : 200
+      });
+      const failing = outboxEvent('event-fail-1', 'partner.disbursement.recorded', { id: 'disb-1' });
+      const succeeding = outboxEvent('event-ok-1', 'learning.enrolment.created', {});
+      const { service } = makeService(
+        [
+          { eventTypes: ['disbursement.recorded'], targetUrl: 'https://a.example/hook' },
+          { eventTypes: ['enrolment.created'], targetUrl: 'https://b.example/hook' }
+        ],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        [failing, succeeding]
+      );
+
+      const result = await service.redriveFailed();
+      expect(result).toEqual({ scanned: 2, attempted: 2, redelivered: 1, failed: 1 });
+
+      // The succeeded event is processed and skipped; the failed one retries.
+      const second = await service.redriveFailed();
+      expect(second).toEqual({ scanned: 2, attempted: 1, redelivered: 0, failed: 1 });
+    });
+
+    it('caps attempts per pass at the limit', async () => {
+      let calls = 0;
+      const fetchImpl: WebhookFetch = async () => {
+        calls += 1;
+        return { status: 200 };
+      };
+      const events = [1, 2, 3].map((n) =>
+        outboxEvent(`event-limit-${n}`, 'learning.enrolment.created', {})
+      );
+      const { service } = makeService(
+        [{ eventTypes: ['enrolment.created'] }],
+        fetchImpl,
+        PUBLIC_LOOKUP,
+        events
+      );
+      const result = await service.redriveFailed(2);
+      expect(result.attempted).toBe(2);
+      expect(result.redelivered).toBe(2);
+      expect(calls).toBe(2);
+
+      // The remaining event is picked up by the next pass.
+      const second = await service.redriveFailed(2);
+      expect(second.attempted).toBe(1);
+      expect(calls).toBe(3);
     });
   });
 
