@@ -173,6 +173,9 @@ docker run --rm -p 8090:8090 -e EVENTGW_MODE=stub agric-event-gw
   the skew window; providers can replay old-but-still-fresh signatures in
   that gap. Acceptable for an edge; persistent replay state would need Redis.
 - **The API ingress contract** (`/api/v1/internal/events` + `X-Internal-Token`
-  + envelope fields) is implemented as specified, but the NestJS side lives
-  on another branch and has not been integration-tested against this service.
+  + envelope fields) is implemented on the NestJS side
+  (`apps/api/src/modules/integrations/internal-events.controller.ts`, guarded
+  by `internal-token.guard.ts` against `EVENTGW_INTERNAL_TOKEN`, fail-closed)
+  with unit-tested token/envelope/replay semantics — but the two sides have
+  not been integration-tested together end to end.
 - Secrets come from the environment only; nothing is committed.
