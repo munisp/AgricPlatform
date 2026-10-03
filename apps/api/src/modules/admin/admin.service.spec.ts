@@ -1,5 +1,5 @@
-import { UnauthorizedException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { describe, expect, it, vi } from 'vitest';
 import type { AuditEvent } from '@agric-platform/shared';
 import { AuditAnchorService } from '../../core/audit-anchor.service.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -184,5 +184,70 @@ describe('AdminService audit anchoring (Stage 23)', () => {
         actualEventCount: 1
       }
     });
+  });
+});
+
+/**
+ * GAP-H06: outbound partner-webhook redrive through the admin surface —
+ * fail-closed when the dispatcher is not wired, straight delegation (with
+ * the attempt limit) when it is.
+ */
+describe('AdminService partner webhook redrive (GAP-H06)', () => {
+  function buildWithDispatcher(dispatcher?: { redriveFailed: (limit?: number) => unknown }) {
+    const users = new UsersService(createInMemoryUserRepository());
+    const sessions = createInMemoryAuthSessionRepository();
+    const audit = { record: async () => ({}) } as unknown as AuditService;
+    const domainEvents = { publish: async () => ({}) } as unknown as DomainEventsService;
+    const stub = {} as never;
+    const admin = new AdminService(
+      users,
+      audit,
+      domainEvents,
+      stub as CommunityService,
+      stub as FinanceService,
+      stub as OpportunitiesService,
+      stub as LearningService,
+      stub as MarketplaceService,
+      stub as OutboxSweeperService,
+      sessions,
+      createInMemoryPartnerMemberRepository(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      dispatcher as never
+    );
+    return { admin };
+  }
+
+  it('fails closed (503) when the webhook dispatcher is not wired', async () => {
+    const { admin } = buildWithDispatcher(undefined);
+    await expect(admin.redrivePartnerWebhooks()).rejects.toBeInstanceOf(
+      ServiceUnavailableException
+    );
+  });
+
+  it('delegates to the dispatcher and returns its counters', async () => {
+    const redriveFailed = vi.fn(async (_limit?: number) => ({
+      scanned: 3,
+      attempted: 2,
+      redelivered: 1,
+      failed: 1
+    }));
+    const { admin } = buildWithDispatcher({ redriveFailed });
+
+    const result = await admin.redrivePartnerWebhooks(50);
+    expect(redriveFailed).toHaveBeenCalledWith(50);
+    expect(result).toEqual({ scanned: 3, attempted: 2, redelivered: 1, failed: 1 });
+  });
+
+  it('passes no limit when none is given', async () => {
+    const redriveFailed = vi.fn(async () => ({ scanned: 0, attempted: 0, redelivered: 0, failed: 0 }));
+    const { admin } = buildWithDispatcher({ redriveFailed });
+    await admin.redrivePartnerWebhooks();
+    expect(redriveFailed).toHaveBeenCalledWith(undefined);
   });
 });
