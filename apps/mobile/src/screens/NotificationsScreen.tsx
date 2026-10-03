@@ -4,6 +4,7 @@ import { isAbortError } from '../api/client';
 import { useApiClient } from '../api/context';
 import { fetchSession, listNotifications, markNotificationRead } from '../api/endpoints';
 import type { NotificationMessage } from '../api/types';
+import type { OfflineQueue } from '../offline/queue';
 import { useSyncStatus, useSyncStore } from '../sync/context';
 import { SyncBadge } from '../sync/SyncBadge';
 import { useListRefresh } from './use-list-refresh';
@@ -66,13 +67,16 @@ function notificationKey(item: NotificationMessage): string {
  *    against a server without the sync wave), the screen falls back to the
  *    legacy direct endpoint before giving up with an error.
  *
- * "Mark read" stays a direct API call (notifications are read-only in sync
- * v1 — the server is the only writer); the list re-syncs afterwards so the
- * cache picks up the server-side version bump. The tapped row flips to read
- * optimistically as soon as the POST resolves, without waiting for the
- * re-sync round trip.
+ * "Mark read" (GAP-M25): notifications stay read-only in record-level sync
+ * (the server is the only writer), so the read receipt goes through the
+ * legacy offline mutation queue when one is provided — enqueued FIRST with
+ * a stable per-notification idempotency key, then flushed. A failed flush
+ * leaves the entry parked for the connectivity sync instead of losing the
+ * read state; the tapped row flips to read optimistically either way, and
+ * a successful flush re-syncs the cache so it reconciles with the
+ * server-side version bump. Without a queue the call stays a direct POST.
  */
-export function NotificationsScreen() {
+export function NotificationsScreen({ queue }: { queue?: OfflineQueue }) {
   const client = useApiClient();
   const store = useSyncStore();
   const status = useSyncStatus(store);
@@ -80,6 +84,7 @@ export function NotificationsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [fromCache, setFromCache] = useState(false);
   const [marking, setMarking] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const readCache = useCallback((): NotificationMessage[] => {
     return store
@@ -128,8 +133,45 @@ export function NotificationsScreen() {
     async (item: NotificationMessage) => {
       setMarking(item.id);
       setError(null);
+      setNotice(null);
+      // Stable per notification: marking the same message read twice is one
+      // logical mutation, so a double-tap/replay dedupes to one request.
+      const idempotencyKey = `notification.read:${item.id}`;
       try {
-        await markNotificationRead(client, item.id);
+        if (queue) {
+          // Offline-first (GAP-M25): enqueue the read receipt, then flush.
+          await queue.enqueue({
+            kind: 'notification.marked_read',
+            method: 'POST',
+            path: `/notifications/${encodeURIComponent(item.id)}/read`,
+            idempotencyKey
+          });
+          await queue.flush((request) =>
+            client.apiFetch(request.path, {
+              method: request.method,
+              body: request.payload,
+              idempotencyKey: request.idempotencyKey
+            })
+          );
+          const stillPending = (await queue.pending()).some(
+            (entry) => entry.idempotencyKey === idempotencyKey
+          );
+          if (stillPending) {
+            // Offline: flip the row optimistically; the connectivity sync
+            // replays the receipt and the next pull reconciles the cache.
+            setItems((current) =>
+              current
+                ? current.map((entry) =>
+                    entry.id === item.id ? { ...entry, status: 'read' } : entry
+                  )
+                : current
+            );
+            setNotice('Saved offline — will sync when you are back online.');
+            return;
+          }
+        } else {
+          await markNotificationRead(client, item.id);
+        }
         // Optimistic: clear the unread dot immediately, then re-sync the
         // cache so the server-side version bump is picked up (the re-sync
         // is part of the contract — see the sync notifications tests).
@@ -148,7 +190,7 @@ export function NotificationsScreen() {
         setMarking(null);
       }
     },
-    [client, load]
+    [client, queue, load]
   );
 
   const renderItem = useCallback(
@@ -187,6 +229,11 @@ export function NotificationsScreen() {
         <>
           <SyncBadge status={status} />
           {error ? <ErrorNotice message={error} /> : null}
+          {notice ? (
+            <View style={uiStyles.notice}>
+              <Text style={uiStyles.noticeText}>{notice}</Text>
+            </View>
+          ) : null}
           {fromCache ? (
             <View style={uiStyles.notice}>
               <Text style={uiStyles.noticeText}>
