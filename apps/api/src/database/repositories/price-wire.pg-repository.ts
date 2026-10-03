@@ -82,7 +82,8 @@ export class PgPriceWireRepository implements PriceWireRepository {
     return result.rows.map((row) => this.subscriptionFromRow(row));
   }
 
-  async findSubscriptionById(id: string): Promise<PriceSubscription | undefined> {
+  /** Internal lookup behind getSubscriptionById; not part of the public port. */
+  private async findSubscriptionById(id: string): Promise<PriceSubscription | undefined> {
     const result = await this.pool.query(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM advisory.price_subscriptions WHERE id = $1`,
       [id]

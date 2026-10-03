@@ -60,7 +60,6 @@ export interface PriceWireRepository {
    */
   createSubscription(subscription: PriceSubscription): Promise<PriceSubscription>;
   findSubscriptions(criteria: PriceSubscriptionCriteria): Promise<PriceSubscription[]>;
-  findSubscriptionById(id: string): Promise<PriceSubscription | undefined>;
   /** Throws NotFoundException when the id does not exist. */
   getSubscriptionById(id: string): Promise<PriceSubscription>;
   /** Finds the (unique) row for the spec dedupe key, active or stopped. */
@@ -150,11 +149,6 @@ export class InMemoryPriceWireRepository implements PriceWireRepository {
         )
         .map((subscription) => ({ ...subscription }))
     );
-  }
-
-  findSubscriptionById(id: string): Promise<PriceSubscription | undefined> {
-    const found = this.subscriptions.get(id);
-    return Promise.resolve(found ? { ...found } : undefined);
   }
 
   getSubscriptionById(id: string): Promise<PriceSubscription> {
