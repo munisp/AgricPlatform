@@ -107,6 +107,11 @@ services:
       MEILISEARCH_API_KEY: local-master-key
       JWT_SECRET: local-development-only
       WEBHOOK_SIGNING_SECRET: local-development-only
+      # Internal event ingress (GAP-C03/GAP-H01): shared credential the api
+      # requires on POST /api/v1/internal/events. Must match the event-gw
+      # service's EVENTGW_INTERNAL_TOKEN below; empty fails the ingress
+      # closed (503) — only needed when the "event-gw" profile is enabled.
+      EVENTGW_INTERNAL_TOKEN: ${EVENTGW_INTERNAL_TOKEN:-}
       SMS_DRIVER: stub
       WHATSAPP_DRIVER: stub
       EMAIL_DRIVER: stub
@@ -128,6 +133,12 @@ services:
       # "flood-ml" profile; requires Sentinel Hub credentials on flood-ml.
       # FLOOD_ML_DRIVER: http
       # FLOOD_ML_URL: http://flood-ml:8001
+      # Crop-intelligence ML sidecar (OPTIONAL). Uncomment together with the
+      # "crop-ml" profile below. FAIL-CLOSED: CROP_ML_DRIVER=http with a
+      # missing/unreachable CROP_ML_URL yields 503s in the credit
+      # geo-verification and VSLA-carbon paths (stub is never substituted).
+      # CROP_ML_DRIVER: http
+      # CROP_ML_URL: http://crop-ml:8100
       # Dapr sidecar (OPTIONAL, profile: dapr). The api-dapr container joins
       # this service's network namespace, so the API reaches Dapr on
       # localhost. No Dapr SDK is wired into the API yet — the sidecar is
@@ -165,7 +176,9 @@ services:
       context: ..
       dockerfile: infra/docker/web.Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:3001
+        # Consumed by apps/web at build time (apps/web/lib/api/config.ts,
+        # apps/web/next.config.ts); must include the API global prefix.
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:3001/api/v1
         NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
         NEXT_PUBLIC_KEYCLOAK_REALM: agric-platform
         NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: agric-web
@@ -357,8 +370,9 @@ services:
 
   # ---- OPTIONAL polyglot sidecars (Stage 18, profiles: event-gw / crop-ml /
   # geo-compute) — none start by default; the platform boots without them.
-  # Each pairs with a fail-closed provider port in the API (stub drivers by
-  # default). Contracts: services/<name>/README.md. ----
+  # event-gw and crop-ml pair with fail-closed provider ports in the API
+  # (stub drivers by default). geo-compute currently has NO API consumer —
+  # see its comment below. Contracts: services/<name>/README.md. ----
 
   # Go stdlib-only webhook edge: verifies external provider webhooks
   # (fail-closed) and fans out to the API internal event ingress with
@@ -420,6 +434,10 @@ services:
 
   # Rust axum geospatial batch-compute sidecar: H3 index/compact, polygon
   # metrics, geofence batch. stub/live modes; contract in README.
+  # OPTIONAL and profile-gated: nothing in apps/api or packages/ calls this
+  # service (the API computes H3 in-process via h3-js and persists that
+  # itself). geo-compute is STATELESS and persists nothing; it is not on the
+  # default data path. Enable only for manual/experimental batch compute.
   geo-compute:
     profiles: ["geo-compute"]
     build:
