@@ -190,7 +190,7 @@ export class FieldAgentsService {
       metadata: { agentUserId: agent.id, purpose: assignment.purpose, targetCount }
     });
     await this.events.publish(
-      'field-agents.assignment.created',
+      'field_agents.assignment.created',
       { assignmentId: assignment.id, agentUserId: agent.id, targetCount },
       creator.id
     );
@@ -256,7 +256,7 @@ export class FieldAgentsService {
       metadata: { completedCount, targetCount: assignment.targetCount }
     });
     await this.events.publish(
-      completed ? 'field-agents.assignment.completed' : 'field-agents.assignment.progress',
+      completed ? 'field_agents.assignment.completed' : 'field_agents.assignment.progress',
       { assignmentId, agentUserId: agent.id, completedCount },
       agent.id
     );
@@ -324,7 +324,7 @@ export class FieldAgentsService {
       metadata: { agentUserId: assignment.agentUserId }
     });
     await this.events.publish(
-      'field-agents.assignment.cancelled',
+      'field_agents.assignment.cancelled',
       { assignmentId, agentUserId: assignment.agentUserId },
       user.id
     );
@@ -414,7 +414,7 @@ export class FieldAgentsService {
       }
     });
     await this.events.publish(
-      'field-agents.profile.captured',
+      'field_agents.profile.captured',
       { farmerUserId: farmer.id, capturedBy: agent.id, consentId: consent.id },
       agent.id
     );
