@@ -208,27 +208,31 @@ export function RegisterAnimalForm({ onRegistered }: { onRegistered?: () => void
 
   const valid = breed.trim().length > 0 && state.length > 0;
 
+  // One body for the online request and the offline-queue replay — tag,
+  // EID, pedigree and notes must survive an offline registration.
+  const registerBody = () => ({
+    species,
+    breed,
+    sex,
+    birthDate: birthDate || undefined,
+    tagId: tagId.trim() || undefined,
+    eid: eid.trim() || undefined,
+    state,
+    lga: lga.trim() || undefined,
+    sireId: sireId.trim() || undefined,
+    damId: damId.trim() || undefined,
+    notes: notes.trim() || undefined
+  });
+
   const register = useApiMutation<void, Animal>({
     mutationFn: () =>
-      registerAnimal({
-        species,
-        breed,
-        sex,
-        birthDate: birthDate || undefined,
-        tagId: tagId.trim() || undefined,
-        eid: eid.trim() || undefined,
-        state,
-        lga: lga.trim() || undefined,
-        sireId: sireId.trim() || undefined,
-        damId: damId.trim() || undefined,
-        notes: notes.trim() || undefined
-      }).then((res) => res.data),
+      registerAnimal(registerBody()).then((res) => res.data),
     queue: {
       kind: 'livestock.animal.registered',
       label: () => `Register ${breed} ${species}`,
       method: 'POST',
       path: () => '/livestock/animals',
-      payload: () => ({ species, breed, sex, state, lga: lga.trim() || undefined })
+      payload: () => registerBody()
     },
     onSuccess: (animal) => {
       setIssuedId(animal.id);
@@ -446,21 +450,25 @@ export function LotsPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const quantityNumber = Number(quantity);
   const valid = Number.isInteger(quantityNumber) && quantityNumber >= 1 && state.length > 0;
 
+  // One body for the online request and the offline-queue replay (lga and
+  // formationRule included).
+  const lotBody = () => ({
+    species,
+    quantity: quantityNumber,
+    state,
+    lga: lga.trim() || undefined,
+    formationRule: formationRule.trim() || undefined
+  });
+
   const create = useApiMutation<void, LivestockLot>({
     mutationFn: () =>
-      createLot({
-        species,
-        quantity: quantityNumber,
-        state,
-        lga: lga.trim() || undefined,
-        formationRule: formationRule.trim() || undefined
-      }).then((res) => res.data),
+      createLot(lotBody()).then((res) => res.data),
     queue: {
       kind: 'livestock.lot.created',
       label: () => `Create ${species} lot`,
       method: 'POST',
       path: () => '/livestock/lots',
-      payload: () => ({ species, quantity: quantityNumber, state })
+      payload: () => lotBody()
     },
     onSuccess: () => {
       setQuantity('');
