@@ -12,7 +12,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsIn, IsNumber, IsOptional, IsPositive, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
+import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsPositive, IsString, IsUrl, Max, MaxLength, Min, MinLength } from 'class-validator';
 import type { Request } from 'express';
 import { PartnerApiService } from './partner-api.service.js';
 import {
@@ -23,6 +23,7 @@ import {
 } from './partner-auth.guard.js';
 import { PartnerScopes } from './partner-scopes.decorator.js';
 import { PARTNER_EVENT_TYPES } from './webhook-dispatch.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * Resolves the effective tenant for a write (Stage 24, audit A2-2): the
@@ -118,12 +119,24 @@ class CreateWebhookSubscriptionDto {
   secret!: string;
 }
 
+/** GAP-M23 rotation request; empty body takes the default 24h grace. */
+class RotateWebhookSecretDto {
+  /** Dual-accept grace in hours (default 24, max 168 = 7d). */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(168)
+  graceHours?: number;
+}
+
 /**
  * Scoped partner API surface (wave P5d). All routes require a partner
  * access token (client-credentials grant) or developer API key, enforce
  * per-route scopes and the per-client rate bucket.
  */
 @ApiTags('partner-api')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route (HMAC partner token).
+@Public()
 @Controller('partner')
 @UseGuards(PartnerAuthGuard)
 export class PartnerApiController {
@@ -262,5 +275,33 @@ export class PartnerApiController {
     const identity = partnerIdentity(request);
     const removed = await this.partnerApi.removeWebhookSubscription(id, identity.clientId);
     return { data: { removed } };
+  }
+
+  /**
+   * GAP-M23 — documented rotation endpoint (docs/security/key-rotation.md).
+   * Server-generates a fresh HMAC secret; the outgoing secret stays accepted
+   * as a SECOND signature (x-agric-signature-previous) for the grace window
+   * (default 24h, ≤7d) so partners cut over without dropped deliveries.
+   * Audited (partner.webhook.secret_rotated); secrets are never logged and
+   * the new secret is returned exactly once.
+   */
+  @Post('webhooks/:id/rotate-secret')
+  @PartnerScopes('webhooks:manage')
+  @ApiOperation({
+    summary:
+      'Rotate a webhook subscription secret (dual-signature grace: default 24h, max 7d; new secret returned once)'
+  })
+  async rotateWebhookSecret(
+    @Param('id') id: string,
+    @Body() dto: RotateWebhookSecretDto,
+    @Req() request: Request
+  ) {
+    const identity = partnerIdentity(request);
+    const rotation = await this.partnerApi.rotateWebhookSecret(
+      id,
+      identity.clientId,
+      dto?.graceHours
+    );
+    return { data: rotation };
   }
 }
