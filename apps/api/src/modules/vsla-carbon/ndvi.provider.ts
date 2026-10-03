@@ -1,7 +1,7 @@
 /**
  * NDVI evidence-linkage provider port (wave VSLACARBON). Seasonal carbon
  * evidence can OPTIONALLY link a Sentinel-2 NDVI assessment from the
- * crop-ml sidecar (services/crop-ml) — the FIXED contract
+ * crop-ml sidecar (services/crop-ml) — the sidecar contract
  * `POST /v1/crop/assess-plot` documented in services/crop-ml/README.md and
  * already implemented by the credit geo-verification drivers
  * (../credit/geo-verification/crop-intel.drivers.ts). This port delegates
