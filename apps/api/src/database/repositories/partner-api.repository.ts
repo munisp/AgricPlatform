@@ -61,6 +61,15 @@ export interface WebhookSubscription {
   targetUrl: string;
   /** HMAC delivery secret (used to sign outbound payloads). */
   secret: string;
+  /**
+   * GAP-M23 rotation grace (docs/security/key-rotation.md): the previous
+   * HMAC secret, dual-signed on outbound deliveries until
+   * `secretPreviousUntil` so partners cut over without dropped events.
+   * Delivery-time material — never echoed on reads, never logged.
+   */
+  secretPrevious?: string;
+  /** ISO deadline of the dual-accept grace window (default 24h, max 7d). */
+  secretPreviousUntil?: string;
   status: WebhookSubscriptionStatus;
   /**
    * Tenant binding (Stage 27 WP-G3, V3 middleware audit): the partner

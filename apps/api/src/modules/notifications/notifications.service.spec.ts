@@ -94,3 +94,69 @@ describe('NotificationsService delivery honesty (wave: stub never fabricates sen
     expect(stored[0].status).not.toBe('sent');
   });
 });
+
+describe('NotificationsService persistence stamps (GAP-M17)', () => {
+  it('populates a deterministic idempotency_key from the message fields', async () => {
+    const { service } = build(new IntegrationsService());
+    const first = await service.send({
+      userId: 'user-aisha',
+      channel: 'in_app',
+      title: 'Welcome',
+      body: 'Hello'
+    });
+    const second = await service.send({
+      userId: 'user-aisha',
+      channel: 'in_app',
+      title: 'Welcome',
+      body: 'Hello'
+    });
+    expect(first.idempotencyKey).toBeTruthy();
+    expect(first.idempotencyKey).toBe(second.idempotencyKey);
+    const different = await service.send({
+      userId: 'user-aisha',
+      channel: 'in_app',
+      title: 'Welcome',
+      body: 'Different body'
+    });
+    expect(different.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
+
+  it('stamps sent_at when the delivery records status sent', async () => {
+    const { service, messages } = build(new IntegrationsService());
+    const message = await service.send({
+      userId: 'user-aisha',
+      channel: 'in_app',
+      title: 'Welcome',
+      body: 'Hello'
+    });
+    expect(message.sentAt).toBeTruthy();
+    const stored = await messages.getById(message.id);
+    expect(stored.sentAt).toBe(message.sentAt);
+  });
+
+  it('does not stamp sent_at when the delivery is not honest (stub failure)', async () => {
+    const { service } = build(new IntegrationsService());
+    const message = await service.send({
+      userId: 'user-aisha',
+      channel: 'sms',
+      title: 'Alert',
+      body: 'Body'
+    });
+    expect(message.status).toBe('failed');
+    expect(message.sentAt).toBeUndefined();
+  });
+
+  it('stamps read_at on mark-read', async () => {
+    const { service } = build(new IntegrationsService());
+    const message = await service.send({
+      userId: 'user-aisha',
+      channel: 'in_app',
+      title: 'Welcome',
+      body: 'Hello'
+    });
+    expect(message.readAt).toBeUndefined();
+    const read = await service.markRead(message.id);
+    expect(read.status).toBe('read');
+    expect(read.readAt).toBeTruthy();
+  });
+});

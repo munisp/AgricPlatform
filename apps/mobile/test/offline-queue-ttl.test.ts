@@ -50,21 +50,21 @@ describe('offline queue TTL (V-64)', () => {
     expect(await queue.pending()).toHaveLength(0);
   });
 
-  it('applies per-kind TTL overrides (booking kinds age out in 24h)', async () => {
-    const bookingTtl = OFFLINE_KIND_TTL_MS['services.booking.created'];
-    expect(bookingTtl).toBeLessThan(DEFAULT_OFFLINE_TTL_MS);
+  it('applies per-kind TTL overrides (placed orders age out in 24h)', async () => {
+    const orderTtl = OFFLINE_KIND_TTL_MS['marketplace.order.created'];
+    expect(orderTtl).toBeLessThan(DEFAULT_OFFLINE_TTL_MS);
 
     const { queue, setNow } = queueAt(T0);
     await queue.enqueue({
       ...BASE,
-      kind: 'services.booking.created',
-      idempotencyKey: 'booking'
+      kind: 'marketplace.order.created',
+      idempotencyKey: 'order'
     });
     await queue.enqueue({ ...BASE, idempotencyKey: 'animal' });
-    setNow(new Date(Date.parse(T0) + bookingTtl + 60_000).toISOString());
+    setNow(new Date(Date.parse(T0) + orderTtl + 60_000).toISOString());
 
     const result = await queue.flush(async () => ({}));
-    expect(result.expired.map((entry) => entry.idempotencyKey)).toEqual(['booking']);
+    expect(result.expired.map((entry) => entry.idempotencyKey)).toEqual(['order']);
     expect(result.sent).toBe(1); // the animal registration is still fresh
   });
 

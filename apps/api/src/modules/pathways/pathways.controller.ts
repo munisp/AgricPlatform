@@ -6,7 +6,7 @@ import type { ClubMemberRole, PathwayTrack, User } from '@agric-platform/shared'
 import { CLUB_MEMBER_ROLES, PATHWAY_TRACKS } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { PathwaysService, type CreateClubInput, type CreateTemplateInput } from './pathways.service.js';
 
@@ -109,6 +109,7 @@ export class PathwaysController {
   constructor(private readonly pathways: PathwaysService) {}
 
   @Get('pathway-templates')
+  @Public()
   @ApiOperation({ summary: 'List student/NYSC pathway templates' })
   listTemplates(@Query('track') track?: PathwayTrack) {
     return this.pathways.listTemplates(track);
@@ -123,6 +124,7 @@ export class PathwaysController {
   }
 
   @Get('pathway-templates/:id')
+  @Public()
   @ApiOperation({ summary: 'Pathway template detail with stages' })
   async getTemplate(@Param('id') id: string) {
     return { data: await this.pathways.getTemplate(id) };
@@ -166,6 +168,7 @@ export class PathwaysController {
   }
 
   @Get('campus-clubs')
+  @Public()
   @ApiOperation({ summary: 'List campus clubs (state / institution / NYSC CDS filter)' })
   listClubs(@Query() query: ListClubsQuery) {
     return this.pathways.listClubs(query);
@@ -180,6 +183,7 @@ export class PathwaysController {
   }
 
   @Get('campus-clubs/:id')
+  @Public()
   @ApiOperation({ summary: 'Campus club detail with member roster' })
   async getClub(@Param('id') id: string) {
     return { data: await this.pathways.getClub(id) };

@@ -4,7 +4,7 @@ import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } fro
 import { LANGUAGE_CODES, type Course, type LanguageCode, type User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { UsersService } from '../users/users.service.js';
@@ -52,6 +52,20 @@ class CreateCourseDto implements CreateCourseInput {
   @IsOptional()
   @IsBoolean()
   offlineAvailable?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  slug?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  description?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  published?: boolean;
 }
 
 class EnrolDto {
@@ -82,6 +96,7 @@ export class LearningController {
   ) {}
 
   @Get('courses')
+  @Public()
   @ApiOperation({ summary: 'List courses with filters (public catalog)' })
   listCourses(@Query() query: ListCoursesQuery) {
     return this.learning.listCourses(query);
@@ -95,6 +110,7 @@ export class LearningController {
   }
 
   @Get('courses/:id')
+  @Public()
   @ApiOperation({ summary: 'Course detail (public catalog)' })
   async getCourse(@Param('id') id: string) {
     return { data: await this.learning.getCourse(id) };
@@ -147,6 +163,7 @@ export class LearningController {
   }
 
   @Get('certificates/verify/:code')
+  @Public()
   @ApiOperation({ summary: 'Verify a certificate by its public verification code (public)' })
   async verifyCertificate(@Param('code') code: string) {
     return {

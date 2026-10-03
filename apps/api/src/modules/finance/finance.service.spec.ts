@@ -99,3 +99,56 @@ describe('FinanceService.lenderMatches — sample catalogue labelling + producti
     );
   });
 });
+
+describe('FinanceService vault document persistence (GAP-M18)', () => {
+  it('uploadDocument persists the object-store reference when provided', async () => {
+    const { service } = makeService();
+    const document = await service.uploadDocument({
+      userId: USER_ID,
+      kind: 'national_id',
+      fileName: 'nin-slip.pdf',
+      storageRef: 'vault/user-adamu/nin-slip.pdf'
+    });
+    expect(document.storageRef).toBe('vault/user-adamu/nin-slip.pdf');
+    const listed = await service.listDocuments(USER_ID);
+    expect(listed.find((entry) => entry.id === document.id)?.storageRef).toBe(
+      'vault/user-adamu/nin-slip.pdf'
+    );
+  });
+
+  it('uploadDocument leaves the storage reference absent when not provided', async () => {
+    const { service } = makeService();
+    const document = await service.uploadDocument({
+      userId: USER_ID,
+      kind: 'farm_photo',
+      fileName: 'maize-plot.jpg'
+    });
+    expect(document.storageRef).toBeUndefined();
+  });
+
+  it('setDocumentStatus stamps verified_at on the verified transition', async () => {
+    const { service } = makeService();
+    const document = await service.uploadDocument({
+      userId: USER_ID,
+      kind: 'land_title',
+      fileName: 'title.pdf',
+      storageRef: 'vault/user-adamu/title.pdf'
+    });
+    expect(document.verifiedAt).toBeUndefined();
+    const verified = await service.setDocumentStatus(document.id, 'verified', 'admin-1');
+    expect(verified.status).toBe('verified');
+    expect(verified.verifiedAt).toBeTruthy();
+  });
+
+  it('setDocumentStatus does not stamp verified_at on rejection', async () => {
+    const { service } = makeService();
+    const document = await service.uploadDocument({
+      userId: USER_ID,
+      kind: 'business_plan',
+      fileName: 'plan.pdf'
+    });
+    const rejected = await service.setDocumentStatus(document.id, 'rejected', 'admin-1');
+    expect(rejected.status).toBe('rejected');
+    expect(rejected.verifiedAt).toBeUndefined();
+  });
+});

@@ -74,10 +74,13 @@ export class PgNotificationRepository
           entry.deadLetteredAt ?? null
         ]
       );
+      // Stamp sent_at on the first honest delivery (attempt time, not
+      // re-delivery sweeps); never overwrite an earlier sent_at.
       const result = await client.query(
-        `UPDATE notifications.notifications SET status = $2
+        `UPDATE notifications.notifications SET status = $2,
+            sent_at = CASE WHEN $2 = 'sent' THEN COALESCE(sent_at, $3::timestamptz) ELSE sent_at END
           WHERE id = $1 RETURNING ${MESSAGE_COLUMNS}`,
-        [id, status]
+        [id, status, entry.at]
       );
       return notificationMapper.fromRow(result.rows[0]);
     });

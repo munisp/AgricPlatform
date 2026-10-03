@@ -168,14 +168,6 @@ export interface RegisterAnimalInput {
   notes?: string;
 }
 
-/** Disease recall from GET /livestock-health/recalls (regulator/admin only). */
-export interface HealthRecall {
-  id: string;
-  status: string;
-  reason?: string;
-  createdAt: string;
-}
-
 /** Vaccination due status from GET /livestock-health/vaccinations/due. */
 export type VaccinationDueStatus = 'overdue' | 'due' | 'upcoming';
 
@@ -215,6 +207,8 @@ export interface FarmPlot {
   boundaryGeojson?: unknown;
   sizeHectares: number;
   soilType?: string;
+  /** GPS fix quality of the centroid capture (GAP-L10); absent on legacy rows. */
+  accuracyMeters?: number;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -230,6 +224,8 @@ export interface CreateFarmPlotInput {
   boundaryGeojson?: unknown;
   sizeHectares: number;
   soilType?: string;
+  /** GPS fix quality of the centroid capture, when the provider reported it. */
+  accuracyMeters?: number;
   clientId?: string;
 }
 

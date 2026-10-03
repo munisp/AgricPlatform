@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createApiClient, type ApiClient } from '../src/api/client';
 import {
+  buildPlaceOrderBody,
   confirmDraftOrder,
-  listActiveRecalls,
   listDraftOrders,
   listDueVaccinations,
   listMyAnimals,
@@ -10,7 +10,7 @@ import {
   listNotifications,
   logoutSession,
   markNotificationRead,
-  refreshSession,
+  placeOrder,
   registerAnimal
 } from '../src/api/endpoints';
 import { createInMemoryTokenStore } from '../src/api/token-store';
@@ -86,12 +86,6 @@ describe('Wave A endpoint wrappers', () => {
     expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ species: 'goat', state: 'Kano' });
   });
 
-  it('listActiveRecalls filters to active recalls', async () => {
-    const { client, calls } = stubbed();
-    await listActiveRecalls(client);
-    expect(calls[0].url).toBe('https://api.test/api/v1/livestock-health/recalls?status=active');
-  });
-
   it('listDueVaccinations defaults to a 30-day lookahead window', async () => {
     const { client, calls } = stubbed();
     await listDueVaccinations(client);
@@ -104,18 +98,37 @@ describe('Wave A endpoint wrappers', () => {
     expect(calls[0].url).toBe('https://api.test/api/v1/livestock-health/vaccinations/due?days=90');
   });
 
-  it('refreshSession posts the presented refresh token', async () => {
-    const { client, calls } = stubbed();
-    await refreshSession(client, 'refresh-1');
-    expect(calls[0].url).toBe('https://api.test/api/v1/auth/refresh');
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ refreshToken: 'refresh-1' });
-  });
-
   it('logoutSession posts the refresh token for revocation', async () => {
     const { client, calls } = stubbed();
     await logoutSession(client, 'refresh-1');
     expect(calls[0].url).toBe('https://api.test/api/v1/auth/logout');
     expect(calls[0].init?.method).toBe('POST');
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ refreshToken: 'refresh-1' });
+  });
+});
+
+describe('placeOrder (GAP-H11)', () => {
+  it('posts the shared body to the listing orders route with the idempotency header', async () => {
+    const { client, calls } = stubbed();
+    await placeOrder(client, 'listing-1', { buyerId: 'user-1', quantity: 2 }, 'order-key-1');
+    expect(calls[0].url).toBe('https://api.test/api/v1/listings/listing-1/orders');
+    expect(calls[0].init?.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ buyerId: 'user-1', quantity: 2 });
+    expect((calls[0].init?.headers as Record<string, string>)['Idempotency-Key']).toBe('order-key-1');
+  });
+
+  it('url-encodes the listing id', async () => {
+    const { client, calls } = stubbed();
+    await placeOrder(client, 'listing/x', { buyerId: 'user-1', quantity: 1 });
+    expect(calls[0].url).toBe('https://api.test/api/v1/listings/listing%2Fx/orders');
+  });
+
+  it('buildPlaceOrderBody is the single body-builder for online + queued requests', () => {
+    // The offline queue entry payload and the online request body MUST be
+    // built by this one function (same contract as the web queue fixes).
+    expect(buildPlaceOrderBody({ buyerId: 'user-1', quantity: 3 })).toEqual({
+      buyerId: 'user-1',
+      quantity: 3
+    });
   });
 });

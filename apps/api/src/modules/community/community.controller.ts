@@ -4,7 +4,7 @@ import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { MentorRequest, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import {
@@ -101,6 +101,7 @@ export class CommunityController {
   constructor(private readonly community: CommunityService) {}
 
   @Get('topics')
+  @Public()
   @ApiOperation({ summary: 'List forum topics with filters (public catalog)' })
   listTopics(@Query() query: ListTopicsQuery) {
     return this.community.listTopics(query);
@@ -114,6 +115,7 @@ export class CommunityController {
   }
 
   @Get('topics/:id')
+  @Public()
   @ApiOperation({ summary: 'Topic detail (public catalog)' })
   async getTopic(@Param('id') id: string) {
     return { data: await this.community.getTopic(id) };

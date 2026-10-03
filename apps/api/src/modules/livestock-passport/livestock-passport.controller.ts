@@ -11,7 +11,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { LivestockPassportService } from './livestock-passport.service.js';
 import type { InitiateTransferInput } from './livestock-passport.service.js';
@@ -67,6 +67,7 @@ export class LivestockPassportController {
   }
 
   @Get('verify/:code')
+  @Public()
   @ApiOperation({
     summary:
       'PUBLIC (unauthenticated) passport verification: HMAC-signed code → redacted view + QR payload. Forged codes answer 404.'

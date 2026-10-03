@@ -11,7 +11,7 @@ import {
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { AuditService } from '../../core/audit.service.js';
@@ -128,6 +128,7 @@ export class OpportunitiesController {
   ) {}
 
   @Get('opportunities')
+  @Public()
   @ApiOperation({ summary: 'List opportunities with state/value-chain/type filters (public catalog)' })
   list(@Query() query: ListOpportunitiesQuery) {
     return this.opportunities.list(query);
@@ -149,6 +150,7 @@ export class OpportunitiesController {
   }
 
   @Get('opportunities/:id')
+  @Public()
   @ApiOperation({ summary: 'Opportunity detail (public catalog)' })
   async get(@Param('id') id: string) {
     return { data: await this.opportunities.get(id) };

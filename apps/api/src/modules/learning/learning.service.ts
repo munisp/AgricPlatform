@@ -21,6 +21,9 @@ export interface CreateCourseInput {
   durationMinutes: number;
   language: LanguageCode;
   offlineAvailable?: boolean;
+  slug?: string;
+  description?: string;
+  published?: boolean;
 }
 
 export interface CertificateVerification {
@@ -71,7 +74,10 @@ export class LearningService {
       durationMinutes: input.durationMinutes,
       language: input.language,
       enrolmentCount: 0,
-      offlineAvailable: input.offlineAvailable ?? false
+      offlineAvailable: input.offlineAvailable ?? false,
+      slug: input.slug,
+      description: input.description,
+      published: input.published ?? false
     };
     const created = await this.courses.create(course);
     await this.events.publish('learning.course.created', { courseId: created.id });

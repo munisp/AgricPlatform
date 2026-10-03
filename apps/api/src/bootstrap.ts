@@ -5,6 +5,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Request } from 'express';
 import type express from 'express';
 import helmet from 'helmet';
+import { configuredCorsOrigins } from './common/cors.js';
 import { ErrorTrackingService } from './common/error-tracking/error-tracking.service.js';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter.js';
 import { HttpMetricsInterceptor } from './common/interceptors/http-metrics.interceptor.js';
@@ -55,12 +56,12 @@ export function configureApp(app: NestExpressApplication): void {
 
   app.setGlobalPrefix('api/v1');
 
-  // Security headers (helmet) and CORS for the Next.js PWA.
+  // Security headers (helmet) and CORS for the Next.js PWA. The allowlist
+  // parser is shared with the embed-feed CORS policy (GAP-L17) so the two
+  // regimes read one source of truth.
   app.use(helmet());
   app.enableCors({
-    origin: (process.env.CORS_ORIGIN ?? 'http://localhost:3000')
-      .split(',')
-      .map((origin) => origin.trim()),
+    origin: configuredCorsOrigins(),
     credentials: true
   });
 

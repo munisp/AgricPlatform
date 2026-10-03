@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { NotificationChannel, NotificationMessage, NotificationPreference } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import { hashIdempotencyPayload } from '../../common/idempotency/payload-hash.js';
 import { MAX_PAGE_SIZE } from '../../common/pagination.js';
 import {
   DELIVERY_LOG_REPOSITORY,
@@ -75,6 +76,16 @@ export class NotificationsService {
       channel: input.channel,
       title: input.title,
       body: input.body,
+      // Deterministic dedupe key derived from the message fields: a retried
+      // identical send collides with the schema-level UNIQUE guard
+      // (notifications.notifications.idempotency_key) instead of duplicating
+      // the notification and its provider delivery.
+      idempotencyKey: hashIdempotencyPayload({
+        userId: input.userId,
+        channel: input.channel,
+        title: input.title,
+        body: input.body
+      }),
       status: 'queued',
       createdAt: new Date().toISOString()
     };
@@ -122,7 +133,10 @@ export class NotificationsService {
   }
 
   async markRead(id: string): Promise<NotificationMessage> {
-    const updated = await this.messages.update(id, { status: 'read' });
+    const updated = await this.messages.update(id, {
+      status: 'read',
+      readAt: new Date().toISOString()
+    });
     await this.syncVersioning?.recordChange({
       entity: SYNC_ENTITY_NOTIFICATION,
       entityId: updated.id,

@@ -1,18 +1,25 @@
-import { Controller, Get, Header, Inject, Query } from '@nestjs/common';
+import { Controller, Get, Header, Inject, Query, UseInterceptors } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { COMMODITY_PRICE_REPOSITORY } from '../../database/persistence.tokens.js';
 import type { CommodityPriceRepository } from '../../database/repositories/commodity-price.repository.js';
 import { PriceWireService } from '../advisory/price-wire.service.js';
+import { EmbedCorsInterceptor } from './embed-cors.interceptor.js';
 import { LearningService } from '../learning/learning.service.js';
 import { OpportunitiesService } from '../opportunities/opportunities.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * Anonymous, read-only embed feed for the public widgets
- * (apps/web/public/widgets/*.js, wave P5d). Responses contain no PII, are
- * CORS-open (`Access-Control-Allow-Origin: *`) and carry cache-friendly
- * headers so third-party pages can poll cheaply.
+ * (apps/web/public/widgets/*.js, wave P5d). Responses contain no PII and
+ * carry cache-friendly headers so third-party pages can poll cheaply.
+ * GAP-L17: CORS is no longer a per-route `ACAO: *` override stacked on the
+ * global credentialled policy — EmbedCorsInterceptor echoes the request
+ * Origin only when it is on the configured allowlist (CORS_ORIGIN +
+ * EMBED_CORS_ORIGINS), so embed hosts are explicit and the two CORS regimes
+ * share one source of truth.
  */
 @ApiTags('embed')
+@UseInterceptors(EmbedCorsInterceptor)
 @Controller('embed')
 export class EmbedController {
   constructor(
@@ -23,7 +30,7 @@ export class EmbedController {
   ) {}
 
   @Get('opportunities')
-  @Header('Access-Control-Allow-Origin', '*')
+  @Public()
   @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({ summary: 'Public opportunity directory for embeds (no PII)' })
   async opportunityDirectory(@Query('limit') limit?: string) {
@@ -47,7 +54,7 @@ export class EmbedController {
   }
 
   @Get('prices')
-  @Header('Access-Control-Allow-Origin', '*')
+  @Public()
   @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({ summary: 'Latest commodity price observations (ticker feed)' })
   async priceTicker(@Query('limit') limit?: string) {
@@ -66,7 +73,7 @@ export class EmbedController {
   }
 
   @Get('price-quote')
-  @Header('Access-Control-Allow-Origin', '*')
+  @Public()
   @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({
     summary:
@@ -79,7 +86,7 @@ export class EmbedController {
   }
 
   @Get('courses')
-  @Header('Access-Control-Allow-Origin', '*')
+  @Public()
   @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @ApiOperation({ summary: 'Course catalogue for embeds (no PII)' })
   async courseCatalogue(@Query('limit') limit?: string) {
@@ -97,7 +104,7 @@ export class EmbedController {
   }
 
   @Get('member-cta')
-  @Header('Access-Control-Allow-Origin', '*')
+  @Public()
   @Header('Cache-Control', 'public, max-age=300')
   @ApiOperation({ summary: 'NYFN member registration button configuration' })
   memberCta() {

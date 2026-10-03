@@ -5,7 +5,8 @@ import type { User } from '@agric-platform/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OidcIdentity } from '../auth/oidc.service.js';
 import type { OidcService } from '../auth/oidc.service.js';
-import { ROLES_KEY } from '../auth/roles.decorator.js';
+import { IS_PUBLIC_KEY, ROLES_KEY } from '../auth/roles.decorator.js';
+import { RolesGuard } from '../auth/roles.guard.js';
 import type { UsersService } from '../../modules/users/users.service.js';
 import { MetricsAccessGuard, metricsTokenMatches } from './metrics-access.guard.js';
 
@@ -25,8 +26,10 @@ const FARMER: User = { ...ADMIN, id: 'user-aisha', roles: ['farmer'] };
 
 function makeContext(headers: Record<string, string>): ExecutionContext {
   const handler = (): void => undefined;
-  // Mirror the @Roles('admin') metadata on the metrics route.
+  // Mirror the metrics route metadata: @Roles('admin') + @Public (the route
+  // is public for the GLOBAL guard only — this guard must still enforce).
   Reflect.defineMetadata(ROLES_KEY, ['admin'], handler);
+  Reflect.defineMetadata(IS_PUBLIC_KEY, true, handler);
   return {
     switchToHttp: () => ({ getRequest: () => ({ headers }) }),
     getHandler: () => handler,
@@ -54,7 +57,8 @@ function makeGuard(options: {
         throw new Error('signature verification failed');
       })
   } as unknown as OidcService;
-  return new MetricsAccessGuard(new Reflector(), users, oidc);
+  // GAP-L16: the guard composes the canonical RolesGuard via injection.
+  return new MetricsAccessGuard(new RolesGuard(new Reflector(), users, oidc));
 }
 
 describe('metricsTokenMatches', () => {

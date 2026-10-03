@@ -10,7 +10,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import {
   ProviderConfigError,
@@ -117,6 +117,7 @@ export class SearchController {
   ) {}
 
   @Get()
+  @Public()
   @ApiOperation({ summary: 'Cross-domain search across courses, opportunities, listings, advisory, chapters, topics' })
   async search(@Query() query: SearchQuery) {
     return {
@@ -127,6 +128,7 @@ export class SearchController {
   }
 
   @Get('suggest')
+  @Public()
   @ApiOperation({ summary: 'Title suggestions for a partial query' })
   async suggest(@Query('q') q: string) {
     return {
@@ -135,6 +137,7 @@ export class SearchController {
   }
 
   @Get('trending')
+  @Public()
   @ApiOperation({ summary: 'Trending queries (decayed counts over a trailing 7-day window)' })
   async trending(@Query() query: TrendingQueryDto) {
     return {
@@ -145,6 +148,7 @@ export class SearchController {
   }
 
   @Get('related')
+  @Public()
   @ApiOperation({ summary: 'Related items by shared-tag co-occurrence' })
   async related(@Query() query: RelatedQuery) {
     if (!RESULT_TYPES.includes(query.type)) {

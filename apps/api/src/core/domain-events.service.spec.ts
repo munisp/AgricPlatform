@@ -42,6 +42,33 @@ describe('DomainEventsService', () => {
     await expect(service.publish('too.many.segments.here', {})).rejects.toThrow(/taxonomy/);
   });
 
+  it('derives outbox aggregate coordinates from the name + payload (GAP-L12)', async () => {
+    const { service } = makeService();
+    // Preferred `${entity}Id` key wins.
+    const issued = await service.publish(
+      'learning.certificate.issued',
+      { certificateId: 'cert-1', courseId: 'course-1' },
+      'user-1'
+    );
+    expect(issued.aggregateType).toBe('learning.certificate');
+    expect(issued.aggregateId).toBe('cert-1');
+    // A single `*Id` payload key is the aggregate reference.
+    const created = await service.publish('chapter.chapter.created', { chapterId: 'chapter-1' });
+    expect(created.aggregateType).toBe('chapter.chapter');
+    expect(created.aggregateId).toBe('chapter-1');
+    // Non-`entity`-named single id keys still resolve (userId here).
+    const updated = await service.publish(
+      'notification.preferences.updated',
+      { userId: 'user-1', channels: [] }
+    );
+    expect(updated.aggregateType).toBe('notification.preferences');
+    expect(updated.aggregateId).toBe('user-1');
+    // Absent references leave aggregate_id NULL (honest).
+    const none = await service.publish('chapter.event.created', {});
+    expect(none.aggregateType).toBe('chapter.event');
+    expect(none.aggregateId).toBeUndefined();
+  });
+
   it('publish() does not wait for the markPublished round trip (perf P1-6)', async () => {
     const outbox = new InMemoryOutboxRepository();
     let markStarted = false;

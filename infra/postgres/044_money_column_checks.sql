@@ -9,7 +9,6 @@
 --
 -- Nullability (verified against the source migrations):
 --   marketplace.listings.price_ngn          NULL    (001_init.sql:477)
---   marketplace.buyer_requests.max_price_ngn NULL   (001_init.sql:496)
 --   marketplace.orders.quantity             NOT NULL (001_init.sql:510)
 --   marketplace.orders.total_naira          NOT NULL (001_init.sql:511)
 --   services.offerings.price_naira          NOT NULL (004_engagement.sql:38)
@@ -109,11 +108,10 @@ ALTER TABLE marketplace.listings
     ADD CONSTRAINT listings_price_ngn_check
     CHECK (price_ngn IS NULL OR price_ngn >= 0);
 
-ALTER TABLE marketplace.buyer_requests
-    DROP CONSTRAINT IF EXISTS buyer_requests_max_price_ngn_check;
-ALTER TABLE marketplace.buyer_requests
-    ADD CONSTRAINT buyer_requests_max_price_ngn_check
-    CHECK (max_price_ngn IS NULL OR max_price_ngn >= 0);
+-- NOTE (GAP-L14): marketplace.buyer_requests was dropped as a verified
+-- orphan by 119_drop_orphan_tables.sql — its max_price_ngn CHECK was
+-- removed here so this file no longer keeps a dead table's constraints
+-- alive on re-application.
 
 ALTER TABLE marketplace.orders
     DROP CONSTRAINT IF EXISTS orders_quantity_check;

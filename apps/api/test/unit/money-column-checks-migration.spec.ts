@@ -48,9 +48,8 @@ const EXPECTED_CHECKS: Record<string, Array<[string, string]>> = {
     ['vsla_loan_repayments_amount_kobo_check', 'amount_kobo>0']
   ],
   'marketplace.listings': [['listings_price_ngn_check', 'price_ngnISNULLORprice_ngn>=0']],
-  'marketplace.buyer_requests': [
-    ['buyer_requests_max_price_ngn_check', 'max_price_ngnISNULLORmax_price_ngn>=0']
-  ],
+  // GAP-L14: marketplace.buyer_requests was dropped as a verified orphan by
+  // 119_drop_orphan_tables.sql — 044 no longer carries its CHECK.
   'marketplace.orders': [
     ['orders_quantity_check', 'quantity>0'],
     ['orders_total_naira_check', 'total_naira>=0']

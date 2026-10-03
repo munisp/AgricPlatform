@@ -103,6 +103,8 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
     'event_types',
     'target_url',
     'secret',
+    'secret_prev',
+    'secret_prev_until',
     'status',
     'partner_id',
     'cross_tenant',
@@ -114,6 +116,10 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
     eventTypes: (row.event_types as string[]) ?? [],
     targetUrl: row.target_url as string,
     secret: row.secret as string,
+    secretPrevious: (row.secret_prev as string | null) ?? undefined,
+    secretPreviousUntil: row.secret_prev_until
+      ? new Date(row.secret_prev_until as string).toISOString()
+      : undefined,
     status: row.status as WebhookSubscription['status'],
     partnerId: (row.partner_id as string | null) ?? undefined,
     crossTenant: Boolean(row.cross_tenant),
@@ -125,6 +131,8 @@ const webhookSubscriptionMapper: RowMapper<WebhookSubscription> = {
     event_types: item.eventTypes,
     target_url: item.targetUrl,
     secret: item.secret,
+    secret_prev: item.secretPrevious ?? null,
+    secret_prev_until: item.secretPreviousUntil ?? null,
     status: item.status,
     partner_id: item.partnerId ?? null,
     cross_tenant: item.crossTenant ?? false,

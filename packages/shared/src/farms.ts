@@ -76,6 +76,13 @@ export interface FarmPlot {
   boundaryGeojson?: unknown;
   sizeHectares: number;
   soilType?: SoilType;
+  /**
+   * GPS fix quality (metres) of the centroid capture, when the mobile
+   * client reported it (GAP-L10). Location-quality metadata for geo
+   * evidence downstream (credit/MRV); absent on rows captured before the
+   * field existed.
+   */
+  accuracyMeters?: number;
   createdAt: string;
   updatedAt: string;
   version: number;

@@ -13,7 +13,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { RequiresFeature } from '../../common/feature-flags/feature-flag.decorator.js';
 import { FeatureFlagGuard } from '../../common/feature-flags/feature-flag.guard.js';
@@ -155,6 +155,7 @@ export class DealerQrWebhookController {
   constructor(private readonly dealerQr: DealerQrService) {}
 
   @Post('mojaloop')
+  @Public()
   @ApiOperation({
     summary:
       'Mojaloop transfer fulfil/abort callback (switch → platform). Requires MOJALOOP_WEBHOOK_TOKEN; ' +
