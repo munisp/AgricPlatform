@@ -3,9 +3,21 @@
 #
 #   kubectl apply -f infra/k8s/cronjobs/webhook-deliveries.yaml
 #
-# Drives POST /admin/webhooks/reprocess: re-drives recorded provider webhook
-# deliveries whose processing never completed (dedupe insert succeeded, side
-# effects failed). Without this job the webhook recovery path silently stops.
+# Drives two endpoints, in order:
+# 1. POST /admin/webhooks/reprocess: re-drives recorded INBOUND provider
+#    webhook deliveries whose processing never completed (dedupe insert
+#    succeeded, side effects failed).
+# 2. POST /admin/partner-webhooks/redrive (GAP-H06): re-dispatches OUTBOUND
+#    partner webhook deliveries that never completed on the default
+#    (stub-bus) path — mapped domain events not marked processed for the
+#    partner-webhook-dispatch consumer. Without this second call, a failed
+#    partner delivery is logged once and lost (the outbox row is already
+#    marked published, so the outbox sweeper never retries it).
+#
+# GAP-M03 caveat: like the rest of infra/k8s/cronjobs/, this job is
+# deliberately NOT deployed by default (not part of any kustomization) —
+# without it, both recovery paths silently stop. Apply deliberately and
+# alert on the outbox backlog.
 #
 # Auth: SWEEPER_ADMIN_TOKEN must be an admin OIDC JWT (provisioned as the
 # SWEEPER_ADMIN_TOKEN key of the agric-secrets Secret — see
@@ -55,7 +67,13 @@ spec:
                       optional: true
               command: ["/bin/sh", "-c"]
               args:
-                - wget -q -T 30 -O- --header="Authorization: Bearer ${SWEEPER_ADMIN_TOKEN:-}" --post-data='' "${API_BASE_URL}/admin/webhooks/reprocess"
+                # Inbound provider-webhook crash recovery, then the GAP-H06
+                # outbound partner-webhook redrive. set -e: any non-2xx fails
+                # the job loudly (never a silent skip).
+                - |
+                  set -e
+                  wget -q -T 30 -O- --header="Authorization: Bearer ${SWEEPER_ADMIN_TOKEN:-}" --post-data='' "${API_BASE_URL}/admin/webhooks/reprocess"
+                  wget -q -T 30 -O- --header="Authorization: Bearer ${SWEEPER_ADMIN_TOKEN:-}" --post-data='' "${API_BASE_URL}/admin/partner-webhooks/redrive"
               resources:
                 requests:
                   cpu: 10m
