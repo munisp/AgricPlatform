@@ -54,6 +54,10 @@ import {
 } from '../sweepers/voucher-stuck-sweeper.service.js';
 import { UsersService } from '../users/users.service.js';
 import { PartnerAuthService } from '../partner-api/partner-auth.service.js';
+import {
+  WebhookDispatchService,
+  type WebhookRedriveResult
+} from '../partner-api/webhook-dispatch.service.js';
 import type { PartnerClient } from '../../database/repositories/partner-api.repository.js';
 
 export type { AccountStatus };
@@ -103,7 +107,11 @@ export class AdminService {
     // OB-17b: partner-organisation client provisioning. Optional so bare
     // unit-test constructions keep working; AdminModule imports
     // PartnerApiModule at runtime.
-    @Optional() private readonly partnerAuth?: PartnerAuthService
+    @Optional() private readonly partnerAuth?: PartnerAuthService,
+    // GAP-H06: outbound partner-webhook redrive. Optional so bare unit-test
+    // constructions keep working; PartnerApiModule exports the dispatcher
+    // and AdminModule imports it at runtime.
+    @Optional() private readonly partnerWebhookDispatch?: WebhookDispatchService
   ) {}
 
   /**
@@ -404,6 +412,25 @@ export class AdminService {
       );
     }
     return this.integrations.reprocessUnprocessedWebhooks();
+  }
+
+  /**
+   * GAP-H06: one outbound partner-webhook redrive pass. Re-dispatches mapped
+   * domain events from the outbox whose delivery never completed (not marked
+   * processed for the 'partner-webhook-dispatch' consumer) — the at-least-once
+   * backstop for the default stub-bus path, where the outbox row is marked
+   * published regardless of delivery outcome and the outbox sweeper never
+   * retries it. Same external-scheduler pattern as the outbox sweep —
+   * POST /admin/partner-webhooks/redrive. Fails closed when the dispatcher
+   * is not wired.
+   */
+  async redrivePartnerWebhooks(limit?: number): Promise<WebhookRedriveResult> {
+    if (!this.partnerWebhookDispatch) {
+      throw new ServiceUnavailableException(
+        'WebhookDispatchService is not wired into the admin module'
+      );
+    }
+    return this.partnerWebhookDispatch.redriveFailed(limit);
   }
 
   /**
