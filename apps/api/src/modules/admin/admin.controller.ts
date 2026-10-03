@@ -277,6 +277,23 @@ export class AdminController {
     return { data: await this.admin.reprocessWebhooks() };
   }
 
+  @Post('partner-webhooks/redrive')
+  @ApiOperation({
+    summary:
+      'Run one OUTBOUND partner-webhook redrive pass (GAP-H06): re-dispatches mapped ' +
+      'domain events from the outbox whose partner delivery never completed (not marked ' +
+      'processed for the partner-webhook-dispatch consumer). At-least-once: receivers ' +
+      'dedupe via the stable x-agric-delivery id. An external scheduler (k8s CronJob, ' +
+      'deliberately not deployed by default — see GAP-M03) must invoke this endpoint ' +
+      'periodically; the API starts no timers of its own. Optional ?limit= caps attempts ' +
+      'per pass (default 100).'
+  })
+  async redrivePartnerWebhooks(@Query('limit') limit?: string) {
+    const parsed = limit === undefined ? undefined : Number.parseInt(limit, 10);
+    const cap = parsed !== undefined && Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+    return { data: await this.admin.redrivePartnerWebhooks(cap) };
+  }
+
   @Get('outbox/dead-letters')
   @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
   async outboxDeadLetters() {
