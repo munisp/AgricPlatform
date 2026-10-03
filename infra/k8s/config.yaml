@@ -9,7 +9,9 @@ data:
   APP_NAME: "AgricPlatform"
   WEB_URL: "https://app.example.invalid"
   API_URL: "https://api.example.invalid"
-  NEXT_PUBLIC_API_URL: "https://api.example.invalid"
+  # Read by apps/web as NEXT_PUBLIC_API_BASE_URL (build-time for the web
+  # image; see infra/docker/web.Dockerfile). Must include the /api/v1 prefix.
+  NEXT_PUBLIC_API_BASE_URL: "https://api.example.invalid/api/v1"
   KEYCLOAK_URL: "https://id.example.invalid"
   KEYCLOAK_REALM: "agric-platform"
   NEXT_PUBLIC_KEYCLOAK_URL: "https://id.example.invalid"
