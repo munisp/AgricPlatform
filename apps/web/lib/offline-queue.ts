@@ -13,10 +13,12 @@ export type QueueStatus = 'queued' | 'sending' | 'sent' | 'failed';
 
 /**
  * Follow-up request for compound mutations (e.g. credit loan draft →
- * submit). During a flush the primary request runs first; `{id}` in the
- * step path is then substituted from the primary response's `data.id` and
- * the steps replay in order, each with a derived idempotency key, so a
- * retried half-finished chain converges instead of duplicating drafts.
+ * submit, onboarding register → profile upsert). During a flush the
+ * primary request runs first; `{id}` in the step path is then substituted
+ * from the primary response's `data.id` (or `data.user.id` for the
+ * auth/register envelope) and the steps replay in order, each with a
+ * derived idempotency key, so a retried half-finished chain converges
+ * instead of duplicating drafts.
  */
 export interface QueuedChainStep {
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
