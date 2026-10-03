@@ -29,7 +29,27 @@ export type PartnerEventType = (typeof PARTNER_EVENT_TYPES)[number];
 /** Consumer name in events.processed_events for the dispatch dedup ledger. */
 export const WEBHOOK_DISPATCH_CONSUMER = 'partner-webhook-dispatch';
 
-const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
+/** Default cap on re-drive attempts per redriveFailed() pass. */
+export const DEFAULT_WEBHOOK_REDRIVE_LIMIT = 100;
+
+/** Counters returned by one redriveFailed() pass. */
+export interface WebhookRedriveResult {
+  /** Mapped (partner-relevant) outbox events examined, processed or not. */
+  scanned: number;
+  /** Unprocessed events re-driven this pass (bounded by the limit). */
+  attempted: number;
+  /** Attempts whose fan-out fully succeeded (event now marked processed). */
+  redelivered: number;
+  /** Attempts that still failed; the event stays unprocessed for the next pass. */
+  failed: number;
+}
+
+/**
+ * Internal domain event name -> public partner webhook type. Exported so
+ * the consumer-coverage registry (core/events/event-consumer-coverage.ts)
+ * reads the source side from this single source of truth.
+ */
+export const DOMAIN_EVENT_MAP: Record<string, PartnerEventType> = {
   'learning.certificate.issued': 'course.completed',
   'learning.enrolment.created': 'enrolment.created',
   'partner.disbursement.recorded': 'disbursement.recorded',
@@ -308,6 +328,63 @@ export class WebhookDispatchService implements OnModuleInit {
   /** Delivers one partner event to every active subscribed client URL. */
   async dispatch(type: PartnerEventType, event: DomainEvent): Promise<number> {
     return (await this.fanOut(type, event)).delivered;
+  }
+
+  /**
+   * GAP-H06 redrive pass: re-dispatches mapped domain events from the
+   * outbox whose delivery never completed. On the default (stub-bus) path
+   * DomainEventsService marks every outbox row published after the
+   * synchronous fan-out, so the outbox sweeper (which only retries
+   * UNPUBLISHED rows) never sees a failed webhook delivery — this pass is
+   * the at-least-once backstop: the dispatch dedup ledger
+   * (events.processed_events, consumer 'partner-webhook-dispatch') is the
+   * source of truth for "delivered", and anything mapped but unprocessed
+   * is re-driven through dispatchOnce (same dedup, SSRF guard, tenant
+   * scoping and stable whd_${event.id} delivery id as the live path).
+   *
+   * Additive: the synchronous '*' listener path is untouched, so
+   * EventEmitter semantics are unchanged. Per-event failures are counted
+   * and logged, never abort the pass, and leave the event unprocessed so
+   * the next pass retries it. Unmapped event names are ignored (they have
+   * no partner webhook type). Outbox rows are never mutated here.
+   *
+   * `limit` caps attempts per pass (default DEFAULT_WEBHOOK_REDRIVE_LIMIT);
+   * non-positive/invalid values fall back to the default. Intended to be
+   * invoked by an external scheduler via POST /admin/partner-webhooks/redrive
+   * — the API starts no timers of its own.
+   */
+  async redriveFailed(limit?: number): Promise<WebhookRedriveResult> {
+    const maxAttempts =
+      limit !== undefined && Number.isInteger(limit) && limit > 0
+        ? limit
+        : DEFAULT_WEBHOOK_REDRIVE_LIMIT;
+    const result: WebhookRedriveResult = { scanned: 0, attempted: 0, redelivered: 0, failed: 0 };
+    for (const event of await this.events.listOutbox()) {
+      const type = DOMAIN_EVENT_MAP[event.name];
+      if (!type) {
+        continue; // no partner webhook type for this domain event
+      }
+      if (result.attempted >= maxAttempts) {
+        break;
+      }
+      result.scanned += 1;
+      if (await this.dedup.has(WEBHOOK_DISPATCH_CONSUMER, event.id)) {
+        continue; // already delivered — consumer-side dedup says processed
+      }
+      result.attempted += 1;
+      try {
+        await this.dispatchOnce(type, event);
+        result.redelivered += 1;
+      } catch (error: unknown) {
+        result.failed += 1;
+        this.logger.warn(
+          `webhook redrive for ${event.name} (${event.id}) failed; left unprocessed for the next pass: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+    return result;
   }
 
   /**
