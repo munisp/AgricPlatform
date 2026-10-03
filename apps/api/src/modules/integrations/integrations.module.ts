@@ -8,6 +8,8 @@ import { MOJALOOP_ADAPTER, createMojaloopAdapter } from './drivers/mojaloop.driv
 import { BridgeSyncService } from './bridge-sync.service.js';
 import { IntegrationsController } from './integrations.controller.js';
 import { IntegrationsService } from './integrations.service.js';
+import { InternalEventsController } from './internal-events.controller.js';
+import { InternalTokenGuard } from './internal-token.guard.js';
 import { MarketDataIngestionService } from './market-data-ingestion.service.js';
 // Phase-3 federated integrations (wave P5a).
 import { BeneficiaryImportService } from './phase3/beneficiary-import.service.js';
@@ -21,9 +23,10 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
 
 @Module({
   imports: [FinanceModule, MarketplaceModule],
-  controllers: [IntegrationsController, Phase3Controller],
+  controllers: [IntegrationsController, InternalEventsController, Phase3Controller],
   providers: [
     IntegrationsService,
+    InternalTokenGuard,
     MarketDataIngestionService,
     BridgeSyncService,
     ExternalAccountsService,
