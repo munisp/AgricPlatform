@@ -175,7 +175,18 @@ export function OnboardingWizard() {
           label: `Onboarding for ${draft.fullName.trim() || 'new member'} (${ROLE_LABELS[draft.role]})`,
           method: 'POST',
           path: '/auth/register',
-          payload: registerPayload
+          payload: registerPayload,
+          // Chained follow-up: once the registration replay returns the new
+          // user id, the wizard profile (steps 1–3) replays against
+          // /profiles/{id} — without this the offline signup loses the whole
+          // profile payload.
+          chain: [
+            {
+              method: 'PUT',
+              path: '/profiles/{id}',
+              payload: profilePayload()
+            }
+          ]
         });
         setSubmitted('queued');
       } else {
