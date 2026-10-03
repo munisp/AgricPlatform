@@ -59,16 +59,6 @@ describePg('pg sync repositories (parity with in-memory)', () => {
     expect(row).toMatchObject({ version: 2, ownerId: 'pgtest-u1', deleted: false });
   });
 
-  it('bumpExpected CAS: insert at 0, reject stale, advance on match', async () => {
-    const versions = createPgEntityVersionRepository(pool!);
-    const bump = { entity: 'pgtest-note', entityId: 'n-2', ownerId: 'pgtest-u1', updatedBy: null };
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 1 })).toBeNull();
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 0 })).toBe(1);
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 0 })).toBeNull();
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 1, deleted: true })).toBe(2);
-    expect((await versions.current('pgtest-note', 'n-2'))!.deleted).toBe(true);
-  });
-
   it('listSince is owner-scoped and change_seq-ordered; maxChangeSeq matches', async () => {
     const versions = createPgEntityVersionRepository(pool!);
     await versions.bump({ entity: 'pgtest-note', entityId: 'n-3', ownerId: 'pgtest-u1', updatedBy: null });

@@ -13,9 +13,42 @@ export interface DomainEvent<T = unknown> {
   payload: T;
   actorId?: string;
   occurredAt: string;
+  /**
+   * Outbox aggregate coordinates (events.outbox.aggregate_type /
+   * aggregate_id). Populated by build(): the type is the `{domain}.{entity}`
+   * prefix of the name; the id is the payload's `${entity}Id` (or its only
+   * `*Id` string field) — NULL when the payload carries no unambiguous
+   * aggregate reference.
+   */
+  aggregateType?: string;
+  aggregateId?: string;
 }
 
 const EVENT_NAME_PATTERN = /^[a-z_]+\.[a-z_]+\.[a-z_]+$/;
+
+/**
+ * Deterministic aggregate-coordinate derivation for the outbox columns
+ * (GAP-L12): every writer (direct append + transactional outbox inserts)
+ * persists the envelope fields, so the derivation lives here, once.
+ */
+function deriveAggregate(
+  name: string,
+  payload: unknown
+): { aggregateType: string; aggregateId?: string } {
+  const [domain, entity] = name.split('.');
+  const aggregateType = `${domain}.${entity}`;
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const record = payload as Record<string, unknown>;
+    const idKeys = Object.keys(record).filter(
+      (key) => key.endsWith('Id') && typeof record[key] === 'string'
+    );
+    const preferred = `${entity}Id`;
+    const match = idKeys.includes(preferred) ? preferred : idKeys.length === 1 ? idKeys[0] : undefined;
+    const aggregateId = match ? (record[match] as string) : undefined;
+    return aggregateId ? { aggregateType, aggregateId } : { aggregateType };
+  }
+  return { aggregateType };
+}
 
 /** messaging.* attributes for the in-process consumer-handler telemetry. */
 function fanOutSpanAttributes(eventName: string): Record<string, string> {
@@ -73,7 +106,8 @@ export class DomainEventsService {
       name,
       payload,
       actorId,
-      occurredAt: new Date().toISOString()
+      occurredAt: new Date().toISOString(),
+      ...deriveAggregate(name, payload)
     };
   }
 
@@ -176,13 +210,24 @@ export class DomainEventsService {
 
   /**
    * Best-effort published marking: repositories predating the sweeper (and
-   * test doubles) may lack the method; failures never break fan-out.
+   * test doubles) may lack the method; failures never break fan-out. The
+   * row stays unpublished, so the outbox sweeper re-drives it (GAP-M10) —
+   * consumer-side dedup (events.processed_events) makes that re-drive
+   * safe — but the crash is surfaced loudly (WARN + counter): a silently
+   * failed mark is how duplicate fan-out hides.
    */
   private async markPublished(eventId: string): Promise<void> {
     try {
       await this.outbox.markPublished?.(eventId, new Date().toISOString());
-    } catch {
-      // Non-fatal: the sweeper will retry the row later.
+    } catch (error) {
+      this.logger.warn(
+        `outbox markPublished failed for ${eventId} — row stays unpublished for sweeper re-drive: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      this.telemetry.increment('eventbus.outbox_mark.failures', 1, {
+        'messaging.system': 'in-process-eventemitter'
+      });
     }
   }
 
