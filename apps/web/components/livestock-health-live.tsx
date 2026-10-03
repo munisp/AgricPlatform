@@ -130,31 +130,28 @@ export function RecordHealthForm({
     dose.trim().length >= 1 &&
     administeredAt.length > 0;
 
+  // One body for the online request and the offline-queue replay —
+  // withdrawal period and clinical notes must survive an offline record.
+  const recordBody = () => ({
+    animalId: animalId.trim(),
+    recordType,
+    product: product.trim(),
+    batchNumber: batchNumber.trim(),
+    dose: dose.trim(),
+    administeredAt: new Date(administeredAt).toISOString(),
+    withdrawalUntil: withdrawalUntil ? new Date(withdrawalUntil).toISOString() : undefined,
+    notes: notes.trim() || undefined
+  });
+
   const record = useApiMutation<void, AnimalHealthRecord>({
     mutationFn: () =>
-      recordHealth({
-        animalId: animalId.trim(),
-        recordType,
-        product: product.trim(),
-        batchNumber: batchNumber.trim(),
-        dose: dose.trim(),
-        administeredAt: new Date(administeredAt).toISOString(),
-        withdrawalUntil: withdrawalUntil ? new Date(withdrawalUntil).toISOString() : undefined,
-        notes: notes.trim() || undefined
-      }).then((res) => res.data),
+      recordHealth(recordBody()).then((res) => res.data),
     queue: {
       kind: 'livestock.health.recorded',
       label: () => `${recordType}: ${product.trim()}`,
       method: 'POST',
       path: () => '/livestock-health/records',
-      payload: () => ({
-        animalId: animalId.trim(),
-        recordType,
-        product: product.trim(),
-        batchNumber: batchNumber.trim(),
-        dose: dose.trim(),
-        administeredAt: new Date(administeredAt).toISOString()
-      })
+      payload: () => recordBody()
     },
     onSuccess: (created) => {
       setSavedRecord(created);
@@ -415,30 +412,27 @@ export function MovementPanel() {
     { fallbackData: FALLBACK_MOVEMENTS, enabled: Boolean(subjectAnimal) }
   );
 
+  // One body for the online request and the offline-queue replay — the
+  // permit linkage must survive an offline movement start.
+  const movementBody = () => ({
+    animalId: animalId.trim() || undefined,
+    lotId: lotId.trim() || undefined,
+    fromState,
+    toState,
+    transportMode,
+    purpose,
+    permitId: permitId.trim() || undefined
+  });
+
   const start = useApiMutation<void, AnimalMovement>({
     mutationFn: () =>
-      startMovement({
-        animalId: animalId.trim() || undefined,
-        lotId: lotId.trim() || undefined,
-        fromState,
-        toState,
-        transportMode,
-        purpose,
-        permitId: permitId.trim() || undefined
-      }).then((res) => res.data),
+      startMovement(movementBody()).then((res) => res.data),
     queue: {
       kind: 'livestock.movement.started',
       label: () => `Movement ${fromState} → ${toState}`,
       method: 'POST',
       path: () => '/livestock-health/movements',
-      payload: () => ({
-        animalId: animalId.trim() || undefined,
-        lotId: lotId.trim() || undefined,
-        fromState,
-        toState,
-        transportMode,
-        purpose
-      })
+      payload: () => movementBody()
     },
     onSuccess: () => query.refresh()
   });
