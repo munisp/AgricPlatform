@@ -184,7 +184,8 @@ export interface UseApiMutationOptions<TInput, TResult> {
     /**
      * Compound-mutation follow-ups replayed after the primary request during
      * a queue flush (e.g. credit draft → submit). `{id}` in a step path is
-     * substituted from the primary response's `data.id`.
+     * substituted from the primary response's `data.id` (or `data.user.id`
+     * for the auth/register envelope).
      */
     chain?: (input: TInput) => QueuedChainStep[];
   };
