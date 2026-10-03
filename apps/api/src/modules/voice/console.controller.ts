@@ -6,6 +6,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { RequiresFeature } from '../../common/feature-flags/feature-flag.decorator.js';
+import { FeatureFlagGuard } from '../../common/feature-flags/feature-flag.guard.js';
 import {
   ESCALATION_CASE_STATUSES,
   type EscalationCaseStatus
@@ -41,7 +42,7 @@ class ScoreQualityDto {
  * 404 while disabled).
  */
 @ApiTags('agronomist-console')
-@UseGuards(RolesGuard)
+@UseGuards(RolesGuard, FeatureFlagGuard)
 @RequiresFeature('agronomist-console')
 @Controller('agronomist')
 export class AgronomistConsoleController {
