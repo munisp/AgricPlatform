@@ -38,7 +38,8 @@ import {
   // Exported so feature modules hosting partner-scoped controllers (e.g.
   // traceability's exporter surface, wave-insurance's insurer read API) can
   // resolve PartnerAuthGuard and its collaborators when the guard is applied
-  // outside this module.
-  exports: [PartnerAuthGuard, PartnerAuthService, PartnerRateService]
+  // outside this module. WebhookDispatchService is exported for the admin
+  // module's GAP-H06 redrive endpoint (POST /admin/partner-webhooks/redrive).
+  exports: [PartnerAuthGuard, PartnerAuthService, PartnerRateService, WebhookDispatchService]
 })
 export class PartnerApiModule {}
