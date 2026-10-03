@@ -108,19 +108,23 @@ export function TransferOwnershipForm({ animal }: { animal: Animal }) {
   const hasActiveLien =
     !liensUnverified && (liensQuery.data ?? []).some((lien) => lien.status === 'active');
 
+  // One body for the online request and the offline-queue replay — the
+  // effective date must survive an offline transfer.
+  const transferBody = () => ({
+    toUserId: toUserId.trim(),
+    transferType,
+    effectiveAt: effectiveAt || undefined
+  });
+
   const transfer = useApiMutation<void, unknown>({
     mutationFn: () =>
-      transferAnimal(animal.id, {
-        toUserId: toUserId.trim(),
-        transferType,
-        effectiveAt: effectiveAt || undefined
-      }).then((res) => res.data),
+      transferAnimal(animal.id, transferBody()).then((res) => res.data),
     queue: {
       kind: 'livestock.animal.transferred',
       label: () => `Transfer ${animal.id}`,
       method: 'POST',
       path: () => `/livestock/animals/${animal.id}/transfer`,
-      payload: () => ({ toUserId: toUserId.trim(), transferType })
+      payload: () => transferBody()
     }
   });
 
