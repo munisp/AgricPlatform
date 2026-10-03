@@ -7,6 +7,16 @@ validation/metrics**, and **geofence batch checks**. Stateless, single binary,
 axum HTTP on port **8200**. Fail-closed doctrine mirrors
 `services/event-gw` and `services/crop-ml` (`docs/flood-ml.md`).
 
+> **Status in the platform: optional, profile-gated, no consumer yet.**
+> Unlike event-gw and crop-ml, this sidecar is **not wired into the API**:
+> nothing in `apps/api` or `packages/` calls it (the API computes H3
+> in-process via `h3-js` in `apps/api/src/modules/geo/h3.service.ts` and
+> persists that itself). geo-compute is **stateless and persists nothing** —
+> it is not on the default data path, and starting its `geo-compute`
+> compose profile changes no platform behaviour. Run it only for
+> manual/experimental batch compute; the intended API/lakehouse handoff is
+> designed (below) but not implemented.
+
 ## Endpoints
 
 | Method | Path | Body | Returns |
