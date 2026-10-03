@@ -48,6 +48,22 @@ import {
 
 export type GeoCreditMode = 'off' | 'shadow';
 
+/**
+ * The crop-ml sidecar REQUIRES a `season` matching ^\d{4}(-(wet|dry))?$
+ * (services/crop-ml/app/models.py AssessPlotRequest — GAP-C02), but neither
+ * CreditLoanApplication nor FarmPlot carries a season field. The season is
+ * therefore derived deterministically from the computation timestamp
+ * (nowIso, UTC): April–October → '<year>-wet' (main rains), November–March
+ * → '<year>-dry'. Documented in docs/geo-verified-credit.md so officers can
+ * reproduce the exact value sent to the sidecar.
+ */
+export function deriveSeasonForDate(nowIso: string): string {
+  const date = new Date(nowIso);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth(); // 0-based: 0 = January
+  return month >= 3 && month <= 9 ? `${year}-wet` : `${year}-dry`;
+}
+
 /** Applications considered "open" for batch shadow recomputation. */
 export const GEO_SHADOW_OPEN_STATUSES: readonly CreditLoanStatus[] = [
   'submitted',
@@ -211,7 +227,10 @@ export class GeoVerificationService {
         cropBasis = cropClient.name === 'http' ? 'live' : 'stub';
         const crop = await cropClient.assessPlot({
           plotId: plot.id,
-          geometry: plot.boundaryGeojson
+          geometry: plot.boundaryGeojson,
+          // crop-ml 422s without a season (GAP-C02) — deterministic
+          // derivation documented at deriveSeasonForDate.
+          season: deriveSeasonForDate(nowIso)
         });
         cropHealthScore = crop.healthScore;
         cropBasis = crop.basis;
