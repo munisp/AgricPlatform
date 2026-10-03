@@ -7,7 +7,7 @@ metadata:
 data:
   WEB_URL: "https://app.staging.example.invalid"
   API_URL: "https://api.staging.example.invalid"
-  NEXT_PUBLIC_API_URL: "https://api.staging.example.invalid"
+  NEXT_PUBLIC_API_BASE_URL: "https://api.staging.example.invalid/api/v1"
   KEYCLOAK_URL: "https://id.staging.example.invalid"
   NEXT_PUBLIC_KEYCLOAK_URL: "https://id.staging.example.invalid"
   # Sandbox drivers prove the adapter code paths without live delivery.
