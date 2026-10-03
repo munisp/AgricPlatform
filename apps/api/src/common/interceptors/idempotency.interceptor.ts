@@ -55,19 +55,24 @@ export function hashRequestBody(body: unknown): string {
  * The store is injected (Redis in production, in-memory otherwise) so replay
  * safety holds across replicas (persistence wave plan §7).
  *
- * Concurrent-twin serialization (Stage 27 WP-G11): two simultaneous FIRST
- * requests with the same key previously both missed the cache and both
- * executed the mutation (the check-then-act gap between `store.get` and the
- * post-response `store.save`). A per-key in-process advisory lock now
+ * Concurrent-twin serialization (Stage 27 WP-G11, distributed in GAP-M07):
+ * two simultaneous FIRST requests with the same key previously both missed
+ * the cache and both executed the mutation (the check-then-act gap between
+ * `store.get` and the post-response `store.save`). A per-key advisory lock
  * serialises them: the twin waits for the first request's response to be
  * cached, then replays it (or 409s on body mismatch) instead of executing a
- * duplicate. The lock is per replica; cross-instance duplicates are stopped
- * by the service-level UNIQUE constraints on the idempotency-keyed records
- * (adopt-on-23505), which remain the correctness backstop.
+ * duplicate. The lock is TWO-LAYERED: the store's distributed lock
+ * (Redis SET NX PX in production — see redis/idempotency.store.ts) holds
+ * across replicas, and the in-process promise chain below stays as the
+ * fast path for same-replica twins and as the only layer for stores with
+ * no lock primitive. A lock acquisition timeout fails CLOSED (503,
+ * retryable) — a duplicate mutation is worse than a retry. Service-level
+ * UNIQUE constraints on the idempotency-keyed records (adopt-on-23505)
+ * remain the final correctness backstop.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
-  /** Per-scoped-key promise-chain mutex (per replica). */
+  /** Per-scoped-key promise-chain mutex (same-replica fast path). */
   private readonly keyLocks = new Map<string, Promise<void>>();
 
   constructor(
@@ -126,11 +131,33 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const path = request.originalUrl.split('?')[0];
     const scopedKey = `${request.method}:${path}:${principal}:${key}`;
     const requestHash = hashRequestBody(request.body);
-    // Serialize concurrent twins (WP-G11): the twin waits for the first
-    // request's response to be cached before its own cache lookup, so it
-    // replays (or 409s on body mismatch) instead of executing a duplicate
-    // mutation. The lock releases only AFTER the envelope is stored.
-    const release = await this.acquireKeyLock(scopedKey);
+    // Serialize concurrent twins (WP-G11 + GAP-M07): the twin waits for the
+    // first request's response to be cached before its own cache lookup, so
+    // it replays (or 409s on body mismatch) instead of executing a duplicate
+    // mutation. The lock releases only AFTER the envelope is stored. The
+    // distributed layer (when the store provides one) serialises twins
+    // across replicas; the in-process chain serialises same-replica twins.
+    const releaseLocal = await this.acquireKeyLock(scopedKey);
+    let releaseDistributed: (() => Promise<void>) | undefined;
+    if (this.store.acquireLock) {
+      try {
+        releaseDistributed = await this.store.acquireLock(scopedKey);
+      } catch (error) {
+        releaseLocal();
+        // FAIL-CLOSED (GAP-M07): without the cross-replica lock a twin on
+        // another instance could duplicate the mutation — answer a
+        // retryable 503 instead of proceeding unlocked.
+        throw new ServiceUnavailableException(
+          `Idempotency lock unavailable — retry the request with the same Idempotency-Key (${error instanceof Error ? error.message : String(error)})`
+        );
+      }
+    }
+    const release = (): void => {
+      releaseLocal();
+      // Release never throws (token-checked, TTL-backstopped); fire and
+      // forget so the response path does not wait on the lock round trip.
+      void releaseDistributed?.();
+    };
     let cached: unknown;
     try {
       cached = await this.store.get(scopedKey);
@@ -139,7 +166,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
       // FAIL-CLOSED (V-77): the idempotency store is a store of RECORD, not
       // a cache — proceeding without it could execute a duplicate mutation.
       // Answer a clean 503 (retryable) instead of leaking a raw 500; the
-      // throttler cache tier fails OPEN by contrast.
+      // throttler cache tier degrades to a per-replica fallback by contrast
+      // (GAP-M06).
       throw new ServiceUnavailableException(
         `Idempotency store unavailable — retry the request later (${error instanceof Error ? error.message : String(error)})`
       );
