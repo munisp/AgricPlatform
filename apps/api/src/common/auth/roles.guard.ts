@@ -2,159 +2,120 @@ import {
   CanActivate,
   ExecutionContext,
   ForbiddenException,
+  Inject,
   Injectable,
   UnauthorizedException
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { User, UserRole } from '@agric-platform/shared';
-import { UsersService } from '../../modules/users/users.service.js';
 import { devHeaderAuthAllowed } from './auth.config.js';
-import { OidcService, type OidcIdentity } from './oidc.service.js';
-import { ROLES_KEY } from './roles.decorator.js';
-import type { AccountStatus } from '../../database/repositories/user.repository.js';
+import { IS_PUBLIC_KEY, ROLES_KEY } from './roles.decorator.js';
+import { OidcService } from './oidc.service.js';
+import { UsersService } from '../../modules/users/users.service.js';
 
 interface AuthenticatedRequest {
   headers: Record<string, string | string[] | undefined>;
-  query?: Record<string, string | string[] | undefined>;
-  /** Express/Fastify request path (url used as fallback in tests). */
-  path?: string;
-  url?: string;
-  user?: unknown;
+  user?: User;
 }
 
 /**
- * The ONLY route allowed to receive credentials as query parameters.
- * Browser EventSource clients cannot set headers, so the notification SSE
- * stream passes the bearer token as ?access_token= (RFC 6750 §2.3). Query
- * strings leak via access logs, browser history and Referer headers, so
- * every other route must use the Authorization header.
- */
-const QUERY_CREDENTIALS_PATH = '/notifications/stream';
-
-/**
- * RBAC guard. Prefers `Authorization: Bearer` (Keycloak OIDC JWT, verified
- * against the realm JWKS) and falls back to the `x-user-id` development
- * header only outside production or when `ALLOW_DEV_HEADER_AUTH=true`.
- * Bearer tokens are always verified when present — a bad token is a 401,
- * never a silent downgrade to header auth.
+ * Global RBAC guard (registered via APP_GUARD in app.module.ts).
+ *
+ * Default-deny (GAP-M05): a route with NO role metadata and no @Public
+ * marker requires any authenticated platform identity. @Roles(...) narrows
+ * to the listed roles. @Public opts out of platform authentication
+ * entirely — the route's own guard (PartnerAuthGuard, InternalTokenGuard,
+ * webhook signature checks, MetricsAccessGuard) then owns the decision.
+ *
+ * Identity resolution order: verified OIDC bearer token (always honoured);
+ * the x-user-id development header only where devHeaderAuthAllowed()
+ * (never in production unless ALLOW_DEV_HEADER_AUTH=true). A bearer that
+ * fails verification is NEVER downgraded to header auth — that would let
+ * an attacker pair a garbage token with a chosen identity.
+ *
+ * Deceased accounts are blocked at the guard (estate-frozen identity can
+ * never act); suspended accounts pass authentication and are blocked at
+ * the specific write paths that check session.status.
  */
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
-    private readonly users: UsersService,
-    private readonly oidc: OidcService
+    @Inject(UsersService) private readonly users: UsersService,
+    @Inject(OidcService) private readonly oidc: OidcService
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (context.getType<string>() !== 'http') {
+      return true;
+    }
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass()
+    ]);
+    if (isPublic) {
+      return true;
+    }
+    return this.enforceRoles(context);
+  }
+
+  /**
+   * The role-enforcement decision, exposed so composed guards
+   * (MetricsAccessGuard, GAP-L16) can run the SAME check with the @Public
+   * escape hatch disabled — a route that is public to the GLOBAL guard but
+   * still carries @Roles metadata.
+   */
+  async enforceRoles(context: ExecutionContext): Promise<boolean> {
     const required = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [
       context.getHandler(),
       context.getClass()
     ]);
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const user = await this.resolveUser(request);
+    if (!user) {
+      throw new UnauthorizedException('Authentication required');
+    }
+    if (user.status === 'deceased') {
+      throw new ForbiddenException(
+        'This account is frozen pending estate resolution and cannot perform actions'
+      );
+    }
+    request.user = user;
+    // Default-deny: no @Roles metadata = any authenticated identity.
     if (!required || required.length === 0) {
       return true;
     }
-
-    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
-    const user = await this.resolveIdentity(request);
-    if (!user.roles.some((role) => required.includes(role))) {
-      throw new ForbiddenException(`Requires one of roles: ${required.join(', ')}`);
+    if (!required.some((role) => user.roles.includes(role))) {
+      throw new ForbiddenException(
+        `Requires role: ${required.join(' or ')} (you have: ${user.roles.join(', ') || 'none'})`
+      );
     }
-    request.user = user;
     return true;
   }
 
-  private async resolveIdentity(request: AuthenticatedRequest): Promise<User> {
+  private async resolveUser(request: AuthenticatedRequest): Promise<User | undefined> {
     const authorization = request.headers['authorization'];
     const header = Array.isArray(authorization) ? authorization[0] : authorization;
-    // endsWith tolerates the global /api/v1 prefix (bootstrap.ts).
-    const requestPath = request.path ?? request.url?.split('?')[0] ?? '';
-    const queryCredentialsAllowed = requestPath.endsWith(QUERY_CREDENTIALS_PATH);
-    const queryToken = queryCredentialsAllowed ? request.query?.['access_token'] : undefined;
-    const queryBearer = Array.isArray(queryToken) ? queryToken[0] : queryToken;
-    const bearer = header?.startsWith('Bearer ')
-      ? header.slice('Bearer '.length).trim()
-      : queryBearer?.trim() || undefined;
-
+    const bearer = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : undefined;
     if (bearer) {
-      let identity: OidcIdentity;
-      try {
-        identity = await this.oidc.verify(bearer);
-      } catch (error) {
-        throw new UnauthorizedException(
-          `Invalid bearer token: ${error instanceof Error ? error.message : 'verification failed'}`
-        );
-      }
-      return this.userFromToken(identity);
-    }
-
-    if (devHeaderAuthAllowed()) {
-      // EventSource clients (SSE) send the same development identity as a
-      // query parameter; honoured only on the SSE route and only where the
-      // header itself is allowed.
-      const devHeader =
-        request.headers['x-user-id'] ??
-        (queryCredentialsAllowed ? request.query?.['x-user-id'] : undefined);
-      const userId = Array.isArray(devHeader) ? devHeader[0] : devHeader;
-      // Perf P1-1: ONE folded user+status read per request (parallel-round
-      // fallback on drivers without the folded read).
-      const resolved = userId ? await this.users.findByIdWithStatus(userId) : undefined;
+      // A presented bearer is ALWAYS verified; failure never downgrades to
+      // the development header (token-smuggling guard).
+      const identity = await this.oidc.verify(bearer);
+      const resolved = await this.users.findByIdWithStatus(identity.subject);
       if (resolved) {
-        this.assertActive(resolved.status);
         return resolved.user;
       }
-      throw new UnauthorizedException(
-        userId
-          ? 'Unknown x-user-id header value'
-          : 'Authentication required. Provide an Authorization: Bearer token (or x-user-id in development).'
-      );
+      throw new UnauthorizedException('Bearer token subject is not a registered user');
     }
-
-    throw new UnauthorizedException(
-      'Authentication required. Provide a valid Authorization: Bearer token issued by the platform identity provider.'
-    );
-  }
-
-  /**
-   * Resolves the token subject to a repository user when one exists;
-   * otherwise synthesises a least-privilege identity from the verified
-   * claims so RBAC still applies (accounts may live only in Keycloak).
-   */
-  private async userFromToken(identity: OidcIdentity): Promise<User> {
-    const resolved = await this.users.findByIdWithStatus(identity.subject);
-    if (resolved) {
-      this.assertActive(resolved.status);
-      return resolved.user;
+    if (!devHeaderAuthAllowed()) {
+      return undefined;
     }
-    const now = new Date().toISOString();
-    return {
-      id: identity.subject,
-      phone: '',
-      fullName: identity.name ?? identity.subject,
-      roles: identity.roles,
-      preferredLanguage: 'en',
-      kycTier: 'tier_0',
-      isVerified: false,
-      createdAt: now,
-      lastActiveAt: now
-    };
-  }
-
-  /**
-   * Suspended accounts (admin-set account status overlay) lose API access
-   * immediately, regardless of how the identity was presented: a still-valid
-   * Keycloak token or development header must not bypass a suspension.
-   * Deceased accounts (OB-06, V-09) are estate-frozen pending succession and
-   * are blocked with a distinct message. The status arrives with the folded
-   * identity read (perf P1-1), so the check stays per-request (immediate
-   * suspension) without a second round trip.
-   */
-  private assertActive(status: AccountStatus): void {
-    if (status === 'deceased') {
-      throw new UnauthorizedException('Account is deceased; estate frozen pending succession.');
+    const headerIdentity = request.headers['x-user-id'];
+    const userId = Array.isArray(headerIdentity) ? headerIdentity[0] : headerIdentity;
+    if (!userId) {
+      return undefined;
     }
-    if (status === 'suspended') {
-      throw new UnauthorizedException('Account is suspended');
-    }
+    const resolved = await this.users.findByIdWithStatus(userId);
+    return resolved?.user;
   }
 }

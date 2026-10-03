@@ -1,45 +1,89 @@
-import { describe, expect, it, vi } from 'vitest';
-import { MetricsService } from '../../common/metrics/metrics.service.js';
+import { describe, expect, it } from 'vitest';
 import {
   createInMemoryEntityVersionRepository,
-  type EntityVersionRepository
+  createInMemorySyncVersionBumpRetryRepository
 } from '../../database/repositories/sync.repository.js';
-import { SyncVersioningService } from './sync-versioning.service.js';
+import { SyncVersioningService, SYNC_VERSION_RETRY_MAX_ATTEMPTS } from './sync-versioning.service.js';
 
-/**
- * L-10: a failed version bump after a REST write is sync-invisible — it must
- * never be silent. The hook stays non-throwing (the entity write already
- * landed), but it increments `agric_sync_version_bump_failures_total` and
- * logs a WARN.
- */
-describe('SyncVersioningService failure visibility', () => {
-  it('increments the failure counter (and does not throw) when the bump fails', async () => {
-    const failing: EntityVersionRepository = {
-      bump: vi.fn().mockRejectedValue(new Error('db blip')),
-      bumpExpected: vi.fn(),
-      applyGuarded: vi.fn(),
-      current: vi.fn(),
-      listSince: vi.fn(),
-      maxChangeSeq: vi.fn()
-    };
-    const metrics = new MetricsService();
-    const inc = vi.spyOn(metrics, 'recordSyncVersionBumpFailure');
-    const service = new SyncVersioningService(failing, metrics);
+const CHANGE = {
+  entity: 'marketplace_listing',
+  entityId: 'listing-1',
+  ownerId: 'seller-1',
+  actorId: 'seller-1',
+  deleted: false
+};
 
-    await expect(
-      service.recordChange({ entity: 'farm_plot', entityId: 'p-1', ownerId: 'u', actorId: 'u' })
-    ).resolves.toBeUndefined();
-    expect(inc).toHaveBeenCalledWith('farm_plot');
+function build(options: { failBumps?: number } = {}) {
+  const versions = createInMemoryEntityVersionRepository();
+  const retries = createInMemorySyncVersionBumpRetryRepository();
+  let failuresLeft = options.failBumps ?? 0;
+  const failingVersions = {
+    ...versions,
+    bump: async (input: Parameters<typeof versions.bump>[0]) => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        throw new Error('version ledger down');
+      }
+      return versions.bump(input);
+    }
+  };
+  const service = new SyncVersioningService(failingVersions, undefined, retries);
+  return { service, versions, retries };
+}
+
+describe('SyncVersioningService failed-bump reconciliation (GAP-M11)', () => {
+  it('a failed bump enqueues a compensating retry entry (never throws)', async () => {
+    const { service, retries } = build({ failBumps: 1 });
+    await expect(service.recordChange(CHANGE)).resolves.toBeUndefined();
+    const pending = await retries.listPending(10);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      entity: CHANGE.entity,
+      entityId: CHANGE.entityId,
+      ownerId: CHANGE.ownerId,
+      attempts: 0,
+      lastError: 'version ledger down'
+    });
   });
 
-  it('does not count a successful bump', async () => {
-    const versions = createInMemoryEntityVersionRepository();
-    const metrics = new MetricsService();
-    const inc = vi.spyOn(metrics, 'recordSyncVersionBumpFailure');
-    const service = new SyncVersioningService(versions, metrics);
+  it('the reconciliation pass re-applies the bump and removes the entry', async () => {
+    const { service, versions, retries } = build({ failBumps: 1 });
+    await service.recordChange(CHANGE);
+    const result = await service.reconcileFailedBumps();
+    expect(result).toEqual({ retried: 1, recovered: 1, failed: 0, exhausted: 0 });
+    expect(await retries.listPending(10)).toHaveLength(0);
+    // The write is sync-visible again: the version advanced.
+    const row = await versions.get(CHANGE.entity, CHANGE.entityId);
+    expect(row?.version).toBe(1);
+  });
 
-    await service.recordChange({ entity: 'farm_plot', entityId: 'p-1', ownerId: 'u', actorId: 'u' });
-    expect(inc).not.toHaveBeenCalled();
-    expect((await versions.current('farm_plot', 'p-1'))!.version).toBe(1);
+  it('a bump that keeps failing stays queued with an incremented attempt budget', async () => {
+    const { service, retries } = build({ failBumps: Number.MAX_SAFE_INTEGER });
+    await service.recordChange(CHANGE);
+    const result = await service.reconcileFailedBumps();
+    expect(result).toEqual({ retried: 1, recovered: 0, failed: 1, exhausted: 0 });
+    const pending = await retries.listPending(10);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].attempts).toBe(1);
+  });
+
+  it('exhausted rows are KEPT for ops and surfaced, never silently dropped', async () => {
+    const { service, retries } = build({ failBumps: Number.MAX_SAFE_INTEGER });
+    await service.recordChange(CHANGE);
+    for (let pass = 0; pass < SYNC_VERSION_RETRY_MAX_ATTEMPTS; pass += 1) {
+      await service.reconcileFailedBumps();
+    }
+    const result = await service.reconcileFailedBumps();
+    expect(result.retried).toBe(0);
+    expect(result.exhausted).toBe(1);
+    const pending = await retries.listPending(10);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].attempts).toBe(SYNC_VERSION_RETRY_MAX_ATTEMPTS);
+  });
+
+  it('a successful bump leaves no retry entry', async () => {
+    const { service, retries } = build();
+    await service.recordChange(CHANGE);
+    expect(await retries.listPending(10)).toHaveLength(0);
   });
 });

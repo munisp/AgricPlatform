@@ -82,7 +82,7 @@ any online touchpoint (API or agent USSD).
   against a Mojaloop simulator endpoint). There is **no live interop**: no
   funds move through any Mojaloop switch from this build.
 - **USSD.** The agent-banking USSD callback
-  (`POST /agent-banking/ussd/callback`) mirrors the agronomy channel: pure
+  (`POST /ussd/callback`) mirrors the agronomy channel: pure
   CON/END menu engine (float balance, last 5 transactions, voucher
   redemption), 3-minute sessions with idempotent replay, and the endpoint
   stays 404 unless `USSD_DRIVER=live|sandbox` with the Africa's Talking
@@ -125,5 +125,4 @@ in the service on top of the role guard.
 - Voucher amounts are bounded only by the agent float and daily limit at
   redemption time; issuance is deliberately not reserved against the float
   (vouchers are claims, not holds — documented for the compliance review).
-- USSD voucher redemption requires typing the full voucher id on a feature
-  phone; a short-code scheme is future work.
+- USSD agent ops are text-only (CON/END), as the channel dictates.
