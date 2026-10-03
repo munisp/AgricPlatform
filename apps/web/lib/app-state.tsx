@@ -57,17 +57,19 @@ function writeQueue(items: QueuedSubmission[]): void {
 
 /** Replays a queued mutation against the API with its stored idempotency key. */
 async function sendQueuedItem(item: QueuedSubmission): Promise<void> {
-  const primary = await apiFetch<{ data?: { id?: unknown } }>(item.path, {
+  const primary = await apiFetch<{ data?: { id?: unknown; user?: { id?: unknown } } }>(item.path, {
     method: item.method,
     body: item.payload,
     idempotencyKey: item.idempotencyKey
   });
-  // Compound mutations (e.g. credit draft → submit): replay the follow-up
-  // steps against the id the primary request returned. Derived idempotency
-  // keys keep retries of a half-finished chain safe — the primary replays
-  // its stored response for the same key, yielding the same id.
+  // Compound mutations (e.g. credit draft → submit, register → profile
+  // upsert): replay the follow-up steps against the id the primary request
+  // returned. Most primaries put it at `data.id`; the auth/register
+  // envelope puts the new user at `data.user.id`. Derived idempotency keys
+  // keep retries of a half-finished chain safe — the primary replays its
+  // stored response for the same key, yielding the same id.
   if (item.chain && item.chain.length > 0) {
-    const id = primary?.data?.id;
+    const id = primary?.data?.id ?? primary?.data?.user?.id;
     if (typeof id !== 'string' || id === '') {
       throw new Error('Queued follow-up could not resolve the primary record id');
     }
