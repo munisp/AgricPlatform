@@ -37,7 +37,7 @@ Inputs (per loan application):
 3. **Flood-risk band** — via the geo-intel flood driver port
    (`FLOOD_ML_DRIVER`), severity mapped `none|low|moderate|high|severe`
    (unknown severities map to the neutral `moderate`).
-4. **Crop health** — crop-ml sidecar `health_score` (0–100) via the
+4. **Crop health** — crop-ml sidecar `health.score` (0–100) via the
    `CropIntelClient` port.
 5. **Data freshness** — age of the plot record (`updatedAt`).
 
@@ -48,7 +48,7 @@ Inputs (per loan application):
 | Plot verification  |     25 | 25 if verified, else 0 (gates every other component) |
 | Area plausibility  |     15 | 15 if area ∈ [0.01, 100] ha, else 0 |
 | Flood risk         |     20 | none=20, low=16, moderate=10, high=5, severe=0 |
-| Crop health        |     30 | round(health_score / 100 × 30), clamped 0–30 |
+| Crop health        |     30 | round(health.score / 100 × 30), clamped 0–30 |
 | Data freshness     |     10 | ≤30d=10, ≤90d=7, ≤180d=4, ≤365d=2, older=0 |
 
 Same inputs → same outputs, always (known-answer vectors in
@@ -92,11 +92,18 @@ factor into the live score requires BOTH:
 | `CROP_ML_URL` | — | Base URL of the crop-ml sidecar (e.g. `http://localhost:8100`). Required when `CROP_ML_DRIVER=http`. |
 | `FLOOD_ML_DRIVER` / `FLOOD_ML_URL` | `stub` / — | Reused from geo-intel; see docs/flood-ml.md. |
 
-The crop-ml sidecar contract (FIXED — sibling wave): `POST
-/v1/crop/assess-plot` `{plot_id, geometry?, season?}` → `{plot_id, season,
-health_score, phenology{sos,eos,peak}, classification, drivers, basis}`;
-`GET /healthz`. The http client uses a 5 s timeout, 2 retries (5xx/network
-only), and a circuit breaker (5 consecutive failures open it for 60 s).
+The crop-ml sidecar contract (mirrors the shipped sidecar schemas,
+`services/crop-ml/app/models.py`): `POST /v1/crop/assess-plot` `{plot_id,
+geometry?, season}` — `season` is REQUIRED and must match
+`^\d{4}(-(wet|dry))?$` — → `{plot_id, season, provider: 'stub'|'live',
+seasonality{phenology{sos_date,eos_date,peak_date,peak_value,...},
+classification{label, reason_codes}}, health{score, drivers[{code, impact,
+detail}]}}`; `GET /healthz`. The http client uses a 5 s timeout, 2 retries
+(5xx/network only), and a circuit breaker (5 consecutive failures open it
+for 60 s). Because neither the loan application nor the farm plot carries a
+season, geo-verification derives it deterministically from the computation
+timestamp (UTC): April–October → `<year>-wet`, November–March →
+`<year>-dry` (see `deriveSeasonForDate`).
 
 ## Fail-closed doctrine
 
