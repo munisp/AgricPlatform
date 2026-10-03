@@ -7,8 +7,17 @@ import { I18nProvider } from '@/lib/i18n';
 import { clearApiCache } from '@/lib/api/hooks';
 import { getDraftsDb } from '@/lib/drafts';
 import { FarmsHub, PlotForm } from '@/components/farms-live';
+import type { QueuedSubmission } from '@/lib/offline-queue';
 
 expect.extend(toHaveNoViolations);
+
+function readStoredQueue(): QueuedSubmission[] {
+  return JSON.parse(window.localStorage.getItem('agric.queue') ?? '[]') as QueuedSubmission[];
+}
+
+function setOnline(online: boolean) {
+  Object.defineProperty(window.navigator, 'onLine', { value: online, configurable: true });
+}
 
 // jsdom does no layout and the stylesheet is not loaded — color contrast is
 // covered by test/contrast.test.ts against the CSS source.
@@ -91,6 +100,10 @@ function router(url: string, init?: RequestInit) {
   if (path.endsWith('/api/v1/farms/plots/plot-1/plantings')) return jsonResponse({ data: [PLANTING] });
   if (path.endsWith('/api/v1/farms/plots/plot-1/expenses')) return jsonResponse({ data: [EXPENSE] });
   if (path.endsWith('/api/v1/farms/plantings/planting-1/harvests')) return jsonResponse({ data: [] });
+  if (path.endsWith('/api/v1/farms/plantings/planting-1') && method === 'PATCH') {
+    const body = JSON.parse(String(init?.body));
+    return jsonResponse({ data: { ...PLANTING, ...body } });
+  }
   return jsonResponse({ message: 'not found' }, 404);
 }
 
@@ -101,6 +114,8 @@ describe('FarmsHub', () => {
     clearApiCache();
     vi.stubGlobal('fetch', fetchMock);
     fetchMock.mockImplementation(router);
+    setOnline(true);
+    window.localStorage.clear();
     const db = getDraftsDb();
     if (db) await db.drafts.clear();
   });
@@ -162,6 +177,82 @@ describe('FarmsHub', () => {
     await waitFor(() => expect(screen.getByText(/Oba Super 2/)).toBeTruthy());
     fireEvent.click(screen.getByRole('tab', { name: 'Expenses' }));
     await waitFor(() => expect(screen.getByText(/NPK 20-10-10/)).toBeTruthy());
+  });
+
+  it('collects a failure reason and sends it when marking a planting failed', async () => {
+    renderWithProviders(<FarmsHub />);
+    await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
+    fireEvent.click(screen.getByText('Plot'));
+    await waitFor(() => expect(screen.getByText(/Oba Super 2/)).toBeTruthy());
+
+    // The failure transition requires a reason — none is sent until one is
+    // picked and confirmed.
+    fireEvent.click(screen.getByText('Mark as failed'));
+    const reasonSelect = screen.getByLabelText('Failure reason');
+    fireEvent.change(reasonSelect, { target: { value: 'flood' } });
+    fireEvent.click(screen.getByText('Confirm failure'));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url).endsWith('/api/v1/farms/plantings/planting-1') &&
+          (init?.method ?? 'GET') === 'PATCH'
+      );
+      expect(patch).toBeTruthy();
+      expect(JSON.parse(String(patch![1]?.body))).toEqual({
+        status: 'failed',
+        failureReason: 'flood'
+      });
+    });
+  });
+
+  it('queues the failed transition offline with the same failureReason payload', async () => {
+    setOnline(false);
+    renderWithProviders(<FarmsHub />);
+    // Plot list renders from the offline fixtures while unreachable.
+    await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
+    fireEvent.click(screen.getByText('Plot'));
+    await waitFor(() => expect(screen.getByText(/Oba Super 2/)).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Mark as failed'));
+    fireEvent.change(screen.getByLabelText('Failure reason'), { target: { value: 'pests' } });
+    fireEvent.click(screen.getByText('Confirm failure'));
+
+    await waitFor(() => expect(readStoredQueue()).toHaveLength(1));
+    const patches = fetchMock.mock.calls.filter(
+      ([, init]) => (init?.method ?? 'GET') === 'PATCH'
+    );
+    expect(patches).toHaveLength(0);
+    const queued = readStoredQueue();
+    expect(queued[0]!.kind).toBe('farms.planting.status_changed');
+    expect(queued[0]!.path).toBe('/farms/plantings/planting-1');
+    expect(queued[0]!.payload).toEqual({ status: 'failed', failureReason: 'pests' });
+  });
+
+  it('queues a plot create offline with soilType and boundaryGeojson intact', async () => {
+    setOnline(false);
+    renderWithProviders(<FarmsHub />);
+    await waitFor(() => expect(screen.getByText('Zaria North Plot')).toBeTruthy());
+    fireEvent.click(screen.getByText('Register plot'));
+    fireEvent.change(screen.getByLabelText('Plot name'), { target: { value: 'Queued Plot' } });
+    fireEvent.change(screen.getByLabelText('LGA'), { target: { value: 'Kura' } });
+    fireEvent.change(screen.getByLabelText('Centre latitude'), { target: { value: '11.7' } });
+    fireEvent.change(screen.getByLabelText('Centre longitude'), { target: { value: '8.4' } });
+    fireEvent.change(screen.getByLabelText('Size (hectares)'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('Soil type'), { target: { value: 'loamy' } });
+    fireEvent.change(screen.getByLabelText('Boundary (GeoJSON)'), {
+      target: {
+        value: '{"type":"Polygon","coordinates":[[[7,11],[7.1,11],[7.1,11.1],[7,11]]]}'
+      }
+    });
+    fireEvent.click(screen.getByText('Save plot'));
+
+    await waitFor(() => expect(readStoredQueue()).toHaveLength(1));
+    const queued = readStoredQueue();
+    expect(queued[0]!.kind).toBe('farms.plot.created');
+    const payload = queued[0]!.payload as Record<string, unknown>;
+    expect(payload.soilType).toBe('loamy');
+    expect((payload.boundaryGeojson as { type: string }).type).toBe('Polygon');
   });
 
   it('has no accessibility violations', async () => {
