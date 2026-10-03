@@ -12,7 +12,7 @@ import {
   type User
 } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
-import type { DomainEventsService } from '../../core/domain-events.service.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
 import { createInMemoryAuditRepository } from '../../database/repositories/audit.repository.js';
 import { InMemoryChapterRepository } from '../../database/repositories/chapter.repository.js';
 import { createInMemoryComplianceConsentRepository } from '../../database/repositories/compliance.repository.js';
@@ -22,6 +22,7 @@ import {
   type InMemoryAgentActivityLogRepository,
   type InMemoryAgentAssignmentRepository
 } from '../../database/repositories/field-agents.repository.js';
+import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
 import { InMemoryProfileRepository } from '../../database/repositories/profile.repository.js';
 import { InMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import type { InMemoryComplianceConsentRepository } from '../../database/repositories/compliance.repository.js';
@@ -125,17 +126,19 @@ interface Harness {
   events: Array<{ name: string; payload: unknown }>;
 }
 
-function harness(): Harness {
+function harness(domainEventsOverride?: DomainEventsService): Harness {
   const users = new UsersService(
     new InMemoryUserRepository([enumerator, enumeratorTwo, farmer, admin, lead, otherLead])
   );
   const events: Harness['events'] = [];
-  const domainEvents = {
-    publish: async (name: string, payload: unknown) => {
-      events.push({ name, payload });
-      return {};
-    }
-  } as unknown as DomainEventsService;
+  const domainEvents =
+    domainEventsOverride ??
+    ({
+      publish: async (name: string, payload: unknown) => {
+        events.push({ name, payload });
+        return {};
+      }
+    } as unknown as DomainEventsService);
   const profiles = new InMemoryProfileRepository();
   const assignments = createInMemoryAgentAssignmentRepository();
   const activity = createInMemoryAgentActivityLogRepository();
@@ -172,7 +175,7 @@ describe('FieldAgentsService — assignment lifecycle', () => {
     expect(queue.map((a) => a.id)).toEqual([created.id]);
     const log = await h.activity.find({ assignmentId: created.id, action: 'assignment_created' });
     expect(log).toHaveLength(1);
-    expect(h.events.map((e) => e.name)).toContain('field-agents.assignment.created');
+    expect(h.events.map((e) => e.name)).toContain('field_agents.assignment.created');
   });
 
   it('chapter lead creates an assignment in a chapter they lead', async () => {
@@ -241,7 +244,7 @@ describe('FieldAgentsService — assignment lifecycle', () => {
       action: 'assignment_completed'
     });
     expect(completedLog).toHaveLength(1);
-    expect(h.events.map((e) => e.name)).toContain('field-agents.assignment.completed');
+    expect(h.events.map((e) => e.name)).toContain('field_agents.assignment.completed');
     // Completed work leaves the enumerator's queue.
     expect(await h.service.myQueue(enumerator)).toHaveLength(0);
   });
@@ -293,6 +296,47 @@ describe('FieldAgentsService — assignment lifecycle', () => {
     });
     await expect(h.service.cancel(lead, own.id)).resolves.toMatchObject({ status: 'cancelled' });
     await expect(h.service.cancel(lead, other.id)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('FieldAgentsService — event taxonomy', () => {
+  const FIELD_AGENTS_EVENTS = [
+    'field_agents.assignment.created',
+    'field_agents.assignment.progress',
+    'field_agents.assignment.completed',
+    'field_agents.assignment.cancelled',
+    'field_agents.profile.captured'
+  ];
+
+  it('field-agents event names pass the real DomainEventsService taxonomy validator', () => {
+    const domainEvents = new DomainEventsService(createInMemoryOutboxRepository());
+    for (const name of FIELD_AGENTS_EVENTS) {
+      expect(() => domainEvents.build(name, {})).not.toThrow();
+    }
+  });
+
+  it('rejects the previous hyphenated field-agents event names', () => {
+    const domainEvents = new DomainEventsService(createInMemoryOutboxRepository());
+    for (const verb of ['created', 'progress', 'completed', 'cancelled']) {
+      expect(() => domainEvents.build(`field-agents.assignment.${verb}`, {})).toThrow(/taxonomy/);
+    }
+    expect(() => domainEvents.build('field-agents.profile.captured', {})).toThrow(/taxonomy/);
+  });
+
+  it('create/progress/complete/cancel flows publish the renamed names through the real outbox', async () => {
+    const domainEvents = new DomainEventsService(createInMemoryOutboxRepository());
+    const h = harness(domainEvents);
+    const first = await h.service.createAssignment(admin, CREATE_INPUT);
+    const second = await h.service.createAssignment(admin, CREATE_INPUT);
+    await h.service.reportProgress(enumerator, first.id);
+    await h.service.cancel(admin, second.id);
+    await h.service.reportProgress(enumerator, first.id, 5);
+    await h.service.captureProfile(enumerator, {
+      farmerUserId: farmer.id,
+      bio: 'Captured in the field during the taxonomy regression test.'
+    });
+    const names = (await domainEvents.listOutbox()).map((event) => event.name);
+    expect(names).toEqual(expect.arrayContaining(FIELD_AGENTS_EVENTS));
   });
 });
 
@@ -360,7 +404,7 @@ describe('FieldAgentsService — on-behalf capture', () => {
     expect(log).toHaveLength(1);
     expect(log[0].agentUserId).toBe(enumerator.id);
     expect(log[0].meta.consentId).toBe(result.consentId);
-    expect(h.events.map((e) => e.name)).toContain('field-agents.profile.captured');
+    expect(h.events.map((e) => e.name)).toContain('field_agents.profile.captured');
   });
 
   it('upserts through the profiles service (merges with the existing profile)', async () => {
