@@ -110,6 +110,28 @@ Events were lost after exhausting retries. List dead letters via the admin
 outbox surface, fix the root cause, then replay. Consumer-side dedup makes
 replay safe.
 
+### Partner webhook delivery failures (outbound, GAP-H06)
+
+A failed OUTBOUND partner webhook delivery does NOT go through the outbox
+sweeper: on the default (stub-bus) path the outbox row is marked published
+after the synchronous fan-out, so only the dispatch dedup ledger
+(`events.processed_events`, consumer `partner-webhook-dispatch`) records
+that delivery never completed.
+
+1. Confirm the webhook-deliveries CronJob
+   (`infra/k8s/cronjobs/webhook-deliveries.yaml`) is applied and running —
+   it is deliberately NOT part of any kustomization (GAP-M03), so a fresh
+   cluster has no redrive at all until you apply it.
+2. Run one manual redrive pass:
+   `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" "$API_BASE_URL/admin/partner-webhooks/redrive"`.
+   The response counts `{scanned, attempted, redelivered, failed}`;
+   `failed` events stay unprocessed and are retried on the next pass.
+3. Persistent failures: find `webhook whd_... failed` / `blocked by SSRF
+   guard` in the API logs, fix the partner endpoint (or its subscription
+   target URL), then re-run. Re-deliveries keep the stable
+   `x-agric-delivery` id (`whd_<event id>`), so partners dedupe against the
+   original attempt — replay is safe.
+
 ### AgricNotificationDlqNonEmpty / AgricNotificationQueueStuck (warn)
 
 1. `npm run verify:providers` — check termii/whatsapp/mailgun credentials
