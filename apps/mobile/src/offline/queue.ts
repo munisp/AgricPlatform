@@ -56,7 +56,7 @@ export function createInMemoryStorage(): KeyValueStorage {
 
 export interface QueuedRequest {
   id: string;
-  /** Domain label for the outbox UI, e.g. 'services.booking.created'. */
+  /** Domain label for the outbox UI, e.g. 'marketplace.order.created'. */
   kind: string;
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** API path relative to the base URL, e.g. '/service-offerings/o-1/bookings'. */
@@ -103,7 +103,8 @@ export const DEFAULT_OFFLINE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * out fast — replaying them late applies stale terms as current truth.
  */
 export const OFFLINE_KIND_TTL_MS: Record<string, number> = {
-  'services.booking.created': 24 * 60 * 60 * 1000,
+  // Placed orders carry listing price/availability — a stale replay must not
+  // apply day-old terms as current truth (produced by ListingDetailScreen).
   'marketplace.order.created': 24 * 60 * 60 * 1000
 };
 

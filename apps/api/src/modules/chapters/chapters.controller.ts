@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   Post,
   Query,
@@ -10,10 +12,10 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
-import type { Chapter, ChapterEvent, User } from '@agric-platform/shared';
+import type { Chapter, ChapterEvent, ChapterMember, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import {
@@ -57,6 +59,10 @@ class CreateChapterDto implements CreateChapterInput {
 
   @IsOptional()
   @IsString()
+  ward?: string;
+
+  @IsOptional()
+  @IsString()
   leadUserId?: string;
 }
 
@@ -72,11 +78,28 @@ class CreateEventDto implements CreateEventInput {
 
   @IsString()
   location!: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  endsAt?: string;
 }
 
 class EventUserDto {
   @IsString()
   userId!: string;
+}
+
+class AddChapterMemberDto {
+  @IsString()
+  userId!: string;
+
+  @IsOptional()
+  @IsIn(['member', 'lead', 'secretary'])
+  role?: ChapterMember['role'];
 }
 
 class ScanAttendanceDto {
@@ -110,6 +133,7 @@ export class ChaptersController {
   constructor(private readonly chapters: ChaptersService) {}
 
   @Get('chapters')
+  @Public()
   @ApiOperation({ summary: 'List chapters in the national/state/LGA/ward hierarchy' })
   list(@Query() query: ListChaptersQuery) {
     return this.chapters.list(query);
@@ -124,12 +148,52 @@ export class ChaptersController {
   }
 
   @Get('chapters/:id')
+  @Public()
   @ApiOperation({ summary: 'Chapter detail with child chapters' })
   async get(@Param('id') id: string) {
     return { data: await this.chapters.getWithChildren(id) };
   }
 
+  @Get('chapters/:id/members')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({ summary: 'Chapter roster (chapter leads and admins)' })
+  async listMembers(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    await this.chapters.assertChapterLeadOrAdmin(actor, id);
+    return { data: await this.chapters.listMembers(id) };
+  }
+
+  @Post('chapters/:id/members')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @ApiOperation({
+    summary: 'Add a chapter member (idempotent upsert on role; chapter leads and admins)'
+  })
+  async addMember(
+    @Param('id') id: string,
+    @Body() dto: AddChapterMemberDto,
+    @CurrentUser() actor: User | null
+  ) {
+    await this.chapters.assertChapterLeadOrAdmin(actor, id);
+    return { data: await this.chapters.addMember(id, dto.userId, dto.role) };
+  }
+
+  @Delete('chapters/:id/members/:userId')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'chapter_lead')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Remove a chapter member (chapter leads and admins)' })
+  async removeMember(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    await this.chapters.assertChapterLeadOrAdmin(actor, id);
+    return { data: await this.chapters.removeMember(id, userId) };
+  }
+
   @Get('chapters/:id/events')
+  @Public()
   @ApiOperation({ summary: 'List chapter events' })
   async listEvents(@Param('id') id: string) {
     return { data: await this.chapters.listEvents(id) };
@@ -145,6 +209,7 @@ export class ChaptersController {
   }
 
   @Get('chapters/:id/announcements')
+  @Public()
   @ApiOperation({ summary: 'List chapter announcements' })
   async listAnnouncements(@Param('id') id: string) {
     return { data: await this.chapters.listAnnouncements(id) };
@@ -177,6 +242,7 @@ export class ChaptersController {
   }
 
   @Get('events/:id')
+  @Public()
   @ApiOperation({ summary: 'Event detail' })
   async getEvent(@Param('id') id: string) {
     return { data: await this.chapters.getEvent(id) };
