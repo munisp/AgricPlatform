@@ -27,7 +27,7 @@ import type { GeoCreditFactorBreakdown } from '@agric-platform/shared';
  *                         plot is a genuine repayment-risk signal, but
  *                         capped below crop health because the flood model
  *                         itself ships unvalidated (often stub).
- *   cropHealth        30  crop-ml health_score (0–100) scaled to 0–30.
+ *   cropHealth        30  crop-ml health.score (0–100) scaled to 0–30.
  *                         The most direct "is something actually growing"
  *                         signal, so the largest weight.
  *   dataFreshness     10  Recency of the underlying plot record; stale
@@ -101,7 +101,7 @@ export interface GeoCreditFactorInput {
   /** Hectares from the stored geometry (boundary estimate, else declared size). */
   areaHectares: number | null;
   floodBand: FloodRiskBand;
-  /** crop-ml health_score 0–100; null when the crop input is unavailable. */
+  /** crop-ml health.score 0–100; null when the crop input is unavailable. */
   cropHealthScore: number | null;
   /** ISO timestamp of the underlying plot record (updatedAt), else null. */
   plotUpdatedAt: string | null;
