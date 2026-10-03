@@ -1,58 +1,59 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UnauthorizedException,
-  UseGuards
-} from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min
+} from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  LISTING_KINDS,
   ORDER_STATUSES,
-  type LocationRef,
+  type ListingKind,
   type MarketplaceListing,
+  type Order,
   type OrderStatus,
-  type SalesChannel,
   type User
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { AuditService } from '../../core/audit.service.js';
 import {
   MarketplaceService,
   type CreateListingInput,
-  type UpdateListingInput
+  type PlaceOrderInput
 } from './marketplace.service.js';
 
-const LISTING_KINDS = ['produce', 'input', 'service', 'equipment', 'storage', 'transport'] as const;
-
 class ListListingsQuery extends ListQueryDto {
-  @IsOptional()
-  @IsIn(LISTING_KINDS)
-  kind?: MarketplaceListing['kind'];
-
   @IsOptional()
   @IsString()
   @MaxLength(100)
   state?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  crop?: string;
+  @IsIn(LISTING_KINDS)
+  kind?: ListingKind;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  q?: string;
+  crop?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  sellerId?: string;
 
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
@@ -60,28 +61,9 @@ class ListListingsQuery extends ListQueryDto {
   active?: boolean;
 }
 
-class LocationDto implements LocationRef {
-  @IsString()
-  @MaxLength(100)
-  state!: string;
-
-  @IsString()
-  @MaxLength(100)
-  lga!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  ward?: string;
-}
-
 class CreateListingDto implements CreateListingInput {
-  @IsString()
-  @MaxLength(100)
-  sellerId!: string;
-
   @IsIn(LISTING_KINDS)
-  kind!: MarketplaceListing['kind'];
+  kind!: ListingKind;
 
   @IsString()
   @MaxLength(200)
@@ -92,56 +74,34 @@ class CreateListingDto implements CreateListingInput {
   @MaxLength(100)
   crop?: string;
 
-  @IsNumber()
+  @IsInt()
   @Min(1)
   quantity!: number;
 
   @IsString()
-  @MaxLength(500)
+  @MaxLength(100)
   unit!: string;
 
-  @IsNumber()
-  @Min(1)
+  @IsInt()
+  @Min(0)
   priceNaira!: number;
 
-  @ValidateNested()
-  @Type(() => LocationDto)
-  location!: LocationDto;
-
-  @IsOptional()
   @IsString()
-  @MaxLength(500)
-  harvestDate?: string;
+  @MaxLength(100)
+  state!: string;
 
-  /** Link to a livestock-trade certified listing (provenance badge source). */
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  certifiedListingId?: string;
-}
+  lga?: string;
 
-class UpdateListingDto implements UpdateListingInput {
   @IsOptional()
   @IsString()
-  @MaxLength(200)
-  title?: string;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  quantity?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
-  priceNaira?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
+  @MaxLength(10)
+  harvestDate?: string;
 }
 
-class CreateOrderDto {
+class PlaceOrderDto implements PlaceOrderInput {
   @IsString()
   @MaxLength(100)
   buyerId!: string;
@@ -149,53 +109,22 @@ class CreateOrderDto {
   @IsInt()
   @Min(1)
   quantity!: number;
-
-  /**
-   * Optional client idempotency key (Stage 27 WP-G11): a same-key retry
-   * with the same (listing, buyer, quantity) replays the original order;
-   * the same key with a different payload is a 409
-   * IDEMPOTENCY_PAYLOAD_MISMATCH.
-   */
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  idempotencyKey?: string;
 }
 
 class OrderStatusDto {
   @IsIn(ORDER_STATUSES)
   status!: OrderStatus;
-
-  /**
-   * Stage 22 (audit C2): provider payment reference (e.g. the Paystack
-   * transaction reference) proving the deposit. Required for the
-   * deposit_paid transition; verified with the configured payment provider
-   * before escrow is held.
-   */
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  paymentReference?: string;
 }
 
-class ReviewDto {
-  @IsString()
-  @MaxLength(100)
-  authorId!: string;
-
-  @IsInt()
-  @Min(1)
-  @Max(5)
-  rating!: number;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  comment?: string;
-}
-
+/**
+ * Marketplace listings are a public browse catalogue (no PII beyond the
+ * seller-facing fields the catalogue itself needs). Listing management is
+ * owner-only; orders are personal trade records visible to buyer, seller
+ * or admin. Order status transitions are actor-checked in the service.
+ */
 @ApiTags('marketplace')
 @Controller()
+@UseGuards(RolesGuard)
 export class MarketplaceController {
   constructor(
     private readonly marketplace: MarketplaceService,
@@ -203,123 +132,101 @@ export class MarketplaceController {
   ) {}
 
   @Get('listings')
-  @ApiOperation({ summary: 'List marketplace listings with filters' })
+  @Public()
+  @ApiOperation({ summary: 'Browse marketplace listings (public catalogue, paginated)' })
   listListings(@Query() query: ListListingsQuery) {
     return this.marketplace.listListings(query);
   }
 
   @Post('listings')
-  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Create a produce/input/service listing' })
+  @ApiOperation({ summary: 'Create a listing (seller is the authenticated user)' })
   async createListing(@Body() dto: CreateListingDto, @CurrentUser() actor: User | null) {
-    assertSelfOrAdmin(actor, dto.sellerId);
-    return { data: await this.marketplace.createListing(dto) };
+    return { data: await this.marketplace.createListing(dto, actor!.id) };
   }
 
   @Get('listings/:id')
-  @ApiOperation({ summary: 'Listing detail' })
+  @Public()
+  @ApiOperation({ summary: 'Listing detail (public catalogue)' })
   async getListing(@Param('id') id: string) {
     return { data: await this.marketplace.getListing(id) };
   }
 
   @Patch('listings/:id')
-  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Update a listing (price, quantity, active state)' })
+  @ApiOperation({ summary: 'Update a listing (owning seller or admin)' })
   async updateListing(
     @Param('id') id: string,
-    @Body() dto: UpdateListingDto,
+    @Body() dto: Partial<CreateListingDto>,
     @CurrentUser() actor: User | null
   ) {
     const listing = await this.marketplace.getListing(id);
-    const owner = assertSelfOrAdmin(actor, listing.sellerId);
-    return { data: await this.marketplace.updateListing(id, dto, owner.id) };
+    assertSelfOrAdmin(actor, listing.sellerId);
+    return { data: await this.marketplace.updateListing(id, dto, actor!) };
   }
 
   @Post('listings/:id/orders')
-  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Place an order against a listing (escrow-ready above threshold)' })
-  async placeOrder(@Param('id') id: string, @Body() dto: CreateOrderDto, @CurrentUser() actor: User | null) {
+  @ApiOperation({ summary: 'Place an order on a listing (buyer is a registered user; idempotency-keyed)' })
+  async placeOrder(
+    @Param('id') id: string,
+    @Body() dto: PlaceOrderDto,
+    @CurrentUser() actor: User | null
+  ) {
     assertSelfOrAdmin(actor, dto.buyerId);
-    return {
-      data: await this.marketplace.placeOrder(id, dto.buyerId, dto.quantity, dto.idempotencyKey)
-    };
+    return { data: await this.marketplace.placeOrder(id, dto, actor!) };
   }
 
   @Get('orders')
-  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({
-    summary: 'List orders by buyer, seller, status or sales channel (own records or admin)'
-  })
+  @ApiOperation({ summary: 'List orders (buyer/seller scoped; admins see all)' })
   async listOrders(
     @CurrentUser() actor: User | null,
     @Query('buyerId') buyerId?: string,
     @Query('sellerId') sellerId?: string,
-    @Query('status') status?: OrderStatus,
-    @Query('channel') channel?: SalesChannel
+    @Query('status') status?: OrderStatus
   ) {
-    if (!actor) {
-      throw new UnauthorizedException('Authentication required');
+    if (buyerId) {
+      assertSelfOrAdmin(actor, buyerId);
     }
-    if (!actor.roles.includes('admin') && buyerId !== actor.id && sellerId !== actor.id) {
-      assertSelfOrAdmin(actor, buyerId ?? sellerId ?? '');
+    if (sellerId) {
+      assertSelfOrAdmin(actor, sellerId);
     }
-    return { data: await this.marketplace.listOrders({ buyerId, sellerId, status, channel }) };
+    if (!buyerId && !sellerId && !actor?.roles.includes('admin')) {
+      throw new ForbiddenException('Listing orders across users requires the admin role');
+    }
+    return { data: await this.marketplace.listOrders({ buyerId, sellerId, status }) };
   }
 
   @Get('orders/:id')
-  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Order detail (order parties or admin)' })
+  @ApiOperation({ summary: 'Order detail (buyer, seller or admin)' })
   async getOrder(@Param('id') id: string, @CurrentUser() actor: User | null) {
     const order = await this.marketplace.getOrder(id);
-    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
+    if (!actor?.roles.includes('admin')) {
+      if (actor?.id !== order.buyerId && actor?.id !== order.sellerId) {
+        throw new ForbiddenException('Orders are visible to the buyer, the seller or an admin');
+      }
+    }
     return { data: order };
   }
 
-  @Patch('orders/:id/status')
-  @UseGuards(RolesGuard)
+  @Post('orders/:id/status')
   @Authenticated()
-  @ApiOperation({
-    summary:
-      'Transition an order status (state machine enforced, actor-scoped; deposit_paid requires a verifiable paymentReference)'
-  })
+  @ApiOperation({ summary: 'Advance an order status (actor-checked state machine in the service)' })
   async setOrderStatus(
     @Param('id') id: string,
     @Body() dto: OrderStatusDto,
     @CurrentUser() actor: User | null
   ) {
-    if (!actor) {
-      throw new UnauthorizedException('Authentication required for order transitions');
-    }
-    const order = await this.marketplace.setOrderStatus(id, dto.status, actor, {
-      paymentReference: dto.paymentReference
-    });
+    const updated = await this.marketplace.transitionOrder(id, dto.status, actor!);
     await this.audit.record({
-      actorId: actor.id,
+      actorId: actor?.id ?? 'anonymous',
       action: 'order.status_changed',
       entityType: 'order',
       entityId: id,
       metadata: { status: dto.status }
     });
-    return { data: order };
-  }
-
-  @Post('orders/:id/reviews')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Review a delivered/completed order' })
-  async reviewOrder(@Param('id') id: string, @Body() dto: ReviewDto, @CurrentUser() actor: User | null) {
-    assertSelfOrAdmin(actor, dto.authorId);
-    return { data: await this.marketplace.reviewOrder(id, dto.authorId, dto.rating, dto.comment) };
-  }
-
-  @Get('orders/:id/reviews')
-  @ApiOperation({ summary: 'Reviews for an order' })
-  async reviews(@Param('id') id: string) {
-    return { data: await this.marketplace.reviewsForOrder(id) };
+    return { data: updated };
   }
 }
