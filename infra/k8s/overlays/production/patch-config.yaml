@@ -10,7 +10,7 @@ metadata:
 data:
   WEB_URL: "https://app.example.invalid"
   API_URL: "https://api.example.invalid"
-  NEXT_PUBLIC_API_URL: "https://api.example.invalid"
+  NEXT_PUBLIC_API_BASE_URL: "https://api.example.invalid/api/v1"
   KEYCLOAK_URL: "https://id.example.invalid"
   NEXT_PUBLIC_KEYCLOAK_URL: "https://id.example.invalid"
   SMS_DRIVER: "stub" # -> "production" with Termii/Twilio live keys
