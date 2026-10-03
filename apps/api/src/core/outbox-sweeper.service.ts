@@ -7,6 +7,16 @@ import { DomainEventsService } from './domain-events.service.js';
 export const OUTBOX_MAX_ATTEMPTS = 8;
 /** Base backoff between relay attempts (doubles per attempt). */
 export const OUTBOX_RETRY_BASE_MS = 30_000;
+/**
+ * GAP-L03: max outbox pages drained per sweep pass. Repository list reads
+ * are bounded (OUTBOX_LIST_DEFAULT_LIMIT rows, oldest first), so one pass
+ * used to touch only the first page and deep backlogs drained over many
+ * invocations. The sweep now loops pages until a page makes no state
+ * change (everything left is deferred or terminal) or this cap is hit —
+ * the cap keeps one pass bounded when the backlog grows faster than the
+ * relay drains it.
+ */
+export const OUTBOX_SWEEP_MAX_PAGES = 10;
 
 export interface OutboxSweepResult {
   published: number;
@@ -19,9 +29,10 @@ export interface OutboxSweepResult {
 /**
  * Outbox sweeper (Wave P). The in-process relay marks rows published when
  * listeners are fanned out; rows that threw during fan-out are retried with
- * exponential backoff and dead-lettered after OUTBOX_MAX_ATTEMPTS. Invoked
- * via POST /admin/outbox/sweep — an external scheduler should call that
- * endpoint; the API starts no timers of its own.
+ * exponential backoff and dead-lettered after OUTBOX_MAX_ATTEMPTS. Driven
+ * two ways (GAP-M03): the in-process OutboxRelaySchedulerService timer
+ * (default ON outside production) and POST /admin/outbox/sweep, invoked by
+ * the outbox-relayer CronJob that ships in the default kustomization.
  */
 @Injectable()
 export class OutboxSweeperService {
@@ -87,16 +98,46 @@ export class OutboxSweeperService {
    */
   async sweep(now: Date = new Date()): Promise<OutboxSweepResult> {
     const result: OutboxSweepResult = { published: 0, failed: 0, deadLettered: 0, deferred: 0 };
-    const records = await this.outbox.listRecords();
-    for (const record of records) {
-      if (record.publishedAt || record.deadLetteredAt) {
-        continue;
+    // GAP-L03: paged drain. `processed` stops a row whose state already
+    // changed this sweep from being re-driven by a later page (its backoff
+    // window may already have elapsed, so a naive loop would retry a
+    // failing row OUTBOX_SWEEP_MAX_PAGES times in one pass); `deferred`
+    // dedupes the deferred count across pages.
+    const deferred = new Set<string>();
+    let skip = 0;
+    for (let page = 0; page < OUTBOX_SWEEP_MAX_PAGES; page += 1) {
+      const records = await this.outbox.listPendingRecords(undefined, skip);
+      if (records.length === 0) {
+        break;
       }
+      skip = await this.sweepPage(now, records, skip, deferred, result);
+    }
+    result.deferred = deferred.size;
+    return result;
+  }
+
+  /**
+   * One page of a sweep (GAP-L03): drives each due pending row (publishing it
+   * or recording an attempt) and counts the still-deferred ones. Returns the
+   * advanced `skip` offset past rows that remain pending (failed → backoff, or
+   * still deferred), so a failing row is driven once per pass instead of
+   * OUTBOX_SWEEP_MAX_PAGES times; rows it publishes/dead-letters drop out of
+   * the pending set, so the unread front always advances to fresh rows.
+   */
+  private async sweepPage(
+    now: Date,
+    records: OutboxRecord[],
+    skip: number,
+    deferred: Set<string>,
+    result: OutboxSweepResult
+  ): Promise<number> {
+    for (const record of records) {
       if (record.attempts > 0) {
         const earliest =
           new Date(record.event.occurredAt).getTime() + this.backoffMs(record.attempts);
         if (now.getTime() < earliest) {
-          result.deferred += 1;
+          deferred.add(record.event.id);
+          skip += 1;
           continue;
         }
       }
@@ -116,9 +157,13 @@ export class OutboxSweeperService {
         if (attempts >= OUTBOX_MAX_ATTEMPTS) {
           await this.outbox.markDeadLetter(record.event.id, now.toISOString());
           result.deadLettered += 1;
+        } else {
+          // Failed row stays pending (now inside its backoff window): skip it on
+          // the next page so it is driven once per pass, not MAX_PAGES times.
+          skip += 1;
         }
       }
     }
-    return result;
+    return skip;
   }
 }

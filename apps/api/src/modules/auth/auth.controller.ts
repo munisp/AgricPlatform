@@ -6,7 +6,7 @@ import { LANGUAGE_CODES, SELF_REGISTRATION_ROLES, USER_ROLES, type LanguageCode,
 import { devHeaderAuthAllowed } from '../../common/auth/auth.config.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { OidcService } from '../../common/auth/oidc.service.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { AuthService } from './auth.service.js';
 import { SessionService } from './session.service.js';
@@ -69,6 +69,7 @@ export class AuthController {
   ) {}
 
   @Post('otp/request')
+  @Public()
   // Stricter limits on credential endpoints (docs/security-compliance.md §7).
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: 'Request a phone OTP challenge (stub driver returns devCode outside production)' })
@@ -77,6 +78,7 @@ export class AuthController {
   }
 
   @Post('otp/verify')
+  @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Verify an OTP challenge and receive a session token' })
   async verifyOtp(
@@ -88,6 +90,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
     summary:
@@ -119,6 +122,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Public()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({
     summary:
@@ -141,6 +145,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @Public()
   @ApiOperation({ summary: 'Revoke the presented refresh-token session (idempotent)' })
   async logout(@Body() dto: RefreshTokenDto) {
     return { data: await this.sessions.logout(dto.refreshToken) };
@@ -159,6 +164,7 @@ export class AuthController {
   }
 
   @Get('session')
+  @Public()
   @ApiOperation({
     summary:
       'Resolve the current session. Bearer token (OIDC) is preferred; the x-user-id header works ' +
