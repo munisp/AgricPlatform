@@ -20,6 +20,7 @@ import {
 } from '../../common/auth/at-callback.utils.js';
 import { E164_PATTERN } from '../auth/auth.controller.js';
 import { UssdService } from './ussd.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /** Africa's Talking form-encoded callback payload (application/x-www-form-urlencoded). */
 class UssdCallbackDto {
@@ -55,6 +56,7 @@ export class UssdController {
   constructor(private readonly ussd: UssdService) {}
 
   @Post('callback')
+  @Public()
   @HttpCode(200)
   @Header('Content-Type', 'text/plain; charset=utf-8')
   @Throttle({ default: { limit: 120, ttl: 60_000 } })

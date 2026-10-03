@@ -5,6 +5,7 @@ import { FeatureFlagGuard } from '../../common/feature-flags/feature-flag.guard.
 import { PartnerAuthGuard } from '../partner-api/partner-auth.guard.js';
 import { PartnerScopes } from '../partner-api/partner-scopes.decorator.js';
 import { CoopScoreService } from './coop-score.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * Partner read surface for Cooperative Score (stage-27 Innovation 14),
@@ -18,6 +19,8 @@ import { CoopScoreService } from './coop-score.service.js';
  * fail-closed by default.
  */
 @ApiTags('partner-credit')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/credit')
 @UseGuards(PartnerAuthGuard, FeatureFlagGuard)
 export class CoopScorePartnerController {

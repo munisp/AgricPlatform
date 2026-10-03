@@ -21,6 +21,7 @@ import {
   type PartnerRequestIdentity
 } from './partner-auth.guard.js';
 import { PartnerScopes } from './partner-scopes.decorator.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /** Fail-closed tenant resolution: only bound client-credentials tokens. */
 function requireLenderTenant(identity: PartnerRequestIdentity): string {
@@ -33,6 +34,8 @@ function requireLenderTenant(identity: PartnerRequestIdentity): string {
 }
 
 @ApiTags('partner-api')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/portfolio')
 @UseGuards(PartnerAuthGuard)
 export class PortfolioScorecardController {

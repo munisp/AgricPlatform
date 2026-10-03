@@ -37,6 +37,8 @@
 | `notifications.messages` | Notifications with `created_at` past the window | 365 | Purge (hard delete) | Transient messaging; no evidence value |
 | `integrations.inbound_events` | Processed inbound webhook rows (`processed_at` past the window) | 90 | Anonymise (payload → `{}` tombstone; column is jsonb NOT NULL) | V-27: payloads carry partner/provider PII; row metadata stays as the processing audit trail |
 | `events.outbox` | Published outbox rows (`published_at` past the window) | 90 | Purge (hard delete) | V-27: relay history; no evidence value once delivered |
+| `events.outbox_dead_letters` | Dead-lettered outbox rows (`dead_lettered_at` past the window) | 30 | Payload anonymised (→ `{}` tombstone) FIRST, then purge | GAP-M20: dead letters keep `published_at` NULL (never matched by the published-row handler) and carry full payloads with potential PII; flip `anonymize_not_delete` to keep tombstoned rows for redrive forensics |
+| `events.processed_events` | Consumer-side dedupe markers (`processed_at` past the window) | 90 | Purge (hard delete, ctid-batched) | GAP-L11: rows are pure idempotency markers (`consumer`, `event_id`, `processed_at`) — no payload, so `anonymize_not_delete` has no effect; 90 days aligns with `events.outbox` (a marker outliving its outbox row is dead weight). Window overridable via `PROCESSED_EVENTS_RETENTION_DAYS`, batch cap via `PROCESSED_EVENTS_PURGE_BATCH_SIZE` (default 500) |
 
 **Never in scope (legal hold):** orders, ledger/finance rows, escrow, invoices, audit events.
 These survive erasure and retention sweeps — see `legal-review-checklist.md` (CBN/PSB

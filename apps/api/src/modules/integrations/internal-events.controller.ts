@@ -7,6 +7,7 @@ import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import { InternalTokenGuard } from './internal-token.guard.js';
 import { IntegrationsService, type EventGwEnvelope } from './integrations.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * event-gw fanout envelope (GAP-C03/GAP-H01; mirrors the Go Envelope in
@@ -60,6 +61,7 @@ export class InternalEventsController {
   ) {}
 
   @Post('events')
+  @Public()
   @UseGuards(InternalTokenGuard)
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({

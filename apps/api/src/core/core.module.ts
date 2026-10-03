@@ -14,6 +14,7 @@ import { AuditAnchorService } from './audit-anchor.service.js';
 import { AuditService } from './audit.service.js';
 import { DomainEventsService } from './domain-events.service.js';
 import { EventDedupService } from './event-dedup.service.js';
+import { OutboxRelaySchedulerService } from './outbox-relay-scheduler.service.js';
 import { OutboxSweeperService } from './outbox-sweeper.service.js';
 import { EVENT_BUS, createEventBus } from './events/event-bus.driver.js';
 import {
@@ -51,6 +52,9 @@ import {
     ErrorTrackingService,
     EventDedupService,
     OutboxSweeperService,
+    // GAP-M03: in-process outbox relay timer (default ON outside
+    // production; the default-deployed CronJob is the production driver).
+    OutboxRelaySchedulerService,
     {
       provide: EVENT_BUS,
       useFactory: (telemetry: TelemetryService) => createEventBus(process.env, telemetry),
@@ -75,6 +79,7 @@ import {
     ErrorTrackingService,
     EventDedupService,
     OutboxSweeperService,
+    OutboxRelaySchedulerService,
     EVENT_BUS,
     WORKFLOW_ORCHESTRATOR,
     AUTHORIZATION_CHECK

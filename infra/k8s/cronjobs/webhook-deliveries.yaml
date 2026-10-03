@@ -1,5 +1,6 @@
-# Webhook deliveries CronJob (WP-G12). NOT part of any kustomization:
-# review and apply deliberately once a cluster exists.
+# Webhook deliveries CronJob (WP-G12). Deployed by default via the staging
+# and production overlays (infra/k8s/overlays/*/kustomization.yaml, GAP-M03);
+# for a hand-rolled cluster, apply deliberately:
 #
 #   kubectl apply -f infra/k8s/cronjobs/webhook-deliveries.yaml
 #
@@ -14,10 +15,13 @@
 #    partner delivery is logged once and lost (the outbox row is already
 #    marked published, so the outbox sweeper never retries it).
 #
-# GAP-M03 caveat: like the rest of infra/k8s/cronjobs/, this job is
-# deliberately NOT deployed by default (not part of any kustomization) —
-# without it, both recovery paths silently stop. Apply deliberately and
-# alert on the outbox backlog.
+# GAP-M03 backstop semantics: this job is a BACKSTOP to the in-process
+# schedulers (SWEEPERS_ENABLED, off by default) and is wired into the
+# staging/production kustomize overlays so both recovery paths run by
+# default. The reprocess/redrive endpoints are idempotent, so running the
+# job concurrently with in-process passes is safe. The remaining jobs in
+# infra/k8s/cronjobs/ (escrow/voucher/projector) are still applied
+# deliberately. Alert on the outbox backlog regardless.
 #
 # Auth: SWEEPER_ADMIN_TOKEN must be an admin OIDC JWT (provisioned as the
 # SWEEPER_ADMIN_TOKEN key of the agric-secrets Secret — see

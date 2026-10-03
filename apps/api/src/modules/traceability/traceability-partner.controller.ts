@@ -8,6 +8,7 @@ import {
 } from '../partner-api/partner-auth.guard.js';
 import { PartnerScopes } from '../partner-api/partner-scopes.decorator.js';
 import { TraceabilityService } from './traceability.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 class PartnerCreateShipmentDto {
   @IsArray()
@@ -36,6 +37,8 @@ interface PartnerScopedRequest {
  * confined to shipments the same client created.
  */
 @ApiTags('partner-traceability')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/traceability')
 @UseGuards(PartnerAuthGuard)
 export class TraceabilityPartnerController {

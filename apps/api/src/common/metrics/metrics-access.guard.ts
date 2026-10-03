@@ -4,13 +4,10 @@ import {
   Injectable,
   UnauthorizedException
 } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
 import { isProduction } from '../auth/auth.config.js';
-import { OidcService } from '../auth/oidc.service.js';
 import { RolesGuard } from '../auth/roles.guard.js';
-import { UsersService } from '../../modules/users/users.service.js';
 
 function extractBearer(request: Request): string | undefined {
   const header = request.headers['authorization'];
@@ -51,15 +48,12 @@ export function metricsTokenMatches(presented: string, configured: string): bool
 @Injectable()
 export class MetricsAccessGuard implements CanActivate {
   /**
-   * The standard RBAC guard, composed in-place: the scrape controller lives
-   * in the PrometheusModule DI context, which cannot resolve providers from
-   * feature modules — but Reflector/UsersService/OidcService are global.
+   * The canonical RBAC guard, injected via Nest DI (GAP-L16 — previously
+   * `new RolesGuard(...)` in-place, a second divergent auth decision path).
+   * RolesGuard is registered as a provider in MetricsModule; its own
+   * dependencies (Reflector/UsersService/OidcService) are global.
    */
-  private readonly rolesGuard: RolesGuard;
-
-  constructor(reflector: Reflector, users: UsersService, oidc: OidcService) {
-    this.rolesGuard = new RolesGuard(reflector, users, oidc);
-  }
+  constructor(private readonly rolesGuard: RolesGuard) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -72,9 +66,11 @@ export class MetricsAccessGuard implements CanActivate {
 
     const hasCredentials = Boolean(bearer) || Boolean(request.headers['x-user-id']);
     if (hasCredentials) {
-      // The route carries @Roles('admin'); RolesGuard enforces it (401 on a
-      // bad/unknown credential, 403 on a non-admin identity).
-      return this.rolesGuard.canActivate(context);
+      // The route carries @Roles('admin') AND @Public (the global default-deny
+      // guard must pass so the METRICS_TOKEN path above can decide first), so
+      // the composed guard enforces roles with the public escape hatch
+      // disabled (401 on a bad/unknown credential, 403 on a non-admin).
+      return this.rolesGuard.enforceRoles(context);
     }
 
     if (isProduction()) {

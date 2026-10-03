@@ -8,6 +8,7 @@ import { MarketplaceModule } from '../marketplace/marketplace.module.js';
 import { OpportunitiesModule } from '../opportunities/opportunities.module.js';
 import { PartnerApiModule } from '../partner-api/partner-api.module.js';
 import { SweepersModule } from '../sweepers/sweepers.module.js';
+import { SyncModule } from '../sync/sync.module.js';
 import { AdminController } from './admin.controller.js';
 import { AdminService } from './admin.service.js';
 // Wave COMP (additive): signed audit evidence export.
@@ -15,7 +16,7 @@ import { AuditEvidenceController } from './audit-evidence.controller.js';
 import { AuditEvidenceService } from './audit-evidence.service.js';
 
 @Module({
-  imports: [CommunityModule, ChaptersModule, FinanceModule, LearningModule, MarketplaceModule, OpportunitiesModule, IntegrationsModule, SweepersModule, PartnerApiModule],
+  imports: [CommunityModule, ChaptersModule, FinanceModule, LearningModule, MarketplaceModule, OpportunitiesModule, IntegrationsModule, SweepersModule, PartnerApiModule, SyncModule],
   controllers: [AdminController, AuditEvidenceController],
   providers: [AdminService, AuditEvidenceService]
 })

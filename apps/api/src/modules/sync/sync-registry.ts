@@ -35,7 +35,7 @@ export interface SyncableEntityDescriptor {
   /**
    * Writable entities only: apply one validated push item. Implementations
    * MUST advance sync.entity_versions atomically with the entity write
-   * (EntityVersionRepository.bumpExpected) and return the new version.
+   * (EntityVersionRepository.applyGuarded) and return the new version.
    */
   apply?(actor: User, item: SyncPushItem): Promise<number>;
 }

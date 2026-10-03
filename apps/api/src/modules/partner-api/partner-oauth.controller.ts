@@ -2,6 +2,7 @@ import { Body, Controller, HttpCode, Post, UnauthorizedException } from '@nestjs
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsString, MaxLength } from 'class-validator';
 import { PartnerAuthService } from './partner-auth.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 class ClientCredentialsGrantDto {
   @IsIn(['client_credentials'])
@@ -22,6 +23,8 @@ class ClientCredentialsGrantDto {
  * claims. Unauthenticated by design — the client secret IS the credential.
  */
 @ApiTags('partner-api')
+// @Public: platform bearer not required — the client secret IS the credential (OAuth2 client-credentials grant).
+@Public()
 @Controller('partner/oauth')
 export class PartnerOAuthController {
   constructor(private readonly auth: PartnerAuthService) {}

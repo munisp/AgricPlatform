@@ -8,6 +8,7 @@ import {
   type PartnerRequestIdentity
 } from '../partner-api/partner-auth.guard.js';
 import { PartnerScopes } from '../partner-api/partner-scopes.decorator.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 import {
   CREDIT_PASSPORT_READ_SCOPE,
   CreditPassportService
@@ -27,6 +28,8 @@ interface PartnerScopedRequest {
  * Flag-gated behind `credit-passport` (fail-closed 404 when off).
  */
 @ApiTags('partner-credit-passport')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/credit-passports')
 @RequiresFeature('credit-passport')
 @UseGuards(PartnerAuthGuard, FeatureFlagGuard)

@@ -4,11 +4,32 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The base is referenced as the `../../base` directory (not `- ../../`):
+# the overlays live INSIDE the infra/k8s root, and kustomize refuses a
+# kustomization whose resource root contains the kustomization itself
+# ("cycle detected", kustomize v4 and v5 alike — `- ../../` never rendered).
+# namespace/commonLabels are repeated here (not only in base/) because a
+# kustomization's own transforms apply to its own resources too — the
+# overlay-only manifests (HPA/PDB/NetworkPolicy, CronJobs) would otherwise
+# render without them.
+namespace: agric-platform
+
+commonLabels:
+  app.kubernetes.io/part-of: agric-platform
+
 resources:
-  - ../../
+  - ../../base
   - hpa.yaml
   - pdb.yaml
   - networkpolicy.yaml
+  # GAP-M03 backstop schedulers: the outbox sweep and webhook
+  # reprocess/redrive CronJobs (see infra/k8s/cronjobs/kustomization.yaml —
+  # only the default-on backstops are resources there). They are BACKSTOPS
+  # to the in-process schedulers (SWEEPERS_ENABLED on the API, off by
+  # default) and are safe to run concurrently with them — every sweep
+  # endpoint is idempotent and CAS-guarded, so an overlapping pass is a
+  # no-op. See docs/runbooks/ops.md ("Backstop scheduler CronJobs").
+  - ../../cronjobs
 
 images:
   - name: ghcr.io/PLACEHOLDER_ORG/agric-web

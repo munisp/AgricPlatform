@@ -3,6 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequiresFeature } from '../../common/feature-flags/feature-flag.decorator.js';
 import { FeatureFlagGuard } from '../../common/feature-flags/feature-flag.guard.js';
 import { CreditPassportService } from './credit-passport.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * PUBLIC (unauthenticated) credit passport verification — the QR flow
@@ -21,6 +22,7 @@ export class CreditPassportController {
   constructor(private readonly passports: CreditPassportService) {}
 
   @Get('verify/:code')
+  @Public()
   @ApiOperation({
     summary:
       'PUBLIC credit passport verification: HMAC-signed code → redacted view + QR payload. Forged, revoked or superseded codes answer 404.'

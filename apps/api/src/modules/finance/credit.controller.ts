@@ -4,7 +4,7 @@ import { ArrayMinSize, IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, M
 import type { Lender, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { CreditService } from './credit.service.js';
 import { LoanService } from './loan.service.js';
@@ -60,6 +60,7 @@ export class CreditController {
   }
 
   @Get('lenders')
+  @Public()
   @ApiOperation({ summary: 'Active lender directory (public catalog)' })
   async lenders() {
     return { data: await this.loans.listLenders() };

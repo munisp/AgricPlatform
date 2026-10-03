@@ -4,7 +4,7 @@ import { Throttle } from '@nestjs/throttler';
 import { IsString, Length, Matches } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { PinSessionService } from './pin-session.service.js';
 
@@ -73,6 +73,7 @@ export class PinSessionsController {
   }
 
   @Post('pin-sessions/switch')
+  @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Swap to a pinned profile with its 4-digit PIN (5 attempts, then 15-minute lockout)'

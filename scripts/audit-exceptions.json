@@ -16,6 +16,22 @@
       "added": "2026-08-10",
       "expires": "2026-11-10",
       "justification": "DoS via infinite loops in the JXL and HEIF parsers. Same exposure analysis as GHSA-w3rx-r6r6-pgpr: build-time-only transitive dependency of the Expo/metro bundler, no runtime surface, inputs are repo-controlled assets, and no fixed version exists upstream yet. Re-evaluate at expiry."
+    },
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "severity": "high",
+      "added": "2026-10-03",
+      "expires": "2026-11-10",
+      "justification": "Stack-exhaustion DoS via deeply nested brace patterns. braces@3.0.3 is the latest published release and the advisory range is '<=3.0.3' — no fixed version exists (every micromatch 4.x release still depends on braces ^3.0.3). Reachable ONLY through micromatch in jest-haste-map/metro-file-map/@jest/transform — Expo/metro/jest build-time tooling that runs in CI/EAS on repo-controlled source, never in the shipped PWA/API/mobile runtime and never on untrusted input. Re-evaluate at expiry or when a patched braces/micromatch releases."
+    },
+    {
+      "id": "GHSA-86w9-cpqp-85rv",
+      "package": "node-forge",
+      "severity": "high",
+      "added": "2026-10-03",
+      "expires": "2026-11-10",
+      "justification": "RSA PKCS#1 v1.5 signature verification accepts extra nested DigestAlgorithm elements. node-forge@1.4.0 is the latest published release and the advisory range is '<=1.4.0' — no fixed version exists. Reachable ONLY through @expo/cli and @expo/code-signing-certificates during mobile app-bundle code-signing at build time inside CI/EAS; it never ships in the PWA/API/mobile runtime and never verifies untrusted signatures in our services (API uses jose). Re-evaluate at expiry or when a patched node-forge releases."
     }
   ]
 }

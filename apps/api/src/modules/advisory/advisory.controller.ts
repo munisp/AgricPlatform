@@ -3,7 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { AdvisoryItem, User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import { AdvisoryService, type CreateAdvisoryInput } from './advisory.service.js';
@@ -59,6 +59,7 @@ export class AdvisoryController {
   constructor(private readonly advisory: AdvisoryService) {}
 
   @Get()
+  @Public()
   @ApiOperation({ summary: 'List advisory content (crop calendar, pest alerts, guides)' })
   list(@Query() query: ListAdvisoryQuery) {
     return this.advisory.list(query);
@@ -73,18 +74,21 @@ export class AdvisoryController {
   }
 
   @Get('weather/:state')
+  @Public()
   @ApiOperation({ summary: 'Weather readiness snapshot for a state (provider adapter)' })
   async weather(@Param('state') state: string) {
     return { data: await this.advisory.weatherFor(state) };
   }
 
   @Get('prices/:crop')
+  @Public()
   @ApiOperation({ summary: 'Price signal for a crop (provider adapter)' })
   async price(@Param('crop') crop: string, @Query('state') state?: string) {
     return { data: await this.advisory.priceFor(crop, state) };
   }
 
   @Get(':id')
+  @Public()
   @ApiOperation({ summary: 'Advisory item detail' })
   async get(@Param('id') id: string) {
     return { data: await this.advisory.get(id) };

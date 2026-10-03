@@ -3,6 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PartnerAuthGuard } from '../partner-api/partner-auth.guard.js';
 import { PartnerScopes } from '../partner-api/partner-scopes.decorator.js';
 import { InsuranceService } from './insurance.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /**
  * Insurer read API (wave-insurance): the underwriter-facing surface on the
@@ -12,6 +13,8 @@ import { InsuranceService } from './insurance.service.js';
  * evidence so the insurer can independently reproduce every evaluation.
  */
 @ApiTags('partner-insurance')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/insurance')
 @UseGuards(PartnerAuthGuard)
 export class InsurerApiController {

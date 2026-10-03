@@ -1,0 +1,23 @@
+# CronJob kustomization (GAP-M03). Only the backstop schedulers that must
+# run by default are resources here — the staging and production overlays
+# pull in this directory (`- ../../cronjobs`), so anything added to this
+# list deploys by default in both environments:
+#
+#   - outbox-relayer.yaml      (POST /admin/outbox/sweep, every minute)
+#   - webhook-deliveries.yaml  (POST /admin/webhooks/reprocess +
+#                               /admin/partner-webhooks/redrive, every 5 min)
+#
+# Both are BACKSTOPS to the in-process schedulers (SWEEPERS_ENABLED, off by
+# default); every pass is idempotent and CAS-guarded, so running the
+# CronJobs concurrently with in-process timers is safe. See
+# docs/runbooks/ops.md ("Backstop scheduler CronJobs (GAP-M03)").
+#
+# The remaining jobs in this directory (escrow-expiry-sweeper,
+# voucher-stuck-sweeper, projector-sweeper) are deliberately NOT listed:
+# apply them by hand (`kubectl apply -f <file>`) after review.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - outbox-relayer.yaml
+  - webhook-deliveries.yaml

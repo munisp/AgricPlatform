@@ -14,7 +14,7 @@ import { Transform } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, Max, Min } from 'class-validator';
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { RecommendationService } from './recommendation.service.js';
 import { RECOMMENDATION_TYPES, type RecommendationType } from './recommender.js';
@@ -70,6 +70,7 @@ export class RecommendationsController {
   }
 
   @Get('similar/:type/:id')
+  @Public()
   @ApiOperation({ summary: 'Items similar to the given content item, with reason codes' })
   async similar(@Param('type') type: string, @Param('id') id: string, @Query() query: RecommendationsQuery) {
     return { data: await this.recommendations.similar(parseType(type), id, query.limit) };

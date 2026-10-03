@@ -86,6 +86,33 @@ export class PgProcessedEventRepository implements ProcessedEventRepository {
     );
     return result.rowCount !== null && result.rowCount > 0;
   }
+
+  async countProcessedBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT count(*)::int AS n FROM events.processed_events
+       WHERE processed_at < $1`,
+      [cutoff]
+    );
+    return result.rows[0].n as number;
+  }
+
+  async purgeProcessedBefore(cutoff: string, limit: number): Promise<number> {
+    // ctid-batched delete (sync.mutations pruneOlderThan pattern): one call
+    // removes at most `limit` rows oldest-first, so a sweep never locks the
+    // whole ledger in a single statement; the caller loops until a short
+    // batch. Served by processed_events_processed_at_idx (migration 127).
+    const result = await this.pool.query(
+      `DELETE FROM events.processed_events
+        WHERE ctid IN (
+          SELECT ctid FROM events.processed_events
+           WHERE processed_at < $1
+           ORDER BY processed_at ASC
+           LIMIT $2
+        )`,
+      [cutoff, Math.max(0, limit)]
+    );
+    return result.rowCount ?? 0;
+  }
 }
 
 export function createPgFeatureFlagRepository(pool: pg.Pool): PgFeatureFlagRepository {

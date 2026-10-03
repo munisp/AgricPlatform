@@ -58,7 +58,12 @@ export class InMemoryNotificationRepository
     entry: DeliveryLogEntry
   ): Promise<NotificationMessage> {
     await this.deliveryLog?.append(entry);
-    return this.update(id, { status });
+    const existing = await this.findById(id);
+    return this.update(id, {
+      status,
+      // Mirror the pg driver: sent_at stamps on the first honest delivery.
+      ...(status === 'sent' && !existing?.sentAt ? { sentAt: entry.at } : {})
+    });
   }
 }
 

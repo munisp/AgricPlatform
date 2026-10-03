@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import type { InstallmentStatus, LoanApplication, LoanStatus, RepaymentInstallment } from '@agric-platform/shared';
 import type { AsyncRepository } from '../../common/async-repository.js';
 import { InMemoryRepository } from '../../common/in-memory.repository.js';
@@ -59,6 +60,18 @@ export class InMemoryRepaymentScheduleRepository
     loanId: string,
     installments: RepaymentInstallment[]
   ): Promise<RepaymentInstallment[]> {
+    // GAP-M21 guard (mirrors the pg driver): never destroy installments
+    // carrying payment evidence — paid or in-flight ('declared') rows block
+    // the replacement with 409.
+    const blocking = (await this.find({ loanId })).filter(
+      (existing) => existing.status === 'paid' || existing.status === 'declared'
+    );
+    if (blocking.length > 0) {
+      throw new ConflictException(
+        `Loan '${loanId}' has paid or in-flight (declared) installments; ` +
+          'the repayment schedule can no longer be replaced'
+      );
+    }
     for (const existing of await this.find({ loanId })) {
       await this.remove(existing.id);
     }

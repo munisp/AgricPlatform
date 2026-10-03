@@ -20,7 +20,7 @@ export const SYNC_ENTITY_NOTIFICATION = 'notification';
  * Extensibility contract for later waves (e.g. farms): inject
  * SyncEntityRegistry in the owning module and register a descriptor backed
  * by that module's repository; set `writable: true` and provide `apply()`
- * (advancing sync.entity_versions via EntityVersionRepository.bumpExpected)
+ * (advancing sync.entity_versions via EntityVersionRepository.applyGuarded)
  * to accept pushes. No sync-module changes required.
  */
 @Injectable()

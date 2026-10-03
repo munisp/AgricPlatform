@@ -1,6 +1,6 @@
 # GeoLibre web GIS. Image is built by infra/geolibre/Dockerfile (pinned
 # upstream tag v2.8.0); the placeholder registry follows the same convention
-# as infra/k8s/web.yaml / api.yaml and is rewritten per-overlay by kustomize.
+# as infra/k8s/base/web.yaml / base/api.yaml and is rewritten per-overlay by kustomize.
 # NOT wired into the base kustomization.yaml — apply explicitly or reference
 # from an overlay's resources.
 apiVersion: apps/v1

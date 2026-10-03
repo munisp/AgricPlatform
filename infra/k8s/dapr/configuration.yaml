@@ -2,7 +2,7 @@
 # Prometheus metrics. Mirrors infra/dapr/config.yaml (compose). The collector
 # endpoint here assumes the observability overlay installs otel-collector in
 # the agric-platform namespace (same as OTEL_EXPORTER_OTLP_ENDPOINT in
-# infra/k8s/config.yaml); adjust the host if it lands in another namespace
+# infra/k8s/base/config.yaml); adjust the host if it lands in another namespace
 # (e.g. otel-collector.observability.svc.cluster.local:4317).
 apiVersion: dapr.io/v1alpha1
 kind: Configuration

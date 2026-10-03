@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
+import { RolesGuard } from '../auth/roles.guard.js';
 import { HttpMetricsInterceptor } from '../interceptors/http-metrics.interceptor.js';
 import { MetricsAccessGuard } from './metrics-access.guard.js';
 import { MetricsController } from './metrics.controller.js';
@@ -27,8 +28,14 @@ import { OperationalMetricsService } from './operational-metrics.service.js';
     MetricsService,
     OperationalMetricsService,
     HttpMetricsInterceptor,
+    // GAP-L16: the canonical RBAC guard as a DI provider so
+    // MetricsAccessGuard composes it instead of instantiating its own copy
+    // (its dependencies — Reflector/UsersService/OidcService — are global).
+    RolesGuard,
     MetricsAccessGuard
   ],
-  exports: [MetricsService, OperationalMetricsService, HttpMetricsInterceptor, PrometheusModule]
+  // GAP-L16: export RolesGuard from this @Global module so it is resolvable in the
+  // PrometheusModule injector that instantiates MetricsController (and MetricsAccessGuard).
+  exports: [MetricsService, OperationalMetricsService, HttpMetricsInterceptor, PrometheusModule, RolesGuard]
 })
 export class MetricsModule {}

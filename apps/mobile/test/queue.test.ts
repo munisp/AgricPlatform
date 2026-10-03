@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createInMemoryStorage, createOfflineQueue, type QueuedRequest } from '../src/offline/queue';
 
 const SAMPLE = {
-  kind: 'services.booking.created',
+  kind: 'marketplace.order.created',
   method: 'POST' as const,
-  path: '/service-offerings/offering-1/bookings',
-  payload: { customerId: 'user-1', quantity: 1 },
+  path: '/listings/listing-1/orders',
+  payload: { buyerId: 'user-1', quantity: 1 },
   idempotencyKey: 'idem-1'
 };
 

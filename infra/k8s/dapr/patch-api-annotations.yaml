@@ -1,5 +1,5 @@
 # OPTIONAL kustomize patch: enable the Dapr sidecar injector for the API
-# Deployment (infra/k8s/api.yaml). Not referenced from kustomization.yaml by
+# Deployment (infra/k8s/base/api.yaml). Not referenced from kustomization.yaml by
 # default — apply explicitly or wire it into an overlay once Dapr is
 # installed on the cluster (see README.md).
 #

@@ -1,6 +1,6 @@
 import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsIn, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import type { User, VaultDocument } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
@@ -29,6 +29,11 @@ class UploadDocumentDto implements UploadDocumentInput {
   @IsString()
   @MaxLength(200)
   fileName!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  storageRef?: string;
 }
 
 class DocumentStatusDto {

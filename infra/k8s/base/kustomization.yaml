@@ -1,0 +1,35 @@
+# Kustomize base for AgricPlatform.
+# Overlay usage (per environment):
+#   kustomize build infra/k8s/overlays/staging     # render staging manifests
+#   kubectl apply -k infra/k8s/overlays/staging    # apply staging
+#   kubectl apply -k infra/k8s/overlays/production # apply production (approved deploys only)
+#
+# The base manifests live in this `base/` subdirectory (moved out of the
+# infra/k8s root) because the overlays live INSIDE the infra/k8s root and
+# kustomize refuses a kustomization whose resource root contains the
+# kustomization itself ("cycle detected") — the overlays' former `- ../../`
+# reference never rendered under any kustomize/kubectl version.
+#
+# Secrets are intentionally NOT part of this base. The API Deployment references
+# a Secret named `agric-secrets` which must be provisioned per environment via
+# External Secrets Operator, sealed-secrets, or `kubectl create secret` —
+# see infra/k8s/secrets-provisioning.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agric-platform
+
+resources:
+  - namespace.yaml
+  - web.yaml
+  - api.yaml
+  - config.yaml
+
+images:
+  - name: ghcr.io/PLACEHOLDER_ORG/agric-web
+    newTag: "0.1.0"
+  - name: ghcr.io/PLACEHOLDER_ORG/agric-api
+    newTag: "0.1.0"
+
+commonLabels:
+  app.kubernetes.io/part-of: agric-platform

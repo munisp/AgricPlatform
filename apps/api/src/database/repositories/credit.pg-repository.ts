@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import type pg from 'pg';
 import type { Lender, LoanApplication, RepaymentInstallment } from '@agric-platform/shared';
 import {
@@ -69,12 +70,32 @@ export class PgRepaymentScheduleRepository
     });
   }
 
-  /** Schedule replacement as one transaction (disbursement regeneration). */
+  /**
+   * Schedule replacement as one transaction (disbursement regeneration).
+   * GAP-M21 guard: the existing rows are locked FOR UPDATE first and the
+   * replacement is refused with 409 when any installment is paid or carries
+   * an in-flight ('declared') payment — an unguarded DELETE in the
+   * double-disburse race would destroy repayment evidence
+   * (paid_at / payment_reference).
+   */
   async replaceSchedule(
     loanId: string,
     installments: RepaymentInstallment[]
   ): Promise<RepaymentInstallment[]> {
     return this.withTransaction(async (client) => {
+      const existing = await client.query(
+        `SELECT status FROM finance.repayment_installments WHERE loan_id = $1 FOR UPDATE`,
+        [loanId]
+      );
+      const blocking = existing.rows.filter((row) =>
+        ['paid', 'declared'].includes(row.status as string)
+      );
+      if (blocking.length > 0) {
+        throw new ConflictException(
+          `Loan '${loanId}' has paid or in-flight (declared) installments; ` +
+            'the repayment schedule can no longer be replaced'
+        );
+      }
       await client.query(`DELETE FROM finance.repayment_installments WHERE loan_id = $1`, [loanId]);
       for (const installment of installments) {
         const row = installmentMapper.toRow(installment);

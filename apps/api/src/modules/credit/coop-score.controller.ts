@@ -41,6 +41,21 @@ export class CoopScoreController {
     return { data: await this.coopScore.getCoopScore(cooperativeId, requireActor(actor)) };
   }
 
+  @Get(':cooperativeId/history')
+  @UseGuards(RolesGuard, FeatureFlagGuard)
+  @Authenticated()
+  @RequiresFeature('coop-score')
+  @ApiOperation({
+    summary:
+      'Cooperative score history, newest version first (admin|lender|cooperative lead; append-only underwriting evidence)'
+  })
+  async getHistory(
+    @Param('cooperativeId') cooperativeId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.coopScore.getCoopScoreHistory(cooperativeId, requireActor(actor)) };
+  }
+
   @Post(':cooperativeId/recompute')
   @UseGuards(RolesGuard, FeatureFlagGuard)
   @Authenticated()

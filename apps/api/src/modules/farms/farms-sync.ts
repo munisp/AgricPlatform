@@ -14,7 +14,7 @@ import { FarmsService, SYNC_ENTITY_FARM_PLOT } from './farms.service.js';
  *   version ledger keeps owner_id, so scoping survives the delete).
  * - Writes (apply) delegate to FarmsService.applySyncedPlot, which enforces
  *   owner scoping, validates the payload and advances sync.entity_versions
- *   via EntityVersionRepository.bumpExpected (CAS on baseVersion).
+ *   via EntityVersionRepository.applyGuarded (CAS on baseVersion).
  *
  * Scope note: the sync engine scopes push/pull to the record owner (or an
  * admin). Field-agent on-behalf capture is NOT routed through sync in v1 —

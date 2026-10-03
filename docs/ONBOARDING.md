@@ -46,7 +46,7 @@ onboarding-hardening audit (OB register); it is descriptive, not aspirational.
   and the agent record are created in a single transaction (OB-12). The
   `agent` role is granted atomically when the agent transitions to ACTIVE
   (OB-05).
-- Developer API keys (`POST /partner-api/developer-keys`) are restricted to
+- Developer API keys (`POST /partner/developer-keys`) are restricted to
   `admin` and `partner`, and requested scopes are validated against the
   `PARTNER_API_SCOPES` whitelist derived from the scopes routes actually
   consume (OB-08).

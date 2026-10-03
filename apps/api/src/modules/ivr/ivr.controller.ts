@@ -20,6 +20,7 @@ import {
 } from '../../common/auth/at-callback.utils.js';
 import { E164_PATTERN } from '../auth/auth.controller.js';
 import { IvrService } from './ivr.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 /** Africa's Talking Voice form-encoded callback payload (application/x-www-form-urlencoded). */
 class IvrCallbackDto {
@@ -61,6 +62,7 @@ export class IvrController {
   constructor(private readonly ivr: IvrService) {}
 
   @Post('callback')
+  @Public()
   @HttpCode(200)
   @Header('Content-Type', 'text/xml; charset=utf-8')
   @Throttle({ default: { limit: 120, ttl: 60_000 } })

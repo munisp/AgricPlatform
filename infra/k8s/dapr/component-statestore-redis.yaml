@@ -1,7 +1,7 @@
 # Dapr Component: state store backed by the platform Redis.
 # Mirrors infra/dapr/components/statestore-redis.yaml (compose, where the
 # service is `redis:6379`).
-# HONEST GAP: the current K8s base (infra/k8s/kustomization.yaml) does NOT
+# HONEST GAP: the current K8s base (infra/k8s/base/kustomization.yaml) does NOT
 # deploy Redis or Redpanda — only web/api/config. The redisHost below is the
 # assumed in-cluster DNS name for a Redis Service named `redis` in
 # agric-platform; adjust once the data-tier wave provides real manifests

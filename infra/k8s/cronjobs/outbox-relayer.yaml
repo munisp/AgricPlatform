@@ -1,11 +1,17 @@
-# Outbox relayer CronJob (WP-G12). NOT part of any kustomization: review and
-# apply deliberately once a cluster exists.
+# Outbox relayer CronJob (WP-G12). Deployed by default via the staging and
+# production overlays (infra/k8s/overlays/*/kustomization.yaml, GAP-M03);
+# for a hand-rolled cluster, apply deliberately:
 #
 #   kubectl apply -f infra/k8s/cronjobs/outbox-relayer.yaml
 #
 # Drives POST /admin/outbox/sweep every minute: retries stalled unpublished
 # outbox rows with backoff and dead-letters exhausted rows. Without this job
 # (or SWEEPERS_ENABLED on the API) the relay silently stops.
+#
+# Backstop semantics: this job is a BACKSTOP to the in-process scheduler
+# (SWEEPERS_ENABLED, off by default). The sweep is idempotent and
+# CAS-guarded, so running both at once is safe — an overlapping pass is a
+# no-op. See docs/runbooks/ops.md ("Backstop scheduler CronJobs").
 #
 # Auth: SWEEPER_ADMIN_TOKEN must be an admin OIDC JWT (provisioned as the
 # SWEEPER_ADMIN_TOKEN key of the agric-secrets Secret — see

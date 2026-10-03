@@ -1,6 +1,6 @@
 # Secrets Provisioning — `agric-secrets`
 
-The API Deployment (`infra/k8s/api.yaml`) consumes a Secret named
+The API Deployment (`infra/k8s/base/api.yaml`) consumes a Secret named
 `agric-secrets` via `envFrom.secretRef`. **No Secret manifest is committed to
 this repository** — the previous placeholder template was removed so that
 `kubectl apply -k` can never create `REPLACE_ME` values in a cluster.

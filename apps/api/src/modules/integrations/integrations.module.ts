@@ -11,6 +11,7 @@ import { IntegrationsService } from './integrations.service.js';
 import { InternalEventsController } from './internal-events.controller.js';
 import { InternalTokenGuard } from './internal-token.guard.js';
 import { MarketDataIngestionService } from './market-data-ingestion.service.js';
+import { PaymentWebhookReconciliationListener } from './payment-webhook.listener.js';
 // Phase-3 federated integrations (wave P5a).
 import { BeneficiaryImportService } from './phase3/beneficiary-import.service.js';
 import { ExchangeFeedIngestionService } from './phase3/exchange-feed-ingestion.service.js';
@@ -28,6 +29,8 @@ import { Phase3Controller } from './phase3/phase3.controller.js';
     IntegrationsService,
     InternalTokenGuard,
     MarketDataIngestionService,
+    // GAP-L05: durable reconciliation consumer for payment-provider webhooks.
+    PaymentWebhookReconciliationListener,
     BridgeSyncService,
     ExternalAccountsService,
     FarmRecordsService,

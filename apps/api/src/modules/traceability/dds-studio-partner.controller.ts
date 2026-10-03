@@ -9,6 +9,7 @@ import {
 } from '../partner-api/partner-auth.guard.js';
 import { PartnerScopes } from '../partner-api/partner-scopes.decorator.js';
 import { DdsStudioService } from './dds-studio.service.js';
+import { Public } from '../../common/auth/roles.decorator.js';
 
 interface PartnerScopedRequest {
   headers: Record<string, string | string[] | undefined>;
@@ -24,6 +25,8 @@ interface PartnerScopedRequest {
  * Packages are confined to the creating client (exporter_partner_id).
  */
 @ApiTags('partner-traceability-dds')
+// @Public: platform bearer not required — PartnerAuthGuard authenticates every route.
+@Public()
 @Controller('partner/traceability')
 @UseGuards(PartnerAuthGuard, FeatureFlagGuard)
 export class DdsStudioPartnerController {

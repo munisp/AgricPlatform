@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/comm
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ActorId } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import type { RawBodyRequest } from '../../bootstrap.js';
 import { MetricsService } from '../../common/metrics/metrics.service.js';
@@ -68,6 +68,7 @@ export class IntegrationsController {
   }
 
   @Post('webhooks/:provider')
+  @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({
     summary:

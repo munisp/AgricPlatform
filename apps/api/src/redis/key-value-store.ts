@@ -46,10 +46,17 @@ export class InMemoryKeyValueStore implements KeyValueStore {
   }
 
   async setNx(key: string, value: string, ttlMs?: number): Promise<boolean> {
-    if ((await this.get(key)) !== undefined) {
+    // No awaits: the check-and-set is synchronous and therefore atomic for
+    // concurrent in-process callers (GAP-M07: the idempotency spin lock
+    // relies on this when the backend is the in-memory store).
+    const existing = this.entries.get(key);
+    if (existing && (existing.expiresAt === undefined || existing.expiresAt > Date.now())) {
       return false;
     }
-    await this.set(key, value, ttlMs);
+    this.entries.set(key, {
+      value,
+      expiresAt: ttlMs !== undefined ? Date.now() + ttlMs : undefined
+    });
     return true;
   }
 

@@ -10,6 +10,7 @@ import { InboundConversationsService } from './inbound-conversations.service.js'
 import { NotificationsStreamController } from './notifications-stream.controller.js';
 import { NotificationsController } from './notifications.controller.js';
 import { NotificationsService } from './notifications.service.js';
+import { OrderStatusNotificationsListener } from './order-status-notifications.listener.js';
 
 @Module({
   imports: [
