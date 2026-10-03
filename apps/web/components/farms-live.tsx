@@ -7,6 +7,7 @@ import {
   HARVEST_UNITS,
   isValidBoundaryGeojson,
   NIGERIAN_STATES,
+  PLANTING_FAILURE_REASONS,
   SOIL_TYPES
 } from '@agric-platform/shared';
 import type {
@@ -15,6 +16,7 @@ import type {
   FarmPlot,
   FarmSummary,
   HarvestRecord,
+  PlantingFailureReason,
   PlantingStatus
 } from '@agric-platform/shared';
 import { useT } from '@/lib/i18n';
@@ -139,6 +141,26 @@ function plotFormFrom(plot: FarmPlot): PlotFormState {
   };
 }
 
+/**
+ * Single builder for the create/update body so the online request and the
+ * offline-queue replay send identical fields (soilType + boundaryGeojson
+ * included).
+ */
+function plotRequestBody(input: PlotFormState) {
+  return {
+    name: input.name.trim(),
+    state: input.state,
+    lga: input.lga.trim(),
+    centroidLat: Number(input.centroidLat),
+    centroidLong: Number(input.centroidLong),
+    sizeHectares: Number(input.sizeHectares),
+    soilType: (input.soilType || undefined) as FarmPlot['soilType'],
+    boundaryGeojson: input.boundary.trim()
+      ? (JSON.parse(input.boundary) as unknown)
+      : undefined
+  };
+}
+
 /** Create/edit plot form with GeoJSON boundary validation. */
 export function PlotForm({
   plot,
@@ -166,18 +188,7 @@ export function PlotForm({
 
   const save = useApiMutation<PlotFormState, FarmPlot>({
     mutationFn: async (input) => {
-      const body = {
-        name: input.name.trim(),
-        state: input.state,
-        lga: input.lga.trim(),
-        centroidLat: Number(input.centroidLat),
-        centroidLong: Number(input.centroidLong),
-        sizeHectares: Number(input.sizeHectares),
-        soilType: (input.soilType || undefined) as FarmPlot['soilType'],
-        boundaryGeojson: input.boundary.trim()
-          ? (JSON.parse(input.boundary) as unknown)
-          : undefined
-      };
+      const body = plotRequestBody(input);
       const res = plot
         ? await updateFarmPlot(plot.id, body)
         : await createFarmPlot(body);
@@ -188,14 +199,9 @@ export function PlotForm({
       label: (input) => `${plot ? 'Update' : 'Register'} plot ${input.name}`,
       method: plot ? 'PATCH' : 'POST',
       path: () => (plot ? `/farms/plots/${plot.id}` : '/farms/plots'),
-      payload: (input) => ({
-        name: input.name.trim(),
-        state: input.state,
-        lga: input.lga.trim(),
-        centroidLat: Number(input.centroidLat),
-        centroidLong: Number(input.centroidLong),
-        sizeHectares: Number(input.sizeHectares)
-      })
+      // Same body as the online request — the boundary was already validated
+      // in submit() before the mutation ran, so the parse here is safe.
+      payload: (input) => plotRequestBody(input)
     },
     onSuccess: (saved) => {
       clearDraft();
@@ -367,23 +373,27 @@ function PlantingForm({ plotId, onSaved }: { plotId: string; onSaved: () => void
   const setField = <K extends keyof PlantingDraft>(key: K, value: string) =>
     setDraft((current) => ({ ...current, [key]: value }));
 
+  // One body for the online request and the offline-queue replay (variety
+  // and expectedHarvestAt included).
+  const plantingBody = () => ({
+    crop: draft.crop.trim(),
+    variety: draft.variety.trim() || undefined,
+    season: draft.season.trim(),
+    plantedAt: new Date(draft.plantedAt).toISOString(),
+    expectedHarvestAt: draft.expectedHarvestAt
+      ? new Date(draft.expectedHarvestAt).toISOString()
+      : undefined
+  });
+
   const save = useApiMutation<unknown, CropPlanting>({
     mutationFn: () =>
-      createCropPlanting(plotId, {
-        crop: draft.crop.trim(),
-        variety: draft.variety.trim() || undefined,
-        season: draft.season.trim(),
-        plantedAt: new Date(draft.plantedAt).toISOString(),
-        expectedHarvestAt: draft.expectedHarvestAt
-          ? new Date(draft.expectedHarvestAt).toISOString()
-          : undefined
-      }).then((res) => res.data),
+      createCropPlanting(plotId, plantingBody()).then((res) => res.data),
     queue: {
       kind: 'farms.planting.created',
       label: () => `Record planting on ${plotId}`,
       method: 'POST',
       path: () => `/farms/plots/${plotId}/plantings`,
-      payload: () => ({ crop: draft.crop.trim(), season: draft.season.trim(), plantedAt: draft.plantedAt })
+      payload: () => plantingBody()
     },
     onSuccess: () => {
       clearDraft();
@@ -470,24 +480,24 @@ function HarvestForm({ plantingId, onSaved }: { plantingId: string; onSaved: () 
     (value) => value.harvestedAt === '' && value.quantity.trim() === ''
   );
 
+  // One body for the online request and the offline-queue replay
+  // (qualityGrade included).
+  const harvestBody = () => ({
+    harvestedAt: new Date(draft.harvestedAt).toISOString(),
+    quantity: Number(draft.quantity),
+    unit: draft.unit,
+    qualityGrade: (draft.grade || undefined) as HarvestRecord['qualityGrade']
+  });
+
   const save = useApiMutation<unknown, HarvestRecord>({
     mutationFn: () =>
-      recordHarvest(plantingId, {
-        harvestedAt: new Date(draft.harvestedAt).toISOString(),
-        quantity: Number(draft.quantity),
-        unit: draft.unit,
-        qualityGrade: (draft.grade || undefined) as HarvestRecord['qualityGrade']
-      }).then((res) => res.data),
+      recordHarvest(plantingId, harvestBody()).then((res) => res.data),
     queue: {
       kind: 'farms.harvest.recorded',
       label: () => `Record harvest for ${plantingId}`,
       method: 'POST',
       path: () => `/farms/plantings/${plantingId}/harvests`,
-      payload: () => ({
-        harvestedAt: draft.harvestedAt,
-        quantity: Number(draft.quantity),
-        unit: draft.unit
-      })
+      payload: () => harvestBody()
     },
     onSuccess: () => {
       clearDraft();
@@ -582,24 +592,24 @@ function ExpenseForm({ plotId, onSaved }: { plotId: string; onSaved: () => void 
     (value) => value.amount.trim() === '' && value.incurredAt === '' && value.note.trim() === ''
   );
 
+  // One body for the online request and the offline-queue replay (note
+  // included).
+  const expenseBody = () => ({
+    category: draft.category,
+    amountKobo: Math.round(Number(draft.amount) * 100),
+    incurredAt: new Date(draft.incurredAt).toISOString(),
+    note: draft.note.trim() || undefined
+  });
+
   const save = useApiMutation<unknown, FarmExpense>({
     mutationFn: () =>
-      createFarmExpense(plotId, {
-        category: draft.category,
-        amountKobo: Math.round(Number(draft.amount) * 100),
-        incurredAt: new Date(draft.incurredAt).toISOString(),
-        note: draft.note.trim() || undefined
-      }).then((res) => res.data),
+      createFarmExpense(plotId, expenseBody()).then((res) => res.data),
     queue: {
       kind: 'farms.expense.recorded',
       label: () => `Record expense on ${plotId}`,
       method: 'POST',
       path: () => `/farms/plots/${plotId}/expenses`,
-      payload: () => ({
-        category: draft.category,
-        amountKobo: Math.round(Number(draft.amount) * 100),
-        incurredAt: draft.incurredAt
-      })
+      payload: () => expenseBody()
     },
     onSuccess: () => {
       clearDraft();
@@ -684,6 +694,11 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
   const [showPlantingForm, setShowPlantingForm] = useState(false);
   const [harvestFormFor, setHarvestFormFor] = useState<string | null>(null);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
+  // 'Mark as failed' asks for a PlantingFailureReason first — the API
+  // rejects status='failed' without one (and the offline replay must carry
+  // the same payload).
+  const [failFor, setFailFor] = useState<string | null>(null);
+  const [failureReason, setFailureReason] = useState<'' | PlantingFailureReason>('');
 
   const plantings = useApiQuery<CropPlanting[]>(
     `farms.plantings.${plot.id}`,
@@ -702,17 +717,28 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
     { fallbackData: demoFarmExpenses.filter((item) => item.plotId === plot.id) }
   );
 
-  const fail = useApiMutation<string, CropPlanting>({
-    mutationFn: (plantingId) =>
-      transitionCropPlanting(plantingId, 'failed').then((res) => res.data),
+  const fail = useApiMutation<{ plantingId: string; failureReason: PlantingFailureReason }, CropPlanting>({
+    mutationFn: ({ plantingId, failureReason }) =>
+      transitionCropPlanting(plantingId, 'failed', undefined, { failureReason }).then(
+        (res) => res.data
+      ),
     queue: {
       kind: 'farms.planting.status_changed',
-      label: (plantingId) => `Mark planting ${plantingId} failed`,
+      label: ({ plantingId }) => `Mark planting ${plantingId} failed`,
       method: 'PATCH',
-      path: (plantingId) => `/farms/plantings/${plantingId}`,
-      payload: () => ({ status: 'failed' satisfies PlantingStatus })
+      path: ({ plantingId }) => `/farms/plantings/${plantingId}`,
+      // Identical payload online and queued — the failureReason is required
+      // by the API for the failed transition.
+      payload: ({ failureReason }) => ({
+        status: 'failed' satisfies PlantingStatus,
+        failureReason
+      })
     },
-    onSuccess: () => invalidateApiQueries(`farms.plantings.${plot.id}`, 'farms.summary')
+    onSuccess: () => {
+      setFailFor(null);
+      invalidateApiQueries(`farms.plantings.${plot.id}`, 'farms.summary');
+    },
+    onQueued: () => setFailFor(null)
   });
 
   return (
@@ -778,10 +804,58 @@ export function PlotDetail({ plot, onBack }: { plot: FarmPlot; onBack: () => voi
                     <button
                       className="btn btn-ghost btn-small"
                       type="button"
-                      onClick={() => void fail.mutate(planting.id)}
+                      aria-expanded={failFor === planting.id}
+                      onClick={() => {
+                        setFailFor(failFor === planting.id ? null : planting.id);
+                        setFailureReason('');
+                      }}
                     >
                       {t('farms.markFailed')}
                     </button>
+                    {failFor === planting.id ? (
+                      <div className="cluster" style={{ marginTop: '0.5rem' }}>
+                        <Field
+                          id={`fail-reason-${planting.id}`}
+                          label={t('farms.failureReasonLabel')}
+                        >
+                          <Select
+                            id={`fail-reason-${planting.id}`}
+                            value={failureReason}
+                            onChange={(event) =>
+                              setFailureReason(event.target.value as PlantingFailureReason)
+                            }
+                          >
+                            <option value="">{t('farms.failureReasonPlaceholder')}</option>
+                            {PLANTING_FAILURE_REASONS.map((reason) => (
+                              <option key={reason} value={reason}>
+                                {reason}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                        <button
+                          className="btn btn-secondary btn-small"
+                          type="button"
+                          disabled={failureReason === '' || fail.status === 'pending'}
+                          onClick={() =>
+                            void fail.mutate({
+                              plantingId: planting.id,
+                              failureReason: failureReason as PlantingFailureReason
+                            })
+                          }
+                        >
+                          {t('farms.confirmFailed')}
+                        </button>{' '}
+                        <button
+                          className="btn btn-ghost btn-small"
+                          type="button"
+                          onClick={() => setFailFor(null)}
+                        >
+                          {t('farms.cancelFailed')}
+                        </button>
+                      </div>
+                    ) : null}
+                    {fail.status === 'error' ? <ApiErrorNotice error={fail.error} /> : null}
                     {harvestFormFor === planting.id ? (
                       <HarvestForm
                         plantingId={planting.id}
