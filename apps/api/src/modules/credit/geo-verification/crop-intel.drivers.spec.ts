@@ -19,14 +19,62 @@ function jsonResponse(body: unknown, status = 200): Promise<Response> {
   );
 }
 
+/**
+ * Realistic crop-ml sidecar payload — mirrors the shipped schemas in
+ * services/crop-ml/app/models.py (AssessPlotResponse): score at
+ * health.score, structured HealthDriver objects, phenology under
+ * seasonality, provenance via the top-level `provider` field.
+ */
 const LIVE_ASSESSMENT = {
   plot_id: 'plot-1',
   season: '2026-wet',
-  health_score: 72.4,
-  phenology: { sos: '2026-04-10', eos: '2026-09-01', peak: { date: '2026-06-15', value: 0.83 } },
-  classification: 'normal',
-  drivers: ['ndvi-trend'],
-  basis: 'live'
+  provider: 'live',
+  seasonality: {
+    plot_id: 'plot-1',
+    acquisitions: 12,
+    ndvi: [
+      { date: '2026-04-10', ndvi: 0.42 },
+      { date: '2026-06-15', ndvi: 0.83 }
+    ],
+    phenology: {
+      sos_date: '2026-04-10',
+      eos_date: '2026-09-01',
+      peak_date: '2026-06-15',
+      peak_value: 0.83,
+      base_value: 0.21,
+      amplitude: 0.62,
+      season_length_days: 144
+    },
+    mean_ndvi: 0.58,
+    reference_phenology: null,
+    classification: { label: 'normal', reason_codes: ['within_baseline'] }
+  },
+  health: {
+    plot_id: 'plot-1',
+    score: 72.4,
+    drivers: [
+      { code: 'ndvi_deficit', impact: 12.6, detail: 'mean NDVI below seasonal baseline' },
+      { code: 'late_sos', impact: 8, detail: 'season start later than baseline' }
+    ],
+    current_phenology: {
+      sos_date: '2026-04-10',
+      eos_date: '2026-09-01',
+      peak_date: '2026-06-15',
+      peak_value: 0.83,
+      base_value: 0.21,
+      amplitude: 0.62,
+      season_length_days: 144
+    },
+    baseline_phenology: {
+      sos_date: '2026-04-01',
+      eos_date: '2026-09-05',
+      peak_date: '2026-06-10',
+      peak_value: 0.9,
+      base_value: 0.2,
+      amplitude: 0.7,
+      season_length_days: 157
+    }
+  }
 };
 
 afterEach(() => {
@@ -86,18 +134,74 @@ describe('createCropIntelClient', () => {
 });
 
 describe('HttpCropIntelClient', () => {
-  it('maps the fixed contract response and records live basis', async () => {
+  it('maps the real sidecar response (GAP-C01: no degradation to 0/stressed/stub)', async () => {
     const fetchMock = vi.fn().mockImplementation(() => jsonResponse(LIVE_ASSESSMENT));
     vi.stubGlobal('fetch', fetchMock);
     const client = new HttpCropIntelClient('http://crop-ml:8100');
     const assessment = await client.assessPlot({ plotId: 'plot-1', season: '2026-wet' });
+    // health.score is used — not a fabricated 0.
     expect(assessment.healthScore).toBe(72);
+    // Provenance comes from the sidecar's own provider field — never a
+    // false 'stub' label on a live response.
     expect(assessment.basis).toBe('live');
+    // seasonality.classification.label is used — not a fallback 'stressed'.
     expect(assessment.classification).toBe('normal');
-    expect(assessment.phenology.peak).toEqual({ date: '2026-06-15', value: 0.83 });
+    // seasonality.phenology maps sos/eos/peak.
+    expect(assessment.phenology).toEqual({
+      sos: '2026-04-10',
+      eos: '2026-09-01',
+      peak: { date: '2026-06-15', value: 0.83 }
+    });
+    // Structured health drivers keep code, impact and detail.
+    expect(assessment.drivers).toEqual([
+      'ndvi_deficit (-12.6): mean NDVI below seasonal baseline',
+      'late_sos (-8): season start later than baseline'
+    ]);
+    expect(assessment.season).toBe('2026-wet');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://crop-ml:8100/v1/crop/assess-plot');
     expect(JSON.parse(String(init?.body))).toEqual({ plot_id: 'plot-1', season: '2026-wet' });
+  });
+
+  it('honestly labels a response from the sidecar stub provider as basis stub', async () => {
+    const stubSidecarResponse = {
+      ...LIVE_ASSESSMENT,
+      provider: 'stub'
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => jsonResponse(stubSidecarResponse)));
+    const client = new HttpCropIntelClient('http://crop-ml:8100');
+    const assessment = await client.assessPlot({ plotId: 'plot-1', season: '2026-wet' });
+    expect(assessment.basis).toBe('stub');
+    expect(assessment.healthScore).toBe(72);
+  });
+
+  it('fails closed when health.score is missing instead of persisting a fabricated 0', async () => {
+    const malformed = { plot_id: 'plot-1', season: '2026-wet', provider: 'live' };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => jsonResponse(malformed)));
+    const client = new HttpCropIntelClient('http://crop-ml:8100');
+    await expect(client.assessPlot({ plotId: 'plot-1' })).rejects.toThrow(ProviderRequestError);
+  });
+
+  it('fails closed on an unknown provider provenance label', async () => {
+    const unknownProvenance = { ...LIVE_ASSESSMENT, provider: 'sentinel-hub' };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => jsonResponse(unknownProvenance)));
+    const client = new HttpCropIntelClient('http://crop-ml:8100');
+    await expect(client.assessPlot({ plotId: 'plot-1' })).rejects.toThrow(ProviderRequestError);
+  });
+
+  it('falls back to the score-derived band when the classification label is unknown', async () => {
+    const weirdLabel = {
+      ...LIVE_ASSESSMENT,
+      seasonality: {
+        ...LIVE_ASSESSMENT.seasonality,
+        classification: { label: 'unexpected', reason_codes: [] }
+      }
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => jsonResponse(weirdLabel)));
+    const client = new HttpCropIntelClient('http://crop-ml:8100');
+    const assessment = await client.assessPlot({ plotId: 'plot-1' });
+    // healthScore 72 → derived band 'normal' (>= 67).
+    expect(assessment.classification).toBe('normal');
   });
 
   it('retries 5xx up to 2 retries then succeeds', async () => {
