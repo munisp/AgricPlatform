@@ -48,6 +48,13 @@ only (`docker compose config` was NOT executed).
 - **Runbook:** `docker compose -f infra/docker-compose.yml --profile redpanda up -d`,
   then run the API with `EVENT_BUS_DRIVER=kafka KAFKA_BROKERS=localhost:9092`
   (inside compose: `redpanda:9092`).
+- **Consumer coverage:** the bus drivers are producer-only — even with
+  `kafka` selected, nothing consumes the topics back, and on the default
+  stub-bus path only the in-process fan-out delivers. Per-event consumer
+  classification (listener / partner webhook / projector / attribution /
+  sentinel / audit-only) lives in
+  [`docs/event-consumer-coverage.md`](event-consumer-coverage.md) (GAP-H05
+  guardrail).
 
 ## 2. Workflow orchestrator — Temporal
 
@@ -179,18 +186,6 @@ only (`docker compose config` was NOT executed).
   then `LEDGER_DRIVER=tigerbeetle TIGERBEETLE_ADDRESSES=localhost:3000
   TIGERBEETLE_CLUSTER_ID=0`. Legal sign-off is required before ANY wiring
   into money movement.
-
-**Stage 27 hardening (WP-G13, PR #84, merge `14ed7a84`):** transfer ids are
-now collision-resistant — an omitted id gets a UUIDv7-based u128, and a
-supplied id that looks like a raw `Date.now()` epoch-millis value hard-fails
-(a reused id silently replays the FIRST transfer); `lookupAccountBalances`
-was added for the pg↔TB consistency checker; every operation carries an
-OTel span + duration/error metrics (ledger id and transfer count only —
-never account ids). The legal gate above is unchanged: still default-OFF,
-still not the system of record, still not wired into `LedgerService` write
-paths. The Postgres ledger additionally gained an in-transaction
-balanced-journal assertion (`finance.transfer_is_balanced`) on the single
-posting path (merge-log).
 
 ## 7. Payments interop — Mojaloop (simulator path)
 
