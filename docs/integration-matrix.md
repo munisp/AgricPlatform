@@ -108,13 +108,13 @@ Wave P5a implements the federated model for these systems: identity resolution v
 
 ## Stage 18 polyglot sidecars (compose profiles, none start by default)
 
-Three single-purpose sidecars ship as compose service fragments merged into `infra/docker-compose.yml`. Each is **stub-mode by default** and pairs with a fail-closed provider port in the API; the platform boots and passes all tests without them. **Verification = unit/contract tests + YAML validity; no live cluster was run.**
+Three single-purpose sidecars ship as compose service fragments merged into `infra/docker-compose.yml`. Each is **stub-mode by default**; the platform boots and passes all tests without them. event-gw and crop-ml pair with fail-closed provider ports in the API. **geo-compute has no API consumer yet** — it is optional/profile-gated, stateless, persists nothing, and is not on the default data path (the API computes H3 in-process via h3-js); run it only for manual/experimental batch compute. **Verification = unit/contract tests + YAML validity; no live cluster was run.**
 
 | Sidecar | Profile / port | Stack | Contract | Live mode |
 | --- | --- | --- | --- | --- |
 | `services/event-gw` | `event-gw` / 8090 | Go 1.22 stdlib-only | Webhook edge: HMAC-SHA256 verify (+/-300s skew, replay cache), fanout to API internal ingress, circuit breaker, JSONL dead-letter spool, `/metrics` | `EVENTGW_MODE=live` + per-provider `EVENTGW_SECRET_<NAME>`; unconfigured routes answer 503 |
-| `services/crop-ml` | `crop-ml` / 8100 | Python 3.12 FastAPI | `POST /v1/crop/assess-plot` → NDVI/phenology/health-score with `basis` flag; consumed by credit geo-verification + VSLA carbon evidence | `IMAGERY_PROVIDER=live` + `SENTINEL_STATS_URL`/`_TOKEN`; 503 when configured-but-unreachable |
-| `services/geo-compute` | `geo-compute` / 8200 | Rust axum + h3o | H3 index/compact, polygon metrics, geofence batch; validated against the repo's h3-js vectors | `GEOCOMPUTE_MODE=live` |
+| `services/crop-ml` | `crop-ml` / 8100 | Python 3.12 FastAPI | `POST /v1/crop/assess-plot` → NDVI/phenology/`health.score` with `provider` provenance; consumed by credit geo-verification + VSLA carbon evidence | `IMAGERY_PROVIDER=live` + `SENTINEL_STATS_URL`/`_TOKEN`; 503 when configured-but-unreachable |
+| `services/geo-compute` | `geo-compute` / 8200 | Rust axum + h3o | H3 index/compact, polygon metrics, geofence batch; validated against the repo's h3-js vectors; **no API consumer wired — manual/experimental use only** | `GEOCOMPUTE_MODE=live` |
 
 ## Stage 18 innovation rails (T1–T3) — adapter ports and external gates
 
