@@ -1,5 +1,8 @@
 # Service fragment for the geo-compute sidecar. The orchestrator merges this
 # into the platform compose file; it is intentionally standalone.
+# OPTIONAL: no API consumer calls geo-compute yet — it is stateless,
+# persists nothing, and is not on the default data path (see
+# services/geo-compute/README.md, "Status in the platform").
 # Merge example:
 #   docker compose -f infra/docker-compose.yml \
 #     -f services/geo-compute/compose.geo-compute.yml \
