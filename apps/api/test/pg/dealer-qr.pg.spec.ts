@@ -1,153 +1,315 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { ConflictException } from '@nestjs/common';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createPgDealerQRRepository } from '../../src/database/repositories/dealer-qr.pg-repository.js';
-import type { DealerQRPurchase, DealerQRToken } from '@agric-platform/shared';
+import type {
+  MerchantPaymentRecord,
+  MerchantQrCodeRecord
+} from '../../src/database/repositories/dealer-qr.repository.js';
+import {
+  PgMerchantPaymentRepository,
+  PgMerchantQrCodeRepository
+} from '../../src/database/repositories/dealer-qr.pg-repository.js';
+import type { DomainEvent } from '../../src/core/domain-events.service.js';
 
 /**
- * PostgreSQL suite for the Dealer QR repositories (wave P2c; migration
- * 073_dealer_qr.sql). Skipped unless DATABASE_URL points at a database; the
- * migration is applied idempotently by the suite itself.
+ * Dealer QR Pay pg contract (Stage 27, Innovation 16; migration 075).
  *
- *   docker compose up -d postgres
- *   DATABASE_URL=postgres://postgres:postgres@localhost:5432/agricplatform \
- *     npx vitest run test/pg/dealer-qr.pg.spec.ts
+ * Two layers, mirroring the 047/052/073 pg patterns:
+ *  - `pg dealer qr pay (query spy)`: always-on tests over a fake pool
+ *    proving the INSERT column order, the CAS WHERE compilation, the
+ *    23505 → 409 unique-violation mapping (UNIQUE mojaloop_transfer_id is
+ *    the settlement idempotency key), and the single-transaction
+ *    state-change + outbox append on the settlement CAS.
+ *  - `pg dealer qr pay (live)`: contract tests in the standard
+ *    describe.skipIf(!DATABASE_URL) style, exercised by CI's db-contract
+ *    job against a database with migrations through 075 applied: the
+ *    UNIQUE transfer id rejects a second settlement row for the same
+ *    switch transfer (webhook redelivery cannot double-settle), the
+ *    partial idempotency index replays client retries, and the co-pay
+ *    split CHECK pins voucher + wallet = amount in integer kobo.
  */
+
+type QueryOutcome = { rows: Record<string, unknown>[]; rowCount?: number } | Error;
+
+interface FakePool {
+  pool: pg.Pool;
+  calls: { text: string; params: unknown[] }[];
+}
+
+function fakePool(behavior: (text: string, params: unknown[]) => QueryOutcome): FakePool {
+  const calls: { text: string; params: unknown[] }[] = [];
+  const query = async (text: string, params?: unknown[]) => {
+    calls.push({ text, params: params ?? [] });
+    const outcome = behavior(text, params ?? []);
+    if (outcome instanceof Error) {
+      throw outcome;
+    }
+    return {
+      rows: outcome.rows,
+      rowCount: outcome.rowCount ?? outcome.rows.length,
+      command: 'UPDATE',
+      oid: 0,
+      fields: []
+    };
+  };
+  const pool = {
+    query,
+    connect: async () => ({ query, release: () => undefined })
+  } as unknown as pg.Pool;
+  return { pool, calls };
+}
+
+function paymentTemplate(overrides: Partial<MerchantPaymentRecord> = {}): MerchantPaymentRecord {
+  return {
+    id: 'mpay-1',
+    qrId: 'qr-1',
+    payerUserId: 'user-farmer',
+    amountKobo: 100_000,
+    voucherTenderKobo: 40_000,
+    walletTenderKobo: 60_000,
+    voucherId: 'voucher-1',
+    payerAliasHmac: 'a'.repeat(64),
+    adapterBasis: 'live',
+    status: 'quoted',
+    idempotencyKey: 'pay-key-1',
+    createdAt: '2026-01-18T23:00:00.000Z',
+    updatedAt: '2026-01-18T23:00:00.000Z',
+    ...overrides
+  };
+}
+
+function paymentRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'mpay-1',
+    qr_id: 'qr-1',
+    payer_user_id: 'user-farmer',
+    amount_kobo: '100000',
+    voucher_tender_kobo: '40000',
+    wallet_tender_kobo: '60000',
+    voucher_id: 'voucher-1',
+    payer_alias_hmac: 'a'.repeat(64),
+    quote_id: 'quote-mpay-1',
+    mojaloop_transfer_id: 'transfer-mpay-1',
+    adapter_basis: 'live',
+    status: 'completed',
+    idempotency_key: 'pay-key-1',
+    ledger_entry_id: 'entry-1',
+    failure_reason: null,
+    created_at: '2026-01-18T23:00:00.000Z',
+    updated_at: '2026-01-18T23:30:00.000Z',
+    completed_at: '2026-01-18T23:30:00.000Z',
+    ...overrides
+  };
+}
+
+function qrTemplate(overrides: Partial<MerchantQrCodeRecord> = {}): MerchantQrCodeRecord {
+  return {
+    id: 'qr-1',
+    agentOrgId: 'agent-1',
+    dealerUserId: 'user-dealer',
+    payloadHmac: 'b'.repeat(64),
+    label: 'Kano shop',
+    status: 'active',
+    createdAt: '2026-01-18T23:00:00.000Z',
+    ...overrides
+  };
+}
+
+describe('pg dealer qr pay (query spy)', () => {
+  it('payment INSERT covers every persisted column in table order', async () => {
+    const { pool, calls } = fakePool(() => ({ rows: [] }));
+    await new PgMerchantPaymentRepository(pool).create(paymentTemplate());
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toContain('INSERT INTO agent_banking.merchant_payments');
+    expect(calls[0].params).toEqual([
+      'mpay-1',
+      'qr-1',
+      'user-farmer',
+      100_000,
+      40_000,
+      60_000,
+      'voucher-1',
+      'a'.repeat(64),
+      null,
+      null,
+      'live',
+      'quoted',
+      'pay-key-1',
+      null,
+      null,
+      '2026-01-18T23:00:00.000Z',
+      '2026-01-18T23:00:00.000Z',
+      null
+    ]);
+  });
+
+  it('maps 23505 on create to 409 (UNIQUE transfer id / idempotency key)', async () => {
+    const { pool } = fakePool(() => Object.assign(new Error('duplicate key'), { code: '23505' }));
+    await expect(new PgMerchantPaymentRepository(pool).create(paymentTemplate())).rejects.toThrow(
+      ConflictException
+    );
+    await expect(
+      new PgMerchantQrCodeRepository(
+        fakePool(() => Object.assign(new Error('duplicate key'), { code: '23505' })).pool
+      ).create(qrTemplate())
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('settlement CAS compiles the quoted guard and commits the outbox event in ONE transaction', async () => {
+    const { pool, calls } = fakePool(() => ({ rows: [], rowCount: 1 }));
+    const event: DomainEvent = {
+      id: 'event-1',
+      name: 'agent_banking.merchant_payment.completed',
+      payload: { paymentId: 'mpay-1', tenantId: 'user:user-farmer' },
+      actorId: 'user-farmer',
+      occurredAt: '2026-01-18T23:30:00.000Z'
+    };
+    await new PgMerchantPaymentRepository(pool).updateExpected(
+      'mpay-1',
+      { status: 'completed', ledgerEntryId: 'entry-1', completedAt: '2026-01-18T23:30:00.000Z' },
+      { status: 'quoted' },
+      event
+    );
+    const texts = calls.map((call) => call.text);
+    expect(texts[0]).toBe('BEGIN');
+    const update = calls.find((call) => call.text.startsWith('UPDATE agent_banking.merchant_payments'));
+    expect(update?.text).toContain('WHERE id = $1 AND status = $');
+    expect(update?.params).toContain('quoted');
+    const outbox = calls.find((call) => call.text.startsWith('INSERT INTO events.outbox'));
+    expect(outbox?.params).toEqual([
+      'event-1',
+      'agent_banking.merchant_payment.completed',
+      // aggregate_type / aggregate_id: literal event carries no envelope
+      // coordinates (built events derive them via DomainEventsService.build).
+      null,
+      null,
+      JSON.stringify({ paymentId: 'mpay-1', tenantId: 'user:user-farmer' }),
+      'user-farmer',
+      '2026-01-18T23:30:00.000Z'
+    ]);
+    expect(texts[texts.length - 2]).toBe('COMMIT');
+  });
+
+  it('CAS conflict (0 rows) surfaces as 409', async () => {
+    const { pool } = fakePool(() => ({ rows: [], rowCount: 0 }));
+    await expect(
+      new PgMerchantPaymentRepository(pool).updateExpected('mpay-1', { status: 'completed' }, { status: 'quoted' })
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('transfer-id lookup targets the UNIQUE settlement key column', async () => {
+    const { pool, calls } = fakePool(() => ({ rows: [paymentRow()] }));
+    const found = await new PgMerchantPaymentRepository(pool).findByTransferId('transfer-mpay-1');
+    expect(calls[0].text).toContain('WHERE mojaloop_transfer_id = $1');
+    expect(found?.status).toBe('completed');
+    expect(found?.amountKobo).toBe(100_000);
+    expect(found?.voucherTenderKobo + (found?.walletTenderKobo ?? 0)).toBe(found?.amountKobo);
+  });
+
+  it('QR round-trip maps snake_case columns and ISO timestamps', async () => {
+    const row = {
+      id: 'qr-1',
+      agent_org_id: 'agent-1',
+      dealer_user_id: 'user-dealer',
+      payload_hmac: 'b'.repeat(64),
+      label: 'Kano shop',
+      status: 'active',
+      created_at: '2026-01-18T23:00:00.000Z'
+    };
+    const { pool } = fakePool(() => ({ rows: [row] }));
+    const found = await new PgMerchantQrCodeRepository(pool).findById('qr-1');
+    expect(found).toEqual(qrTemplate());
+  });
+});
+
+// --------------------------------------------------------------- live ----
+
 const describePg = describe.skipIf(!process.env.DATABASE_URL);
 
-const pool = process.env.DATABASE_URL
-  ? new pg.Pool({ connectionString: process.env.DATABASE_URL })
-  : null;
+describePg('pg dealer qr pay (live)', () => {
+  async function livePool(): Promise<pg.Pool> {
+    const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    await pool.query('SELECT 1');
+    return pool;
+  }
 
-const MIGRATION = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '..',
-  '..',
-  'infra',
-  'postgres',
-  '073_dealer_qr.sql'
-);
+  async function seedPrerequisites(pool: pg.Pool): Promise<{ qrId: string }> {
+    await pool.query(
+      "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-dqr-dealer','+2348001000001','Dealer QR Live') ON CONFLICT (id) DO NOTHING"
+    );
+    await pool.query(
+      "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-dqr-farmer','+2348001000002','Farmer QR Live') ON CONFLICT (id) DO NOTHING"
+    );
+    // The live paymentTemplate defaults payerUserId to 'user-farmer' (the
+    // query-spy fixture id); seed it so merchant_payments.payer_user_id FK
+    // holds in the live layer.
+    await pool.query(
+      "INSERT INTO identity.users (id, phone, full_name) VALUES ('user-farmer','+2348001000003','Spy Fixture Farmer') ON CONFLICT (id) DO NOTHING"
+    );
+    await pool.query(
+      "INSERT INTO agent_banking.agents (id, user_id, organisation, status, float_account_code, commission_account_code, daily_limit_kobo, low_float_threshold_kobo) " +
+        "VALUES ('agent-dqr-live','user-dqr-dealer','QR Live Org','ACTIVE','agent:agent-dqr-live:float','agent:agent-dqr-live:commission_payable',25000000,1000000) ON CONFLICT (id) DO NOTHING"
+    );
+    // merchant_payments.voucher_id FKs to agent_banking.vouchers — the live
+    // payment template tenders 'voucher-1', so seed it (agent + farmer
+    // rows above satisfy its own FKs).
+    await pool.query(
+      "INSERT INTO agent_banking.vouchers (id, agent_id, farmer_id, amount_kobo, expires_at, nonce, signature) " +
+        "VALUES ('voucher-1','agent-dqr-live','user-dqr-farmer',40000,'2030-01-01T00:00:00Z','nonce-dqr-live','sig-dqr-live') ON CONFLICT (id) DO NOTHING"
+    );
+    const qrId = `qr-live-${Date.now()}`;
+    await pool.query(
+      "INSERT INTO agent_banking.merchant_qr_codes (id, agent_org_id, dealer_user_id, payload_hmac, label) VALUES ($1,'agent-dqr-live','user-dqr-dealer',$2,'live shop')",
+      [qrId, 'c'.repeat(64)]
+    );
+    return { qrId };
+  }
 
-async function clean(): Promise<void> {
-  await pool!.query(`DELETE FROM input_vouchers.dealer_qr_purchases WHERE dealer_id LIKE 'pgtest-%'`);
-  await pool!.query(`DELETE FROM input_vouchers.dealer_qr_tokens WHERE dealer_id LIKE 'pgtest-%'`);
-}
-
-function token(id: string): DealerQRToken {
-  return {
-    id,
-    dealerId: 'pgtest-dealer-1',
-    batch: 'batch-A',
-    qrPayload: `payload-${id}`,
-    issuedAt: '2026-06-01T10:00:00.000Z',
-    createdAt: '2026-06-01T10:00:00.000Z'
-  };
-}
-
-function purchase(id: string, tokenId: string, dedupeKey?: string): DealerQRPurchase {
-  return {
-    id,
-    dealerId: 'pgtest-dealer-1',
-    tokenId,
-    farmerId: 'pgtest-farmer-1',
-    amountKobo: 150_000,
-    inputItems: [{ product: 'NPK 15-15-15', quantity: 2, unit: '50kg bag' }],
-    dedupeKey,
-    recordedBy: 'pgtest-dealer-1',
-    occurredAt: '2026-06-01T10:05:00.000Z',
-    createdAt: '2026-06-01T10:05:00.000Z'
-  };
-}
-
-describePg('pg dealer QR repositories (parity with in-memory)', () => {
-  beforeAll(async () => {
-    await pool!.query(readFileSync(MIGRATION, 'utf8'));
-    await clean();
+  it('UNIQUE(mojaloop_transfer_id) rejects a second settlement row for the same switch transfer', async () => {
+    const pool = await livePool();
+    try {
+      const { qrId } = await seedPrerequisites(pool);
+      const repo = new PgMerchantPaymentRepository(pool);
+      const base = paymentTemplate({ id: `mpay-live-${Date.now()}-a`, qrId, mojaloopTransferId: `tr-${Date.now()}` });
+      await repo.create(base);
+      await expect(
+        repo.create(paymentTemplate({ id: `${base.id}-b`, qrId, mojaloopTransferId: base.mojaloopTransferId, idempotencyKey: 'other-key' }))
+      ).rejects.toThrow(ConflictException);
+    } finally {
+      await pool.end();
+    }
   });
 
-  afterAll(async () => {
-    await clean();
-    await pool!.end();
+  it('the quoted→completed CAS makes a redelivered webhook settlement a no-op (second CAS wins 0 rows)', async () => {
+    const pool = await livePool();
+    try {
+      const { qrId } = await seedPrerequisites(pool);
+      const repo = new PgMerchantPaymentRepository(pool);
+      const id = `mpay-live-${Date.now()}-cas`;
+      await repo.create(paymentTemplate({ id, qrId, idempotencyKey: `key-${id}` }));
+      const first = await repo.updateExpected(id, { status: 'completed' }, { status: 'quoted' });
+      expect(first.status).toBe('completed');
+      await expect(
+        repo.updateExpected(id, { status: 'completed' }, { status: 'quoted' })
+      ).rejects.toThrow(ConflictException);
+    } finally {
+      await pool.end();
+    }
   });
 
-  it('creates and reads back a token by id and by QR payload', async () => {
-    const repo = createPgDealerQRRepository(pool!);
-    await repo.createToken(token('pgtest-qr-1'));
-    const byId = await repo.getTokenById('pgtest-qr-1');
-    expect(byId).toMatchObject({
-      id: 'pgtest-qr-1',
-      dealerId: 'pgtest-dealer-1',
-      batch: 'batch-A',
-      qrPayload: 'payload-pgtest-qr-1',
-      issuedAt: '2026-06-01T10:00:00.000Z'
-    });
-    const byPayload = await repo.getTokenByPayload('payload-pgtest-qr-1');
-    expect(byPayload?.id).toBe('pgtest-qr-1');
-    expect(await repo.getTokenByPayload('payload-missing')).toBeUndefined();
-  });
-
-  it('findTokens filters by dealer and batch', async () => {
-    const repo = createPgDealerQRRepository(pool!);
-    await repo.createToken({ ...token('pgtest-qr-2'), batch: 'batch-B' });
-    await repo.createToken(token('pgtest-qr-3'));
-    const all = await repo.findTokens({ dealerId: 'pgtest-dealer-1' });
-    expect(all.map((row) => row.id).sort()).toEqual(['pgtest-qr-2', 'pgtest-qr-3']);
-    const batchA = await repo.findTokens({ dealerId: 'pgtest-dealer-1', batch: 'batch-A' });
-    expect(batchA.map((row) => row.id)).toEqual(['pgtest-qr-3']);
-  });
-
-  it('markRedeemed flips once; the second flip returns undefined (replay-safe)', async () => {
-    const repo = createPgDealerQRRepository(pool!);
-    await repo.createToken(token('pgtest-qr-4'));
-    const patch = {
-      redeemedAt: '2026-06-01T10:06:00.000Z',
-      redeemedFarmerId: 'pgtest-farmer-1',
-      redeemedPurchaseId: 'pgtest-po-1'
-    };
-    const flipped = await repo.markRedeemed('pgtest-qr-4', patch);
-    expect(flipped).toMatchObject(patch);
-    const again = await repo.markRedeemed('pgtest-qr-4', patch);
-    expect(again).toBeUndefined();
-    const stored = await repo.getTokenById('pgtest-qr-4');
-    expect(stored?.redeemedAt).toBe('2026-06-01T10:06:00.000Z');
-  });
-
-  it('createPurchase round-trips items and amount; dedupe replays return the original row', async () => {
-    const repo = createPgDealerQRRepository(pool!);
-    await repo.createToken(token('pgtest-qr-5'));
-    const first = await repo.createPurchase(purchase('pgtest-po-1', 'pgtest-qr-5', 'dk-1'));
-    expect(first.amountKobo).toBe(150_000);
-    expect(first.inputItems).toEqual([{ product: 'NPK 15-15-15', quantity: 2, unit: '50kg bag' }]);
-
-    // Replay with the same dedupe key: the UNIQUE index fires and the
-    // repository answers with the original row instead of throwing.
-    const replay = await repo.createPurchase(purchase('pgtest-po-2', 'pgtest-qr-5', 'dk-1'));
-    expect(replay.id).toBe('pgtest-po-1');
-    expect(await repo.countPurchasesByFarmer('pgtest-farmer-1')).toBe(1);
-
-    // A different key inserts normally.
-    const second = await repo.createPurchase(purchase('pgtest-po-3', 'pgtest-qr-5', 'dk-2'));
-    expect(second.id).toBe('pgtest-po-3');
-    expect(await repo.countPurchasesByFarmer('pgtest-farmer-1')).toBe(2);
-  });
-
-  it('findPurchases filters by dealer, farmer and token', async () => {
-    const repo = createPgDealerQRRepository(pool!);
-    await repo.createToken(token('pgtest-qr-6'));
-    await repo.createToken(token('pgtest-qr-7'));
-    await repo.createPurchase(purchase('pgtest-po-4', 'pgtest-qr-6'));
-    await repo.createPurchase({ ...purchase('pgtest-po-5', 'pgtest-qr-7'), farmerId: 'pgtest-farmer-2' });
-
-    expect((await repo.findPurchases({ dealerId: 'pgtest-dealer-1' })).length).toBeGreaterThanOrEqual(2);
-    expect((await repo.findPurchases({ farmerId: 'pgtest-farmer-2' })).map((row) => row.id)).toEqual([
-      'pgtest-po-5'
-    ]);
-    expect((await repo.findPurchases({ tokenId: 'pgtest-qr-6' })).map((row) => row.id)).toEqual([
-      'pgtest-po-4'
-    ]);
+  it('the split CHECK rejects voucher + wallet != amount', async () => {
+    const pool = await livePool();
+    try {
+      const { qrId } = await seedPrerequisites(pool);
+      await expect(
+        pool.query(
+          "INSERT INTO agent_banking.merchant_payments (id, qr_id, payer_user_id, amount_kobo, voucher_tender_kobo, wallet_tender_kobo, adapter_basis, status) " +
+            "VALUES ($1,$2,'user-dqr-farmer',100000,40000,50000,'live','quoted')",
+          [`mpay-live-${Date.now()}-split`, qrId]
+        )
+      ).rejects.toThrow();
+    } finally {
+      await pool.end();
+    }
   });
 });
