@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { RolesGuard } from './common/auth/roles.guard.js';
+import { TenantGuard } from './common/auth/tenant.guard.js';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor.js';
 import { LoggingModule } from './common/logging/logging.module.js';
 import { MetricsModule } from './common/metrics/metrics.module.js';
@@ -116,9 +118,10 @@ import { OfftakeModule } from './modules/marketplace/offtake.module.js';
       inject: [{ token: REDIS_CLIENT, optional: true }, MetricsService],
       useFactory: (redis: import('ioredis').Redis | null, metrics: MetricsService) => ({
         throttlers: [{ ttl: 60_000, limit: 300 }],
-        // V-77: the storage fails OPEN with agric_throttle_redis_errors_total
-        // on Redis errors (cache tier), so a Redis outage degrades rate
-        // limiting instead of taking the API down.
+        // V-77/GAP-M06: on Redis errors the storage circuits to a per-replica
+        // in-process fixed-window fallback (cache tier — never takes the API
+        // down, but never serves unthrottled either) with
+        // agric_throttle_redis_errors_total incremented per failure.
         ...(redis ? { storage: new RedisThrottlerStorage(redis, metrics) } : {})
       })
     }),
@@ -224,6 +227,19 @@ import { OfftakeModule } from './modules/marketplace/offtake.module.js';
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // GAP-M05: global default-deny platform auth. Every route requires a
+    // valid platform identity unless it carries explicit @Public() metadata
+    // (reserved for self-authenticating routes — partner/webhook/internal/
+    // metrics guards — and intentionally anonymous content). Runs after the
+    // throttler so abusive anonymous traffic is rate-limited first.
+    // UsersModule and CoreModule are @Global, so UsersService/OidcService
+    // resolve here.
+    { provide: APP_GUARD, useClass: RolesGuard },
+    // GAP-M08: pipeline tenant enforcement for :partnerId-parameterised
+    // routes (the existing partner_members binding — not a new tenancy
+    // model). Runs after RolesGuard so request.user is already resolved;
+    // PARTNER_MEMBER_REPOSITORY comes from the @Global DatabaseModule.
+    { provide: APP_GUARD, useClass: TenantGuard },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor }
   ]
 })
