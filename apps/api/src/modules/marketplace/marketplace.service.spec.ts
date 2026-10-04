@@ -760,3 +760,43 @@ function sabotageHoldOnce(escrow: EscrowService): void {
     return original(...args);
   }) as typeof escrow.holdForOrder;
 }
+
+describe('MarketplaceService listing description (GAP-L12)', () => {
+  it('persists the description on create and updates it on patch', async () => {
+    const { marketplace } = makeService();
+    const created = await marketplace.createListing({
+      sellerId: seller.id!,
+      kind: 'produce',
+      title: 'Maize lot',
+      description: 'Well-dried white maize, 2026 wet season harvest.',
+      crop: 'maize',
+      quantity: 10,
+      unit: 'tonnes',
+      priceNaira: 250_000,
+      location: { state: 'Kano', lga: 'Kano Municipal' }
+    });
+    expect(created.description).toBe('Well-dried white maize, 2026 wet season harvest.');
+    const updated = await marketplace.updateListing(
+      created.id,
+      { description: 'Price negotiable for bulk buyers.' },
+      seller.id!
+    );
+    expect(updated.description).toBe('Price negotiable for bulk buyers.');
+    const fetched = await marketplace.getListing(created.id);
+    expect(fetched.description).toBe('Price negotiable for bulk buyers.');
+  });
+
+  it('leaves the description absent when not provided', async () => {
+    const { marketplace } = makeService();
+    const created = await marketplace.createListing({
+      sellerId: seller.id!,
+      kind: 'produce',
+      title: 'Soybean lot',
+      quantity: 5,
+      unit: 'tonnes',
+      priceNaira: 400_000,
+      location: { state: 'Benue', lga: 'Makurdi' }
+    });
+    expect(created.description).toBeUndefined();
+  });
+});
