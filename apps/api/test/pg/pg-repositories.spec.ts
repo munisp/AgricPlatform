@@ -500,14 +500,16 @@ describePg('pg compliance repositories (Wave COMP)', () => {
       anonymizeNotDelete: true,
       updatedAt: new Date().toISOString()
     });
-    expect((await policies().findByEntity('contract-policy-entity'))?.retainDays).toBe(90);
+    expect(
+      (await policies().list()).find((p) => p.entity === 'contract-policy-entity')?.retainDays
+    ).toBe(90);
     await policies().upsert({
       entity: 'contract-policy-entity',
       retainDays: 30,
       anonymizeNotDelete: false,
       updatedAt: new Date().toISOString()
     });
-    const updated = await policies().findByEntity('contract-policy-entity');
+    const updated = (await policies().list()).find((p) => p.entity === 'contract-policy-entity');
     expect(updated?.retainDays).toBe(30);
     expect(updated?.anonymizeNotDelete).toBe(false);
   });
