@@ -5,7 +5,7 @@ import type { CohortStatus, MilestoneProgressStatus, ProgrammeType, User } from 
 import { COHORT_STATUSES, MILESTONE_PROGRESS_STATUSES, PROGRAMME_TYPES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import {
@@ -145,6 +145,7 @@ export class ProgrammesController {
   constructor(private readonly programmes: ProgrammesService) {}
 
   @Get('programme-cohorts')
+  @Public()
   @ApiOperation({ summary: 'List women/youth programme cohorts' })
   listCohorts(@Query() query: ListCohortsQuery) {
     return this.programmes.listCohorts(query);
@@ -171,6 +172,7 @@ export class ProgrammesController {
   }
 
   @Get('programme-cohorts/:id')
+  @Public()
   @ApiOperation({ summary: 'Cohort detail' })
   async getCohort(@Param('id') id: string) {
     return { data: await this.programmes.getCohort(id) };
@@ -219,6 +221,7 @@ export class ProgrammesController {
   }
 
   @Get('programme-cohorts/:id/milestones')
+  @Public()
   @ApiOperation({ summary: 'List cohort milestones in sequence order' })
   async listMilestones(@Param('id') id: string) {
     return { data: await this.programmes.listMilestones(id) };
@@ -272,6 +275,7 @@ export class ProgrammesController {
   }
 
   @Get('programme-cohorts/:id/leaderboard')
+  @Public()
   @ApiOperation({ summary: 'Cohort judging leaderboard' })
   async leaderboard(@Param('id') id: string) {
     return { data: await this.programmes.leaderboard(id) };
