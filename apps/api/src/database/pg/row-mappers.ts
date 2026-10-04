@@ -6,6 +6,7 @@ import type {
   Certificate,
   Chapter,
   ChapterEvent,
+  ChapterMember,
   CohortThread,
   CohortThreadPost,
   ConsentRecord,
@@ -409,13 +410,17 @@ export const deletionRequestMapper: RowMapper<DeletionRequest> = {
 export const courseMapper: RowMapper<Course> = {
   columns: [
     'id',
+    'slug',
     'title',
     'category',
     'level',
     'duration_minutes',
     'language',
     'enrolment_count',
-    'offline_available'
+    'offline_available',
+    'description',
+    'moodle_course_id',
+    'published'
   ],
   fromRow: (row) => ({
     id: row.id as string,
@@ -425,18 +430,26 @@ export const courseMapper: RowMapper<Course> = {
     durationMinutes: num(row.duration_minutes),
     language: row.language as Course['language'],
     enrolmentCount: num(row.enrolment_count),
-    offlineAvailable: row.offline_available as boolean
+    offlineAvailable: row.offline_available as boolean,
+    ...(row.slug ? { slug: row.slug as string } : {}),
+    ...(row.description ? { description: row.description as string } : {}),
+    ...(row.moodle_course_id != null ? { moodleCourseId: num(row.moodle_course_id) } : {}),
+    published: row.published as boolean
   }),
   toRow: (item) =>
     present(item, {
       id: 'id',
+      slug: 'slug',
       title: 'title',
       category: 'category',
       level: 'level',
       duration_minutes: 'durationMinutes',
       language: 'language',
       enrolment_count: 'enrolmentCount',
-      offline_available: 'offlineAvailable'
+      offline_available: 'offlineAvailable',
+      description: 'description',
+      moodle_course_id: 'moodleCourseId',
+      published: 'published'
     })
 };
 
@@ -622,6 +635,7 @@ export const chapterMapper: RowMapper<Chapter> = {
     'parent_id',
     'state',
     'lga',
+    'ward',
     'lead_user_id',
     'member_count',
     'active'
@@ -633,6 +647,7 @@ export const chapterMapper: RowMapper<Chapter> = {
     parentId: (row.parent_id as string) ?? undefined,
     state: row.state as string,
     lga: (row.lga as string) ?? undefined,
+    ward: (row.ward as string) ?? undefined,
     leadUserId: (row.lead_user_id as string) ?? undefined,
     memberCount: num(row.member_count),
     active: row.active as boolean
@@ -645,9 +660,27 @@ export const chapterMapper: RowMapper<Chapter> = {
       parent_id: 'parentId',
       state: 'state',
       lga: 'lga',
+      ward: 'ward',
       lead_user_id: 'leadUserId',
       member_count: 'memberCount',
       active: 'active'
+    })
+};
+
+export const chapterMemberMapper: RowMapper<ChapterMember> = {
+  columns: ['chapter_id', 'user_id', 'role', 'joined_at'],
+  fromRow: (row) => ({
+    chapterId: row.chapter_id as string,
+    userId: row.user_id as string,
+    role: row.role as ChapterMember['role'],
+    joinedAt: ts(row.joined_at)
+  }),
+  toRow: (item) =>
+    present(item, {
+      chapter_id: 'chapterId',
+      user_id: 'userId',
+      role: 'role',
+      joined_at: 'joinedAt'
     })
 };
 
@@ -660,7 +693,10 @@ export const chapterEventMapper: RowMapper<ChapterEvent> = {
     'starts_at',
     'location',
     'rsvp_count',
-    'attendance_count'
+    'attendance_count',
+    'description',
+    'ends_at',
+    'created_by'
   ],
   fromRow: (row) => ({
     id: row.id as string,
@@ -670,7 +706,10 @@ export const chapterEventMapper: RowMapper<ChapterEvent> = {
     startsAt: ts(row.starts_at),
     location: row.location as string,
     rsvpCount: num(row.rsvp_count),
-    attendanceCount: num(row.attendance_count)
+    attendanceCount: num(row.attendance_count),
+    ...(row.description ? { description: row.description as string } : {}),
+    ...(row.ends_at ? { endsAt: ts(row.ends_at) } : {}),
+    ...(row.created_by ? { createdBy: row.created_by as string } : {})
   }),
   toRow: (item) =>
     present(item, {
@@ -681,7 +720,10 @@ export const chapterEventMapper: RowMapper<ChapterEvent> = {
       starts_at: 'startsAt',
       location: 'location',
       rsvp_count: 'rsvpCount',
-      attendance_count: 'attendanceCount'
+      attendance_count: 'attendanceCount',
+      description: 'description',
+      ends_at: 'endsAt',
+      created_by: 'createdBy'
     })
 };
 
@@ -760,6 +802,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
     'seller_id',
     'kind',
     'title',
+    'description',
     'crop',
     'quantity',
     'unit',
@@ -778,6 +821,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
     sellerId: row.seller_id as string,
     kind: row.kind as MarketplaceListing['kind'],
     title: row.title as string,
+    description: (row.description as string) ?? undefined,
     crop: (row.crop as string) ?? undefined,
     quantity: num(row.quantity),
     unit: row.unit as string,
@@ -793,6 +837,7 @@ export const listingMapper: RowMapper<MarketplaceListing> = {
       seller_id: 'sellerId',
       kind: 'kind',
       title: 'title',
+      description: 'description',
       crop: 'crop',
       quantity: 'quantity',
       unit: 'unit',
@@ -915,14 +960,16 @@ export const creditProfileMapper: RowMapper<CreditProfile> = {
 };
 
 export const documentMapper: RowMapper<VaultDocument> = {
-  columns: ['id', 'user_id', 'kind', 'file_name', 'status', 'uploaded_at'],
+  columns: ['id', 'user_id', 'kind', 'file_name', 'status', 'uploaded_at', 'storage_ref', 'verified_at'],
   fromRow: (row) => ({
     id: row.id as string,
     userId: row.user_id as string,
     kind: row.kind as VaultDocument['kind'],
     fileName: row.file_name as string,
     status: row.status as VaultDocument['status'],
-    uploadedAt: ts(row.uploaded_at)
+    uploadedAt: ts(row.uploaded_at),
+    ...(row.storage_ref ? { storageRef: row.storage_ref as string } : {}),
+    ...(row.verified_at ? { verifiedAt: ts(row.verified_at) } : {})
   }),
   toRow: (item) =>
     present(item, {
@@ -931,12 +978,25 @@ export const documentMapper: RowMapper<VaultDocument> = {
       kind: 'kind',
       file_name: 'fileName',
       status: 'status',
-      uploaded_at: 'uploadedAt'
+      uploaded_at: 'uploadedAt',
+      storage_ref: 'storageRef',
+      verified_at: 'verifiedAt'
     })
 };
 
 export const notificationMapper: RowMapper<NotificationMessage> = {
-  columns: ['id', 'user_id', 'channel', 'title', 'body', 'status', 'created_at'],
+  columns: [
+    'id',
+    'user_id',
+    'channel',
+    'title',
+    'body',
+    'idempotency_key',
+    'status',
+    'created_at',
+    'sent_at',
+    'read_at'
+  ],
   fromRow: (row) => ({
     id: row.id as string,
     userId: row.user_id as string,
@@ -944,7 +1004,10 @@ export const notificationMapper: RowMapper<NotificationMessage> = {
     title: row.title as string,
     body: row.body as string,
     status: row.status as NotificationMessage['status'],
-    createdAt: ts(row.created_at)
+    createdAt: ts(row.created_at),
+    ...(row.idempotency_key ? { idempotencyKey: row.idempotency_key as string } : {}),
+    ...(row.sent_at ? { sentAt: ts(row.sent_at) } : {}),
+    ...(row.read_at ? { readAt: ts(row.read_at) } : {})
   }),
   toRow: (item) =>
     present(item, {
@@ -953,8 +1016,11 @@ export const notificationMapper: RowMapper<NotificationMessage> = {
       channel: 'channel',
       title: 'title',
       body: 'body',
+      idempotency_key: 'idempotencyKey',
       status: 'status',
-      created_at: 'createdAt'
+      created_at: 'createdAt',
+      sent_at: 'sentAt',
+      read_at: 'readAt'
     })
 };
 
@@ -1037,17 +1103,21 @@ export const auditMapper: RowMapper<AuditEvent> = {
 };
 
 export const outboxMapper: RowMapper<DomainEvent> = {
-  columns: ['id', 'name', 'payload', 'actor_id', 'occurred_at'],
+  columns: ['id', 'name', 'aggregate_type', 'aggregate_id', 'payload', 'actor_id', 'occurred_at'],
   fromRow: (row) => ({
     id: row.id as string,
     name: row.name as string,
     payload: row.payload,
     actorId: (row.actor_id as string) ?? undefined,
-    occurredAt: ts(row.occurred_at)
+    occurredAt: ts(row.occurred_at),
+    ...(row.aggregate_type ? { aggregateType: row.aggregate_type as string } : {}),
+    ...(row.aggregate_id ? { aggregateId: row.aggregate_id as string } : {})
   }),
   toRow: (item) => ({
     id: item.id,
     name: item.name,
+    aggregate_type: item.aggregateType ?? null,
+    aggregate_id: item.aggregateId ?? null,
     payload: item.payload ?? {},
     actor_id: item.actorId ?? null,
     occurred_at: item.occurredAt
@@ -2481,7 +2551,10 @@ export const offtakeTemplateMapper: RowMapper<OfftakeTemplate> = {
       updated_at: 'updatedAt'
     })
 };
-export const offtakeContractMapper: RowMapper<OfftakeContract> = {
+// Module-scoped name (GAP-L18): livestock.offtake_contracts (migration
+// 014) — distinct from marketplaceOfftakeContractMapper in
+// repositories/offtake.pg-repository.ts.
+export const livestockOfftakeContractMapper: RowMapper<OfftakeContract> = {
   columns: [
     'id',
     'template_id',
