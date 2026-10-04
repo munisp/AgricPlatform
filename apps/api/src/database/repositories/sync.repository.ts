@@ -134,7 +134,7 @@ export class InMemoryEntityVersionRepository implements EntityVersionRepository 
   private changeSeq = 0;
 
   private key(entity: string, entityId: string): string {
-    return `${entity} ${entityId}`;
+    return `${entity}${entityId}`;
   }
 
   private stamp(input: EntityVersionBump, version: number): EntityVersionRecord {
@@ -224,13 +224,13 @@ export class InMemorySyncCursorRepository implements SyncCursorRepository {
   private readonly cursors = new Map<string, number>();
 
   async get(userId: string, entity: string): Promise<number> {
-    return this.cursors.get(`${userId} ${entity}`) ?? 0;
+    return this.cursors.get(`${userId}${entity}`) ?? 0;
   }
 
   async set(userId: string, entity: string, cursor: number): Promise<void> {
     // Monotonic (L-08): mirror the pg GREATEST — a stale cursor write never
     // regresses the recorded position.
-    const key = `${userId} ${entity}`;
+    const key = `${userId}${entity}`;
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, cursor));
   }
 }
@@ -239,12 +239,12 @@ export class InMemorySyncMutationRepository implements SyncMutationRepository {
   private readonly rows = new Map<string, SyncMutationRecord>();
 
   async find(userId: string, clientMutationId: string): Promise<SyncMutationRecord | undefined> {
-    const row = this.rows.get(`${userId} ${clientMutationId}`);
+    const row = this.rows.get(`${userId}${clientMutationId}`);
     return row ? { ...row } : undefined;
   }
 
   async record(record: SyncMutationRecord): Promise<boolean> {
-    const key = `${record.userId} ${record.clientMutationId}`;
+    const key = `${record.userId}${record.clientMutationId}`;
     if (this.rows.has(key)) {
       return false;
     }
