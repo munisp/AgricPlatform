@@ -105,7 +105,6 @@ export interface RetentionPolicy {
 
 export interface RetentionPolicyRepository {
   list(): Promise<RetentionPolicy[]>;
-  findByEntity(entity: string): Promise<RetentionPolicy | undefined>;
   upsert(policy: RetentionPolicy): Promise<RetentionPolicy>;
 }
 
@@ -120,7 +119,15 @@ export const DEFAULT_RETENTION_POLICIES: ReadonlyArray<Omit<RetentionPolicy, 'up
   { entity: 'notifications.messages', retainDays: 365, anonymizeNotDelete: false },
   // V-27 (migration 118): PII-bearing webhook/outbox payloads.
   { entity: 'integrations.inbound_events', retainDays: 90, anonymizeNotDelete: true },
-  { entity: 'events.outbox', retainDays: 90, anonymizeNotDelete: false }
+  { entity: 'events.outbox', retainDays: 90, anonymizeNotDelete: false },
+  // GAP-M20 (migration 122): dead-lettered outbox rows (keyed on
+  // dead_lettered_at; payloads tombstoned before purge).
+  { entity: 'events.outbox_dead_letters', retainDays: 30, anonymizeNotDelete: false },
+  // GAP-L11 (migration 127): consumer-side dedupe markers (keyed on
+  // processed_at; no payload columns, so purge-only). 90 days aligns with
+  // events.outbox — a marker outliving the outbox row it dedupes is dead
+  // weight. Overridable via PROCESSED_EVENTS_RETENTION_DAYS.
+  { entity: 'events.processed_events', retainDays: 90, anonymizeNotDelete: false }
 ];
 
 // ---------------------------------------------------------------------------
@@ -234,11 +241,6 @@ export class InMemoryDataSubjectRequestRepository implements DataSubjectRequestR
     return { ...request };
   }
 
-  async findById(id: string): Promise<DataSubjectRequest | undefined> {
-    const request = this.requests.get(id);
-    return request ? { ...request } : undefined;
-  }
-
   async getById(id: string): Promise<DataSubjectRequest> {
     const request = await this.findById(id);
     if (!request) {
@@ -322,11 +324,6 @@ export class InMemoryRetentionPolicyRepository implements RetentionPolicyReposit
     return [...this.policies.values()]
       .sort((a, b) => a.entity.localeCompare(b.entity))
       .map((policy) => ({ ...policy }));
-  }
-
-  async findByEntity(entity: string): Promise<RetentionPolicy | undefined> {
-    const policy = this.policies.get(entity);
-    return policy ? { ...policy } : undefined;
   }
 
   async upsert(policy: RetentionPolicy): Promise<RetentionPolicy> {
