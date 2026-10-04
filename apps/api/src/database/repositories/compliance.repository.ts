@@ -241,6 +241,11 @@ export class InMemoryDataSubjectRequestRepository implements DataSubjectRequestR
     return { ...request };
   }
 
+  async findById(id: string): Promise<DataSubjectRequest | undefined> {
+    const request = this.requests.get(id);
+    return request ? { ...request } : undefined;
+  }
+
   async getById(id: string): Promise<DataSubjectRequest> {
     const request = await this.findById(id);
     if (!request) {
