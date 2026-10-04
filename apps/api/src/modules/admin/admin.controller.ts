@@ -2,115 +2,127 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
   Post,
-  Put,
   Query,
   UseGuards
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  ArrayNotEmpty,
-  ArrayMaxSize,
-  ArrayUnique,
-  IsBoolean,
-  IsIn,
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Matches,
-  Max,
-  MaxLength,
-  Min
-} from 'class-validator';
-import { LANGUAGE_CODES, USER_ROLES, type LanguageCode, type UserRole } from '@agric-platform/shared';
+import { ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
+import { SELF_REGISTRATION_ROLES, USER_ROLES, type User, type UserRole } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
-import type { User } from '@agric-platform/shared';
-import { E164_PATTERN } from '../auth/auth.controller.js';
-import { AdminService, type AccountStatus } from './admin.service.js';
+import { AuditService } from '../../core/audit.service.js';
+import { SessionService } from '../auth/session.service.js';
+import { ChaptersService } from '../chapters/chapters.service.js';
+import { UsersService } from '../users/users.service.js';
 
-class UpdateRolesDto {
+class AdminUsersQuery extends ListQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  lga?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  role?: UserRole;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  search?: string;
+}
+
+class UpdateUserDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  email?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isVerified?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  lga?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  bio?: string;
+}
+
+class RolesDto {
   @ArrayNotEmpty()
-  @ArrayMaxSize(USER_ROLES.length)
   @IsIn(USER_ROLES, { each: true })
   roles!: UserRole[];
 }
 
-/** Admin user-directory query: validated role filter + real pagination (L-15/V-72). */
-class AdminUsersQueryDto extends ListQueryDto {
+class TierDto {
+  @IsIn(['tier_0', 'tier_1', 'tier_2', 'tier_3'])
+  tier!: 'tier_0' | 'tier_1' | 'tier_2' | 'tier_3';
+}
+
+class StatusDto {
+  @IsIn(['active', 'suspended', 'deceased'])
+  status!: 'active' | 'suspended' | 'deceased';
+
   @IsOptional()
-  @IsIn(USER_ROLES)
-  role?: UserRole;
+  @IsString()
+  @MaxLength(2000)
+  reason?: string;
+
+  /** Required when status = 'deceased' (GAP-H04). */
+  @IsOptional()
+  @IsISO8601()
+  dateOfDeath?: string;
 }
 
-class UpdateStatusDto {
-  @IsIn(['active', 'suspended'])
-  status!: AccountStatus;
-}
-
-class UpdateVerificationDto {
-  @IsBoolean()
-  isVerified!: boolean;
-}
-
-/**
- * OB-17a: admin-provisioned account. The account is created UNVERIFIED and
- * must complete OTP verification on first login (same flow as self-service
- * registration, OB-01).
- */
-class AdminCreateUserDto {
-  @Matches(E164_PATTERN, { message: 'phone must be in E.164 format (e.g. +2348012345678)' })
+class CreateUserDto {
+  @IsString()
+  @MaxLength(100)
   phone!: string;
 
   @IsString()
-  @IsNotEmpty()
-  @MaxLength(200)
+  @MaxLength(500)
   fullName!: string;
 
-  @ArrayNotEmpty()
-  @ArrayMaxSize(USER_ROLES.length)
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  email?: string;
+
+  @IsArray()
   @IsIn(USER_ROLES, { each: true })
   roles!: UserRole[];
 
-  @IsIn(LANGUAGE_CODES)
-  preferredLanguage!: LanguageCode;
-
   @IsOptional()
   @IsString()
-  @MaxLength(320)
-  email?: string;
-}
-
-/** OB-17b: partner-organisation client provisioning (tenant-bound). */
-class AdminRegisterPartnerClientDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(200)
-  name!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(100)
-  partnerId!: string;
-
-  @ArrayNotEmpty()
-  @ArrayMaxSize(50)
-  @ArrayUnique()
-  @IsString({ each: true })
-  @MaxLength(100, { each: true })
-  scopes!: string[];
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100_000)
-  rateLimitPerMin?: number;
+  @Length(2, 5)
+  preferredLanguage?: string;
 }
 
 @ApiTags('admin')
@@ -118,219 +130,153 @@ class AdminRegisterPartnerClientDto {
 @UseGuards(RolesGuard)
 @Roles('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly chapters: ChaptersService,
+    private readonly audit: AuditService,
+    private readonly sessions: SessionService
+  ) {}
 
   @Get('users')
-  @ApiOperation({ summary: 'List users with account status overlay (paginated)' })
-  async users(@Query() query: AdminUsersQueryDto) {
-    return { data: await this.admin.listUsers(query.role, query.page, query.pageSize) };
+  @ApiOperation({ summary: 'List users with filters (admin)' })
+  async listUsers(@Query() query: AdminUsersQuery) {
+    return this.users.list(query);
   }
 
-  @Post('users')
-  @ApiOperation({
-    summary:
-      'Provision a user account directly (audited). Created unverified: the user completes OTP verification on first login.'
-  })
-  async createUser(@Body() dto: AdminCreateUserDto, @CurrentUser() actor: User | null) {
-    return { data: await this.admin.createUser(dto, actor?.id ?? 'admin') };
+  @Get('users/:id')
+  @ApiOperation({ summary: 'User detail (admin)' })
+  async getUser(@Param('id') id: string) {
+    return { data: await this.users.getById(id) };
   }
 
-  @Post('partner-clients')
-  @ApiOperation({
-    summary:
-      'Register a partner-organisation API client (audited; tenant-bound). The plaintext secret is returned exactly once.'
-  })
-  async registerPartnerClient(
-    @Body() dto: AdminRegisterPartnerClientDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.admin.registerPartnerClient(dto, actor?.id ?? 'admin') };
+  @Patch('users/:id')
+  @ApiOperation({ summary: 'Update profile fields (admin)' })
+  async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto, @CurrentUser() actor: User | null) {
+    const updated = await this.users.update(id, dto);
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'user.admin_updated',
+      entityType: 'user',
+      entityId: id,
+      metadata: { fields: Object.keys(dto) }
+    });
+    return { data: updated };
   }
 
   @Patch('users/:id/roles')
-  @ApiOperation({ summary: "Set a user's roles (audited)" })
-  async setRoles(@Param('id') id: string, @Body() dto: UpdateRolesDto, @CurrentUser() actor: User | null) {
-    return { data: await this.admin.setRoles(id, dto.roles, actor?.id ?? 'admin') };
+  @ApiOperation({ summary: 'Replace user roles (admin; cannot demote the last admin)' })
+  async setRoles(@Param('id') id: string, @Body() dto: RolesDto, @CurrentUser() actor: User | null) {
+    const updated = await this.users.setRoles(id, dto.roles, actor!.id);
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'user.roles_changed',
+      entityType: 'user',
+      entityId: id,
+      metadata: { roles: dto.roles }
+    });
+    return { data: updated };
+  }
+
+  @Patch('users/:id/tier')
+  @ApiOperation({ summary: 'Set KYC tier (admin)' })
+  async setTier(@Param('id') id: string, @Body() dto: TierDto, @CurrentUser() actor: User | null) {
+    const updated = await this.users.setKycTier(id, dto.tier, actor!.id);
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'user.kyc_tier_changed',
+      entityType: 'user',
+      entityId: id,
+      metadata: { tier: dto.tier }
+    });
+    return { data: updated };
   }
 
   @Patch('users/:id/status')
-  @ApiOperation({ summary: 'Activate or suspend a user account (audited)' })
-  async setStatus(@Param('id') id: string, @Body() dto: UpdateStatusDto, @CurrentUser() actor: User | null) {
-    return { data: await this.admin.setStatus(id, dto.status, actor?.id ?? 'admin') };
+  @ApiOperation({ summary: 'Suspend/reactivate/freeze (deceased) an account (admin; audited)' })
+  async setStatus(@Param('id') id: string, @Body() dto: StatusDto, @CurrentUser() actor: User | null) {
+    const updated = await this.users.setStatus(id, dto.status, actor!.id, {
+      dateOfDeath: dto.dateOfDeath,
+      reason: dto.reason
+    });
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: `user.status_${dto.status}`,
+      entityType: 'user',
+      entityId: id,
+      metadata: { reason: dto.reason, dateOfDeath: dto.dateOfDeath }
+    });
+    return { data: updated };
   }
 
-  @Patch('users/:id/verification')
-  @ApiOperation({ summary: "Set a user's verification state (audited)" })
-  async setVerification(
-    @Param('id') id: string,
-    @Body() dto: UpdateVerificationDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.admin.setVerified(id, dto.isVerified, actor?.id ?? 'admin') };
+  @Post('users')
+  @ApiOperation({ summary: 'Create a user account (admin provisioning)' })
+  async createUser(@Body() dto: CreateUserDto, @CurrentUser() actor: User | null) {
+    // Admin provisioning may grant privileged roles — that is the explicit
+    // admin path that self-registration (auth.controller.ts) rejects.
+    const created = await this.users.create({
+      phone: dto.phone,
+      fullName: dto.fullName,
+      email: dto.email,
+      roles: dto.roles.length > 0 ? dto.roles : [...SELF_REGISTRATION_ROLES],
+      preferredLanguage: (dto.preferredLanguage as User['preferredLanguage']) ?? 'en'
+    });
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'user.admin_created',
+      entityType: 'user',
+      entityId: created.id,
+      metadata: { roles: created.roles }
+    });
+    return { data: created };
   }
 
-  @Put('users/:id/partner-memberships/:partnerId')
-  @ApiOperation({
-    summary:
-      'Bind a user to a partner organisation (tenant binding for /partner/:partnerId/*; audited, idempotent)'
-  })
-  async bindPartnerMember(
-    @Param('id') id: string,
-    @Param('partnerId') partnerId: string,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.admin.bindPartnerMember(id, partnerId, actor?.id ?? 'admin') };
+  @Post('users/:id/sessions/revoke-all')
+  @ApiOperation({ summary: 'Revoke every refresh-token session for a user (admin incident response)' })
+  async revokeSessions(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const target = await this.users.getById(id);
+    const revoked = await this.sessions.revokeAllForUser(id);
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'user.sessions_revoked',
+      entityType: 'user',
+      entityId: id,
+      metadata: { phone: target.phone, revoked }
+    });
+    return { data: { userId: id, sessionsRevoked: revoked } };
   }
 
-  @Delete('users/:id/partner-memberships/:partnerId')
-  @ApiOperation({ summary: 'Revoke a partner-organisation binding (audited)' })
-  async unbindPartnerMember(
-    @Param('id') id: string,
-    @Param('partnerId') partnerId: string,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.admin.unbindPartnerMember(id, partnerId, actor?.id ?? 'admin') };
+  @Get('chapters/:id/members')
+  @ApiOperation({ summary: 'Chapter roster (admin view)' })
+  async chapterMembers(@Param('id') id: string) {
+    return { data: await this.chapters.listMembers(id) };
   }
 
-  @Get('partner-memberships')
-  @ApiOperation({ summary: 'List partner tenant bindings (optionally filtered by userId)' })
-  async partnerMemberships(@Query('userId') userId?: string) {
-    return { data: await this.admin.partnerMemberships(userId) };
+  @Delete('sessions/:id')
+  @ApiOperation({ summary: 'Revoke one refresh-token session by id (admin incident response)' })
+  async revokeSession(@Param('id') id: string, @CurrentUser() actor: User | null) {
+    const session = await this.sessions.getById(id);
+    if (!session) {
+      throw new ForbiddenException(`Session '${id}' not found`);
+    }
+    await this.sessions.revokeById(id);
+    await this.audit.record({
+      actorId: actor?.id ?? 'anonymous',
+      action: 'session.revoked',
+      entityType: 'refresh_session',
+      entityId: id,
+      metadata: { userId: session.userId }
+    });
+    return { data: { revoked: true, sessionId: id } };
   }
 
-  @Get('review-queue')
-  @ApiOperation({ summary: 'Moderation/review queue: flagged topics, documents, applications' })
-  async reviewQueue() {
-    return { data: await this.admin.reviewQueue() };
-  }
-
-  @Get('kpis')
-  @ApiOperation({ summary: 'Platform KPIs (repository-computed, live basis; seed refused in production)' })
-  async kpis() {
-    return { data: await this.admin.kpis() };
-  }
-
-  @Get('audit')
-  @ApiOperation({ summary: 'Audit event log' })
-  async auditLog(@Query('actorId') actorId?: string, @Query('entityType') entityType?: string) {
-    return { data: await this.admin.auditLog(actorId, entityType) };
-  }
-
-  @Get('audit-log/verify')
-  @ApiOperation({
-    summary:
-      'Verify the tamper-evident audit hash chain ({valid, brokenAt?, checked, anchors?}). ' +
-      'Optional fromId/toId bound the walk to a contiguous range (regulator spot-checks). ' +
-      'The anchors section verifies the Stage 23 anchoring checkpoints and reports ' +
-      'anchor-chain breaks (brokenAnchorAt) and tail-truncation gaps (gap).'
-  })
-  async verifyAuditLog(@Query('fromId') fromId?: string, @Query('toId') toId?: string) {
-    return { data: await this.admin.verifyAuditLog({ fromId, toId }) };
-  }
-
-  @Post('audit-log/anchors')
-  @ApiOperation({
-    summary:
-      'Create an anchoring checkpoint over the current audit chain tip (Stage 23). ' +
-      'Notarizes tip event id + tip hash + event count into the tamper-evident anchor ' +
-      'chain (and the configured off-box sink). An external scheduler should invoke ' +
-      'this periodically, or set AUDIT_ANCHOR_INTERVAL_MS for an in-process timer.'
-  })
-  async createAuditAnchor() {
-    return { data: await this.admin.createAuditAnchor() };
-  }
-
-  @Get('audit-log/anchors')
-  @ApiOperation({
-    summary: 'List anchoring checkpoints in anchor-chain order (Stage 23, admin only)'
-  })
-  async auditAnchors() {
-    return { data: await this.admin.listAuditAnchors() };
-  }
-
-  @Get('events')
-  @ApiOperation({ summary: 'Domain event outbox ({domain}.{entity}.{verb} taxonomy)' })
-  async events() {
-    return { data: await this.admin.eventOutbox() };
-  }
-
-  @Post('outbox/sweep')
-  @ApiOperation({
-    summary:
-      'Run one outbox sweeper pass: retries stalled unpublished rows with backoff and ' +
-      'dead-letters exhausted rows. An external scheduler should invoke this endpoint ' +
-      'periodically; the API starts no timers of its own.'
-  })
-  async sweepOutbox() {
-    return { data: await this.admin.sweepOutbox() };
-  }
-
-  @Post('webhooks/reprocess')
-  @ApiOperation({
-    summary:
-      'Run one webhook crash-recovery pass: re-drives recorded provider webhooks whose ' +
-      'processing never completed (dedupe insert succeeded, side effects failed). An ' +
-      'external scheduler should invoke this endpoint periodically; the API starts no ' +
-      'timers of its own.'
-  })
-  async reprocessWebhooks() {
-    return { data: await this.admin.reprocessWebhooks() };
-  }
-
-  @Post('partner-webhooks/redrive')
-  @ApiOperation({
-    summary:
-      'Run one OUTBOUND partner-webhook redrive pass (GAP-H06): re-dispatches mapped ' +
-      'domain events from the outbox whose partner delivery never completed (not marked ' +
-      'processed for the partner-webhook-dispatch consumer). At-least-once: receivers ' +
-      'dedupe via the stable x-agric-delivery id. An external scheduler (k8s CronJob, ' +
-      'deliberately not deployed by default — see GAP-M03) must invoke this endpoint ' +
-      'periodically; the API starts no timers of its own. Optional ?limit= caps attempts ' +
-      'per pass (default 100).'
-  })
-  async redrivePartnerWebhooks(@Query('limit') limit?: string) {
-    const parsed = limit === undefined ? undefined : Number.parseInt(limit, 10);
-    const cap = parsed !== undefined && Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-    return { data: await this.admin.redrivePartnerWebhooks(cap) };
-  }
-
-  @Get('outbox/dead-letters')
-  @ApiOperation({ summary: 'Dead-lettered outbox rows (admin only)' })
-  async outboxDeadLetters() {
-    return { data: await this.admin.outboxDeadLetters() };
-  }
-
-  @Post('outbox/dead-letters/:id/redrive')
-  @ApiOperation({
-    summary:
-      'Redrive a dead-lettered outbox row (admin only, audited): clears dead_lettered_at and ' +
-      'the attempt counter so the next sweep re-delivers it. 404 when the row is not dead-lettered.'
-  })
-  async redriveOutboxDeadLetter(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    return { data: await this.admin.redriveOutboxDeadLetter(actor?.id ?? 'admin', id) };
-  }
-
-  @Post('sweeps/escrow-expiry')
-  @ApiOperation({
-    summary:
-      'Run one escrow-expiry sweeper pass (WP-G12): auto-refunds held escrows past their ' +
-      'heldUntil deadline and resumes stuck release/refund drives, all through the guarded ' +
-      'escrow service semantics. Idempotent — an external scheduler (k8s CronJob) invokes ' +
-      'this endpoint periodically.'
-  })
-  async sweepEscrowExpiry() {
-    return { data: await this.admin.sweepEscrowExpiry() };
-  }
-
-  @Post('sweeps/voucher-stuck')
-  @ApiOperation({
-    summary:
-      'Run one stuck-voucher sweeper pass (WP-G12): expires ISSUED vouchers past their ' +
-      'expiry and recovers stuck EXPIRING/VOIDING/REDEEMING claims with ledger-proof ' +
-      'compensation. Idempotent — an external scheduler (k8s CronJob) invokes this ' +
-      'endpoint periodically.'
-  })
-  async sweepVoucherStuck() {
-    return { data: await this.admin.sweepVoucherStuck() };
+  @Get('sessions')
+  @ApiOperation({ summary: 'List refresh-token sessions, optionally filtered by user (admin)' })
+  async listSessions(@Query('userId') userId?: string) {
+    const sessions = userId
+      ? await this.sessions.listForUser(userId)
+      : await this.sessions.listAll();
+    return {
+      data: sessions.map(({ refreshTokenHash: _hash, ...rest }) => rest)
+    };
   }
 }
