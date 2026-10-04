@@ -435,6 +435,40 @@ export class WebhookDispatchService implements OnModuleInit {
    * closed rather than re-validating a Location target, which is the safer
    * of the two documented options (no redirect-chasing code path at all).
    */
+  /**
+   * Delivery headers for one attempt. GAP-M23 rotation grace
+   * (docs/security/key-rotation.md): while the subscription carries a
+   * previous secret inside its dual-accept window, deliveries are signed
+   * TWICE — x-agric-signature with the CURRENT secret and
+   * x-agric-signature-previous with the previous one — so partners can cut
+   * over without dropped events. Acceptance of the previous secret is
+   * TIME-GATED here (secretPreviousUntil); the persisted slot is
+   * overwritten on the next rotation.
+   */
+  private deliveryHeaders(
+    subscription: WebhookSubscription,
+    delivery: WebhookDelivery,
+    body: string
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'x-agric-signature': signWebhookPayload(subscription.secret, body),
+      'x-agric-event': delivery.type,
+      'x-agric-delivery': delivery.id
+    };
+    if (
+      subscription.secretPrevious &&
+      subscription.secretPreviousUntil &&
+      subscription.secretPreviousUntil > new Date().toISOString()
+    ) {
+      headers['x-agric-signature-previous'] = signWebhookPayload(
+        subscription.secretPrevious,
+        body
+      );
+    }
+    return headers;
+  }
+
   async deliver(
     subscription: WebhookSubscription,
     delivery: WebhookDelivery,
@@ -455,12 +489,7 @@ export class WebhookDispatchService implements OnModuleInit {
     try {
       const response = await this.fetchImpl(subscription.targetUrl, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-agric-signature': signWebhookPayload(subscription.secret, body),
-          'x-agric-event': delivery.type,
-          'x-agric-delivery': delivery.id
-        },
+        headers: this.deliveryHeaders(subscription, delivery, body),
         body,
         signal: controller.signal,
         redirect: 'manual'
