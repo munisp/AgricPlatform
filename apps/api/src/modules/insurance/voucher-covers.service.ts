@@ -1,92 +1,211 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   type OnModuleInit
 } from '@nestjs/common';
-import type { DomainEvent, DomainEventsService } from '../../core/domain-events.service.js';
-import type { TelemetryService } from '../../common/telemetry/telemetry.service.js';
+import { FLOOD_SEVERITY_RANKS, type FloodSeverityRank, type User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
-import type { User } from '@agric-platform/shared';
+import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
+import { AuditService } from '../../core/audit.service.js';
+import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   INPUT_VOUCHER_PROGRAMME_REPOSITORY,
+  PARAMETRIC_PRODUCT_REPOSITORY,
   VOUCHER_COVER_REPOSITORY,
   VOUCHER_PROGRAMME_RIDER_REPOSITORY
 } from '../../database/persistence.tokens.js';
-import type { InputVoucherProgrammeRepository } from '../../database/repositories/input-voucher.repository.js';
+import type { SubsidyProgrammeRepository } from '../../database/repositories/input-vouchers.repository.js';
 import type {
-  VoucherCoverCriteria,
+  ParametricProductRepository,
   VoucherCoverRecord,
   VoucherCoverRepository,
+  VoucherCoverCriteria,
   VoucherProgrammeRiderRecord,
   VoucherProgrammeRiderRepository
-} from '../../database/repositories/voucher-cover.repository.js';
+} from '../../database/repositories/insurance.repository.js';
+import { computePremiumKobo, MAX_SUM_INSURED_KOBO, MIN_SUM_INSURED_KOBO } from './premium.js';
 
-export interface QuoteRiderInput {
+export interface DefineRiderInput {
+  /** Catalog product code (trigger type source), e.g. 'NG-RAIN-WET-26'. */
   productCode: string;
   sumInsuredKobo: number;
-  premiumRateBps: number;
-  floodBand: 'low' | 'medium' | 'high';
+  /** Defaults to the catalog product's rate; bounded 1–10000 bps. */
+  premiumRateBps?: number;
+  /** Pricing flood band captured at definition time (default 'none'). */
+  floodBand?: FloodSeverityRank;
+}
+
+export interface DefineRiderResult {
+  rider: VoucherProgrammeRiderRecord;
+  /** Deterministic per-voucher premium preview from the rate card. */
+  premiumPreviewKobo: number;
+  replayed: boolean;
 }
 
 /**
- * Voucher-cover riders (Stage 27 innovation 19): an input-voucher
- * programme can carry a parametric insurance rider; each redeemed voucher
- * binds a cover, and insurance trigger/payout events project the cover
- * lifecycle (bound → triggered → paid).
+ * Stage 27 (Insurance-in-the-Bag): sponsor-defined insurance riders on
+ * subsidy programmes, farmer-facing cover reads, and the lifecycle
+ * projector that mirrors policy events onto voucher covers.
+ *
+ * Money doctrine: this service NEVER posts to the ledger. The premium
+ * debit rides the voucher-redemption ledger entry in InputVouchersService
+ * (envelope split, one atomic posting); the payout leg flows through the
+ * existing insurance policy lifecycle (evaluateTriggers → proposePayout →
+ * confirmPayout) whose stub execution is fail-closed in production — this
+ * projector only observes its events, it does not weaken those gates.
+ *
+ * Projector discipline: listeners catch their own errors (a projection
+ * failure must never break the insurance fan-out) and transitions are CAS
+ * + idempotent, so duplicate event delivery replays as a no-op.
  */
 @Injectable()
 export class VoucherCoversService implements OnModuleInit {
   private readonly logger = new Logger(VoucherCoversService.name);
 
   constructor(
-    @Inject(INPUT_VOUCHER_PROGRAMME_REPOSITORY)
-    private readonly programmes: InputVoucherProgrammeRepository,
-    @Inject(VOUCHER_PROGRAMME_RIDER_REPOSITORY)
-    private readonly riders: VoucherProgrammeRiderRepository,
-    @Inject(VOUCHER_COVER_REPOSITORY)
-    private readonly covers: VoucherCoverRepository,
+    @Inject(VOUCHER_PROGRAMME_RIDER_REPOSITORY) private readonly riders: VoucherProgrammeRiderRepository,
+    @Inject(VOUCHER_COVER_REPOSITORY) private readonly covers: VoucherCoverRepository,
+    @Inject(PARAMETRIC_PRODUCT_REPOSITORY) private readonly products: ParametricProductRepository,
+    @Inject(INPUT_VOUCHER_PROGRAMME_REPOSITORY) private readonly programmes: SubsidyProgrammeRepository,
     private readonly events: DomainEventsService,
-    private readonly telemetry?: TelemetryService
+    @Optional() private readonly audit?: AuditService,
+    @Optional() private readonly telemetry?: TelemetryService,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never re-projects a cover transition.
+    // @Optional with an in-memory fallback so bare unit constructions keep
+    // working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   onModuleInit(): void {
-    this.events.on('insurance.trigger.fired', (event) => {
-      void this.projectTriggered(event);
-    });
-    this.events.on('insurance.payout.settled', (event) => {
-      void this.projectPaid(event);
-    });
+    // GAP-M09: dedup-guarded (mark-after). The projectors keep their
+    // existing self-catching CAS doctrine (a projection failure never
+    // breaks the insurance fan-out and replays as a no-op); the guard
+    // makes sweeper re-drives of already-projected events no-ops too.
+    this.events.on('insurance.trigger.raised', (event) =>
+      void this.dedup.runOnce('insurance-voucher-covers', event.id, () =>
+        this.projectTriggered(event)
+      )
+    );
+    this.events.on('insurance.payout.paid', (event) =>
+      void this.dedup.runOnce('insurance-voucher-covers', event.id, () => this.projectPaid(event))
+    );
   }
 
   // ---------------------------------------------------------------- riders
 
   /**
-   * Quotes and attaches a rider to a programme (admin workflow). Premium is
-   * deterministic: sumInsured × rate/10_000, flood-band adjusted.
+   * Defines (or idempotently re-defines) the programme's insurance rider.
+   * The premium preview reuses the deterministic rate card with its
+   * ₦1k–₦1M sum-insured bounds. Re-defining with DIFFERENT terms is
+   * rejected (409 RIDER_LOCKED) once any cover has been bound under the
+   * programme — money terms cannot change under live covers (same
+   * immutable-snapshot doctrine as seasonal schedules).
    */
-  async quoteRider(programmeId: string, input: QuoteRiderInput, actorId: string): Promise<VoucherProgrammeRiderRecord> {
+  async defineRider(programmeId: string, input: DefineRiderInput, actorId: string): Promise<DefineRiderResult> {
     const programme = await this.programmes.findById(programmeId);
     if (!programme) {
       throw new NotFoundException(`Programme '${programmeId}' not found`);
     }
-    const bandMultiplier = { low: 1, medium: 1.25, high: 1.6 }[input.floodBand];
-    const premiumKobo = Math.round((input.sumInsuredKobo * input.premiumRateBps * bandMultiplier) / 10_000);
-    const existing = await this.riders.findByProgrammeId(programmeId);
-    const rider: VoucherProgrammeRiderRecord = {
-      id: existing?.id ?? newId('rider'),
-      programmeId,
-      productCode: input.productCode,
+    if (!input.productCode?.trim()) {
+      throw new BadRequestException('productCode is required');
+    }
+    const product = await this.products.findOne({ code: input.productCode.trim() });
+    if (!product) {
+      throw new BadRequestException(
+        `Unknown insurance product '${input.productCode}' — riders reference the seeded parametric catalog`
+      );
+    }
+    if (
+      !Number.isSafeInteger(input.sumInsuredKobo) ||
+      input.sumInsuredKobo < MIN_SUM_INSURED_KOBO ||
+      input.sumInsuredKobo > MAX_SUM_INSURED_KOBO
+    ) {
+      throw new BadRequestException(
+        `sumInsuredKobo must be between ${MIN_SUM_INSURED_KOBO} and ${MAX_SUM_INSURED_KOBO} kobo (rate-card bounds)`
+      );
+    }
+    const premiumRateBps = input.premiumRateBps ?? product.premiumRateBps;
+    if (!Number.isSafeInteger(premiumRateBps) || premiumRateBps <= 0 || premiumRateBps > 10_000) {
+      throw new BadRequestException('premiumRateBps must be an integer between 1 and 10000');
+    }
+    const floodBand: FloodSeverityRank = input.floodBand ?? 'none';
+    if (!FLOOD_SEVERITY_RANKS.includes(floodBand)) {
+      throw new BadRequestException(`floodBand must be one of ${FLOOD_SEVERITY_RANKS.join(', ')}`);
+    }
+    const { premiumKobo } = computePremiumKobo({
       sumInsuredKobo: input.sumInsuredKobo,
-      premiumRateBps: input.premiumRateBps,
-      floodBand: input.floodBand,
-      premiumKobo,
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await this.riders.upsert(rider);
+      premiumRateBps,
+      floodBand
+    });
+    const now = new Date().toISOString();
+    const existing = await this.riders.findByProgrammeId(programmeId);
+    if (existing) {
+      const identical =
+        existing.productCode === product.code &&
+        existing.sumInsuredKobo === input.sumInsuredKobo &&
+        existing.premiumRateBps === premiumRateBps &&
+        existing.floodBand === floodBand;
+      if (identical) {
+        return { rider: existing, premiumPreviewKobo: premiumKobo, replayed: true };
+      }
+      const bound = await this.covers.find({ programmeId });
+      if (bound.length > 0) {
+        throw new ConflictException(
+          `RIDER_LOCKED: programme '${programmeId}' already has ${bound.length} bound cover(s) — rider terms cannot change under live covers`
+        );
+      }
+      const updated = await this.riders.update({
+        ...existing,
+        productCode: product.code,
+        sumInsuredKobo: input.sumInsuredKobo,
+        premiumRateBps,
+        floodBand,
+        updatedAt: now
+      });
+      await this.publishQuoted(updated, premiumKobo, actorId);
+      return { rider: updated, premiumPreviewKobo: premiumKobo, replayed: false };
+    }
+    const rider = await this.riders.create({
+      id: newId('ivrider'),
+      programmeId,
+      productCode: product.code,
+      sumInsuredKobo: input.sumInsuredKobo,
+      premiumRateBps,
+      floodBand,
+      status: 'active',
+      createdBy: actorId,
+      createdAt: now,
+      updatedAt: now
+    });
+    await this.publishQuoted(rider, premiumKobo, actorId);
+    await this.audit?.record({
+      actorId,
+      action: 'insurance.voucher_rider.defined',
+      entityType: 'insurance_programme_riders',
+      entityId: rider.id,
+      metadata: { programmeId, productCode: rider.productCode, sumInsuredKobo: rider.sumInsuredKobo, premiumRateBps, floodBand }
+    });
+    return { rider, premiumPreviewKobo: premiumKobo, replayed: false };
+  }
+
+  /** Programme-level quote event: the deterministic premium the rider prices at. */
+  private async publishQuoted(
+    rider: VoucherProgrammeRiderRecord,
+    premiumKobo: number,
+    actorId: string
+  ): Promise<void> {
     await this.events.publish(
       'insurance.voucher_cover.quoted',
       {
@@ -104,7 +223,6 @@ export class VoucherCoversService implements OnModuleInit {
       programme_id: rider.programmeId,
       trigger_type: rider.productCode
     });
-    return rider;
   }
 
   async getRider(programmeId: string): Promise<VoucherProgrammeRiderRecord> {
@@ -205,14 +323,12 @@ export class VoucherCoversService implements OnModuleInit {
           coverId: updated.id,
           voucherId: updated.voucherId,
           policyId: updated.policyId,
+          programmeId: updated.programmeId,
           payoutId: payload.payoutId,
           amountKobo: payload.amountKobo
         },
         event.actorId
       );
-      this.telemetry?.increment('insurance.voucher_covers_paid_total', 1, {
-        programme_id: updated.programmeId
-      });
     } catch (error) {
       this.logger.warn(`voucher-cover payout projection failed: ${(error as Error)?.message ?? error}`);
     }
