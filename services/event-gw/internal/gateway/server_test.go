@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -223,6 +224,110 @@ func TestReplayRejected(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("ingress calls = %d, want 1 (replay not fanned out)", calls.Load())
+	}
+}
+
+// GAP-L02: when the configured replay-persist file is corrupt, webhook
+// ingestion fails CLOSED (503) — the edge must not accept deliveries it
+// cannot replay-guard.
+func TestReplayPersistenceFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	persistPath := filepath.Join(dir, "replay.jsonl")
+	if err := os.WriteFile(persistPath, []byte("NOT-JSON\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	ingress := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ingress.Close)
+
+	cfg := &Config{
+		Mode:              ModeLive,
+		Providers:         liveProvider(testSecret),
+		ProviderOrder:     []string{"weather"},
+		IngressURL:        ingress.URL,
+		InternalToken:     "internal-test-token",
+		SpoolPath:         filepath.Join(dir, "deadletter.jsonl"),
+		MaxSkew:           300 * time.Second,
+		ReplayTTL:         10 * time.Minute,
+		MaxBodyBytes:      1 << 20,
+		MaxAttempts:       3,
+		BackoffBase:       200 * time.Millisecond,
+		BackoffMax:        2 * time.Second,
+		BreakerThreshold:  5,
+		BreakerCooldown:   30 * time.Second,
+		DrainInterval:     time.Minute,
+		ReplayPersistPath: persistPath,
+	}
+	metrics := NewMetrics(cfg.ProviderOrder)
+	breaker := NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown)
+	spool := NewSpool(cfg.SpoolPath)
+	logger := log.New(io.Discard, "", 0)
+	fanout := NewFanout(cfg, breaker, spool, metrics, logger)
+	fanout.Sleep = func(time.Duration) {}
+	srv := NewServer(cfg, fanout, metrics, logger)
+
+	rec := doWebhook(t, srv, "weather", testBody, signedHeaders(testSecret, testBody, time.Now()))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (fail-closed): %s", rec.Code, rec.Body)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("no delivery may be fanned out while the replay store is unavailable")
+	}
+}
+
+// GAP-L02: with a healthy persist file, replay protection survives a
+// "restart" (a fresh Server over the same file).
+func TestReplayProtectionSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	persistPath := filepath.Join(dir, "replay.jsonl")
+	var calls atomic.Int64
+	ingress := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ingress.Close)
+
+	build := func() *Server {
+		cfg := &Config{
+			Mode:              ModeLive,
+			Providers:         liveProvider(testSecret),
+			ProviderOrder:     []string{"weather"},
+			IngressURL:        ingress.URL,
+			InternalToken:     "internal-test-token",
+			SpoolPath:         filepath.Join(dir, "deadletter.jsonl"),
+			MaxSkew:           300 * time.Second,
+			ReplayTTL:         10 * time.Minute,
+			MaxBodyBytes:      1 << 20,
+			MaxAttempts:       3,
+			BackoffBase:       200 * time.Millisecond,
+			BackoffMax:        2 * time.Second,
+			BreakerThreshold:  5,
+			BreakerCooldown:   30 * time.Second,
+			DrainInterval:     time.Minute,
+			ReplayPersistPath: persistPath,
+		}
+		metrics := NewMetrics(cfg.ProviderOrder)
+		breaker := NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown)
+		spool := NewSpool(cfg.SpoolPath)
+		logger := log.New(io.Discard, "", 0)
+		fanout := NewFanout(cfg, breaker, spool, metrics, logger)
+		fanout.Sleep = func(time.Duration) {}
+		return NewServer(cfg, fanout, metrics, logger)
+	}
+
+	headers := signedHeaders(testSecret, testBody, time.Now())
+	if rec := doWebhook(t, build(), "weather", testBody, headers); rec.Code != http.StatusAccepted {
+		t.Fatalf("first delivery status = %d, want 202", rec.Code)
+	}
+	// Restart over the same persist file: the same delivery is still a replay.
+	if rec := doWebhook(t, build(), "weather", testBody, headers); rec.Code != http.StatusConflict {
+		t.Fatalf("replay after restart status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("ingress calls = %d, want 1 (replay across restart not fanned out)", calls.Load())
 	}
 }
 
