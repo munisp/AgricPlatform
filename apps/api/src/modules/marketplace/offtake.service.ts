@@ -22,6 +22,8 @@ import type {
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import {
   COMMODITY_LOT_REPOSITORY,
@@ -238,7 +240,13 @@ export class OfftakeService implements OnModuleInit {
     @Inject(LISTING_REPOSITORY) private readonly listings: ListingRepository,
     @Inject(COMMODITY_LOT_REPOSITORY) private readonly lots: CommodityLotRepository,
     @Optional() private readonly audit?: AuditService,
-    @Optional() private readonly telemetry?: TelemetryService
+    @Optional() private readonly telemetry?: TelemetryService,
+    // @Optional with an in-memory fallback so bare unit constructions keep
+    // working; the module wires the pg-backed singleton in production.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   /**
@@ -251,11 +259,17 @@ export class OfftakeService implements OnModuleInit {
    */
   onModuleInit(): void {
     this.events.on('marketplace.escrow.status_changed', (event) => {
-      void this.settleReleasedEscrow(event).catch((error: unknown) => {
-        this.logger.error(
-          `offtake settlement posting failed for event ${event.id}: ${(error as Error)?.message ?? error}`
-        );
-      });
+      // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+      // already-settled event is a no-op; a failed posting stays unrecorded
+      // so re-drive retries it (the posting is idempotency-keyed per
+      // escrow, so re-execution after a partial failure converges).
+      void this.dedup
+        .runOnce('marketplace-offtake-settle', event.id, () => this.settleReleasedEscrow(event))
+        .catch((error: unknown) => {
+          this.logger.error(
+            `offtake settlement posting failed for event ${event.id}: ${(error as Error)?.message ?? error}`
+          );
+        });
     });
   }
 
