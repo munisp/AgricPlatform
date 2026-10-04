@@ -43,6 +43,7 @@ import {
 } from '../src/database/repositories/vsla-carbon.repository.js';
 import { createInMemoryAnnouncementRepository } from '../src/database/repositories/announcement.repository.js';
 import { createInMemoryChapterEventRepository } from '../src/database/repositories/chapter-event.repository.js';
+import { createInMemoryChapterMemberRepository } from '../src/database/repositories/chapter-member.repository.js';
 import { createInMemoryChapterRepository } from '../src/database/repositories/chapter.repository.js';
 import { createInMemoryEventRsvpRepository } from '../src/database/repositories/event-rsvp.repository.js';
 import {
@@ -256,6 +257,7 @@ function makeChaptersService() {
   return new ChaptersService(
     new DomainEventsService(createInMemoryOutboxRepository()),
     createInMemoryChapterRepository(),
+    createInMemoryChapterMemberRepository(),
     events,
     createInMemoryEventRsvpRepository(events),
     createInMemoryAnnouncementRepository()
