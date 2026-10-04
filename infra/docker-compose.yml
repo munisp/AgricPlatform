@@ -3,7 +3,6 @@
 #   docker compose -f infra/docker-compose.yml up -d postgres redis keycloak meilisearch
 #   docker compose -f infra/docker-compose.yml --profile integrations up -d   # adds Moodle, Discourse, Directus
 #   docker compose -f infra/docker-compose.yml --profile apps up -d           # builds and runs web + api
-#   docker compose -f infra/docker-compose.yml --profile apps --profile dapr up -d   # + Dapr sidecars
 #   docker compose -f infra/docker-compose.yml --profile fluvio up -d         # Fluvio streaming cluster
 #   docker compose -f infra/docker-compose.yml --profile mojaloop up -d       # Mojaloop Testing Toolkit (hub emulator)
 #   docker compose -f infra/docker-compose.yml --profile geolibre up -d --build  # GeoLibre web GIS on :8300
@@ -103,6 +102,14 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: agric-platform
       KEYCLOAK_CLIENT_ID: agric-api
+      # GAP-L01: phone-auth token exchange (keycloak-phone-token.service.ts)
+      # needs KEYCLOAK_CLIENT_ID + KEYCLOAK_CLIENT_SECRET when
+      # PHONE_AUTH_KEYCLOAK=true; the service fails closed (503
+      # AUTH_UNAVAILABLE / boot abort) without it. Empty default — set via
+      # .env (both .env.example files document the variable; placeholder
+      # only, never a real secret). Uncomment the flag to enable:
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      # PHONE_AUTH_KEYCLOAK: "true"
       MEILISEARCH_HOST: http://meilisearch:7700
       MEILISEARCH_API_KEY: local-master-key
       JWT_SECRET: local-development-only
@@ -139,12 +146,6 @@ services:
       # geo-verification and VSLA-carbon paths (stub is never substituted).
       # CROP_ML_DRIVER: http
       # CROP_ML_URL: http://crop-ml:8100
-      # Dapr sidecar (OPTIONAL, profile: dapr). The api-dapr container joins
-      # this service's network namespace, so the API reaches Dapr on
-      # localhost. No Dapr SDK is wired into the API yet — the sidecar is
-      # additive (pub/sub + state via HTTP) and fails nothing when absent.
-      # DAPR_HTTP_ENDPOINT: http://localhost:3500
-      # DAPR_GRPC_ENDPOINT: localhost:50001
       # Mojaloop (OPTIONAL, profile: mojaloop). Dev default targets the
       # Testing Toolkit as a hub-emulator counterparty (MOJALOOP_DRIVER=
       # simulator). The four MOJALOOP_* endpoint vars below are the contract
@@ -552,6 +553,10 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: agric-platform
       KEYCLOAK_CLIENT_ID: agric-api
+      # GAP-L01: see the main api service — phone-auth fails closed without
+      # the client secret when PHONE_AUTH_KEYCLOAK=true.
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      # PHONE_AUTH_KEYCLOAK: "true"
       JWT_SECRET: local-development-only
       WEBHOOK_SIGNING_SECRET: local-development-only
       WORKFLOW_DRIVER: temporal
@@ -733,105 +738,6 @@ services:
   # Wave stage25 optional platform components — NONE start by default. All
   # images are pinned (no 'latest'); all credentials are LOCAL-ONLY.
   # ==========================================================================
-
-  # ---- Dapr (profile: dapr) ----
-  # Dapr placement service + daprd sidecars for agric-api and agric-event-gw.
-  # The sidecars join the app container's network namespace (network_mode:
-  # service:...) so app<->sidecar traffic stays on localhost, matching Dapr
-  # semantics. Components live in infra/dapr/components/ (pub/sub -> redpanda,
-  # state store -> redis); runtime config (OTel tracing to otel-collector:4317,
-  # Prometheus metrics on :9090) in infra/dapr/config.yaml.
-  # Requires: --profile apps --profile dapr (api-dapr attaches to api) and/or
-  # --profile event-gw --profile dapr (event-gw-dapr attaches to event-gw).
-  # NOTE on healthchecks: daprio/* images are distroless (no shell, no wget/
-  # nc), so the checks below are exec-liveness only. Real readiness is
-  # GET :3501/v1.0/healthz on each sidecar — probe that from the
-  # observability layer instead.
-  dapr-placement:
-    profiles: ["dapr"]
-    image: daprio/placement:1.18.3
-    container_name: agric-dapr-placement
-    ports:
-      - "50005:50005"
-    healthcheck:
-      test: ["CMD", "/placement", "--version"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-    networks: [agric]
-
-  api-dapr:
-    profiles: ["dapr"]
-    image: daprio/daprd:1.18.3
-    container_name: agric-api-dapr
-    command:
-      - /daprd
-      - --app-id=agric-api
-      - --app-port=3001
-      - --app-protocol=http
-      - --placement-host-address=dapr-placement:50005
-      - --components-path=/components
-      - --config=/config/config.yaml
-      - --log-level=info
-    volumes:
-      - ./dapr/components:/components:ro
-      - ./dapr/config.yaml:/config/config.yaml:ro
-    depends_on:
-      - api
-      - dapr-placement
-    healthcheck:
-      test: ["CMD", "/daprd", "--version"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-    # Shares the api container's network namespace: Dapr HTTP :3500, gRPC
-    # :50001, health :3501 and metrics :9090 are reachable as localhost:*
-    # from api, and as agric-api:* from other compose services.
-    network_mode: "service:api"
-
-  event-gw-dapr:
-    profiles: ["dapr"]
-    image: daprio/daprd:1.18.3
-    container_name: agric-event-gw-dapr
-    command:
-      - /daprd
-      - --app-id=agric-event-gw
-      - --app-port=8090
-      - --app-protocol=http
-      - --placement-host-address=dapr-placement:50005
-      - --components-path=/components
-      - --config=/config/config.yaml
-      - --log-level=info
-    volumes:
-      - ./dapr/components:/components:ro
-      - ./dapr/config.yaml:/config/config.yaml:ro
-    depends_on:
-      - event-gw
-      - dapr-placement
-    healthcheck:
-      test: ["CMD", "/daprd", "--version"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 128M
-    network_mode: "service:event-gw"
 
   # ---- Fluvio streaming (profile: fluvio) ----
   # Single-SCU dev cluster following the official docker-compose example
