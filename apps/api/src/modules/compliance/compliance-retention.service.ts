@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, Logger, Optional, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import {
@@ -7,6 +7,7 @@ import {
   INBOUND_EVENT_REPOSITORY,
   NOTIFICATION_REPOSITORY,
   OUTBOX_REPOSITORY,
+  PROCESSED_EVENT_REPOSITORY,
   RETENTION_POLICY_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type {
@@ -24,7 +25,25 @@ import {
   InMemoryOutboxRepository,
   type OutboxRepository
 } from '../../database/repositories/outbox.repository.js';
+import {
+  InMemoryProcessedEventRepository,
+  type ProcessedEventRepository
+} from '../../database/repositories/processed-event.repository.js';
 import { pseudonymFor } from './compliance.service.js';
+
+/**
+ * GAP-L11: default per-statement delete cap for the events.processed_events
+ * purge (aligned with the sync.mutations idempotency-ledger sweeper,
+ * SYNC_MUTATIONS_SWEEP_BATCH_SIZE). Overridable via
+ * PROCESSED_EVENTS_PURGE_BATCH_SIZE.
+ */
+export const PROCESSED_EVENTS_PURGE_BATCH_SIZE = 500;
+
+/** Positive integer env override, falling back when unset/invalid. */
+function positiveIntFrom(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const parsed = Number(env[name] ?? fallback);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 export interface RetentionSweepOptions {
   /**
@@ -68,6 +87,8 @@ export interface RetentionSweepResult {
  *   notifications.messages            notifications past retain_days
  *   integrations.inbound_events       processed inbound webhook rows past retain_days (V-27)
  *   events.outbox                     published outbox rows past retain_days (V-27)
+ *   events.outbox_dead_letters        dead-lettered outbox rows past retain_days (GAP-M20)
+ *   events.processed_events           consumer-dedupe markers past retain_days (GAP-L11)
  * Unknown entities are reported as `skipped` (never silently ignored).
  *
  * anonymize_not_delete = true pseudonymises the user reference (deterministic
@@ -80,6 +101,8 @@ export interface RetentionSweepResult {
  */
 @Injectable()
 export class ComplianceRetentionService {
+  private readonly logger = new Logger(ComplianceRetentionService.name);
+
   constructor(
     private readonly audit: AuditService,
     @Inject(RETENTION_POLICY_REPOSITORY) private readonly policies: RetentionPolicyRepository,
@@ -96,7 +119,14 @@ export class ComplianceRetentionService {
     private readonly inboundEvents: InboundEventRepository = new InMemoryInboundEventRepository(),
     @Optional()
     @Inject(OUTBOX_REPOSITORY)
-    private readonly outbox: OutboxRepository = new InMemoryOutboxRepository()
+    private readonly outbox: OutboxRepository = new InMemoryOutboxRepository(),
+    // GAP-L11: appended last with in-memory defaults so existing positional
+    // constructor calls (unit specs) keep working unchanged; Nest injects
+    // the configured driver via the token at runtime.
+    @Optional()
+    @Inject(PROCESSED_EVENT_REPOSITORY)
+    private readonly processedEvents: ProcessedEventRepository = new InMemoryProcessedEventRepository(),
+    @Optional() private readonly env: NodeJS.ProcessEnv = process.env
   ) {}
 
   async listPolicies(): Promise<RetentionPolicy[]> {
@@ -236,6 +266,89 @@ export class ComplianceRetentionService {
             ? await this.outbox.anonymizePublishedBefore(cutoff)
             : await this.outbox.purgePublishedBefore(cutoff);
         return { ...base, matched, action: policy.anonymizeNotDelete ? 'anonymize' : 'purge', affected };
+      }
+      case 'events.outbox_dead_letters': {
+        // GAP-M20: dead-lettered rows keep published_at NULL forever, so the
+        // published-row filters above never match them — without this
+        // handler their full payloads (potentially PII) accumulate without
+        // bound. Keyed on dead_lettered_at. The purge path anonymizes the
+        // payload FIRST (empty-object tombstone, jsonb NOT NULL) and only
+        // then deletes, so a mid-sweep crash never leaves unscrubbed PII
+        // behind on rows it already decided to remove; anonymize_not_delete
+        // keeps the tombstoned row metadata for redrive forensics.
+        const matched = await this.outbox.countDeadLetteredBefore(cutoff);
+        if (dryRun) {
+          return { ...base, matched, action: policy.anonymizeNotDelete ? 'anonymize' : 'purge', affected: 0 };
+        }
+        if (policy.anonymizeNotDelete) {
+          const affected = await this.outbox.anonymizeDeadLetteredBefore(cutoff);
+          return { ...base, matched, action: 'anonymize', affected };
+        }
+        await this.outbox.anonymizeDeadLetteredBefore(cutoff);
+        const affected = await this.outbox.purgeDeadLetteredBefore(cutoff);
+        return {
+          ...base,
+          matched,
+          action: 'purge',
+          affected,
+          note: 'payloads anonymized (tombstoned) before purge'
+        };
+      }
+      case 'events.processed_events': {
+        // GAP-L11: consumer-side idempotency ledger (consumer, event_id,
+        // processed_at). Rows are pure dedupe markers — no payload, no PII —
+        // so there is nothing to anonymize; past the window they are simply
+        // hard-purged (anonymize_not_delete has no effect here). The window
+        // comes from the policy row (90-day default, aligned with
+        // events.outbox: once the outbox row itself is pruned, its dedupe
+        // marker can never be consulted again) and can be overridden via
+        // PROCESSED_EVENTS_RETENTION_DAYS. The purge is batched
+        // (PROCESSED_EVENTS_PURGE_BATCH_SIZE) so one statement never locks
+        // the whole ledger, and fail-closed: a failing count/purge is
+        // logged and surfaced in the result note WITHOUT rejecting the
+        // sweep, so a failing purge cannot take down the sweeper loop —
+        // batches already committed stay committed (the delete is
+        // idempotent; the next pass re-drives the remainder).
+        const retainDays = positiveIntFrom(this.env, 'PROCESSED_EVENTS_RETENTION_DAYS', policy.retainDays);
+        const entityBase = { entity: policy.entity, retainDays };
+        const entityCutoff = new Date(Date.now() - retainDays * 86_400_000).toISOString();
+        let matched = 0;
+        let affected = 0;
+        try {
+          matched = await this.processedEvents.countProcessedBefore(entityCutoff);
+          if (!dryRun) {
+            const batchSize = positiveIntFrom(
+              this.env,
+              'PROCESSED_EVENTS_PURGE_BATCH_SIZE',
+              PROCESSED_EVENTS_PURGE_BATCH_SIZE
+            );
+            for (;;) {
+              const batch = await this.processedEvents.purgeProcessedBefore(entityCutoff, batchSize);
+              affected += batch;
+              if (batch < batchSize) {
+                break;
+              }
+            }
+            if (affected > 0) {
+              this.logger.log(
+                `events.processed_events retention: purged ${affected} row(s) older than ${entityCutoff}`
+              );
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`events.processed_events retention purge failed: ${message}`);
+          return { ...entityBase, matched, action: 'purge', affected, note: `purge failed: ${message}` };
+        }
+        return {
+          ...entityBase,
+          matched,
+          action: 'purge',
+          affected,
+          ...(policy.anonymizeNotDelete
+            ? { note: 'no payload columns to anonymize — dedupe markers are purge-only' }
+            : {})
+        };
       }
       default:
         return {
