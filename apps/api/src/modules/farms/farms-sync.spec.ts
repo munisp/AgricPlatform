@@ -122,6 +122,36 @@ describe('farm_plot sync push — apply', () => {
     expect(row).toMatchObject({ version: 1, ownerId: farmer.id, deleted: false });
   });
 
+  it('persists GPS accuracyMeters from the sync payload (GAP-L10)', async () => {
+    const [result] = await h.sync.push(farmer, [
+      pushItem({
+        entityId: 'plot-a',
+        clientMutationId: 'm-1',
+        payload: plotPayload({ accuracyMeters: 6 })
+      })
+    ]);
+    expect(result).toMatchObject({ status: 'applied' });
+    expect((await h.plots.findById('plot-a'))!.accuracyMeters).toBe(6);
+
+    // Full-replacement update: a capture without accuracy clears the field.
+    await h.sync.push(farmer, [
+      pushItem({ entityId: 'plot-a', clientMutationId: 'm-2', baseVersion: 1 })
+    ]);
+    expect((await h.plots.findById('plot-a'))!.accuracyMeters).toBeUndefined();
+  });
+
+  it('rejects a sync payload with a negative accuracyMeters (fail-closed)', async () => {
+    const [result] = await h.sync.push(farmer, [
+      pushItem({
+        entityId: 'plot-a',
+        clientMutationId: 'm-1',
+        payload: plotPayload({ accuracyMeters: -3 })
+      })
+    ]);
+    expect(result.status).toBe('error');
+    expect(await h.plots.findById('plot-a')).toBeUndefined();
+  });
+
   it('applies an update at the matching baseVersion (full replacement)', async () => {
     await h.sync.push(farmer, [pushItem({ entityId: 'plot-a', clientMutationId: 'm-1' })]);
     const [result] = await h.sync.push(farmer, [
