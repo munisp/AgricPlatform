@@ -49,16 +49,10 @@ export interface EntityVersionRepository {
    */
   bump(input: EntityVersionBump): Promise<number>;
   /**
-   * Compare-and-set bump used by the push path: only advances when the
-   * current version equals `expectedVersion` (0 = the record must not exist
-   * yet). Returns the new version, or null on a version mismatch — callers
-   * translate null into a CONFLICT result, never a silent overwrite.
-   */
-  bumpExpected(input: EntityVersionBump & { expectedVersion: number }): Promise<number | null>;
-  /**
    * Claim-guarded apply (v2 push discipline, docs/sync-protocol.md §9): the
-   * version row is CAS-claimed FIRST — atomically, exactly like
-   * bumpExpected — and `apply` (the entity write) runs only while the claim
+   * version row is CAS-claimed FIRST — atomically, advancing only when the
+   * current version equals `expectedVersion` (0 = the record must not exist
+   * yet) — and `apply` (the entity write) runs only while the claim
    * is held. A concurrent claimant for the same record either blocks until
    * this claim completes (pg: the claiming UPDATE holds the row lock to
    * COMMIT) or fails the CAS immediately; the loser receives null and NEVER
@@ -140,7 +134,7 @@ export class InMemoryEntityVersionRepository implements EntityVersionRepository 
   private changeSeq = 0;
 
   private key(entity: string, entityId: string): string {
-    return `${entity}${entityId}`;
+    return `${entity} ${entityId}`;
   }
 
   private stamp(input: EntityVersionBump, version: number): EntityVersionRecord {
@@ -163,14 +157,6 @@ export class InMemoryEntityVersionRepository implements EntityVersionRepository 
     const row = this.stamp(input, (existing?.version ?? 0) + 1);
     this.rows.set(key, row);
     return row.version;
-  }
-
-  async bumpExpected(input: EntityVersionBump & { expectedVersion: number }): Promise<number | null> {
-    const existing = this.rows.get(this.key(input.entity, input.entityId));
-    if ((existing?.version ?? 0) !== input.expectedVersion) {
-      return null;
-    }
-    return this.bump(input);
   }
 
   async applyGuarded<T>(
@@ -238,13 +224,13 @@ export class InMemorySyncCursorRepository implements SyncCursorRepository {
   private readonly cursors = new Map<string, number>();
 
   async get(userId: string, entity: string): Promise<number> {
-    return this.cursors.get(`${userId}${entity}`) ?? 0;
+    return this.cursors.get(`${userId} ${entity}`) ?? 0;
   }
 
   async set(userId: string, entity: string, cursor: number): Promise<void> {
     // Monotonic (L-08): mirror the pg GREATEST — a stale cursor write never
     // regresses the recorded position.
-    const key = `${userId}${entity}`;
+    const key = `${userId} ${entity}`;
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, cursor));
   }
 }
@@ -253,12 +239,12 @@ export class InMemorySyncMutationRepository implements SyncMutationRepository {
   private readonly rows = new Map<string, SyncMutationRecord>();
 
   async find(userId: string, clientMutationId: string): Promise<SyncMutationRecord | undefined> {
-    const row = this.rows.get(`${userId}${clientMutationId}`);
+    const row = this.rows.get(`${userId} ${clientMutationId}`);
     return row ? { ...row } : undefined;
   }
 
   async record(record: SyncMutationRecord): Promise<boolean> {
-    const key = `${record.userId}${record.clientMutationId}`;
+    const key = `${record.userId} ${record.clientMutationId}`;
     if (this.rows.has(key)) {
       return false;
     }
@@ -288,4 +274,103 @@ export function createInMemorySyncCursorRepository(): InMemorySyncCursorReposito
 
 export function createInMemorySyncMutationRepository(): InMemorySyncMutationRepository {
   return new InMemorySyncMutationRepository();
+}
+
+// ---------------------------------------------------------------------------
+// GAP-M11: failed version-bump reconciliation ledger (sync.version_bump_retries).
+// ---------------------------------------------------------------------------
+
+/** A queued compensating version bump (GAP-M11, migration 123). */
+export interface SyncVersionBumpRetryRecord {
+  entity: string;
+  entityId: string;
+  ownerId: string | null;
+  actorId: string | null;
+  deleted: boolean;
+  /** Reconcile attempts so far (bounded by the reconciler). */
+  attempts: number;
+  lastError: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Durable queue for version bumps whose initial recordChange failed
+ * (GAP-M11). The reconciliation pass re-applies the unconditional bump and
+ * removes the row on success; exhausted rows (attempts over the budget) are
+ * KEPT for ops inspection — dropping one would be permanent sync
+ * invisibility for that record.
+ */
+export interface SyncVersionBumpRetryRepository {
+  /**
+   * Atomic upsert (INSERT ... ON CONFLICT DO UPDATE on pg): a repeated
+   * failure for the same record refreshes the change + error and resets
+   * the attempt budget (the newest write deserves a fresh chance).
+   */
+  enqueue(change: SyncVersionBumpRetryInput, error: string): Promise<void>;
+  /** Pending retries, oldest-updated first, bounded by `limit`. */
+  listPending(limit: number): Promise<SyncVersionBumpRetryRecord[]>;
+  /** Removes the row after a successful compensating bump. */
+  remove(entity: string, entityId: string): Promise<void>;
+  /** Increments the attempt counter and stamps the latest error; returns the new count. */
+  recordAttempt(entity: string, entityId: string, error: string): Promise<number>;
+}
+
+export interface SyncVersionBumpRetryInput {
+  entity: string;
+  entityId: string;
+  ownerId: string | null;
+  actorId: string | null;
+  deleted: boolean;
+}
+
+export class InMemorySyncVersionBumpRetryRepository implements SyncVersionBumpRetryRepository {
+  private readonly rows = new Map<string, SyncVersionBumpRetryRecord>();
+
+  private key(entity: string, entityId: string): string {
+    return `${entity} ${entityId}`;
+  }
+
+  async enqueue(change: SyncVersionBumpRetryInput, error: string): Promise<void> {
+    const key = this.key(change.entity, change.entityId);
+    const existing = this.rows.get(key);
+    const now = new Date().toISOString();
+    this.rows.set(key, {
+      entity: change.entity,
+      entityId: change.entityId,
+      ownerId: change.ownerId,
+      actorId: change.actorId,
+      deleted: change.deleted,
+      attempts: 0,
+      lastError: error,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    });
+  }
+
+  async listPending(limit: number): Promise<SyncVersionBumpRetryRecord[]> {
+    return [...this.rows.values()]
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .slice(0, Math.max(0, limit))
+      .map((row) => ({ ...row }));
+  }
+
+  async remove(entity: string, entityId: string): Promise<void> {
+    this.rows.delete(this.key(entity, entityId));
+  }
+
+  async recordAttempt(entity: string, entityId: string, error: string): Promise<number> {
+    const row = this.rows.get(this.key(entity, entityId));
+    if (!row) {
+      return 0;
+    }
+    row.attempts += 1;
+    row.lastError = error;
+    row.updatedAt = new Date().toISOString();
+    return row.attempts;
+  }
+}
+
+export function createInMemorySyncVersionBumpRetryRepository(): InMemorySyncVersionBumpRetryRepository {
+  return new InMemorySyncVersionBumpRetryRepository();
 }
