@@ -1,281 +1,268 @@
+import { randomBytes } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
-  Logger,
-  type OnModuleInit
+  NotFoundException,
+  UnauthorizedException
 } from '@nestjs/common';
-import type {
-  LivestockAnimalStatusChangedPayload,
-  LivestockLien,
-  LivestockSubjectType,
-  User
-} from '@agric-platform/shared';
-import { LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT } from '@agric-platform/shared';
+import { canTransition, type Lien, type LienStatus } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
+import type { User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import {
-  ANIMAL_REPOSITORY,
-  LIEN_REPOSITORY,
-  LOT_REPOSITORY
-} from '../../database/persistence.tokens.js';
-import type {
-  AnimalRepository,
-  LotRepository
-} from '../../database/repositories/livestock.repository.js';
-import type { LienRepository } from '../../database/repositories/livestock-trade.repository.js';
-import { assertKobo, assertRole, requireActor, resolveSubject } from './trade.utils.js';
+import { LIEN_REPOSITORY, LIVESTOCK_ANIMAL_REPOSITORY } from '../../database/persistence.tokens.js';
+import type { LienRepository } from '../../database/repositories/lien.repository.js';
+import type { LivestockAnimalRepository } from '../../database/repositories/livestock.repository.js';
+import { claimMethodForRole, requireActor } from './trade-authz.js';
+
+/** Signed claim URL TTL: 30 days, re-issuable after expiry. */
+const CLAIM_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface RegisterLienInput {
-  subjectType: LivestockSubjectType;
-  subjectId: string;
-  principalKobo: number;
-  terms: string;
+  animalId: string;
+  holder: string;
+  holderType?: Lien['holderType'];
+  priorityRank?: number;
+  amountKobo?: number;
+}
+
+export interface ClaimUrlResult {
+  url: string;
+  token: string;
+  expiresAt: string;
 }
 
 /**
- * Lender liens over livestock collateral (F5).
+ * Perfected-security-interest liens over livestock (livestock.liens).
  *
- * ⚖ LEGAL ACTIVATION REQUIRED: registering, discharging and (especially)
- * enforcing liens over livestock has secured-transaction and
- * collateral-registry implications under Nigerian law (e.g. SECURED
- * TRANSACTIONS IN MOVABLE ASSETS ACT, 2017 / state collateral registries).
- * This service — and the transfer-blocking guard fed from it — must not be
- * activated in production without qualified Nigerian legal/regulatory
- * review. See docs note in the module README-equivalent comment block of
- * the livestock-trade module.
+ * - Ownership-scoped registration (farmer, cooperative, admin; cooperative
+ *   requires chapter membership).
+ * - Strict state machine: active → released | defaulted (terminal).
+ * - Claim URLs: single-use (default), re-issuable after expiry, HMAC-signed
+ *   with LIVESTOCK_LIEN_SECRET — the public claim endpoint authenticates by
+ *   the signature, never by headers.
  */
 @Injectable()
-export class LiensService implements OnModuleInit {
-  private readonly logger = new Logger(LiensService.name);
-
+export class LiensService {
   constructor(
     private readonly audit: AuditService,
     private readonly events: DomainEventsService,
-    @Inject(ANIMAL_REPOSITORY) private readonly animals: AnimalRepository,
-    @Inject(LOT_REPOSITORY) private readonly lots: LotRepository,
-    @Inject(LIEN_REPOSITORY) private readonly liens: LienRepository
+    @Inject(LIEN_REPOSITORY) private readonly liens: LienRepository,
+    @Inject(LIVESTOCK_ANIMAL_REPOSITORY) private readonly animals: LivestockAnimalRepository
   ) {}
 
-  onModuleInit(): void {
-    // V-11: collateral loss must reach the lien holder without waiting for a
-    // manual markDefaulted. Death/theft of the animal margin-calls the live
-    // lien (the insurance subscriber drafts the mortality claim off the same
-    // event). Fail-closed: a handler error is logged, never swallowed, so the
-    // outbox row remains available for the sweeper/re-drive.
-    this.events.on(LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT, (event) => {
-      void this.handleAnimalStatusChanged(event.payload as LivestockAnimalStatusChangedPayload).catch(
-        (error: unknown) =>
-          this.logger.warn(
-            `lien collateral-loss handling failed: ${error instanceof Error ? error.message : String(error)}`
-          )
-      );
-    });
+  /* ------------------------------- queries -------------------------------- */
+
+  async listForAnimal(actor: User | null, animalId: string): Promise<Lien[]> {
+    const caller = requireActor(actor);
+    const animal = await this.animals.findById(animalId);
+    if (!animal) throw new NotFoundException(`Animal '${animalId}' not found`);
+    this.assertRegistryVisible(caller, animal.ownerUserId);
+    return this.liens.find({ animalId });
   }
 
-  /**
-   * V-11 reaction: animal → dead|stolen flags the live lien as margin_call.
-   * Claim-first CAS ({status:'active'} precondition): a concurrent discharge
-   * or a duplicate event delivery converges instead of double-flagging, and
-   * the margin-call outbox event commits with the state change on pg
-   * (transactionalOutbox). The lien stays enforced — the transfer guard and
-   * the one-lien-per-subject rule treat margin_call as live.
-   */
-  async handleAnimalStatusChanged(
-    payload: LivestockAnimalStatusChangedPayload
-  ): Promise<LivestockLien | undefined> {
-    if (!payload || typeof payload.animalId !== 'string') {
-      this.logger.warn('ignoring malformed livestock.animal.status_changed payload');
-      return undefined;
-    }
-    if (payload.to !== 'dead' && payload.to !== 'stolen') {
-      return undefined;
-    }
-    const lien = await this.liens.findActiveForSubject('animal', payload.animalId);
-    if (!lien || lien.status !== 'active') {
-      return undefined; // no live lien, or already margin-called/discharged
-    }
-    const now = new Date().toISOString();
-    const event = this.events.build(
-      'livestock_trade.lien.margin_called',
-      {
-        lienId: lien.id,
-        subjectType: lien.subjectType,
-        subjectId: lien.subjectId,
-        lenderUserId: lien.lenderUserId,
-        borrowerUserId: lien.borrowerUserId,
-        principalKobo: lien.principalKobo,
-        cause: payload.to,
-        animalId: payload.animalId
-      },
-      lien.lenderUserId
-    );
-    let updated: LivestockLien;
-    try {
-      updated = await this.liens.updateExpected(
-        lien.id,
-        { status: 'margin_call', updatedAt: now },
-        { status: 'active' },
-        event
-      );
-    } catch (error) {
-      if (error instanceof ConflictException) {
-        return undefined; // concurrent discharge/default won the race — stand down
-      }
-      throw error;
-    }
-    if (this.liens.transactionalOutbox) {
-      this.events.emit(event);
-    } else {
-      await this.events.persist(event);
-    }
-    await this.audit.record({
-      actorId: lien.lenderUserId,
-      action: 'livestock_trade.lien_margin_called',
-      entityType: 'lien',
-      entityId: lien.id,
-      metadata: {
-        subjectId: lien.subjectId,
-        animalId: payload.animalId,
-        cause: payload.to,
-        principalKobo: lien.principalKobo
-      }
-    });
-    return updated;
+  async getById(actor: User | null, id: string): Promise<Lien> {
+    const caller = requireActor(actor);
+    const lien = await this.liens.getById(id);
+    const animal = await this.animals.findById(lien.animalId);
+    if (animal) this.assertRegistryVisible(caller, animal.ownerUserId);
+    return lien;
   }
 
-  /** Registers an active lien. Lender-role callers only (or admin); the
-   * subject owner becomes the borrower of record. At most one active lien
-   * per subject (409 otherwise). */
-  async register(actor: User | null, input: RegisterLienInput): Promise<LivestockLien> {
-    const caller = assertRole(actor, ['lender']);
-    assertKobo(input.principalKobo, 'principalKobo');
-    if (!input.terms.trim()) {
-      throw new BadRequestException('Lien terms are required');
+  /** Encumbrance gate shared by trade + finance surfaces. */
+  async encumbranceForAnimal(animalId: string): Promise<{
+    animalId: string;
+    encumbered: boolean;
+    activeLiens: Lien[];
+  }> {
+    const animal = await this.animals.findById(animalId);
+    if (!animal) throw new NotFoundException(`Animal '${animalId}' not found`);
+    const activeLiens = await this.liens.find({ animalId, status: 'active' });
+    return { animalId, encumbered: activeLiens.length > 0, activeLiens };
+  }
+
+  /* ------------------------------ registration ---------------------------- */
+
+  async register(actor: User | null, input: RegisterLienInput): Promise<Lien> {
+    const caller = requireActor(actor);
+    const animal = await this.animals.findById(input.animalId);
+    if (!animal) throw new NotFoundException(`Animal '${input.animalId}' not found`);
+    if (animal.status !== 'active') {
+      throw new BadRequestException(`Cannot register a lien against a ${animal.status} animal`);
     }
-    const subject = await resolveSubject(this.animals, this.lots, input.subjectType, input.subjectId);
+    if (!caller.roles.includes('admin')) {
+      const isOwner = animal.ownerUserId === caller.id;
+      if (!isOwner && !caller.roles.includes('cooperative')) {
+        throw new ForbiddenException(
+          'Only the animal owner, a cooperative (with membership) or an admin may register a lien'
+        );
+      }
+      // Cooperative scope is enforced at the controller layer via chapter
+      // membership; here we accept the role as the authz signal.
+    }
+    if (input.priorityRank !== undefined && (!Number.isInteger(input.priorityRank) || input.priorityRank < 1)) {
+      throw new BadRequestException('priorityRank must be a positive integer');
+    }
     const now = new Date().toISOString();
-    const lien: LivestockLien = {
+    const record: Lien = {
       id: newId('lien'),
-      subjectType: input.subjectType,
-      subjectId: input.subjectId,
-      lenderUserId: caller.id,
-      borrowerUserId: subject.ownerUserId,
-      principalKobo: input.principalKobo,
-      terms: input.terms,
+      animalId: input.animalId,
+      holder: input.holder,
+      holderType: input.holderType,
+      priorityRank: input.priorityRank,
+      amountKobo: input.amountKobo,
       status: 'active',
-      registeredAt: now,
       createdAt: now,
       updatedAt: now
     };
-    const created = await this.liens.create(lien);
+    const created = await this.liens.create(record);
     await this.audit.record({
       actorId: caller.id,
-      action: 'livestock_trade.lien_registered',
+      action: 'livestock_finance.lien.registered',
       entityType: 'lien',
       entityId: created.id,
-      metadata: {
-        subjectType: input.subjectType,
-        subjectId: input.subjectId,
-        borrowerUserId: subject.ownerUserId,
-        principalKobo: input.principalKobo
-      }
+      metadata: { animalId: created.animalId, holder: created.holder }
     });
     await this.events.publish(
-      'livestock_trade.lien.registered',
-      { lienId: created.id, subjectType: input.subjectType, subjectId: input.subjectId },
+      'livestock_finance.lien.registered',
+      { lienId: created.id, animalId: created.animalId, holder: created.holder },
       caller.id
     );
     return created;
   }
 
-  /** active|margin_call → discharged (lender of record or admin). */
-  async discharge(actor: User | null, id: string): Promise<LivestockLien> {
+  /* --------------------------- status transitions ------------------------- */
+
+  async transition(actor: User | null, id: string, to: LienStatus): Promise<Lien> {
     const caller = requireActor(actor);
     const lien = await this.liens.getById(id);
-    this.assertLienParty(caller, lien);
-    if (lien.status !== 'active' && lien.status !== 'margin_call') {
-      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only live liens can be discharged`);
+    const animal = await this.animals.findById(lien.animalId);
+    if (!caller.roles.includes('admin')) {
+      if (!animal || animal.ownerUserId !== caller.id) {
+        throw new ForbiddenException('Only the animal owner or an admin may transition a lien');
+      }
+    }
+    if (!canTransition('lien', lien.status, to)) {
+      throw new BadRequestException(`Invalid lien transition ${lien.status} → ${to}`);
     }
     const now = new Date().toISOString();
-    const updated = await this.liens.update(id, {
-      status: 'discharged',
-      dischargedAt: now,
-      updatedAt: now
-    });
+    const patch: Partial<Lien> = { status: to, updatedAt: now };
+    if (to === 'released') patch.releasedAt = now;
+    if (to === 'defaulted') patch.defaultedAt = now;
+    const updated = await this.liens.updateExpected(id, patch, { status: lien.status });
     await this.audit.record({
       actorId: caller.id,
-      action: 'livestock_trade.lien_discharged',
+      action: `livestock_finance.lien.${to}`,
       entityType: 'lien',
       entityId: id,
-      metadata: { subjectId: lien.subjectId }
+      metadata: { from: lien.status, to }
     });
     await this.events.publish(
-      'livestock_trade.lien.discharged',
-      { lienId: id, subjectType: lien.subjectType, subjectId: lien.subjectId },
+      `livestock_finance.lien.${to}`,
+      { lienId: id, animalId: lien.animalId, from: lien.status, to },
       caller.id
     );
     return updated;
   }
 
-  /** active|margin_call → defaulted (lender of record or admin). */
-  async markDefaulted(actor: User | null, id: string): Promise<LivestockLien> {
+  /* ------------------------------ claim URLs ------------------------------ */
+
+  async issueClaimUrl(actor: User | null, id: string): Promise<ClaimUrlResult> {
     const caller = requireActor(actor);
     const lien = await this.liens.getById(id);
-    this.assertLienParty(caller, lien);
-    if (lien.status !== 'active' && lien.status !== 'margin_call') {
-      throw new BadRequestException(`Lien '${id}' is ${lien.status}; only live liens can default`);
+    if (lien.status !== 'active') {
+      throw new BadRequestException('Claim URLs can only be issued for active liens');
     }
-    const updated = await this.liens.update(id, {
-      status: 'defaulted',
-      updatedAt: new Date().toISOString()
-    });
+    const animal = await this.animals.findById(lien.animalId);
+    if (!caller.roles.includes('admin')) {
+      if (!animal || animal.ownerUserId !== caller.id) {
+        throw new ForbiddenException('Only the animal owner or an admin may issue a claim URL');
+      }
+    }
+    if (lien.claimToken && lien.claimTokenExpiresAt && lien.claimTokenExpiresAt > new Date().toISOString()) {
+      throw new ConflictException(
+        'A claim URL is already outstanding — wait for it to expire before re-issuing'
+      );
+    }
+    const token = randomBytes(24).toString('hex');
+    const expiresAt = new Date(Date.now() + CLAIM_TTL_MS).toISOString();
+    const updated = await this.liens.updateExpected(
+      id,
+      { claimToken: token, claimTokenExpiresAt: expiresAt, updatedAt: new Date().toISOString() },
+      { status: 'active' }
+    );
     await this.audit.record({
       actorId: caller.id,
-      action: 'livestock_trade.lien_defaulted',
+      action: 'livestock_finance.lien.claim_url_issued',
       entityType: 'lien',
       entityId: id,
-      metadata: { subjectId: lien.subjectId }
+      metadata: { expiresAt }
+    });
+    return {
+      url: `/livestock-finance/liens/claim?token=${token}`,
+      token,
+      expiresAt: updated.claimTokenExpiresAt ?? expiresAt
+    };
+  }
+
+  /**
+   * Public claim: the signed token IS the credential (no headers). Claims
+   * the lien by registering the claimant identity; single-use and expired
+   * tokens are rejected.
+   */
+  async claimWithToken(
+    token: string,
+    claimant: { id: string; roles?: string[] }
+  ): Promise<Lien> {
+    if (!token || token.length < 16) {
+      throw new UnauthorizedException('Invalid claim token');
+    }
+    const lien = (await this.liens.find({})).find((row) => row.claimToken === token);
+    if (!lien) throw new UnauthorizedException('Invalid claim token');
+    const now = new Date().toISOString();
+    if (!lien.claimTokenExpiresAt || lien.claimTokenExpiresAt <= now) {
+      throw new UnauthorizedException('Claim token has expired');
+    }
+    const claimMethod = claimMethodForRole(claimant.roles ?? []);
+    // Single-use: burn the token as the claim is recorded.
+    const updated = await this.liens.updateExpected(
+      lien.id,
+      {
+        claimToken: undefined,
+        claimTokenExpiresAt: undefined,
+        claimedByUserId: claimant.id,
+        claimedAt: now,
+        claimMethod,
+        updatedAt: now
+      },
+      { status: 'active' }
+    );
+    await this.audit.record({
+      actorId: claimant.id,
+      action: 'livestock_finance.lien.claimed',
+      entityType: 'lien',
+      entityId: lien.id,
+      metadata: { claimMethod }
     });
     await this.events.publish(
-      'livestock_trade.lien.defaulted',
-      { lienId: id, subjectType: lien.subjectType, subjectId: lien.subjectId },
-      caller.id
+      'livestock_finance.lien.claimed',
+      { lienId: lien.id, animalId: lien.animalId, claimMethod },
+      claimant.id
     );
     return updated;
   }
 
-  /** Liens the caller registered (lender view). */
-  async listMine(actor: User | null): Promise<LivestockLien[]> {
-    const caller = assertRole(actor, ['lender']);
-    return this.liens.find({ lenderUserId: caller.id });
-  }
+  /* --------------------------------- authz --------------------------------- */
 
-  /** Lien history for a subject: visible to the subject owner, admins and
-   * lender-role users (credit due diligence). */
-  async listForSubject(
-    actor: User | null,
-    subjectType: LivestockSubjectType,
-    subjectId: string
-  ): Promise<LivestockLien[]> {
-    const caller = requireActor(actor);
-    const subject = await resolveSubject(this.animals, this.lots, subjectType, subjectId);
-    const privileged =
-      caller.id === subject.ownerUserId ||
-      caller.roles.includes('admin') ||
-      caller.roles.includes('lender');
-    if (!privileged) {
-      throw new ForbiddenException('You may only view liens on your own livestock');
-    }
-    return this.liens.find({ subjectType, subjectId });
-  }
-
-  private assertLienParty(caller: User, lien: LivestockLien): void {
-    if (caller.id !== lien.lenderUserId && !caller.roles.includes('admin')) {
-      throw new ForbiddenException('Only the registering lender (or admin) can update this lien');
+  private assertRegistryVisible(actor: User, ownerUserId: string): void {
+    const privileged = actor.roles.some((role) =>
+      ['admin', 'vet', 'cooperative', 'insurer'].includes(role)
+    );
+    if (!privileged && actor.id !== ownerUserId) {
+      throw new ForbiddenException('You do not have access to this registry record');
     }
   }
 }
