@@ -458,7 +458,7 @@ describe('CoopScoreService fail-closed degradation', () => {
       new InMemoryCreditLoanRepository([]),
       new InMemoryCreditRepaymentRepository([]),
       new InMemoryVslaGroupRepository(),
-      new InMemoryVslaMemberRepository(),
+      new InMemoryVslaMemberRepository([]),
       new InMemoryVslaCycleRepository(),
       new InMemoryVslaShareOutRepository(),
       new InMemoryVslaShareOutPlanRepository(),
@@ -472,6 +472,7 @@ describe('CoopScoreService fail-closed degradation', () => {
     const view = await empty.getCoopScore(COOP, admin);
     expect(view.score).toBe(0);
     expect(view.band).toBe('D');
-    expect(view.factors.every((factor) => factor.basis !== 'measured')).toBe(true);
+    expect(view.factors.every((factor) => factor.basis === 'unavailable')).toBe(true);
+    expect(view.dataAsOf).toBeTruthy();
   });
 });
