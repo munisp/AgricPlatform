@@ -287,11 +287,13 @@ export async function postLedgerEntryTx(
   }
   if (outboxEvent) {
     await client.query(
-      `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
-       VALUES ($1, $2, $3, $4, $5)`,
+      `INSERT INTO events.outbox (id, name, aggregate_type, aggregate_id, payload, actor_id, occurred_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         outboxEvent.id,
         outboxEvent.name,
+        outboxEvent.aggregateType ?? null,
+        outboxEvent.aggregateId ?? null,
         JSON.stringify(outboxEvent.payload ?? {}),
         outboxEvent.actorId ?? null,
         outboxEvent.occurredAt
