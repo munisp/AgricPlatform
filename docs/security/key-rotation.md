@@ -1,89 +1,130 @@
-# Key rotation runbook
+# Key rotation — platform capability (V-26)
 
-How to rotate every signing/verification credential the platform holds,
-with zero-downtime dual-accept windows where the mechanism supports one.
-Every rotation is an audited, deliberate operator action — no automatic
-rotation timers exist in this codebase.
+Status: **mechanism shipped + one reference adoption** (agent-banking
+vouchers). Per-module adoption is a follow-on wave; this document is the
+checklist each module follows. Companion incident entry: see
+`docs/runbooks/ops.md` → "Secret compromise / key rotation".
 
-## 1. Partner webhook delivery secrets (GAP-M23)
+## The mechanism (`apps/api/src/common/crypto/key-rotation.ts`)
 
-Outbound partner webhook payloads are HMAC-SHA256 signed with the
-subscription's `secret` (partners.webhook_subscriptions). Rotation keeps
-deliveries verifiable while the partner updates their receiver:
+A **key ring**: one ACTIVE key (signs/hashes everything new) plus a
+PREVIOUS acceptance window (verify-only). Signed payloads carry the key id
+in the envelope: `<kid>:<hmac-hex>`. Verification accepts active + previous
+kids and **rejects retired kids with a distinct reason**
+(`retired-kid` vs `mismatch` vs `malformed`) so rotation drift is
+distinguishable from tampering in logs/alerts.
 
-1. Operator (or the partner via `POST /partner/webhooks/:id/rotate-secret`)
-   requests a rotation.
-2. The service generates a new secret, moves the current one to
-   `secret_prev` and stamps `secret_prev_until = now() + grace` (default
-   24h, clamped to a 7d maximum).
-3. During the grace window every delivery is **dual-signed**:
-   - `x-agric-signature` — HMAC with the NEW secret;
-   - `x-agric-signature-previous` — HMAC with the OLD secret.
-   The partner can verify either header while cutting over.
-4. After `secret_prev_until` the previous secret is accepted nowhere and
-   the next rotation overwrites both slots.
-5. The new secret is returned **exactly once** in the rotation response.
-   Secrets are never logged and never echoed on subscription reads.
+Env convention per purpose `X`:
 
-The dual-accept is TIME-GATED at delivery; there is no way to extend a
-lapsed grace window except rotating back explicitly.
+```
+X_KEYS="2026-06-a=<secretA>,2025-12-b=<secretB>"   # first pair = ACTIVE, rest = PREVIOUS
+X_SECRET="<secretA>"                               # legacy single-secret fallback (kid 'legacy')
+```
 
-## 2. API access JWT signing (OIDC / Keycloak)
+Secrets must be base64url/base64/hex (`,` and `=` are separators). kids are
+public ids (`[a-zA-Z0-9._-]{1,64}`) — never put secret material in a kid.
 
-Access-token verification uses the realm's JWKS from Keycloak
-(`KEYCLOAK_URL` / realm `agric-platform`). Rotation is a Keycloak-side
-operation: generate the new realm key in the Keycloak admin console;
-tokens signed with the previous key stay verifiable until they expire
-(max access-token TTL is minutes), because the JWKS endpoint serves both
-keys during the rollover. No API redeploy is needed — the verifier
-refreshes JWKS on kid miss.
+`resolveHmacKeyRing(env, {...})` fails closed in production: no key
+material configured → boot error; any ring secret equal to a published dev
+default or below the strength floor → boot error (checked for EVERY slot,
+active and previous).
 
-## 3. Agent voucher HMAC secret (AGENT_VOUCHER_SECRET)
+**Rotation procedure (any module):**
+1. Generate the new secret; add `X_KEYS="<newKid>=<newSecret>,<oldKid>=<oldSecret>"`.
+2. Deploy. New artifacts are signed with `<newKid>`; artifacts signed with
+   `<oldKid>` keep verifying (mode `previous`).
+3. After the field lifetime of the old artifacts has passed (voucher
+   expiry horizon, QR re-issue cycle, …), remove the old pair and deploy
+   again. Old signatures now reject with reason `retired-kid` — expected.
 
-`AGENT_VOUCHER_SECRET` signs offline vouchers (docs/agent-banking.md).
-There is NO dual-accept window for voucher signatures (a voucher is a
-short-lived physical artefact; agents re-issue after rotation):
+## Reference implementation: agent-banking vouchers (DONE)
 
-1. Announce the rotation to agents (vouchers issued before the cutover will
-   fail verification afterwards — redeem outstanding vouchers first).
-2. Update the secret in the environment / secret store.
-3. Rolling-restart the API so all replicas pick up the new value
-   (`kubectl -n agric-platform rollout restart deploy/api`).
-4. Verify one freshly issued voucher redeems.
+Files: `modules/agent-banking/voucher-crypto.ts`
+(`resolveVoucherKeyRing`, `signVoucherEnvelope`, `verifyVoucherEnvelope`),
+adopted end-to-end in `agent-banking.service.ts` (issue + redeem) and
+`dealer-qr.service.ts` (voucher tender verification).
 
-## 4. AT callback token (AT_CALLBACK_TOKEN)
+- Issued signatures are `dev:<hex>` in dev / `<kid>:<hex>` in production.
+- **Legacy window:** bare-hex signatures printed before envelopes shipped
+  keep verifying against every ring secret (`legacyBareHex: true`). Drop
+  the option once all fielded vouchers carry kids.
+- Tests: `common/crypto/key-rotation.spec.ts` (kid window, retired
+  rejection, dual-salt), plus voucher-service specs for envelope issuance
+  and legacy acceptance.
 
-Africa's Talking USSD/IVR callbacks authenticate with a shared secret
-(`?token=` query param or `x-at-callback-token` header):
+## Adoption checklist (per module)
 
-1. Update `AT_CALLBACK_TOKEN` in the secret store and restart the API.
-2. Update the callback URL / header config in the AT dashboard to match.
-3. The window between (1) and (2) rejects callbacks with 401 — schedule
-   the change during a low-traffic window; AT retries failed callbacks.
+For each consumer below: (1) add a `resolve<KeyRing>` next to the existing
+`resolve<Secret>`; (2) switch sign → `hmacSign(ring, …)` (envelope) and
+verify → `hmacVerify(ring, …)`; (3) decide the legacy acceptance window
+for already-fielded artifacts; (4) add env vars to deploy secrets;
+(5) extend the module spec with: sign with kid=A → verify accepts A+B
+during window → rejects retired C.
 
-## 5. Provider API keys (Termii, 360dialog, Mailgun, OneSignal, Paystack, …)
+- [ ] **qr-crypto.ts** (`AGENT_QR_SECRET`, agent QR codes, sign at
+  ~qr-crypto.ts:86-101). Same shape as vouchers. Legacy: fielded printed
+  QRs are bare-hex → enable `legacyBareHex` until re-issuance cycle
+  completes.
+- [ ] **passport-code.ts** (livestock passport codes, sign at
+  passport-code.ts:126-139). Legacy window: passports already issued.
+- [ ] **partner-api.config.ts** (`PARTNER_API_HMAC_SECRET`, webhook
+  signature verification at :40/:74). Inbound verification only — rotation
+  window = partner cutover window; alert on `retired-kid` verification
+  failures (a partner still on the retired secret).
+- [ ] **nin-crypto.ts** (`NIN_HASH_SALT`, keyed hash at :56-72) —
+  **dual-salt lookup**: use `matchKeyedHash(ring, 'nin:v1:'+nin, stored)`
+  + `keyedHash(ring, …)` for writes. Stored hashes carry no kid; verify
+  computes candidates under active+previous salts (constant-time).
+  **Re-hash "job" design:** batch re-hash is impossible BY DESIGN (the
+  plaintext NIN is never persisted). Instead: opportunistic re-hash — when
+  `matchKeyedHash` returns `needsRehash: true` (matched a previous salt),
+  immediately persist `keyedHash(active, …)` for that row in the same
+  request. Dormant rows age out of the window when it closes; plan the
+  window ≥ the beneficiary-verification re-check cadence. Dedupe invariant
+  holds throughout: a NIN always maps to the same stored hash for the salt
+  that wrote it, and transition rows converge to the active salt on first
+  presentation.
+- [ ] **msisdn-crypto.ts** (voice console phone hashing :17/:23/:48) —
+  same dual-salt pattern as NIN.
+- [ ] **Webhook-subscription secrets** (`webhook_subscriptions.secret`
+  plaintext at `infra/postgres/010_partner_api.sql:46`, reads at
+  partner-api.pg-repository.ts:116/:127). Two changes:
+  1. *Encrypt at rest*: the codebase currently has NO field-encryption
+     infrastructure (no AES/HSM wrapper exists — verified by absence of any
+     `createCipheriv` usage), so this step must introduce one (envelope
+     encryption with a master key from the secret manager) or move webhook
+     secrets into the secret store with read-on-demand. Plaintext at rest
+     defeats the signing upgrade entirely — a DB read yields every signing
+     secret. NOTE: hashing is NOT an option here (unlike NIN) because the
+     API needs the plaintext to sign outbound deliveries.
+  2. *Rotate endpoint*: IMPLEMENTED (GAP-M23, 2026-10-03) as
+     `POST /api/v1/partner/webhooks/:id/rotate-secret`
+     (`apps/api/src/modules/partner-api/partner-api.controller.ts`; the
+     resource lives under `/partner/webhooks`, not
+     `/partner-api/webhook-subscriptions` as first drafted). Partner-owner
+     authz via the `webhooks:manage` scope (the subscription must belong to
+     the calling client); every rotation is audited
+     (`partner.webhook.secret_rotated`, secrets never logged). Columns
+     `secret_prev TEXT` + `secret_prev_until TIMESTAMPTZ` were added by
+     migration `infra/postgres/125_webhook_secret_rotation.sql`.
+     Rotation writes current→`secret_prev` with a grace TTL (default 24h,
+     ≤7d, client-tunable via `graceHours`) and generates a fresh current
+     secret server-side. During grace, outbound deliveries carry BOTH
+     `x-agric-signature` (new) and `x-agric-signature-previous` (old)
+     headers so partners cut over without dropped events. Acceptance of
+     the previous secret is TIME-GATED at delivery
+     (`webhook-dispatch.service.ts` `deliveryHeaders`) — the API starts no
+     timers, so instead of a sweeper deleting `secret_prev` at
+     `secret_prev_until`, an expired slot simply stops being sent and is
+     overwritten on the next rotation. The response returns the new secret
+     exactly once (creation-time-only visibility); list/read responses
+     omit both secret fields.
 
-All provider credentials live in `agric-secrets`
-(infra/k8s/secrets-provisioning.md):
+## Operational notes
 
-1. Create the new key at the provider.
-2. Update the secret value (External Secrets / sealed-secrets / manual).
-3. Rolling-restart the API; revoke the old key at the provider only after
-   health checks pass.
-
-## 6. Payment webhook verification (Paystack secret / Flutterwave verif-hash)
-
-Rotating these breaks signature verification for in-flight webhooks:
-
-1. Configure the new secret at the provider AND in `agric-secrets`
-   (`PAYSTACK_SECRET_KEY` / the Flutterwave verif-hash).
-2. Restart the API. Unverified webhooks are rejected (never processed), so
-   a missed event must be re-driven via
-   `POST /admin/webhooks/reprocess` after the new secret is live.
-
-## Evidence
-
-Every rotation-touching endpoint (webhook rotate-secret, admin secret
-endpoints) writes an audit event; voucher verification failures and AT
-callback 401s are logged with reason codes. Rotation drills belong to the
-quarterly ops review.
+- kid format recommendation: `<yyyymm>-<letter>` (e.g. `2026-06-a`).
+- Keep the previous window SHORT (one key deep) — every previous slot is a
+  verification oracle for old artifacts and must meet production strength.
+- Verification failures with reason `retired-kid` after a rotation are a
+  signal that a client/partner is still presenting old artifacts —
+  investigate before assuming attack.
