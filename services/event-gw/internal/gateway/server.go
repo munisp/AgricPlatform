@@ -1,235 +1,395 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
-// Server is the event-gw HTTP edge: provider webhook verification, replay
-// rejection, durable spooling and fan-out to the API internal ingress.
+// Server is the event-gw HTTP edge: webhook ingestion, health/readiness, and
+// metrics.
 type Server struct {
-	cfg    *Config
-	replay *ReplayCache
-	spool  *Spool
-	logger *slog.Logger
-	mux    *http.ServeMux
-	http   *http.Server
+	cfg     *Config
+	replay  *ReplayCache
+	fanout  *Fanout
+	metrics *Metrics
+	logger  *log.Logger
+	// replayErr is set when configured replay persistence failed to load
+	// (GAP-L02): webhook ingestion then fails closed with 503 — an edge
+	// that cannot guarantee its replay protection must not accept
+	// deliveries as if it could.
+	replayErr error
+
+	// Now is injectable for tests.
+	Now func() time.Time
+
+	started time.Time
 }
 
-// Envelope is the canonical internal event shape the API ingress consumes.
-type Envelope struct {
-	ID         string          `json:"id"`
-	Provider   string          `json:"provider"`
-	EventType  string          `json:"eventType"`
-	Payload    json.RawMessage `json:"payload"`
-	ReceivedAt time.Time       `json:"receivedAt"`
-	DedupeKey  string          `json:"dedupeKey"`
-}
-
-// NewServer builds the edge. replay and spool are created by main from the
-// config (in-memory vs durable variants); the server only orchestrates.
-func NewServer(cfg *Config, replay *ReplayCache, spool *Spool, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
+func NewServer(cfg *Config, fanout *Fanout, metrics *Metrics, logger *log.Logger) *Server {
+	replay, err := LoadReplayCache(cfg.ReplayTTL, cfg.ReplayPersistPath, logger)
+	if err != nil {
+		logger.Printf(
+			"ERROR: replay persistence unavailable: %v — webhook ingestion will answer 503 (fail-closed)",
+			err,
+		)
+		// Stay up with an empty in-memory cache so /healthz and /metrics
+		// keep working; every webhook is rejected via replayErr above.
+		replay = NewReplayCache(cfg.ReplayTTL)
 	}
-	s := &Server{cfg: cfg, replay: replay, spool: spool, logger: logger}
+	return &Server{
+		cfg:       cfg,
+		replay:    replay,
+		fanout:    fanout,
+		metrics:   metrics,
+		logger:    logger,
+		replayErr: err,
+		Now:       time.Now,
+		started:   time.Now(),
+	}
+}
+
+// Routes builds the HTTP mux (Go 1.22 method+pattern routing).
+func (s *Server) Routes() http.Handler {
+	return s.RoutesWithTelemetry(nil)
+}
+
+// RoutesWithTelemetry builds the HTTP mux, wrapping each route with an OTel
+// server span named by its route template when telemetry is enabled. A nil
+// (or disabled) Telemetry returns the plain mux — identical to Routes().
+func (s *Server) RoutesWithTelemetry(t *Telemetry) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
-	mux.HandleFunc("/webhooks/", s.handleWebhook)
-	s.mux = mux
-	s.http = &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	return s
+	mux.Handle("POST /webhooks/{provider}", t.WrapRoute("POST /webhooks/{provider}", http.HandlerFunc(s.handleWebhook)))
+	mux.Handle("GET /healthz", t.WrapRoute("GET /healthz", http.HandlerFunc(s.handleHealthz)))
+	mux.Handle("GET /readyz", t.WrapRoute("GET /readyz", http.HandlerFunc(s.handleReadyz)))
+	mux.Handle("GET /metrics", t.WrapRoute("GET /metrics", http.HandlerFunc(s.handleMetrics)))
+	return mux
 }
 
-// ListenAndServe starts the HTTP listener and the spool drain loop.
-func (s *Server) ListenAndServe() error {
-	go s.drainLoop()
-	s.logger.Info("event-gw listening",
-		"addr", s.cfg.ListenAddr,
-		"api", s.cfg.APIBaseURL,
-		"providers", len(s.cfg.WebhookSecrets),
-	)
-	return s.http.ListenAndServe()
+// StartBackground launches the replay-cache eviction and spool re-drain
+// goroutines; both stop when ctx is cancelled.
+func (s *Server) StartBackground(ctx context.Context) {
+	s.replay.StartEviction(ctx, s.cfg.ReplayTTL/2)
+	s.fanout.StartDrainLoop(ctx, s.cfg.DrainInterval)
 }
 
-// Shutdown stops the listener gracefully (SIGTERM handling lives in main).
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.http.Shutdown(ctx)
+// Response bodies as typed structs (field order is alphabetical so the
+// marshalled bytes are identical to the previous map[string]any output,
+// which Go sorts by key). This avoids per-request map + reflection work.
+type rejectResponse struct {
+	Provider string `json:"provider,omitempty"`
+	Reason   string `json:"reason"`
+	Status   string `json:"status"`
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+type acceptedResponse struct {
+	Delivery string `json:"delivery"`
+	EventID  string `json:"eventId"`
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
 }
 
-// handleReadyz fails closed when the spool is saturated — an orchestrator
-// must stop routing new webhooks to a sidecar that cannot persist them.
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	status := "ok"
-	code := http.StatusOK
-	checks := map[string]string{"spool": "ok"}
-	if s.spool.Saturated() {
-		status = "degraded"
-		code = http.StatusServiceUnavailable
-		checks["spool"] = "saturated"
-	}
-	writeJSON(w, code, map[string]any{"status": status, "checks": checks})
+type errorResponse struct {
+	EventID  string `json:"eventId"`
+	Provider string `json:"provider"`
+	Reason   string `json:"reason"`
+	Status   string `json:"status"`
 }
 
-// handleWebhook is the provider ingress: /webhooks/{provider}. Verification
-// is fail-closed at every step — any doubt answers 4xx and NOTHING spools.
-func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
-		return
-	}
-	provider := strings.Trim(strings.TrimPrefix(r.URL.Path, "/webhooks/"), "/")
-	if provider == "" || strings.Contains(provider, "/") {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown provider"})
-		return
-	}
-	secret, ok := s.cfg.WebhookSecrets[provider]
-	if !ok {
-		// Fail closed: an unconfigured provider is rejected, never spooled.
-		s.logger.Warn("webhook for unconfigured provider rejected", "provider", provider)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown provider"})
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "body too large"})
-		return
-	}
-	signature := r.Header.Get("X-Webhook-Signature")
-	if !VerifySignature(secret, body, signature) {
-		s.logger.Warn("webhook signature verification failed", "provider", provider)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid signature"})
-		return
-	}
-	eventType := r.Header.Get("X-Webhook-Event")
-	if eventType == "" {
-		eventType = "unknown"
-	}
-	dedupeKey := r.Header.Get("X-Webhook-Id")
-	if dedupeKey == "" {
-		dedupeKey = fmt.Sprintf("%x", sha256.Sum256(body))
-	}
-	if s.replay.Seen(provider, dedupeKey) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
-		return
-	}
-	envelope := Envelope{
-		ID:         fmt.Sprintf("evt_%x", sha256.Sum256(append([]byte(provider+dedupeKey), body...)))[:32],
-		Provider:   provider,
-		EventType:  eventType,
-		Payload:    json.RawMessage(body),
-		ReceivedAt: time.Now().UTC(),
-		DedupeKey:  dedupeKey,
-	}
-	s.replay.Mark(provider, dedupeKey)
-	if err := s.spool.Append(envelope); err != nil {
-		s.logger.Error("spool append failed — event NOT acknowledged", "error", err, "id", envelope.ID)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "spool unavailable — retry"})
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued", "id": envelope.ID})
+type healthResponse struct {
+	Mode           string `json:"mode"`
+	ProvidersKnown int    `json:"providersKnown"`
+	Status         string `json:"status"`
+	UptimeSeconds  int64  `json:"uptimeSeconds"`
 }
 
-// drainLoop forwards spooled envelopes to the API internal ingress, oldest
-// first. The API fails closed on the shared internal token; the spool
-// retains anything not yet accepted.
-func (s *Server) drainLoop() {
-	ticker := time.NewTicker(s.cfg.DrainInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.drainOnce()
-	}
+type readyResponse struct {
+	Breaker      string `json:"breaker"`
+	Mode         string `json:"mode"`
+	SpoolBacklog int    `json:"spoolBacklog"`
+	Status       string `json:"status"`
 }
 
-var drainMu sync.Mutex
-
-func (s *Server) drainOnce() {
-	drainMu.Lock()
-	defer drainMu.Unlock()
-	envelopes, err := s.spool.Peek(100)
-	if err != nil {
-		s.logger.Error("spool peek failed", "error", err)
-		return
-	}
-	for _, envelope := range envelopes {
-		if err := s.forward(envelope); err != nil {
-			s.logger.Warn("fan-out failed — envelope stays spooled",
-				"error", err, "id", envelope.ID)
-			return // stop at the first failure to preserve ordering
-		}
-		if err := s.spool.Ack(envelope.ID); err != nil {
-			s.logger.Error("spool ack failed", "error", err, "id", envelope.ID)
-			return
-		}
-	}
-}
-
-func (s *Server) forward(envelope Envelope) error {
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest(
-		http.MethodPost,
-		strings.TrimSuffix(s.cfg.APIBaseURL, "/")+"/internal/events",
-		strings.NewReader(string(body)),
-	)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.cfg.InternalToken != "" {
-		req.Header.Set("X-Internal-Token", s.cfg.InternalToken)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		return errors.New(fmt.Sprintf("api answered %d", resp.StatusCode))
-	}
-	return nil
-}
-
-// VerifySignature compares the hex-encoded HMAC-SHA256 of body in constant
-// time. A missing or malformed signature never passes.
-func VerifySignature(secret string, body []byte, signature string) bool {
-	if signature == "" || secret == "" {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := mac.Sum(nil)
-	provided, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256="))
-	if err != nil {
-		return false
-	}
-	return hmac.Equal(expected, provided)
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	enc, _ := json.Marshal(body)
+	_, _ = w.Write(enc)
+}
+
+func (s *Server) reject(w http.ResponseWriter, provider string, status int, reason string) {
+	s.metrics.Inc(MetricRejected, provider)
+	writeJSON(w, status, rejectResponse{Status: "rejected", Provider: provider, Reason: reason})
+}
+
+// handleWebhook ingests one external provider webhook.
+//
+// Flow: provider lookup -> live-mode misconfiguration gate -> body shape
+// validation -> (live only) timestamp + HMAC verification -> replay check ->
+// envelope -> fanout (deliver or spool). Response is 202 once the event is
+// durably accepted (delivered or spooled), never silently dropped.
+func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	provider := strings.ToLower(r.PathValue("provider"))
+	p, ok := s.cfg.Providers[provider]
+	if !ok {
+		// Unknown provider: no per-provider metrics (cardinality guard).
+		writeJSON(w, http.StatusNotFound, rejectResponse{Status: "rejected", Reason: "unknown provider"})
+		return
+	}
+	s.metrics.Inc(MetricReceived, provider)
+
+	// Fail-closed: a live-mode provider without a secret never accepts.
+	if s.cfg.Mode == ModeLive && !p.Configured {
+		s.reject(w, provider, http.StatusServiceUnavailable,
+			fmt.Sprintf("provider misconfigured: EVENTGW_SECRET_%s not set (live mode)", strings.ToUpper(strings.ReplaceAll(provider, "-", "_"))))
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, s.cfg.MaxBodyBytes+1))
+	if err != nil {
+		s.reject(w, provider, http.StatusBadRequest, "unreadable body")
+		return
+	}
+	if int64(len(body)) > s.cfg.MaxBodyBytes {
+		s.reject(w, provider, http.StatusRequestEntityTooLarge, "body too large")
+		return
+	}
+	eventID, err := validateShape(body)
+	if err != nil {
+		s.reject(w, provider, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	sig := strings.TrimSpace(r.Header.Get(p.SigHeader))
+	ts := strings.TrimSpace(r.Header.Get(p.TsHeader))
+
+	if s.cfg.Mode == ModeLive {
+		if sig == "" {
+			s.reject(w, provider, http.StatusUnauthorized, "missing signature header "+p.SigHeader)
+			return
+		}
+		if ts == "" {
+			s.reject(w, provider, http.StatusUnauthorized, "missing timestamp header "+p.TsHeader)
+			return
+		}
+		if err := CheckTimestamp(ts, s.Now(), s.cfg.MaxSkew); err != nil {
+			s.reject(w, provider, http.StatusUnauthorized, "timestamp rejected: "+err.Error())
+			return
+		}
+		if !VerifySignature(p.Secret, body, sig, p.SigEncoding) {
+			s.reject(w, provider, http.StatusUnauthorized, "invalid signature")
+			return
+		}
+		s.metrics.Inc(MetricVerified, provider)
+	}
+
+	// GAP-L02: replay-persistence load failure is fail-closed — the edge
+	// cannot guarantee replay protection, so it refuses ingestion (503)
+	// instead of silently reopening the replay window.
+	if s.replayErr != nil {
+		s.reject(w, provider, http.StatusServiceUnavailable,
+			"replay store unavailable: "+s.replayErr.Error())
+		return
+	}
+	fresh, err := s.replay.CheckAndMark(replayKey(provider, body, sig, ts), s.Now())
+	if err != nil {
+		// Persist-append failed mid-request: the marker is NOT durable, so
+		// accepting the webhook would reopen the replay window after a
+		// restart. Fail closed.
+		s.logger.Printf("ERROR: replay mark persist failed for %s: %v", provider, err)
+		s.reject(w, provider, http.StatusServiceUnavailable,
+			"replay store write failed: refusing unguardable delivery")
+		return
+	}
+	if !fresh {
+		s.reject(w, provider, http.StatusConflict, "replay: duplicate delivery within replay window")
+		return
+	}
+
+	env := Envelope{
+		Provider:   provider,
+		EventID:    eventID,
+		ReceivedAt: s.Now().UTC().Format(time.RFC3339),
+		Payload:    json.RawMessage(body),
+	}
+	if env.EventID == "" {
+		env.EventID = generateEventID()
+	}
+	outcome, err := s.fanout.Deliver(env)
+	if err != nil {
+		s.logger.Printf("ERROR: fanout for provider %q event %q: %v", provider, env.EventID, err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{
+			Status: "error", Provider: provider, EventID: env.EventID,
+			Reason: "delivery failed and dead-letter spool write failed",
+		})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, acceptedResponse{
+		Status: "accepted", Provider: provider, EventID: env.EventID, Delivery: outcome,
+	})
+}
+
+// validateShape enforces the minimal event shape: a non-empty JSON object.
+// It streams the top-level keys, decoding values into a single reused buffer,
+// and returns the provider-supplied event id ("eventId", "event_id" or "id",
+// as a string or number; last occurrence wins, matching map semantics) or ""
+// when none is usable. The full payload is still validated for well-formedness.
+func validateShape(body []byte) (string, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return "", fmt.Errorf("empty body")
+	}
+	if trimmed[0] != '{' {
+		return "", fmt.Errorf("payload must be a JSON object")
+	}
+	eventID, err := scanEventID(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid JSON: %v", err)
+	}
+	return eventID, nil
+}
+
+// scanEventID streams the top-level object members and extracts the event id
+// candidates without materialising a map of the whole payload.
+func scanEventID(data []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if _, err := dec.Token(); err != nil { // opening '{'
+		return "", err
+	}
+	var raws [3]json.RawMessage // eventId, event_id, id
+	var raw json.RawMessage
+	for dec.More() {
+		ktok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		key, ok := ktok.(string)
+		if !ok {
+			return "", fmt.Errorf("invalid object key")
+		}
+		raw = raw[:0] // reuse the backing array across values
+		if err := dec.Decode(&raw); err != nil {
+			return "", err
+		}
+		switch key {
+		case "eventId":
+			raws[0] = append(raws[0][:0], raw...)
+		case "event_id":
+			raws[1] = append(raws[1][:0], raw...)
+		case "id":
+			raws[2] = append(raws[2][:0], raw...)
+		}
+	}
+	if _, err := dec.Token(); err != nil { // closing '}'
+		return "", err
+	}
+	// Nothing may follow the top-level object (json.Unmarshal parity).
+	if tok, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("unexpected data after top-level value: %v", tok)
+	}
+	for _, cand := range raws {
+		if cand == nil {
+			continue
+		}
+		if id, ok := idFromRaw(cand); ok {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+// idFromRaw extracts an event id from a raw JSON value: a non-empty string
+// or a non-empty number, matching the historical extraction rules.
+func idFromRaw(raw json.RawMessage) (string, bool) {
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str != "" {
+		return str, true
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw, &num); err == nil && num != "" {
+		return num.String(), true
+	}
+	return "", false
+}
+
+// generateEventID builds a random event id when the payload has no usable
+// provider-supplied id field.
+func generateEventID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// crypto/rand failure is effectively unreachable; fall back to time.
+		return fmt.Sprintf("evt_%d", time.Now().UnixNano())
+	}
+	return "evt_" + hex.EncodeToString(buf[:])
+}
+
+// replayKey identifies a delivery for replay detection. In live mode the
+// (timestamp, signature) pair is unique per signed payload; in stub mode
+// (signature may be absent) we fall back to a body hash.
+func replayKey(provider string, body []byte, sig, ts string) string {
+	if sig != "" {
+		return provider + "|" + ts + "|" + sig
+	}
+	sum := sha256.Sum256(body)
+	return provider + "|body|" + hex.EncodeToString(sum[:])
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, healthResponse{
+		Status:         "ok",
+		Mode:           s.cfg.Mode,
+		UptimeSeconds:  int64(time.Since(s.started).Seconds()),
+		ProvidersKnown: len(s.cfg.Providers),
+	})
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	breaker := s.fanout.Breaker().State()
+	backlog := s.fanout.Spool().Backlog()
+	status := http.StatusOK
+	readiness := "ready"
+	if breaker == BreakerOpen {
+		// Cannot fan out right now: report not-ready (spool keeps accepting).
+		status = http.StatusServiceUnavailable
+		readiness = "degraded"
+	}
+	writeJSON(w, status, readyResponse{
+		Status:       readiness,
+		Mode:         s.cfg.Mode,
+		Breaker:      string(breaker),
+		SpoolBacklog: backlog,
+	})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	breaker := s.fanout.Breaker().State()
+	breakerOpen := 0
+	if breaker == BreakerOpen {
+		breakerOpen = 1
+	}
+	extra := []string{
+		"# HELP eventgw_spool_backlog Events waiting in the dead-letter spool.",
+		"# TYPE eventgw_spool_backlog gauge",
+		fmt.Sprintf("eventgw_spool_backlog %d", s.fanout.Spool().Backlog()),
+		"# HELP eventgw_breaker_open Whether the ingress circuit breaker is open (1) or not (0).",
+		"# TYPE eventgw_breaker_open gauge",
+		fmt.Sprintf("eventgw_breaker_open %d", breakerOpen),
+		"# HELP eventgw_mode Operating mode info (always 1).",
+		"# TYPE eventgw_mode gauge",
+		fmt.Sprintf("eventgw_mode{mode=%q} 1", s.cfg.Mode),
+	}
+	s.metrics.Render(w, extra...)
 }
