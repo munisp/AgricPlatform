@@ -602,7 +602,7 @@ describe('WebhookDispatchService', () => {
 
     it('allows https deliveries to public hosts in production', async () => {
       vi.stubEnv('NODE_ENV', 'production');
-      const fetchImpl = vi.fn(async () => ({ status: 200 }));
+      const fetchImpl: WebhookFetch = async () => ({ status: 200 });
       const { service } = makeService([{ eventTypes: ['enrolment.created'] }], fetchImpl);
       expect(
         await service.dispatch('enrolment.created', event('learning.enrolment.created', {}))
