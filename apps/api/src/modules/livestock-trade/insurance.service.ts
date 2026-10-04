@@ -6,6 +6,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   type OnModuleInit
 } from '@nestjs/common';
 import type {
@@ -24,6 +25,8 @@ import {
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   ANIMAL_REPOSITORY,
   INSURANCE_CLAIM_REPOSITORY,
@@ -94,28 +97,46 @@ export class InsuranceService implements OnModuleInit {
     @Inject(INSURANCE_CLAIM_REPOSITORY)
     private readonly claims: InsuranceClaimRepository,
     @Inject(LIVESTOCK_INSURANCE_PROVIDER)
-    private readonly provider: LivestockInsuranceProvider
+    private readonly provider: LivestockInsuranceProvider,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never drafts duplicate auto-claims. @Optional
+    // with an in-memory fallback so bare unit constructions keep working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   onModuleInit(): void {
     this.events.on(LIVESTOCK_RECALL_INITIATED_EVENT, (event) => {
-      void this.handleRecallInitiated(event.payload as LivestockRecallInitiatedPayload).catch(
-        (error: unknown) =>
-          this.logger.warn(
-            `recall auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
-          )
-      );
+      // GAP-M09: dedup-guarded (mark-after); the auto-claim draft is
+      // idempotent per (policyId, recallId), so a re-drive after a partial
+      // failure converges.
+      void this.dedup
+        .runOnce('livestock-trade-insurance', event.id, () =>
+          this.handleRecallInitiated(event.payload as LivestockRecallInitiatedPayload)
+        )
+        .catch(
+          (error: unknown) =>
+            this.logger.warn(
+              `recall auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
+            )
+        );
     });
     // V-11: mortality auto-claim — animal death/theft drafts a claim per
     // bound policy covering the animal, off the same status_changed event
     // the lien service uses for its margin call.
     this.events.on(LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT, (event) => {
-      void this.handleAnimalStatusChanged(event.payload as LivestockAnimalStatusChangedPayload).catch(
-        (error: unknown) =>
-          this.logger.warn(
-            `mortality auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
-          )
-      );
+      void this.dedup
+        .runOnce('livestock-trade-insurance', event.id, () =>
+          this.handleAnimalStatusChanged(event.payload as LivestockAnimalStatusChangedPayload)
+        )
+        .catch(
+          (error: unknown) =>
+            this.logger.warn(
+              `mortality auto-claim handling failed: ${error instanceof Error ? error.message : String(error)}`
+            )
+        );
     });
   }
 
