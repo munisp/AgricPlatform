@@ -79,6 +79,10 @@ describe('BridgeSyncService — Moodle → learning.courses catalogue sync', () 
     expect(maize).toBeDefined();
     expect(maize?.title).toBe('Maize Agronomy 101');
     expect(maize?.category).toBe('moodle-3');
+    // GAP-L12: the bridge is the in-repo writer for slug/moodle_course_id/published.
+    expect(maize?.slug).toBe('moodle-7');
+    expect(maize?.moodleCourseId).toBe(7);
+    expect(maize?.published).toBe(true);
     const other = await courses.findById('moodle-9');
     expect(other?.category).toBe('moodle');
 

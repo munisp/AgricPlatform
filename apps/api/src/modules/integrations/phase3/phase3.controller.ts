@@ -15,7 +15,7 @@ import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class
 import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../../common/auth/ownership.js';
-import { Authenticated, Roles } from '../../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../../common/auth/roles.guard.js';
 import { BeneficiaryImportService, type BeneficiaryRowInput } from './beneficiary-import.service.js';
 import { ExternalAccountsService } from './external-accounts.service.js';
@@ -163,6 +163,7 @@ export class Phase3Controller {
   // ------------------------------------------------------------------
 
   @Post('webhooks/farmos')
+  @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({ summary: 'farmOS record push receiver' })
   async farmosWebhook(@Body() payload: Record<string, unknown>, @Headers() headers: Record<string, string | undefined>) {
@@ -171,6 +172,7 @@ export class Phase3Controller {
   }
 
   @Post('webhooks/litefarm')
+  @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({ summary: 'LiteFarm record push receiver' })
   async litefarmWebhook(@Body() payload: Record<string, unknown>, @Headers() headers: Record<string, string | undefined>) {
@@ -179,6 +181,7 @@ export class Phase3Controller {
   }
 
   @Post('webhooks/ofn')
+  @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({ summary: 'OFN order event receiver (mapped to marketplace domain events)' })
   async ofnWebhook(@Body() payload: Record<string, unknown>, @Headers() headers: Record<string, string | undefined>) {
@@ -187,6 +190,7 @@ export class Phase3Controller {
   }
 
   @Post('webhooks/lender')
+  @Public()
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({ summary: 'Lender loan status/repayment event receiver' })
   async lenderWebhook(@Body() payload: Record<string, unknown>, @Headers() headers: Record<string, string | undefined>) {
