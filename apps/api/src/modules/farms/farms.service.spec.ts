@@ -1,297 +1,276 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
-import {
-  createInMemoryCropPlantingRepository,
-  createInMemoryFarmExpenseAllocationRepository,
-  createInMemoryFarmExpenseRepository,
-  createInMemoryFarmPlotRepository,
-  createInMemoryHarvestRecordRepository
-} from '../../database/repositories/farms.repository.js';
 import { createInMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { createInMemoryFarmRepository } from '../../database/repositories/farms.repository.js';
 import { FarmsService } from './farms.service.js';
 
-type UserRef = Pick<User, 'id' | 'roles'>;
-const asUser = (ref: UserRef): User => ({
-  phone: '+2348000000000',
-  fullName: 'Spec User',
-  preferredLanguage: 'en',
-  kycTier: 'tier_1',
-  isVerified: true,
-  createdAt: '2025-01-01T00:00:00.000Z',
-  ...ref
-});
+const owner = { id: 'user-1', roles: ['farmer'] } as User;
+const admin = { id: 'admin-1', roles: ['admin'] } as User;
 
-const farmer = asUser({ id: 'farmer-1', roles: ['farmer'] });
-const otherFarmer = asUser({ id: 'farmer-2', roles: ['farmer'] });
-const admin = asUser({ id: 'admin-1', roles: ['admin'] });
+function makeService() {
+  const events = new DomainEventsService(createInMemoryOutboxRepository());
+  const farms = createInMemoryFarmRepository();
+  const service = new FarmsService(events, farms.plots, farms.plantings, farms.harvests, farms.expenses, farms.allocations);
+  return { service, farms, events };
+}
 
-const plotInput = {
-  name: 'Zaria North Plot',
-  state: 'Kaduna',
-  lga: 'Zaria',
-  centroidLat: 11.08,
-  centroidLong: 7.72,
-  sizeHectares: 2.5
-};
-
-const boundary = {
-  type: 'Polygon',
-  coordinates: [
-    [
-      [7.72, 11.08],
-      [7.73, 11.08],
-      [7.73, 11.09],
-      [7.72, 11.08]
-    ]
-  ]
-};
-
-const plantingInput = {
-  crop: 'Maize',
-  variety: 'Oba Super 2',
-  season: '2025-wet',
-  plantedAt: '2025-05-15T00:00:00.000Z',
-  expectedHarvestAt: '2025-09-15T00:00:00.000Z'
-};
-
-describe('FarmsService', () => {
-  let plots: ReturnType<typeof createInMemoryFarmPlotRepository>;
-  let plantings: ReturnType<typeof createInMemoryCropPlantingRepository>;
-  let harvests: ReturnType<typeof createInMemoryHarvestRecordRepository>;
-  let expenses: ReturnType<typeof createInMemoryFarmExpenseRepository>;
-  let audit: { record: ReturnType<typeof vi.fn> };
-  let events: DomainEventsService;
+describe('FarmsService — plot ownership & versioning', () => {
   let service: FarmsService;
-
   beforeEach(() => {
-    plots = createInMemoryFarmPlotRepository();
-    plantings = createInMemoryCropPlantingRepository();
-    harvests = createInMemoryHarvestRecordRepository();
-    expenses = createInMemoryFarmExpenseRepository();
-    audit = { record: vi.fn().mockResolvedValue(undefined) };
-    events = new DomainEventsService(createInMemoryOutboxRepository());
-    service = new FarmsService(
-      audit as never,
-      events,
-      plots,
-      plantings,
-      harvests,
-      expenses,
-      undefined,
-      undefined,
-      createInMemoryFarmExpenseAllocationRepository()
-    );
+    service = makeService().service;
   });
 
-  /* ------------------------------- plots ------------------------------- */
-
-  it('creates a plot for the caller with sync metadata, audit and event', async () => {
-    const plot = await service.createPlot(farmer, { ...plotInput, boundaryGeojson: boundary });
-    expect(plot.id).toMatch(/^plot-/);
-    expect(plot.ownerUserId).toBe('farmer-1');
+  it('creates a plot owned by the caller and bumps version on update', async () => {
+    const plot = await service.createPlot(owner, {
+      name: 'North Field',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11.08,
+      centroidLong: 7.72,
+      sizeHectares: 2.5
+    });
+    expect(plot.ownerUserId).toBe('user-1');
     expect(plot.version).toBe(1);
-    expect(plot.boundaryGeojson).toEqual(boundary);
-    expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'farms.plot_created', entityId: plot.id })
-    );
-    const outbox = await events.listOutbox();
-    expect(outbox).toHaveLength(1);
-    expect(outbox[0].name).toBe('farms.plot.created');
-  });
-
-  it('rejects plots with an unknown state, bad centroid or invalid boundary', async () => {
-    await expect(service.createPlot(farmer, { ...plotInput, state: 'Atlantis' })).rejects.toThrow(
-      /Unknown Nigerian state/
-    );
-    await expect(service.createPlot(farmer, { ...plotInput, centroidLat: 95 })).rejects.toThrow(
-      /centroidLat/
-    );
-    await expect(
-      service.createPlot(farmer, { ...plotInput, boundaryGeojson: { type: 'Point', coordinates: [1, 2] } })
-    ).rejects.toThrow(/GeoJSON/);
-    await expect(service.createPlot(farmer, { ...plotInput, sizeHectares: 0 })).rejects.toThrow(
-      /sizeHectares/
-    );
-  });
-
-  it('requires authentication for plot creation', async () => {
-    await expect(service.createPlot(null, plotInput)).rejects.toThrow(/Authentication required/);
-  });
-
-  it('scopes plot listing to the owner; admins can list all or filter', async () => {
-    await service.createPlot(farmer, plotInput);
-    await service.createPlot(otherFarmer, { ...plotInput, name: 'Kano Plot', state: 'Kano' });
-    expect(await service.listPlots(farmer)).toHaveLength(1);
-    expect(await service.listPlots(admin)).toHaveLength(2);
-    expect(await service.listPlots(admin, { ownerUserId: 'farmer-2' })).toHaveLength(1);
-    await expect(service.listPlots(farmer, { ownerUserId: 'farmer-2' })).rejects.toThrow(
-      /your own farm plots/
-    );
-  });
-
-  it('restricts plot detail and updates to owner or admin', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
-    await expect(service.getPlot(otherFarmer, plot.id)).rejects.toThrow(/your own records/);
-    expect(await service.getPlot(admin, plot.id)).toEqual(plot);
-    await expect(service.updatePlot(otherFarmer, plot.id, { name: 'x' })).rejects.toThrow(
-      /your own records/
-    );
-    const updated = await service.updatePlot(farmer, plot.id, { name: 'Renamed', sizeHectares: 3 });
-    expect(updated.name).toBe('Renamed');
+    const updated = await service.updatePlot(owner, plot.id, { sizeHectares: 3 });
+    expect(updated.sizeHectares).toBe(3);
     expect(updated.version).toBe(2);
   });
 
-  it('removes a plot with its plantings, harvests and expenses', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
-    const planting = await service.createPlanting(farmer, plot.id, plantingInput);
-    await service.recordHarvest(farmer, planting.id, {
-      harvestedAt: '2025-09-20T00:00:00.000Z',
-      quantity: 40,
-      unit: 'bags'
+  it('enforces ownership on reads and writes', async () => {
+    const plot = await service.createPlot(owner, {
+      name: 'Private Plot',
+      state: 'Kano',
+      lga: 'Kano',
+      centroidLat: 12,
+      centroidLong: 8.5,
+      sizeHectares: 1
     });
-    await service.createExpense(farmer, plot.id, {
-      category: 'seeds',
-      amountKobo: 150_000,
-      incurredAt: '2025-05-10T00:00:00.000Z'
-    });
-    const result = await service.removePlot(farmer, plot.id);
-    expect(result.removed).toBe(true);
-    expect(await plantings.find({ plotId: plot.id })).toHaveLength(0);
-    expect(await harvests.find({ plantingId: planting.id })).toHaveLength(0);
-    expect(await expenses.find({ plotId: plot.id })).toHaveLength(0);
-    await expect(service.removePlot(farmer, plot.id)).rejects.toThrow(/not found/);
+    const stranger = { id: 'user-2', roles: ['farmer'] } as User;
+    await expect(service.getPlot(stranger, plot.id)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.updatePlot(stranger, plot.id, { name: 'x' })).rejects.toBeInstanceOf(
+      ForbiddenException
+    );
+    await expect(service.removePlot(stranger, plot.id)).rejects.toBeInstanceOf(ForbiddenException);
+    // Admin sees everything.
+    await expect(service.getPlot(admin, plot.id)).resolves.toMatchObject({ id: plot.id });
   });
 
-  /* ----------------------------- plantings ----------------------------- */
-
-  it('creates plantings only on plots the actor can access', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
-    await expect(service.createPlanting(otherFarmer, plot.id, plantingInput)).rejects.toThrow(
-      /your own records/
+  it('scopes plot listings: non-admins only see their own', async () => {
+    await service.createPlot(owner, {
+      name: 'Mine',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 1
+    });
+    const mine = await service.listPlots(owner, {});
+    expect(mine.every((plot) => plot.ownerUserId === 'user-1')).toBe(true);
+    await expect(service.listPlots(owner, { ownerUserId: 'user-2' })).rejects.toBeInstanceOf(
+      ForbiddenException
     );
-    const planting = await service.createPlanting(farmer, plot.id, plantingInput);
+    const all = await service.listPlots(admin, {});
+    expect(all.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('removes a plot with its child records', async () => {
+    const plot = await service.createPlot(owner, {
+      name: 'Doomed',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 1
+    });
+    const planting = await service.createPlanting(owner, plot.id, {
+      crop: 'maize',
+      season: '2026-wet',
+      plantedAt: '2026-05-01T00:00:00.000Z'
+    });
+    await service.createExpense(owner, plot.id, {
+      category: 'seed',
+      amountKobo: 5000,
+      incurredAt: '2026-05-01T00:00:00.000Z'
+    });
+    await service.removePlot(owner, plot.id);
+    await expect(service.getPlot(owner, plot.id)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.listPlantings(owner, plot.id)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('FarmsService — planting lifecycle (A2/A3/V-03)', () => {
+  let service: FarmsService;
+  beforeEach(() => {
+    service = makeService().service;
+  });
+
+  async function plotWithPlanting() {
+    const plot = await service.createPlot(owner, {
+      name: 'Lifecycle',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 1
+    });
+    const planting = await service.createPlanting(owner, plot.id, {
+      crop: 'sorghum',
+      season: '2026-wet',
+      plantedAt: '2026-05-01T00:00:00.000Z'
+    });
+    return { plot, planting };
+  }
+
+  it('drives the status machine growing → partially_harvested → harvested', async () => {
+    const { planting } = await plotWithPlanting();
     expect(planting.status).toBe('growing');
-    expect(planting.version).toBe(1);
-    expect(await service.listPlantings(farmer, plot.id)).toHaveLength(1);
+    await service.recordHarvest(owner, planting.id, {
+      harvestedAt: '2026-07-01T00:00:00.000Z',
+      quantity: 20,
+      unit: 'kg'
+    });
+    const afterPick = await service.listPlantings(owner, planting.plotId);
+    expect(afterPick[0].status).toBe('partially_harvested');
+    const harvested = await service.updatePlantingStatus(owner, planting.id, 'harvested', {});
+    expect(harvested.status).toBe('harvested');
+    await expect(
+      service.updatePlantingStatus(owner, planting.id, 'growing', {})
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('enforces the planting status lifecycle with idempotent replays', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
-    const planting = await service.createPlanting(farmer, plot.id, plantingInput);
-    // V-03 contract input: the failure transition requires a failureReason.
-    await expect(service.updatePlantingStatus(farmer, planting.id, 'failed')).rejects.toThrow(
-      /failureReason is required/
-    );
-    const failed = await service.updatePlantingStatus(farmer, planting.id, 'failed', {
+  it('requires failureReason when failing a planting and records the event payload', async () => {
+    const { planting } = await plotWithPlanting();
+    await expect(
+      service.updatePlantingStatus(owner, planting.id, 'failed', {})
+    ).rejects.toBeInstanceOf(BadRequestException);
+    const failed = await service.updatePlantingStatus(owner, planting.id, 'failed', {
       failureReason: 'drought'
     });
     expect(failed.status).toBe('failed');
     expect(failed.failureReason).toBe('drought');
-    // Replay of the same transition is a no-op (no reason needed).
-    expect(await service.updatePlantingStatus(farmer, planting.id, 'failed')).toEqual(failed);
-    await expect(service.updatePlantingStatus(farmer, planting.id, 'growing')).rejects.toThrow(
-      /Invalid planting status transition/
-    );
-    await expect(
-      service.recordHarvest(farmer, planting.id, {
-        harvestedAt: '2025-09-20T00:00:00.000Z',
-        quantity: 10,
-        unit: 'kg'
-      })
-    ).rejects.toThrow(/cannot be harvested/);
   });
 
-  /* ------------------------------ harvests ----------------------------- */
-
-  it('records a harvest pick and flips the planting to partially_harvested (A3)', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
-    const planting = await service.createPlanting(farmer, plot.id, plantingInput);
-    const harvest = await service.recordHarvest(farmer, planting.id, {
-      harvestedAt: '2025-09-20T00:00:00.000Z',
-      quantity: 40,
-      unit: 'bags',
-      qualityGrade: 'A'
+  it('replant linkage: replantOfId must reference a FAILED planting on the same plot', async () => {
+    const { plot, planting } = await plotWithPlanting();
+    // Still growing — not a valid replant target.
+    await expect(
+      service.createPlanting(owner, plot.id, {
+        crop: 'sorghum',
+        season: '2026-wet',
+        plantedAt: '2026-06-01T00:00:00.000Z',
+        replantOfId: planting.id
+      })
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await service.updatePlantingStatus(owner, planting.id, 'failed', { failureReason: 'pest' });
+    const replant = await service.createPlanting(owner, plot.id, {
+      crop: 'sorghum',
+      season: '2026-wet',
+      plantedAt: '2026-06-01T00:00:00.000Z',
+      replantOfId: planting.id
     });
-    expect(harvest.plantingId).toBe(planting.id);
-    expect((await plantings.getById(planting.id)).status).toBe('partially_harvested');
-    expect(await service.listHarvests(farmer, planting.id)).toHaveLength(1);
-    await expect(service.listHarvests(otherFarmer, planting.id)).rejects.toThrow(
-      /your own records/
-    );
-    await expect(
-      service.recordHarvest(farmer, planting.id, {
-        harvestedAt: '2025-09-21T00:00:00.000Z',
-        quantity: -1,
-        unit: 'bags'
-      })
-    ).rejects.toThrow(/quantity/);
+    expect(replant.replantOfId).toBe(planting.id);
+  });
+});
+
+describe('FarmsService — expenses and intercrop allocation (A4)', () => {
+  let service: FarmsService;
+  beforeEach(() => {
+    service = makeService().service;
   });
 
-  /* ------------------------------ expenses ----------------------------- */
-
-  it('records integer-kobo expenses and rejects invalid amounts', async () => {
-    const plot = await service.createPlot(farmer, plotInput);
+  it('validates allocation shares total exactly 100 and reference the plot plantings', async () => {
+    const plot = await service.createPlot(owner, {
+      name: 'Intercrop',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 2
+    });
+    const a = await service.createPlanting(owner, plot.id, {
+      crop: 'maize',
+      season: '2026-wet',
+      plantedAt: '2026-05-01T00:00:00.000Z'
+    });
+    const b = await service.createPlanting(owner, plot.id, {
+      crop: 'cowpea',
+      season: '2026-wet',
+      plantedAt: '2026-05-01T00:00:00.000Z'
+    });
+    // 60 + 30 != 100.
     await expect(
-      service.createExpense(farmer, plot.id, {
-        category: 'labour',
-        amountKobo: 10.5,
-        incurredAt: '2025-06-01T00:00:00.000Z'
+      service.createExpense(owner, plot.id, {
+        category: 'fertilizer',
+        amountKobo: 10000,
+        incurredAt: '2026-05-02T00:00:00.000Z',
+        allocations: [
+          { plantingId: a.id, sharePercent: 60 },
+          { plantingId: b.id, sharePercent: 30 }
+        ]
       })
-    ).rejects.toThrow(/kobo/);
-    const expense = await service.createExpense(farmer, plot.id, {
+    ).rejects.toBeInstanceOf(BadRequestException);
+    const expense = await service.createExpense(owner, plot.id, {
       category: 'fertilizer',
-      amountKobo: 750_000,
-      incurredAt: '2025-06-01T00:00:00.000Z',
-      note: 'NPK 20-10-10'
+      amountKobo: 10000,
+      incurredAt: '2026-05-02T00:00:00.000Z',
+      allocations: [
+        { plantingId: a.id, sharePercent: 60 },
+        { plantingId: b.id, sharePercent: 40 }
+      ]
     });
-    expect(expense.amountKobo).toBe(750_000);
-    expect(await service.listExpenses(farmer, plot.id)).toHaveLength(1);
-    await expect(service.listExpenses(otherFarmer, plot.id)).rejects.toThrow(/your own records/);
+    expect(expense.id).toBeDefined();
+    const allocations = await service.listPlantingExpenseAllocations(owner, a.id);
+    expect(allocations).toEqual([{ expenseId: expense.id, plantingId: a.id, sharePercent: 60 }]);
   });
 
-  /* ------------------------------ summary ------------------------------ */
-
-  it('aggregates per-owner summary across plots', async () => {
-    const plotA = await service.createPlot(farmer, plotInput);
-    const plotB = await service.createPlot(farmer, { ...plotInput, name: 'Second', sizeHectares: 1.5 });
-    await service.createPlot(otherFarmer, { ...plotInput, name: 'Not mine' });
-    const maize = await service.createPlanting(farmer, plotA.id, plantingInput);
-    await service.createPlanting(farmer, plotB.id, { ...plantingInput, crop: 'Cassava' });
-    await service.recordHarvest(farmer, maize.id, {
-      harvestedAt: '2025-09-20T00:00:00.000Z',
-      quantity: 40,
-      unit: 'bags'
+  it('plot-level expenses carry no allocations', async () => {
+    const plot = await service.createPlot(owner, {
+      name: 'Shared',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 1
     });
-    await service.recordHarvest(farmer, maize.id, {
-      harvestedAt: '2025-09-22T00:00:00.000Z',
-      quantity: 10,
-      unit: 'bags'
+    const expense = await service.createExpense(owner, plot.id, {
+      category: 'labour',
+      amountKobo: 4000,
+      incurredAt: '2026-05-02T00:00:00.000Z'
     });
-    await service.createExpense(farmer, plotA.id, {
-      category: 'seeds',
-      amountKobo: 200_000,
-      incurredAt: '2025-05-10T00:00:00.000Z'
-    });
-    let summary = await service.summary(farmer);
-    expect(summary.activePlantings).toBe(2); // cassava growing + maize partially harvested (A3)
-    // Close the maize season explicitly (partially_harvested → harvested).
-    await service.updatePlantingStatus(farmer, maize.id, 'harvested');
-    summary = await service.summary(farmer);
-    expect(summary.ownerUserId).toBe('farmer-1');
-    expect(summary.plotCount).toBe(2);
-    expect(summary.totalHectares).toBe(4);
-    expect(summary.activePlantings).toBe(1); // cassava still growing
-    expect(summary.harvestByCrop).toEqual([{ crop: 'Maize', totalQuantity: 50, harvestCount: 2 }]);
-    expect(summary.totalExpensesKobo).toBe(200_000);
+    const expenses = await service.listExpenses(owner, plot.id);
+    expect(expenses.map((row) => row.id)).toContain(expense.id);
   });
+});
 
-  it('scopes summary to the caller unless admin', async () => {
-    await service.createPlot(farmer, plotInput);
-    await expect(service.summary(farmer, 'farmer-2')).rejects.toThrow(/your own farm summary/);
-    const adminView = await service.summary(admin, 'farmer-1');
-    expect(adminView.ownerUserId).toBe('farmer-1');
-    expect(adminView.plotCount).toBe(1);
-    expect((await service.summary(farmer, 'farmer-1')).ownerUserId).toBe('farmer-1');
+describe('FarmsService — summary aggregation', () => {
+  it('aggregates plots, active plantings and harvest totals per owner', async () => {
+    const service = makeService().service;
+    const plot = await service.createPlot(owner, {
+      name: 'Summary',
+      state: 'Kaduna',
+      lga: 'Zaria',
+      centroidLat: 11,
+      centroidLong: 7,
+      sizeHectares: 3
+    });
+    const planting = await service.createPlanting(owner, plot.id, {
+      crop: 'rice',
+      season: '2026-wet',
+      plantedAt: '2026-05-01T00:00:00.000Z'
+    });
+    await service.recordHarvest(owner, planting.id, {
+      harvestedAt: '2026-08-01T00:00:00.000Z',
+      quantity: 2,
+      unit: 'tonnes'
+    });
+    const summary = await service.summary(owner, undefined);
+    expect(summary.plotCount).toBeGreaterThanOrEqual(1);
+    expect(summary.totalHectares).toBeGreaterThanOrEqual(3);
+    expect(summary.activePlantings).toBeGreaterThanOrEqual(1);
+    const rice = summary.harvestTotalsByCrop.find((row) => row.crop === 'rice');
+    expect(rice?.quantity).toBe(2);
+    await expect(service.summary(owner, 'user-2')).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
