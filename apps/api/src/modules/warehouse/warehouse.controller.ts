@@ -14,7 +14,7 @@ import { ArrayMinSize, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLeng
 import type { User, WarehouseCertificationStatus, WarehouseGrade } from '@agric-platform/shared';
 import { WAREHOUSE_CERTIFICATION_STATUSES, WAREHOUSE_GRADES, WAREHOUSE_LOSS_KINDS } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { WarehouseBondService } from './warehouse-bond.service.js';
 import {
@@ -227,6 +227,7 @@ export class WarehouseController {
   /* ------------------------- warehouse registry (admin) ------------------ */
 
   @Get('warehouses')
+  @Public()
   @ApiOperation({ summary: 'Browse the certified warehouse registry (state/LGA/certification filters)' })
   browseWarehouses(@Query() query: BrowseWarehousesQuery) {
     return this.warehouse.browseWarehouses(query).then((data) => ({ data }));
@@ -241,6 +242,7 @@ export class WarehouseController {
   }
 
   @Get('warehouses/:id')
+  @Public()
   @ApiOperation({ summary: 'Warehouse detail (capacity, H3 cell, certification status)' })
   async getWarehouse(@Param('id') id: string) {
     return { data: await this.warehouse.getWarehouse(id) };
@@ -335,6 +337,7 @@ export class WarehouseController {
   }
 
   @Get('receipts/:id/verify')
+  @Public()
   @ApiOperation({ summary: 'Verify the HMAC signature of a receipt (tamper evidence)' })
   async verifyReceipt(@Param('id') id: string) {
     const receipt = await this.warehouse.getReceipt(id);
@@ -490,6 +493,7 @@ export class WarehouseController {
   }
 
   @Get('integrations/status')
+  @Public()
   @ApiOperation({ summary: 'External-port driver labels (certification feed, collateral registry)' })
   integrationStatus() {
     return { data: this.warehouse.integrationStatus() };
