@@ -273,7 +273,13 @@ export class BridgeSyncService implements OnModuleInit, OnModuleDestroy {
         durationMinutes: 0,
         language: 'en',
         enrolmentCount: 0,
-        offlineAvailable: false
+        offlineAvailable: false,
+        // Deterministic unique handle + external reference (GAP-L12): the
+        // bridge is the in-repo writer for slug/moodle_course_id; synced
+        // catalogue rows are visible by definition (published).
+        slug: id,
+        moodleCourseId: course.id,
+        published: true
       };
       if (await this.courses.findById(id)) {
         // Never clobber local curation: only the synced title is refreshed.
