@@ -25,7 +25,7 @@ import {
   resolveAtCallbackToken
 } from '../../common/auth/at-callback.utils.js';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Roles } from '../../common/auth/roles.decorator.js';
+import { Public, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import {
   AGENT_STATUSES,
@@ -689,13 +689,14 @@ export class AgentUssdController {
   constructor(private readonly ussd: AgentUssdService) {}
 
   @Post('callback')
+  @Public()
   @HttpCode(200)
   @Header('Content-Type', 'text/plain; charset=utf-8')
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @ApiOperation({
     summary:
       "Africa's Talking agent-banking USSD callback (CON/END plain text, ≤182 chars). " +
-      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY/AT_USERNAME. ' +
+      'Disabled unless USSD_DRIVER=live|sandbox with AT_API_KEY and AT_USERNAME. ' +
       'Requires the AT_CALLBACK_TOKEN secret (?token= or x-at-callback-token) once configured.'
   })
   async callback(
