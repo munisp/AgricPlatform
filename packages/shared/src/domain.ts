@@ -131,6 +131,14 @@ export interface Course {
   language: LanguageCode;
   enrolmentCount: number;
   offlineAvailable: boolean;
+  /** URL-friendly unique handle (additive; learning.courses.slug). */
+  slug?: string;
+  /** Free-text course summary (additive; learning.courses.description). */
+  description?: string;
+  /** External Moodle reference — set only by the Moodle bridge sync (additive). */
+  moodleCourseId?: number;
+  /** Catalogue visibility flag (additive; learning.courses.published). */
+  published?: boolean;
 }
 
 export interface Enrolment {
@@ -202,9 +210,18 @@ export interface Chapter {
   parentId?: string;
   state: string;
   lga?: string;
+  /** Ward name for ward-level chapters (additive; chapters.ward). */
+  ward?: string;
   leadUserId?: string;
   memberCount: number;
   active: boolean;
+}
+
+export interface ChapterMember {
+  chapterId: string;
+  userId: string;
+  role: 'member' | 'lead' | 'secretary';
+  joinedAt: string;
 }
 
 export interface ChapterEvent {
@@ -216,6 +233,12 @@ export interface ChapterEvent {
   location: string;
   rsvpCount: number;
   attendanceCount: number;
+  /** Optional agenda/notes (additive; chapters.events.description). */
+  description?: string;
+  /** Optional scheduled end (additive; chapters.events.ends_at). */
+  endsAt?: string;
+  /** Actor who created the event (additive; chapters.events.created_by). */
+  createdBy?: string;
 }
 
 export interface AdvisoryItem {
@@ -234,6 +257,8 @@ export interface MarketplaceListing {
   sellerId: string;
   kind: 'produce' | 'input' | 'service' | 'equipment' | 'storage' | 'transport';
   title: string;
+  /** Free-text listing detail (additive; marketplace.listings.description). */
+  description?: string;
   crop?: string;
   quantity: number;
   unit: string;
@@ -297,6 +322,10 @@ export interface VaultDocument {
   fileName: string;
   status: 'uploaded' | 'verified' | 'rejected';
   uploadedAt: string;
+  /** Object-store key resolving to the uploaded blob; never an inline PII blob (additive). */
+  storageRef?: string;
+  /** Stamped when an admin verifies the document (additive). */
+  verifiedAt?: string;
 }
 
 export interface NotificationPreference {
@@ -311,8 +340,14 @@ export interface NotificationMessage {
   channel: NotificationChannel;
   title: string;
   body: string;
-  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'read';
+  status: 'queued' | 'sent' | 'delivered' | 'failed' | 'read' | 'suppressed';
   createdAt: string;
+  /** Deterministic dedupe key persisted under the UNIQUE guard (additive). */
+  idempotencyKey?: string;
+  /** Stamped when a delivery attempt records status 'sent' (additive). */
+  sentAt?: string;
+  /** Stamped when the recipient marks the message read (additive). */
+  readAt?: string;
 }
 
 export interface AuditEvent {
