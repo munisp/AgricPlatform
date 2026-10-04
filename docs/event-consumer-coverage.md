@@ -8,6 +8,14 @@ the coverage gap explicit, per event name, and fail the test suite when a
 newly introduced event name is left unclassified. They do **not** implement
 the missing consumers, and nothing here is a production-readiness claim.
 
+**Progress since the guardrail landed:** the first real end-to-end business
+consumer on the default path now exists
+(`notifications/order-status-notifications.listener.ts` — buyer in_app
+notification on delivery-critical order transitions, GAP-H05 partial), and
+the reliability gaps behind the register items GAP-M03/M09/M10/M11/M20 and
+GAP-L02/L03/L05 are fixed (see §limits below). Everything else remains
+deferred-with-guardrail.
+
 ## How the event spine actually delivers
 
 `DomainEventsService` (`apps/api/src/core/domain-events.service.ts`) is the
@@ -33,7 +41,7 @@ marked `published_at` after fan-out, and *no code reacts to it*. The
 business reaction one might expect (a notification, a projection, a
 webhook, a workflow) is **deferred** — it does not exist yet.
 
-## 1. In-process listeners (13 event names)
+## 1. In-process listeners (14 event names)
 
 | Event name | Listener(s) |
 | --- | --- |
@@ -44,10 +52,11 @@ webhook, a workflow) is **deferred** — it does not exist yet.
 | `farms.plot.removed` | `geo/geo.service.ts` (H3 removal) |
 | `insurance.payout.paid` | `insurance/voucher-covers.service.ts` |
 | `insurance.trigger.raised` | `insurance/voucher-covers.service.ts` |
-| `integration.webhook.received` | `notifications/inbound-conversations.service.ts` |
+| `integration.webhook.received` | `notifications/inbound-conversations.service.ts`, `integrations/payment-webhook.listener.ts` (GAP-L05: durable payment-callback reconciliation for paystack/flutterwave) |
 | `livestock.animal.status_changed` | `livestock-trade/insurance.service.ts`, `livestock-trade/liens.service.ts` (via shared `LIVESTOCK_ANIMAL_STATUS_CHANGED_EVENT` constant) |
 | `livestock.recall.initiated` | `livestock-health/recall-notifications.listener.ts`, `livestock-trade/insurance.service.ts` |
 | `marketplace.escrow.status_changed` | `marketplace/coop-pool.service.ts`, `marketplace/offtake.service.ts` |
+| `marketplace.order.status_changed` | `notifications/order-status-notifications.listener.ts` (GAP-H05 partial: buyer in_app notification on `delivered`/`completed`; also analytics-projected) |
 | `voice.agent_case.created` | `voice/escalation-console.service.ts` |
 | `warehouse.receipt.loss_reported` | `warehouse/ltv-guardian.service.ts` |
 
@@ -97,16 +106,17 @@ scheduler-dependent reader of the same outbox rows.
 Detective control only (read-only on ledger/outbox), gated behind the
 `float-sentinel` feature flag (default OFF) and an external scheduler call.
 
-## 6. Explicit audit-only (345 event names)
+## 6. Explicit audit-only (346 event names)
 
 No consumer of any class reacts to these events on any path. The outbox row
 is the audit trail; the business reaction is an accepted, documented
 deferral (GAP-H05). The checked-in source of truth is `AUDIT_ONLY_EVENTS`
 in `apps/api/src/core/events/event-consumer-coverage.ts`.
 
-<details><summary><code>advisory.*</code> — 11 events</summary>
+<details><summary><code>advisory.*</code> — 12 events</summary>
 
 - `advisory.content.published`
+- `advisory.market_data_ingestion.failed` (GAP-M10: durable record of an exhausted ingestion pass)
 - `advisory.price_dispatch.failed`
 - `advisory.price_dispatch.sent`
 - `advisory.price_dispatch.suppressed`
@@ -664,29 +674,41 @@ in `apps/api/src/core/events/event-consumer-coverage.ts`.
 2. **Unconsumed events are durable but inert.** Audit-only events persist
    in `events.outbox` and are marked published after the (no-op) fan-out.
    Durability is not delivery: any business reaction to those
-   345 event names is deferred until a consumer is
+   346 event names is deferred until a consumer is
    implemented.
 3. **Published audit rows are subject to the retention horizon.** The
    default compliance policy (`infra/postgres/118_compliance_retention_webhook_outbox.sql`)
    hard-prunes `events.outbox` rows 90 days after `published_at`
    (`anonymize_not_delete = false`; an operator can flip it to payload
-   tombstoning). Audit-only history therefore has a bounded lifetime, and
-   **dead-lettered rows are never matched by retention at all** — they
-   accumulate with full payloads indefinitely (GAP-M20).
-4. **The outbox sweeper requires an external scheduler.** The API starts
-   no timers (GAP-M03): `POST /admin/outbox/sweep` must be invoked
-   externally, the five backstop CronJobs in `infra/k8s/cronjobs/` are not
-   part of any kustomization, and `SWEEPERS_ENABLED` defaults off. Without
-   that wiring, retries never fire and the projector/sentinel never run.
-5. **Listener dedup is incomplete (GAP-M09).** Only the recall-notification
-   listener (plus whatsapp / partner-dispatch paths) guards with
-   `EventDedupService`. A sweeper re-drive re-executes *every* listener;
-   correctness for the rest rests on unverified per-handler write
-   idempotency.
+   tombstoning). Audit-only history therefore has a bounded lifetime.
+   **Dead-lettered rows now have their own retention policy (GAP-M20,
+   fixed):** `infra/postgres/122_outbox_dead_letter_retention.sql` adds the
+   `events.outbox_dead_letters` policy (30 days, keyed on
+   `dead_lettered_at`); the retention sweep tombstones the payload to
+   `{}` BEFORE purging, and never matches unpublished or published rows.
+4. **The outbox sweeper has an in-process scheduler (GAP-M03, fixed).**
+   `OutboxRelaySchedulerService` (`apps/api/src/core/outbox-relay-scheduler.service.ts`)
+   runs the sweep every minute (default ON; `OUTBOX_RELAY_ENABLED=false`
+   disables; production defaults OFF for the CronJob driver), jittered at
+   startup and single-writer via a pg advisory lock when PostgreSQL is
+   live. `POST /admin/outbox/sweep` remains the external driver; the five
+   backstop CronJobs in `infra/k8s/cronjobs/` are not part of any
+   kustomization, and `SWEEPERS_ENABLED` defaults off. Sync version-bump
+   reconciliation (GAP-M11) is scheduler-driven via
+   `POST /admin/sweeps/sync-version-retries`.
+5. **Listener dedup is now uniform (GAP-M09, fixed).** Every in-process
+   listener enumerated in this document runs behind the shared
+   `EventDedupService.runOnce` guard (`events.processed_events`,
+   mark-after-processing with in-flight serialization): a sweeper re-drive
+   of an already-handled event is a no-op, and a failed handling stays
+   unrecorded so re-drive retries it. Handler-side write idempotency
+   remains the convergence mechanism after partial failures.
 6. **Partner webhook delivery is not at-least-once** on the default path
    (GAP-H06 — see §2).
-7. **Outbox reads are bounded at 1000 rows per pass** (GAP-L03): deep
-   backlogs drain over many sweeper/projector invocations.
+7. **Outbox reads are paged (GAP-L03, fixed).** The sweep drains the
+   repository page repeatedly (bounded at `OUTBOX_SWEEP_MAX_PAGES` = 10
+   pages per pass) until a page makes no state change, so deep backlogs
+   drain within one invocation instead of one page per invocation.
 8. **Field-agents event taxonomy fixed.** The field-agents events were
    previously emitted as `field-agents.assignment.*` and
    `field-agents.profile.captured` with a hyphen and were **rejected by the
