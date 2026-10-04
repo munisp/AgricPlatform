@@ -19,7 +19,7 @@ import {
   OFFTAKE_TEMPLATE_STATUSES
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import type {
   CreateCertifiedListingInput
@@ -230,6 +230,7 @@ export class LivestockTradeController {
   }
 
   @Get('certified-listings/:id/provenance')
+  @Public()
   @ApiOperation({
     summary:
       'Public buyer-safe provenance summary (certification status, species, ownership depth, state). No authentication required; no PII beyond what certified listings already expose publicly.'

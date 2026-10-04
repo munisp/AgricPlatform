@@ -167,10 +167,17 @@ describe('GeoIntelService.assessFloodRisk', () => {
     process.env.FLOOD_ML_DRIVER = 'http';
     process.env.FLOOD_ML_URL = 'http://flood-ml:8001';
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('connect ECONNREFUSED')));
-    const { service } = makeService();
-    await expect(service.assessFloodRisk(actor, { lat: 9, long: 8 })).rejects.toBeInstanceOf(
-      ServiceUnavailableException
-    );
+    // Fake timers keep the retry backoff (GAP-M01) instant.
+    vi.useFakeTimers();
+    try {
+      const { service } = makeService();
+      const pending = service.assessFloodRisk(actor, { lat: 9, long: 8 });
+      const assertion = expect(pending).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('serves live assessments from the sidecar when reachable', async () => {
@@ -185,7 +192,8 @@ describe('GeoIntelService.assessFloodRisk', () => {
             severity: 'high',
             flood_percentage: 12.4,
             flood_area_km2: 3.1,
-            avg_confidence: 0.87
+            avg_confidence: 0.87,
+            basis: 'live'
           }),
           { status: 200, headers: { 'content-type': 'application/json' } }
         )
@@ -196,7 +204,32 @@ describe('GeoIntelService.assessFloodRisk', () => {
     expect(result.driver).toBe('http');
     expect(result.floodDetected).toBe(true);
     expect(result.severity).toBe('high');
+    expect(result.basis).toBe('live');
     expect(result.source).toContain('flood-ml sidecar');
+  });
+
+  it('fails closed with 503 when the sidecar omits the basis provenance field', async () => {
+    process.env.FLOOD_ML_DRIVER = 'http';
+    process.env.FLOOD_ML_URL = 'http://flood-ml:8001';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ flood_detected: false, severity: 'none' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+    );
+    vi.useFakeTimers();
+    try {
+      const { service } = makeService();
+      const pending = service.assessFloodRisk(actor, { lat: 9, long: 8 });
+      const assertion = expect(pending).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
