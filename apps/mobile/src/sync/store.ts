@@ -215,8 +215,6 @@ export interface SyncStore {
   pushPending(): Promise<PushSummary>;
   /** Explicit sync pass: pull every entity, then flush the outbox. */
   syncNow(entities: readonly string[]): Promise<SyncSummary>;
-  /** Cheap "am I behind?" probe straight from the server (§8). */
-  fetchServerStatus(): Promise<SyncStatusEntry[]>;
 }
 
 export interface SyncStoreOptions {
@@ -717,7 +715,6 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
     pullEntity,
     enqueue,
     pushPending,
-    syncNow,
-    fetchServerStatus: () => transport.status()
+    syncNow
   };
 }
