@@ -62,6 +62,39 @@ tickets/chat.
 4. Post an incident note if user traffic was affected (see
    [incident-response.md](incident-response.md)).
 
+## Backstop scheduler CronJobs (GAP-M03)
+
+The outbox relay and webhook-delivery recovery passes have **no in-process
+timer by default** (`SWEEPERS_ENABLED` is off; the API starts no timers of
+its own for the outbox relay). They are driven by two CronJobs that ARE part
+of the default staging and production kustomize overlays:
+
+| CronJob | Schedule | Drives |
+| --- | --- | --- |
+| `outbox-relayer` (`infra/k8s/cronjobs/outbox-relayer.yaml`) | every minute | `POST /admin/outbox/sweep` |
+| `webhook-deliveries` (`infra/k8s/cronjobs/webhook-deliveries.yaml`) | every 5 minutes | `POST /admin/webhooks/reprocess`, then `POST /admin/partner-webhooks/redrive` |
+
+These jobs are **backstops to the in-process scheduler**, not either/or:
+enabling `SWEEPERS_ENABLED=true` on the API and running the CronJobs at the
+same time is safe. Every sweep/reprocess/redrive pass is idempotent and
+CAS-guarded (outbox rows carry attempt state + backoff; webhook replays keep
+their stable delivery ids and consumer-side dedup), so an overlapping pass
+is a no-op — never pause one mechanism just because the other is on.
+
+Operational notes:
+
+- Both jobs fail loudly (non-2xx → job failure) and present
+  `SWEEPER_ADMIN_TOKEN` from the `agric-secrets` Secret; a 401 means the
+  token rotated, not that the sweep is unnecessary.
+- After any overlay apply, confirm the jobs exist:
+  `kubectl get cronjobs -n agric-platform outbox-relayer webhook-deliveries`.
+- The remaining jobs in `infra/k8s/cronjobs/` (escrow-expiry, voucher-stuck,
+  projector sweeper) are still applied deliberately and are NOT in the
+  overlays.
+- Still alert on the outbox backlog (`AgricOutboxBacklogGrowing`) — a
+  deployed-but-starved CronJob (bad token, API down) is indistinguishable
+  from a missing one without the alert.
+
 ## On-call alerts → actions
 
 Alerts are defined in `infra/observability/alerts.yml`; each carries a
@@ -96,9 +129,11 @@ Alerts are defined in `infra/observability/alerts.yml`; each carries a
 
 ### AgricOutboxBacklogGrowing / AgricOutboxOldestPendingOld (warn/page)
 
-1. The outbox sweeper is externally scheduled (cron/CronJob running
-   `scripts/sweep-outbox.mjs`). Confirm the schedule still runs and the
-   `ADMIN_TOKEN` it presents is still valid.
+1. The outbox sweeper is externally scheduled — the `outbox-relayer`
+   CronJob (`infra/k8s/cronjobs/outbox-relayer.yaml`, in the default
+   overlays; see "Backstop scheduler CronJobs (GAP-M03)" above) or a cron
+   running `scripts/sweep-outbox.mjs`. Confirm the schedule still runs and
+   the admin token it presents is still valid.
 2. Run one manual sweep: `API_BASE_URL=… ADMIN_TOKEN=… npm run sweep:outbox`.
 3. A single stuck row (age alert with small backlog): the listener for
    that event type throws every pass. Find `outbox relay failed` in the
@@ -119,9 +154,11 @@ after the synchronous fan-out, so only the dispatch dedup ledger
 that delivery never completed.
 
 1. Confirm the webhook-deliveries CronJob
-   (`infra/k8s/cronjobs/webhook-deliveries.yaml`) is applied and running —
-   it is deliberately NOT part of any kustomization (GAP-M03), so a fresh
-   cluster has no redrive at all until you apply it.
+   (`infra/k8s/cronjobs/webhook-deliveries.yaml`) is deployed and running —
+   it is part of the default staging/production overlays (see "Backstop
+   scheduler CronJobs (GAP-M03)" above), so on an overlay-managed cluster it
+   should exist; on a hand-rolled cluster it must be applied deliberately or
+   there is no redrive at all.
 2. Run one manual redrive pass:
    `curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" "$API_BASE_URL/admin/partner-webhooks/redrive"`.
    The response counts `{scanned, attempted, redelivered, failed}`;
@@ -232,10 +269,15 @@ signed JSONL file next to the anchor sink instead.
 
 ## Client contract — escrow expiry race (N-4)
 
-Escrow expiry is lazy: a payment intent that passes `expiresAt` is not
-swept in the background — it flips to `expired` the NEXT time it is read
-or acted on. Clients therefore MUST NOT treat "no expiry event received"
-as "still payable". Contract for integrators:
+Escrow expiry is lazy at the API edge: a payment intent (`GET
+/payments/intents/:id`, implemented in
+`apps/api/src/modules/marketplace/commerce.controller.ts` over the escrow
+hold) that passes its server-issued `expiresAt` reports `status: 'expired'`
+on the NEXT read; a background sweeper
+(`apps/api/src/modules/sweepers/escrow-expiry-sweeper.service.ts`, plus the
+admin `POST /escrow/expire` backstop) drives the actual auto-refund. Clients
+therefore MUST NOT treat "no expiry event received" as "still payable".
+Contract for integrators:
 
 - always read the intent (`GET /payments/intents/:id`) immediately before
   attempting confirmation; a `status: 'expired'` response is final;
