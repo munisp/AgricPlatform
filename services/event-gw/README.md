@@ -28,17 +28,27 @@ metric, never fanned out):
    (`crypto/hmac` + `hmac.Equal`) against the signature header, decoded per
    provider as hex (optional `sha256=` prefix tolerated) or base64
    (`EVENTGW_SIG_ENCODING_<NAME>`).
-3. Replay cache: an in-memory map (mutex-guarded, TTL eviction goroutine)
-   keyed on provider+timestamp+signature rejects duplicate deliveries with
-   **409** for `EVENTGW_REPLAY_TTL_SECONDS` (default 600 s). In stub mode the
-   key falls back to a body hash — two distinct-but-identical payloads inside
+3. Replay cache: a TTL map (mutex-guarded, eviction goroutine) keyed on
+   provider+timestamp+signature rejects duplicate deliveries with **409**
+   for `EVENTGW_REPLAY_TTL_SECONDS` (default 600 s). In stub mode the key
+   falls back to a body hash — two distinct-but-identical payloads inside
    the window collapse to a replay there, a documented stub-mode limitation.
+   **Persistence (GAP-L02)**: with `EVENTGW_REPLAY_PERSIST_PATH` set, markers
+   are appended to a JSONL file (compacted tmp+rename on TTL eviction, same
+   doctrine as the spool) so a restart does NOT forget recent deliveries
+   inside the skew window. The sidecar is dependency-free (stdlib only, no
+   Redis client), so the durable store is a bounded local file on the same
+   volume convention as the spool. Load is **fail-closed**: a corrupt marker
+   file rejects every webhook with **503** (logged at startup) rather than
+   silently dropping replay protection, and a mid-request persist write
+   failure also answers 503. Set it in production; unset keeps the
+   in-memory-only cache (development default, warned about at startup).
 
 ## Endpoints
 
 | Route | Purpose |
 | --- | --- |
-| `POST /webhooks/{provider}` | Ingest one webhook. `202` once durably accepted (`"delivery":"delivered"` or `"spooled"`), `400` bad shape, `401` bad signature/timestamp, `404` unknown provider, `409` replay, `503` live-mode provider without secret. |
+| `POST /webhooks/{provider}` | Ingest one webhook. `202` once durably accepted (`"delivery":"delivered"` or `"spooled"`), `400` bad shape, `401` bad signature/timestamp, `404` unknown provider, `409` replay, `503` live-mode provider without secret or replay store unavailable (GAP-L02 fail-closed). |
 | `GET /healthz` | Liveness: mode, uptime, known provider count. Always 200. |
 | `GET /readyz` | Readiness detail: circuit-breaker state + spool backlog. `200` ready, `503` degraded while the breaker is open (the spool still accepts). |
 | `GET /metrics` | Prometheus text format, hand-rolled: `eventgw_webhooks_received_total`, `eventgw_webhooks_verified_total`, `eventgw_webhooks_rejected_total`, `eventgw_events_fanned_total`, `eventgw_events_deadlettered_total` (all `{provider=...}`), plus gauges `eventgw_spool_backlog`, `eventgw_breaker_open`, `eventgw_mode{mode=...}`. Verified stays 0 in stub mode — honest by construction. |
@@ -68,6 +78,33 @@ payload's `eventId`/`event_id`/`id` when present, else generated as
   `202` with `"delivery":"spooled"`; only a spool **write** failure turns the
   response into a 500.
 
+## Internal ingress contract (GAP-C03 / GAP-H01) and integration test
+
+The fanout target is the API's dedicated internal ingress
+`POST /api/v1/internal/events`, implemented and owned on the NestJS side by:
+
+- `apps/api/src/modules/integrations/internal-events.controller.ts` — route +
+  `EventGwEnvelopeDto` (whitelist + `forbidNonWhitelisted`: exactly the four
+  envelope fields; any extra top-level field, e.g. a smuggled provider-native
+  `signature`, is a `400`; success is `201 {data:...}`);
+- `apps/api/src/modules/integrations/internal-token.guard.ts` —
+  `X-Internal-Token` auth: `503` fail-closed when the API has no
+  `EVENTGW_INTERNAL_TOKEN` configured, `401` on a missing/mismatched token,
+  compared constant-time over SHA-256 hashes of both sides;
+- `apps/api/test/internal-events.e2e.spec.ts` — the API-side contract e2e.
+
+`internal/gateway/integration_fanout_test.go` closes the loop from the Go
+side: it runs the real edge server (live-mode HMAC verification included)
+against an `httptest` mock that re-implements exactly the contract above —
+envelope shape, constant-time token compare, `503` fail-closed, `401` on a
+bad token — and asserts the sidecar's fanout delivers precisely what the API
+expects, including spool + drain redrive on `5xx` and **no provider-native
+signature headers on the internal path** (GAP-H01). The test is fully
+in-process (no external services), so it runs under plain `go test ./...`
+and is deliberately NOT gated behind a build tag or env flag. **If either
+side of the contract changes, that file and the three API files above must
+change together** — the mock's expectations are the drift tripwire.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -84,6 +121,7 @@ payload's `eventId`/`event_id`/`id` when present, else generated as
 | `EVENTGW_SPOOL_PATH` | `/var/spool/event-gw/deadletter.jsonl` | Dead-letter spool file. |
 | `EVENTGW_MAX_SKEW_SECONDS` | `300` | Timestamp skew window. |
 | `EVENTGW_REPLAY_TTL_SECONDS` | `600` | Replay-cache entry TTL. |
+| `EVENTGW_REPLAY_PERSIST_PATH` | _(empty)_ | GAP-L02: JSONL file persisting replay markers across restarts. Empty = in-memory only (dev default, startup warning; set it in production). Corrupt file → webhooks 503 (fail-closed). |
 | `EVENTGW_MAX_ATTEMPTS` | `3` | Fanout attempts per delivery cycle. |
 | `EVENTGW_BACKOFF_BASE_MS` / `EVENTGW_BACKOFF_MAX_MS` | `200` / `2000` | Retry backoff base / cap. |
 | `EVENTGW_BREAKER_THRESHOLD` | `5` | Consecutive failures before the breaker opens. |
@@ -147,6 +185,13 @@ docker run --rm -p 8090:8090 -e EVENTGW_MODE=stub agric-event-gw
   entries while failing, drain skipped while open, poison-line retention,
   healthz/readyz/metrics content, readyz degraded state, method routing,
   config defaults/overrides/bad-value table.
+- Update (GAP-C03/H01 integration test, this branch): with
+  `internal/gateway/integration_fanout_test.go` added, `go test ./...
+  -count=1` → exit 0 (5 new top-level tests: happy-path contract,
+  spool+redrive on 5xx, fail-closed 503 with no API token, bad-token 401
+  never accepted, mock-vs-guard semantics table). Run with go1.22.12 in the
+  sandbox; module deps fetched via a goproxy mirror (proxy.golang.org is
+  blocked in the sandbox).
 - `go vet ./...` → exit 0, no output.
 - `gofmt -l .` → exit 0, no output.
 - Binary smoke test (real process + fake ingress): stub-mode unsigned POST →
@@ -176,6 +221,8 @@ docker run --rm -p 8090:8090 -e EVENTGW_MODE=stub agric-event-gw
   + envelope fields) is implemented on the NestJS side
   (`apps/api/src/modules/integrations/internal-events.controller.ts`, guarded
   by `internal-token.guard.ts` against `EVENTGW_INTERNAL_TOKEN`, fail-closed)
-  with unit-tested token/envelope/replay semantics — but the two sides have
-  not been integration-tested together end to end.
+  and is covered end to end by `internal/gateway/integration_fanout_test.go`
+  (sidecar → mock API, in-process — see the contract section above). What is
+  still NOT covered is a live deployment test against a real NestJS API
+  instance; that remains CI/deployment-level verification.
 - Secrets come from the environment only; nothing is committed.
