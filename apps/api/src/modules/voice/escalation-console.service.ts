@@ -15,6 +15,8 @@ import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { TenantContext } from '../../common/telemetry/tenant-context.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   AGENT_CASE_REPOSITORY,
   ESCALATION_CASE_REPOSITORY,
@@ -152,7 +154,15 @@ export class EscalationConsoleService implements OnModuleInit {
     private readonly audit: AuditService,
     private readonly integrations: IntegrationsService,
     @Optional() telemetry?: TelemetryService,
-    @Optional() private readonly env: NodeJS.ProcessEnv = process.env
+    @Optional() private readonly env: NodeJS.ProcessEnv = process.env,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never double-enqueues a console case.
+    // @Optional with an in-memory fallback so bare unit constructions keep
+    // working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {
     this.telemetry = telemetry ?? new TelemetryService();
   }
@@ -168,11 +178,15 @@ export class EscalationConsoleService implements OnModuleInit {
       if (!caseId) {
         return;
       }
-      void this.enqueueFromAgentCase(caseId).catch((error: unknown) => {
-        this.logger.warn(
-          `console intake failed for agent case ${caseId}: ${(error as Error)?.message ?? error}`
-        );
-      });
+      // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+      // already-mirrored escalation is a no-op.
+      void this.dedup
+        .runOnce('voice-escalation-console', event.id, () => this.enqueueFromAgentCase(caseId))
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `console intake failed for agent case ${caseId}: ${(error as Error)?.message ?? error}`
+          );
+        });
     });
   }
 
