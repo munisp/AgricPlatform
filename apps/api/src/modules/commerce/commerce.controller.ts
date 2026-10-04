@@ -21,7 +21,7 @@ import {
 } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
-import { Authenticated } from '../../common/auth/roles.decorator.js';
+import { Authenticated, Public } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { MarketplaceService } from '../marketplace/marketplace.service.js';
 import { BuyerGroupsService, type CreateBuyerGroupInput, type UpdateBuyerGroupInput } from './buyer-groups.service.js';
@@ -418,6 +418,7 @@ export class CommerceController {
   /* ------------------------- 1. variants & SKUs ------------------------- */
 
   @Get('listings/:id/variants')
+  @Public()
   @ApiOperation({ summary: 'List variants for a listing' })
   async listVariants(@Param('id') id: string, @Query('active') active?: string) {
     return { data: await this.variants.listForListing(id, active === 'true') };
@@ -682,12 +683,14 @@ export class CommerceController {
   }
 
   @Get('listings/:id/reviews')
+  @Public()
   @ApiOperation({ summary: 'Reviews for a listing' })
   async listingReviews(@Param('id') id: string) {
     return { data: await this.reviews.reviewsForListing(id) };
   }
 
   @Get('sellers/:id/rating')
+  @Public()
   @ApiOperation({ summary: 'Materialized seller rating aggregate' })
   async sellerRating(@Param('id') id: string) {
     return { data: await this.reviews.sellerRating(id) };
