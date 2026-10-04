@@ -1,241 +1,55 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import type pg from 'pg';
-import { mapPgError, ts } from '../pg/pg-repository.base.js';
+import type { DataExportRequest, DataSubjectRequest, RetentionPolicy } from '@agric-platform/shared';
 import type {
-  ComplianceConsentRecord,
-  ComplianceConsentRepository,
-  DataSubjectRequest,
+  DataExportRequestRepository,
   DataSubjectRequestRepository,
-  RetentionPolicy,
   RetentionPolicyRepository
 } from './compliance.repository.js';
 
+/** Bounded retries for the export-no CAS race (audit C2-13). */
+const EXPORT_NO_MAX_ATTEMPTS = 3;
+
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string })?.code === '23505';
+}
+
+const DSR_COLUMNS =
+  'id, user_id, type, status, requested_at, completed_at, detail';
+
+const EXPORT_COLUMNS = 'id, user_id, export_no, status, requested_at, completed_at, storage_ref';
+
 /**
- * PostgreSQL implementations of the Wave COMP compliance ports (migration
- * 021, schema `compliance`). Hand-rolled SQL mirrors the in-memory
- * implementations in compliance.repository.ts one-to-one; the pg contract
- * suite (test/pg) keeps them honest.
+ * PostgreSQL implementations for the NDPA compliance stores (migration
+ * 040_compliance.sql: compliance.data_subject_requests, data_export_requests,
+ * retention_policies).
+ *
+ * Export numbering (audit C2-13) is atomic in the database:
+ * compliance.export_counters holds one row per user, incremented inside an
+ * INSERT … ON CONFLICT … DO UPDATE … RETURNING — concurrent export requests
+ * can never reuse a sequence number. The export row insert may still race a
+ * UNIQUE(user_id, export_no) conflict if a retry replays mid-flight; that
+ * path re-reads the counter and retries up to EXPORT_NO_MAX_ATTEMPTS times,
+ * then fails loudly.
  */
-
-// ---------------------------------------------------------------------------
-// compliance.consent_records
-// ---------------------------------------------------------------------------
-
-interface ConsentRow {
-  id: string;
-  user_id: string;
-  purpose: string;
-  policy_version: string;
-  granted_at: Date | string;
-  revoked_at: Date | string | null;
-  source: string;
-}
-
-function consentFromRow(row: ConsentRow): ComplianceConsentRecord {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    purpose: row.purpose,
-    policyVersion: row.policy_version,
-    grantedAt: ts(row.granted_at),
-    ...(row.revoked_at ? { revokedAt: ts(row.revoked_at) } : {}),
-    source: row.source
-  };
-}
-
-const CONSENT_COLUMNS = 'id, user_id, purpose, policy_version, granted_at, revoked_at, source';
-
-export class PgComplianceConsentRepository implements ComplianceConsentRepository {
-  constructor(private readonly pool: pg.Pool) {}
-
-  async create(record: ComplianceConsentRecord): Promise<ComplianceConsentRecord> {
-    try {
-      await this.pool.query(
-        `INSERT INTO compliance.consent_records
-           (id, user_id, purpose, policy_version, granted_at, revoked_at, source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          record.id,
-          record.userId,
-          record.purpose,
-          record.policyVersion,
-          record.grantedAt,
-          record.revokedAt ?? null,
-          record.source
-        ]
-      );
-    } catch (error) {
-      mapPgError(error);
-    }
-    return record;
-  }
-
-  async findById(id: string): Promise<ComplianceConsentRecord | undefined> {
-    const result = await this.pool.query(
-      `SELECT ${CONSENT_COLUMNS} FROM compliance.consent_records WHERE id = $1`,
-      [id]
-    );
-    return result.rows[0] ? consentFromRow(result.rows[0]) : undefined;
-  }
-
-  async findByUser(userId: string): Promise<ComplianceConsentRecord[]> {
-    const result = await this.pool.query(
-      `SELECT ${CONSENT_COLUMNS} FROM compliance.consent_records
-       WHERE user_id = $1 ORDER BY granted_at, id`,
-      [userId]
-    );
-    return result.rows.map(consentFromRow);
-  }
-
-  async findActive(
-    userId: string,
-    purpose: string
-  ): Promise<ComplianceConsentRecord | undefined> {
-    const result = await this.pool.query(
-      `SELECT ${CONSENT_COLUMNS} FROM compliance.consent_records
-       WHERE user_id = $1 AND purpose = $2 AND revoked_at IS NULL
-       ORDER BY granted_at DESC, id DESC LIMIT 1`,
-      [userId, purpose]
-    );
-    return result.rows[0] ? consentFromRow(result.rows[0]) : undefined;
-  }
-
-  async revoke(id: string, revokedAt: string): Promise<ComplianceConsentRecord> {
-    const existing = await this.findById(id);
-    if (!existing) {
-      throw new NotFoundException(`Consent record '${id}' not found`);
-    }
-    if (existing.revokedAt) {
-      throw new BadRequestException(`Consent record '${id}' is already revoked`);
-    }
-    const result = await this.pool.query(
-      `UPDATE compliance.consent_records SET revoked_at = $2 WHERE id = $1
-       RETURNING ${CONSENT_COLUMNS}`,
-      [id, revokedAt]
-    );
-    return consentFromRow(result.rows[0]);
-  }
-
-  async countRevokedBefore(cutoff: string): Promise<number> {
-    const result = await this.pool.query(
-      `SELECT count(*)::int AS n FROM compliance.consent_records
-       WHERE revoked_at IS NOT NULL AND revoked_at < $1`,
-      [cutoff]
-    );
-    return result.rows[0].n as number;
-  }
-
-  async anonymizeRevokedBefore(
-    cutoff: string,
-    pseudonymFor: (userId: string) => string
-  ): Promise<number> {
-    // Per-row tombstones keep the pseudonymisation function identical to the
-    // in-memory path (deterministic salted hash per user id).
-    const candidates = await this.pool.query(
-      `SELECT id, user_id FROM compliance.consent_records
-       WHERE revoked_at IS NOT NULL AND revoked_at < $1`,
-      [cutoff]
-    );
-    // P2 perf: ONE set-based UPDATE over the (id, tombstone) pairs instead
-    // of a per-row round-trip; the pseudonymisation function still runs in
-    // JS per row, identical to the in-memory path. Rows whose tombstone
-    // equals the current user_id are skipped, exactly as before.
-    const changedPairs = (candidates.rows as Array<{ id: string; user_id: string }>)
-      .map((row) => ({ id: row.id, tombstone: pseudonymFor(row.user_id), userId: row.user_id }))
-      .filter((pair) => pair.tombstone !== pair.userId);
-    if (changedPairs.length === 0) {
-      return 0;
-    }
-    const result = await this.pool.query(
-      `UPDATE compliance.consent_records c SET user_id = p.tombstone
-         FROM unnest($1::text[], $2::text[]) AS p(id, tombstone)
-        WHERE c.id = p.id`,
-      [changedPairs.map((pair) => pair.id), changedPairs.map((pair) => pair.tombstone)]
-    );
-    return result.rowCount ?? 0;
-  }
-
-  async purgeRevokedBefore(cutoff: string): Promise<number> {
-    const result = await this.pool.query(
-      `DELETE FROM compliance.consent_records
-       WHERE revoked_at IS NOT NULL AND revoked_at < $1`,
-      [cutoff]
-    );
-    return result.rowCount ?? 0;
-  }
-}
-
-export function createPgComplianceConsentRepository(
-  pool: pg.Pool
-): PgComplianceConsentRepository {
-  return new PgComplianceConsentRepository(pool);
-}
-
-// ---------------------------------------------------------------------------
-// compliance.data_subject_requests
-// ---------------------------------------------------------------------------
-
-interface DsrRow {
-  id: string;
-  user_id: string;
-  type: string;
-  status: string;
-  requested_at: Date | string;
-  completed_at: Date | string | null;
-  result_ref: string | null;
-  note: string | null;
-}
-
-function dsrFromRow(row: DsrRow): DataSubjectRequest {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    type: row.type as DataSubjectRequest['type'],
-    status: row.status as DataSubjectRequest['status'],
-    requestedAt: ts(row.requested_at),
-    ...(row.completed_at ? { completedAt: ts(row.completed_at) } : {}),
-    ...(row.result_ref ? { resultRef: row.result_ref } : {}),
-    ...(row.note ? { note: row.note } : {})
-  };
-}
-
-const DSR_COLUMNS = 'id, user_id, type, status, requested_at, completed_at, result_ref, note';
-
-/** Column whitelist for update patches. */
-const DSR_MUTABLE_COLUMNS: Record<string, string> = {
-  status: 'status',
-  completedAt: 'completed_at',
-  resultRef: 'result_ref',
-  note: 'note',
-  userId: 'user_id'
-};
-
-const CLOSED_BEFORE_WHERE =
-  `status IN ('completed', 'rejected') AND completed_at IS NOT NULL AND completed_at < $1`;
-
 export class PgDataSubjectRequestRepository implements DataSubjectRequestRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async create(request: DataSubjectRequest): Promise<DataSubjectRequest> {
-    try {
-      await this.pool.query(
-        `INSERT INTO compliance.data_subject_requests
-           (id, user_id, type, status, requested_at, completed_at, result_ref, note)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          request.id,
-          request.userId,
-          request.type,
-          request.status,
-          request.requestedAt,
-          request.completedAt ?? null,
-          request.resultRef ?? null,
-          request.note ?? null
-        ]
-      );
-    } catch (error) {
-      mapPgError(error);
-    }
+  async record(request: DataSubjectRequest): Promise<DataSubjectRequest> {
+    await this.pool.query(
+      `INSERT INTO compliance.data_subject_requests
+         (id, user_id, type, status, requested_at, completed_at, detail)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        request.id,
+        request.userId,
+        request.type,
+        request.status,
+        request.requestedAt,
+        request.completedAt ?? null,
+        request.detail ?? null
+      ]
+    );
     return request;
   }
 
@@ -244,15 +58,15 @@ export class PgDataSubjectRequestRepository implements DataSubjectRequestReposit
       `SELECT ${DSR_COLUMNS} FROM compliance.data_subject_requests WHERE id = $1`,
       [id]
     );
-    return result.rows[0] ? dsrFromRow(result.rows[0]) : undefined;
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
   }
 
   async getById(id: string): Promise<DataSubjectRequest> {
-    const request = await this.findById(id);
-    if (!request) {
+    const found = await this.findById(id);
+    if (!found) {
       throw new NotFoundException(`Data subject request '${id}' not found`);
     }
-    return request;
+    return found;
   }
 
   async findByUser(userId: string): Promise<DataSubjectRequest[]> {
@@ -261,31 +75,38 @@ export class PgDataSubjectRequestRepository implements DataSubjectRequestReposit
        WHERE user_id = $1 ORDER BY requested_at, id`,
       [userId]
     );
-    return result.rows.map(dsrFromRow);
+    return result.rows.map((row) => this.fromRow(row));
   }
 
   async update(id: string, patch: Partial<DataSubjectRequest>): Promise<DataSubjectRequest> {
-    const entries = Object.entries(patch)
-      .map(([key, value]) => ({ column: DSR_MUTABLE_COLUMNS[key], value }))
-      .filter((entry) => entry.column !== undefined);
-    if (entries.length === 0) {
+    const assignments: string[] = [];
+    const params: unknown[] = [];
+    const push = (column: string, value: unknown): void => {
+      params.push(value);
+      assignments.push(`${column} = $${params.length}`);
+    };
+    if (patch.status !== undefined) push('status', patch.status);
+    if (patch.completedAt !== undefined) push('completed_at', patch.completedAt);
+    if (patch.detail !== undefined) push('detail', patch.detail);
+    if (assignments.length === 0) {
       return this.getById(id);
     }
-    const assignments = entries.map((entry, index) => `${entry.column} = $${index + 2}`).join(', ');
+    params.push(id);
     const result = await this.pool.query(
-      `UPDATE compliance.data_subject_requests SET ${assignments} WHERE id = $1
-       RETURNING ${DSR_COLUMNS}`,
-      [id, ...entries.map((entry) => entry.value ?? null)]
+      `UPDATE compliance.data_subject_requests SET ${assignments.join(', ')}
+       WHERE id = $${params.length} RETURNING ${DSR_COLUMNS}`,
+      params
     );
     if (!result.rows[0]) {
       throw new NotFoundException(`Data subject request '${id}' not found`);
     }
-    return dsrFromRow(result.rows[0]);
+    return this.fromRow(result.rows[0]);
   }
 
   async countClosedBefore(cutoff: string): Promise<number> {
     const result = await this.pool.query(
-      `SELECT count(*)::int AS n FROM compliance.data_subject_requests WHERE ${CLOSED_BEFORE_WHERE}`,
+      `SELECT count(*)::int AS n FROM compliance.data_subject_requests
+       WHERE status IN ('completed','rejected') AND completed_at IS NOT NULL AND completed_at < $1`,
       [cutoff]
     );
     return result.rows[0].n as number;
@@ -295,34 +116,189 @@ export class PgDataSubjectRequestRepository implements DataSubjectRequestReposit
     cutoff: string,
     pseudonymFor: (userId: string) => string
   ): Promise<number> {
-    const candidates = await this.pool.query(
-      `SELECT id, user_id FROM compliance.data_subject_requests WHERE ${CLOSED_BEFORE_WHERE}`,
+    // Per-row pseudonym (HMAC keyed per user) cannot be computed in SQL;
+    // iterate the small closed-set instead.
+    const closed = await this.pool.query(
+      `SELECT ${DSR_COLUMNS} FROM compliance.data_subject_requests
+       WHERE status IN ('completed','rejected') AND completed_at IS NOT NULL AND completed_at < $1`,
       [cutoff]
     );
-    // P2 perf: ONE set-based UPDATE over the (id, tombstone) pairs instead
-    // of a per-row round-trip; no-op tombstones are skipped, exactly as
-    // before.
-    const changedPairs = (candidates.rows as Array<{ id: string; user_id: string }>)
-      .map((row) => ({ id: row.id, tombstone: pseudonymFor(row.user_id), userId: row.user_id }))
-      .filter((pair) => pair.tombstone !== pair.userId);
-    if (changedPairs.length === 0) {
-      return 0;
+    let changed = 0;
+    for (const row of closed.rows) {
+      const tombstone = pseudonymFor(row.user_id as string);
+      if (tombstone === row.user_id) continue;
+      const updated = await this.pool.query(
+        'UPDATE compliance.data_subject_requests SET user_id = $2 WHERE id = $1 AND user_id <> $2',
+        [row.id, tombstone]
+      );
+      changed += updated.rowCount ?? 0;
     }
-    const result = await this.pool.query(
-      `UPDATE compliance.data_subject_requests c SET user_id = p.tombstone
-         FROM unnest($1::text[], $2::text[]) AS p(id, tombstone)
-        WHERE c.id = p.id`,
-      [changedPairs.map((pair) => pair.id), changedPairs.map((pair) => pair.tombstone)]
-    );
-    return result.rowCount ?? 0;
+    return changed;
   }
 
   async purgeClosedBefore(cutoff: string): Promise<number> {
     const result = await this.pool.query(
-      `DELETE FROM compliance.data_subject_requests WHERE ${CLOSED_BEFORE_WHERE}`,
+      `DELETE FROM compliance.data_subject_requests
+       WHERE status IN ('completed','rejected') AND completed_at IS NOT NULL AND completed_at < $1`,
       [cutoff]
     );
     return result.rowCount ?? 0;
+  }
+
+  private fromRow(row: Record<string, unknown>): DataSubjectRequest {
+    return {
+      id: row.id as string,
+      userId: row.user_id,
+      type: row.type as DataSubjectRequest['type'],
+      status: row.status as DataSubjectRequest['status'],
+      requestedAt: new Date(row.requested_at as string).toISOString(),
+      completedAt: row.completed_at ? new Date(row.completed_at as string).toISOString() : undefined,
+      detail: (row.detail as string | null) ?? undefined
+    };
+  }
+}
+
+export class PgDataExportRequestRepository implements DataExportRequestRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  /**
+   * Allocates the next export_no for a user atomically. The counter row is
+   * the single writer-side lock: INSERT … ON CONFLICT increments and
+   * RETURNS the new value in one statement.
+   */
+  private async nextExportNo(userId: string): Promise<number> {
+    const result = await this.pool.query(
+      `INSERT INTO compliance.export_counters (user_id, next_export_no)
+       VALUES ($1, 2)
+       ON CONFLICT (user_id)
+       DO UPDATE SET next_export_no = compliance.export_counters.next_export_no + 1
+       RETURNING next_export_no - 1 AS export_no`,
+      [userId]
+    );
+    return Number(result.rows[0].export_no);
+  }
+
+  async record(request: Omit<DataExportRequest, 'exportNo'>): Promise<DataExportRequest> {
+    for (let attempt = 1; attempt <= EXPORT_NO_MAX_ATTEMPTS; attempt += 1) {
+      const exportNo = await this.nextExportNo(request.userId);
+      try {
+        await this.pool.query(
+          `INSERT INTO compliance.data_export_requests
+             (id, user_id, export_no, status, requested_at, completed_at, storage_ref)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            request.id,
+            request.userId,
+            exportNo,
+            request.status,
+            request.requestedAt,
+            request.completedAt ?? null,
+            request.storageRef ?? null
+          ]
+        );
+        return { ...request, exportNo };
+      } catch (error) {
+        if (!isUniqueViolation(error)) {
+          throw error;
+        }
+        // A replayed/duplicated insert already holds that (user, export_no);
+        // re-allocate and retry.
+      }
+    }
+    throw new ConflictException(
+      `data export request numbering failed after ${EXPORT_NO_MAX_ATTEMPTS} attempts for user '${request.userId}'`
+    );
+  }
+
+  async findById(id: string): Promise<DataExportRequest | undefined> {
+    const result = await this.pool.query(
+      `SELECT ${EXPORT_COLUMNS} FROM compliance.data_export_requests WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+  }
+
+  async getById(id: string): Promise<DataExportRequest> {
+    const found = await this.findById(id);
+    if (!found) {
+      throw new NotFoundException(`Data export request '${id}' not found`);
+    }
+    return found;
+  }
+
+  async findByUser(userId: string): Promise<DataExportRequest[]> {
+    const result = await this.pool.query(
+      `SELECT ${EXPORT_COLUMNS} FROM compliance.data_export_requests
+       WHERE user_id = $1 ORDER BY export_no`,
+      [userId]
+    );
+    return result.rows.map((row) => this.fromRow(row));
+  }
+
+  async update(id: string, patch: Partial<DataExportRequest>): Promise<DataExportRequest> {
+    const assignments: string[] = [];
+    const params: unknown[] = [];
+    const push = (column: string, value: unknown): void => {
+      params.push(value);
+      assignments.push(`${column} = $${params.length}`);
+    };
+    if (patch.status !== undefined) push('status', patch.status);
+    if (patch.completedAt !== undefined) push('completed_at', patch.completedAt);
+    if (patch.storageRef !== undefined) push('storage_ref', patch.storageRef);
+    if (assignments.length === 0) {
+      return this.getById(id);
+    }
+    params.push(id);
+    const result = await this.pool.query(
+      `UPDATE compliance.data_export_requests SET ${assignments.join(', ')}
+       WHERE id = $${params.length} RETURNING ${EXPORT_COLUMNS}`,
+      params
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException(`Data export request '${id}' not found`);
+    }
+    return this.fromRow(result.rows[0]);
+  }
+
+  private fromRow(row: Record<string, unknown>): DataExportRequest {
+    return {
+      id: row.id as string,
+      userId: row.user_id as string,
+      exportNo: Number(row.export_no),
+      status: row.status as DataExportRequest['status'],
+      requestedAt: new Date(row.requested_at as string).toISOString(),
+      completedAt: row.completed_at ? new Date(row.completed_at as string).toISOString() : undefined,
+      storageRef: (row.storage_ref as string | null) ?? undefined
+    };
+  }
+}
+
+export class PgRetentionPolicyRepository implements RetentionPolicyRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async list(): Promise<RetentionPolicy[]> {
+    const result = await this.pool.query(
+      'SELECT entity, retention_days, anonymize_before_purge, updated_at FROM compliance.retention_policies ORDER BY entity'
+    );
+    return result.rows.map((row) => ({
+      entity: row.entity as string,
+      retentionDays: Number(row.retention_days),
+      anonymizeBeforePurge: Boolean(row.anonymize_before_purge),
+      updatedAt: new Date(row.updated_at as string).toISOString()
+    }));
+  }
+
+  async upsert(policy: RetentionPolicy): Promise<RetentionPolicy> {
+    await this.pool.query(
+      `INSERT INTO compliance.retention_policies (entity, retention_days, anonymize_before_purge, updated_at)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (entity) DO UPDATE SET
+         retention_days = EXCLUDED.retention_days,
+         anonymize_before_purge = EXCLUDED.anonymize_before_purge,
+         updated_at = EXCLUDED.updated_at`,
+      [policy.entity, policy.retentionDays, policy.anonymizeBeforePurge, policy.updatedAt]
+    );
+    return policy;
   }
 }
 
@@ -332,58 +308,10 @@ export function createPgDataSubjectRequestRepository(
   return new PgDataSubjectRequestRepository(pool);
 }
 
-// ---------------------------------------------------------------------------
-// compliance.retention_policies
-// ---------------------------------------------------------------------------
-
-interface RetentionPolicyRow {
-  entity: string;
-  retain_days: number;
-  anonymize_not_delete: boolean;
-  updated_at: Date | string;
-}
-
-function policyFromRow(row: RetentionPolicyRow): RetentionPolicy {
-  return {
-    entity: row.entity,
-    retainDays: row.retain_days,
-    anonymizeNotDelete: row.anonymize_not_delete,
-    updatedAt: ts(row.updated_at)
-  };
-}
-
-const POLICY_COLUMNS = 'entity, retain_days, anonymize_not_delete, updated_at';
-
-export class PgRetentionPolicyRepository implements RetentionPolicyRepository {
-  constructor(private readonly pool: pg.Pool) {}
-
-  async list(): Promise<RetentionPolicy[]> {
-    const result = await this.pool.query(
-      `SELECT ${POLICY_COLUMNS} FROM compliance.retention_policies ORDER BY entity`
-    );
-    return result.rows.map(policyFromRow);
-  }
-
-  async findByEntity(entity: string): Promise<RetentionPolicy | undefined> {
-    const result = await this.pool.query(
-      `SELECT ${POLICY_COLUMNS} FROM compliance.retention_policies WHERE entity = $1`,
-      [entity]
-    );
-    return result.rows[0] ? policyFromRow(result.rows[0]) : undefined;
-  }
-
-  async upsert(policy: RetentionPolicy): Promise<RetentionPolicy> {
-    await this.pool.query(
-      `INSERT INTO compliance.retention_policies (entity, retain_days, anonymize_not_delete, updated_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (entity) DO UPDATE
-         SET retain_days = EXCLUDED.retain_days,
-             anonymize_not_delete = EXCLUDED.anonymize_not_delete,
-             updated_at = EXCLUDED.updated_at`,
-      [policy.entity, policy.retainDays, policy.anonymizeNotDelete, policy.updatedAt]
-    );
-    return policy;
-  }
+export function createPgDataExportRequestRepository(
+  pool: pg.Pool
+): PgDataExportRequestRepository {
+  return new PgDataExportRequestRepository(pool);
 }
 
 export function createPgRetentionPolicyRepository(pool: pg.Pool): PgRetentionPolicyRepository {
