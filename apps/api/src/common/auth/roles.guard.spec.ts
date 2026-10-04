@@ -8,6 +8,7 @@ import type { UserRole } from '@agric-platform/shared';
 import { createInMemoryUserRepository } from '../../database/repositories/user.repository.js';
 import { UsersService } from '../../modules/users/users.service.js';
 import { OidcService } from './oidc.service.js';
+import { IS_PUBLIC_KEY, ROLES_KEY } from './roles.decorator.js';
 import { RolesGuard } from './roles.guard.js';
 
 const ISSUER = 'https://keycloak.test/realms/agric-platform';
@@ -16,8 +17,12 @@ const AUDIENCE = 'agric-web';
 let privateKey: CryptoKey;
 let jwks: JSONWebKeySet;
 
-function makeGuard(required: UserRole[] | undefined): {
+function makeGuard(
+  required: UserRole[] | undefined,
+  options: { isPublic?: boolean } = {}
+): {
   activate: () => Promise<boolean>;
+  activateEnforced: () => Promise<boolean>;
   request: {
     headers: Record<string, string>;
     query?: Record<string, string>;
@@ -28,7 +33,15 @@ function makeGuard(required: UserRole[] | undefined): {
 } {
   const reflector = new Reflector();
   // Avoid decorator plumbing: stub the metadata lookup per scenario.
-  reflector.getAllAndOverride = () => required;
+  reflector.getAllAndOverride = ((key: string) => {
+    if (key === ROLES_KEY) {
+      return required;
+    }
+    if (key === IS_PUBLIC_KEY) {
+      return options.isPublic ? true : undefined;
+    }
+    return undefined;
+  }) as unknown as Reflector['getAllAndOverride'];
   const request: {
     headers: Record<string, string>;
     query?: Record<string, string>;
@@ -51,7 +64,12 @@ function makeGuard(required: UserRole[] | undefined): {
     getClass: () => undefined,
     switchToHttp: () => ({ getRequest: () => request })
   } as unknown as ExecutionContext;
-  return { activate: () => guard.canActivate(context), request, users };
+  return {
+    activate: () => guard.canActivate(context),
+    activateEnforced: () => guard.enforceRoles(context),
+    request,
+    users
+  };
 }
 
 async function sign(claims: Record<string, unknown>, options: { issuer?: string; audience?: string; expired?: boolean; subject?: string } = {}) {
@@ -81,9 +99,34 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     process.env = { ...savedEnv };
   });
 
-  it('passes routes without role requirements', async () => {
+  it('DEFAULT-DENY (GAP-M05): rejects anonymous callers on routes with no @Roles and no @Public', async () => {
     const { activate } = makeGuard(undefined);
+    await expect(activate()).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('DEFAULT-DENY (GAP-M05): admits any valid identity on an undecorated route and attaches request.user', async () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.ALLOW_DEV_HEADER_AUTH;
+    const { activate, request } = makeGuard(undefined);
+    request.headers['x-user-id'] = 'user-aisha';
     await expect(activate()).resolves.toBe(true);
+    expect((request.user as { id: string }).id).toBe('user-aisha');
+  });
+
+  it('@Public routes pass anonymously without any credential (GAP-M05)', async () => {
+    const { activate, request } = makeGuard(undefined, { isPublic: true });
+    await expect(activate()).resolves.toBe(true);
+    expect(request.user).toBeUndefined();
+  });
+
+  it('@Public wins over @Roles metadata on the same route (the route guard owns the decision)', async () => {
+    const { activate } = makeGuard(['admin'], { isPublic: true });
+    await expect(activate()).resolves.toBe(true);
+  });
+
+  it('enforceRoles ignores the @Public escape hatch (GAP-L16 composed-guard path)', async () => {
+    const { activateEnforced } = makeGuard(['admin'], { isPublic: true });
+    await expect(activateEnforced()).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('accepts a valid Keycloak bearer token with a matching realm role', async () => {
@@ -225,7 +268,7 @@ describe('RolesGuard (OIDC bearer + dev header)', () => {
     (repo as { findByIdWithStatus?: unknown }).findByIdWithStatus = undefined;
     const users = new UsersService(repo);
     const reflector = new Reflector();
-    reflector.getAllAndOverride = () => ['admin'];
+    reflector.getAllAndOverride = ((key: string) => (key === ROLES_KEY ? ['admin'] : undefined)) as unknown as Reflector['getAllAndOverride'];
     const request = { headers: { 'x-user-id': 'user-admin' } };
     const guard = new RolesGuard(
       reflector,
