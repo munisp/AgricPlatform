@@ -11,7 +11,9 @@ import {
 } from '../../database/repositories/phase3.repository.js';
 import {
   PARTNER_SHARE_CONSENT_PURPOSE,
-  PartnerApiService
+  PartnerApiService,
+  WEBHOOK_SECRET_GRACE_DEFAULT_HOURS,
+  WEBHOOK_SECRET_GRACE_MAX_HOURS
 } from './partner-api.service.js';
 
 function consent(userId: string, granted = true, revoked = false): ConsentRecord {
@@ -101,7 +103,7 @@ function makeService(
   const profiles = {
     get: vi.fn(async (userId: string) => ({ userId, location: { state: 'Kano' } }))
   };
-  const audit = { record: vi.fn(async () => ({})) };
+  const audit = { record: vi.fn(async (_input: unknown) => ({})) };
   const events = { publish: vi.fn(async (name: string, payload: unknown) => ({ name, payload })) };
   const consentRepo = {
     find: vi.fn(async ({ userId }: { userId?: string }) =>
@@ -607,5 +609,106 @@ describe('PartnerApiService', () => {
       })
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+// GAP-M23 — documented rotate-secret endpoint (docs/security/key-rotation.md).
+describe('PartnerApiService.rotateWebhookSecret (GAP-M23)', () => {
+  const ORIGINAL_SECRET = 'sixteen-char-secret';
+
+  async function makeWithSubscription() {
+    const ctx = makeService();
+    const subscription = await ctx.service.createWebhookSubscription('pc_test', {
+      eventTypes: ['disbursement.recorded'],
+      targetUrl: 'https://partner.example/hook',
+      secret: ORIGINAL_SECRET
+    });
+    return { ...ctx, subscription };
+  }
+
+  it('generates a fresh secret, returns it exactly once, and persists the previous secret with the default 24h grace', async () => {
+    const { service, subscriptions, subscription } = await makeWithSubscription();
+    const before = Date.now();
+    const rotation = await service.rotateWebhookSecret(subscription.id, 'pc_test');
+
+    // New secret: server-generated, >= the 16-char creation minimum, never
+    // equal to the outgoing one; returned on the rotation response ONLY.
+    expect(rotation.secret).not.toBe(ORIGINAL_SECRET);
+    expect(rotation.secret.length).toBeGreaterThanOrEqual(16);
+    expect(rotation.subscription).not.toHaveProperty('secret');
+    expect(rotation.subscription).not.toHaveProperty('secretPrevious');
+
+    // Persisted: current <- new, previous <- outgoing, grace deadline ~24h.
+    const stored = await subscriptions.getById(subscription.id);
+    expect(stored.secret).toBe(rotation.secret);
+    expect(stored.secretPrevious).toBe(ORIGINAL_SECRET);
+    const untilMs = Date.parse(stored.secretPreviousUntil!);
+    expect(stored.secretPreviousUntil).toBe(rotation.secretPreviousUntil);
+    expect(untilMs).toBeGreaterThanOrEqual(before + WEBHOOK_SECRET_GRACE_DEFAULT_HOURS * 3_600_000);
+    expect(untilMs).toBeLessThanOrEqual(
+      Date.now() + WEBHOOK_SECRET_GRACE_DEFAULT_HOURS * 3_600_000 + 5_000
+    );
+
+    // Reads still never echo either secret.
+    const listed = await service.webhookSubscriptionsFor('pc_test');
+    expect(listed[0]).not.toHaveProperty('secret');
+    expect(listed[0]).not.toHaveProperty('secretPrevious');
+  });
+
+  it('audits the rotation without logging either secret', async () => {
+    const { service, audit, subscription } = await makeWithSubscription();
+    const rotation = await service.rotateWebhookSecret(subscription.id, 'pc_test');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: 'pc_test',
+        action: 'partner.webhook.secret_rotated',
+        entityType: 'webhook_subscription',
+        entityId: subscription.id
+      })
+    );
+    const auditPayload = JSON.stringify(audit.record.mock.calls.map((call) => call[0]));
+    expect(auditPayload).not.toContain(rotation.secret);
+    expect(auditPayload).not.toContain(ORIGINAL_SECRET);
+  });
+
+  it('rejects rotation by a different client (ownership enforced)', async () => {
+    const { service, subscription } = await makeWithSubscription();
+    await expect(
+      service.rotateWebhookSecret(subscription.id, 'pc_other')
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    const stored = await service.webhookSubscriptionsFor('pc_test');
+    expect(stored).toHaveLength(1);
+  });
+
+  it('clamps the grace window to 7 days', async () => {
+    const { service, subscriptions, subscription } = await makeWithSubscription();
+    const before = Date.now();
+    const rotation = await service.rotateWebhookSecret(subscription.id, 'pc_test', 24 * 30);
+    const untilMs = Date.parse(rotation.secretPreviousUntil);
+    expect(untilMs).toBeLessThanOrEqual(
+      before + WEBHOOK_SECRET_GRACE_MAX_HOURS * 3_600_000 + 5_000
+    );
+    expect(untilMs).toBeGreaterThanOrEqual(before + WEBHOOK_SECRET_GRACE_MAX_HOURS * 3_600_000);
+    const stored = await subscriptions.getById(subscription.id);
+    expect(stored.secretPreviousUntil).toBe(rotation.secretPreviousUntil);
+  });
+
+  it('falls back to the default grace for invalid graceHours input', async () => {
+    const { service, subscription } = await makeWithSubscription();
+    const before = Date.now();
+    const rotation = await service.rotateWebhookSecret(subscription.id, 'pc_test', -5);
+    expect(Date.parse(rotation.secretPreviousUntil)).toBeGreaterThanOrEqual(
+      before + WEBHOOK_SECRET_GRACE_DEFAULT_HOURS * 3_600_000
+    );
+  });
+
+  it('a second rotation overwrites the previous-secret slot', async () => {
+    const { service, subscriptions, subscription } = await makeWithSubscription();
+    const first = await service.rotateWebhookSecret(subscription.id, 'pc_test');
+    const second = await service.rotateWebhookSecret(subscription.id, 'pc_test');
+    const stored = await subscriptions.getById(subscription.id);
+    expect(stored.secret).toBe(second.secret);
+    expect(stored.secretPrevious).toBe(first.secret);
+    expect(stored.secretPrevious).not.toBe(ORIGINAL_SECRET);
   });
 });
