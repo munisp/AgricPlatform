@@ -75,6 +75,12 @@ class CreatePlotDto implements CreatePlotInput {
   @IsIn([...SOIL_TYPES])
   soilType?: CreatePlotInput['soilType'];
 
+  /** GPS fix quality (metres) of the centroid capture (GAP-L10). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  accuracyMeters?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(100)
@@ -115,6 +121,11 @@ class UpdatePlotDto implements UpdatePlotInput {
   @IsOptional()
   @IsIn([...SOIL_TYPES])
   soilType?: UpdatePlotInput['soilType'];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  accuracyMeters?: number;
 }
 
 class ListPlotsQuery {
@@ -369,6 +380,18 @@ export class FarmsController {
   @ApiOperation({ summary: 'List harvest records for a planting (owner or admin)' })
   async listHarvests(@Param('plantingId') plantingId: string, @CurrentUser() actor: User | null) {
     return { data: await this.farms.listHarvests(actor, plantingId) };
+  }
+
+  @Get('plantings/:plantingId/expense-allocations')
+  @Authenticated()
+  @ApiOperation({
+    summary: 'Expense-allocation shares touching a planting — per-crop P&L (owner or admin)'
+  })
+  async listPlantingExpenseAllocations(
+    @Param('plantingId') plantingId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    return { data: await this.farms.listPlantingExpenseAllocations(actor, plantingId) };
   }
 
   /* ------------------------------ expenses ----------------------------- */
