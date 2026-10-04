@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   OnModuleInit,
+  Optional,
   UnauthorizedException
 } from '@nestjs/common';
 import {
@@ -27,6 +28,8 @@ import {
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   FARM_PLOT_REPOSITORY,
   GEO_BOUNDARY_REPOSITORY,
@@ -118,7 +121,13 @@ export class GeoService implements OnModuleInit {
     @Inject(H3_INDEX_REPOSITORY) private readonly h3Index: H3IndexRepository,
     @Inject(GEO_BOUNDARY_REPOSITORY) private readonly boundaries: GeoBoundaryRepository,
     @Inject(FARM_PLOT_REPOSITORY) private readonly plots: FarmPlotRepository,
-    @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository
+    @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
+    // @Optional with an in-memory fallback so bare unit constructions keep
+    // working; the module wires the pg-backed singleton in production.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   /**
@@ -128,9 +137,30 @@ export class GeoService implements OnModuleInit {
    * breaks the source write; POST /geo/reindex repairs drift.
    */
   onModuleInit(): void {
-    this.events.on('farms.plot.created', (event) => void this.onPlotIndexed(event));
-    this.events.on('farms.plot.updated', (event) => void this.onPlotIndexed(event));
-    this.events.on('farms.plot.removed', (event) => void this.onPlotRemoved(event));
+    // GAP-M09: every handler runs behind the processed_events dedup guard
+    // (mark-after), so a sweeper re-drive of an already-indexed event is a
+    // no-op. The handlers keep their own logged-failure doctrine (a failed
+    // index update never breaks the source write; POST /geo/reindex repairs
+    // drift) — errors they swallow are recorded as processed, errors that
+    // escape leave the event unrecorded for re-drive.
+    const guard = (consumer: string, event: DomainEvent, handler: () => Promise<void>): void => {
+      void this.dedup.runOnce(consumer, event.id, handler).catch((error: unknown) => {
+        this.logger.error(
+          `dedup-guarded geo handler '${consumer}' failed for event ${event.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      });
+    };
+    this.events.on('farms.plot.created', (event) =>
+      guard('geo-h3-index', event, () => this.onPlotIndexed(event))
+    );
+    this.events.on('farms.plot.updated', (event) =>
+      guard('geo-h3-index', event, () => this.onPlotIndexed(event))
+    );
+    this.events.on('farms.plot.removed', (event) =>
+      guard('geo-h3-remove', event, () => this.onPlotRemoved(event))
+    );
   }
 
   private async onPlotIndexed(event: DomainEvent): Promise<void> {
