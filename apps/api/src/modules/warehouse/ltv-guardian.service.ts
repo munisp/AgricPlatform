@@ -21,6 +21,8 @@ import { newId } from '../../common/async-repository.js';
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   COLLATERAL_POSITION_REPOSITORY,
   LOAN_APPLICATION_REPOSITORY,
@@ -128,7 +130,14 @@ export class LtvGuardianService implements OnModuleInit {
     private readonly loans: LoanApplicationRepository,
     @Inject(COMMODITY_PRICE_PROVIDER)
     private readonly prices: CommodityPriceProvider,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never re-applies a write-down. @Optional with
+    // an in-memory fallback so bare unit constructions keep working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   /**
@@ -142,11 +151,17 @@ export class LtvGuardianService implements OnModuleInit {
    */
   onModuleInit(): void {
     this.events.on('warehouse.receipt.loss_reported', (event) => {
-      void this.applyLossEvent(event).catch((error: unknown) => {
-        this.logger.error(
-          `LTV loss write-down failed for event ${event.id}: ${(error as Error)?.message ?? error}`
-        );
-      });
+      // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+      // already-applied loss event is a no-op; a failed write-down stays
+      // unrecorded so re-drive retries it (the write-down CAS never
+      // increases pledged quantity, so re-execution converges).
+      void this.dedup
+        .runOnce('warehouse-ltv-guardian', event.id, () => this.applyLossEvent(event))
+        .catch((error: unknown) => {
+          this.logger.error(
+            `LTV loss write-down failed for event ${event.id}: ${(error as Error)?.message ?? error}`
+          );
+        });
     });
   }
 
