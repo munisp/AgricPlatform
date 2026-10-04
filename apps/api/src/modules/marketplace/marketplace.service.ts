@@ -140,6 +140,7 @@ export interface CreateListingInput {
   sellerId: string;
   kind: MarketplaceListing['kind'];
   title: string;
+  description?: string;
   crop?: string;
   quantity: number;
   unit: string;
@@ -152,6 +153,7 @@ export interface CreateListingInput {
 
 export interface UpdateListingInput {
   title?: string;
+  description?: string;
   quantity?: number;
   priceNaira?: number;
   isActive?: boolean;
@@ -246,6 +248,7 @@ export class MarketplaceService {
       sellerId: input.sellerId,
       kind: input.kind,
       title: input.title,
+      description: input.description,
       crop: input.crop,
       quantity: input.quantity,
       unit: input.unit,
