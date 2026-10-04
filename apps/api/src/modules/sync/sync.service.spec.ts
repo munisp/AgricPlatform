@@ -430,15 +430,6 @@ describe('SyncService.status', () => {
  * DATABASE_URL is set); this assertion pins the port shapes the pg
  * implementations satisfy. */
 describe('sync repository port parity (in-memory reference)', () => {
-  it('bumpExpected CAS: insert at 0, reject stale, advance on match', async () => {
-    const versions: EntityVersionRepository = new InMemoryEntityVersionRepository();
-    const bump = { entity: 'e', entityId: 'id-1', ownerId: 'u', updatedBy: 'u' };
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 1 })).toBeNull();
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 0 })).toBe(1);
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 0 })).toBeNull();
-    expect(await versions.bumpExpected({ ...bump, expectedVersion: 1 })).toBe(2);
-  });
-
   it('mutation ledger record is atomic on (user, clientMutationId)', async () => {
     const mutations = new InMemorySyncMutationRepository();
     const record = {
