@@ -97,7 +97,15 @@ production entity:
   server-side writes become sync-visible; `SyncVersioningService.recordChange`
   remains only as the legacy non-fatal hook for modules not yet on the
   guard, and its failures are counted by
-  `agric_sync_version_bump_failures_total` (alertable, never silent).
+  `agric_sync_version_bump_failures_total` (alertable, never silent) and —
+  GAP-M11 — enqueued as compensating entries in
+  `sync.version_bump_retries` (migration 123). The reconciliation pass
+  (`POST /admin/sweeps/sync-version-retries`, external-scheduler pattern
+  like the outbox sweep) re-applies the unconditional bump with a bounded
+  attempt budget (8); recovered rows are removed, exhausted rows are KEPT
+  for ops inspection and reported — never silently dropped (a dropped row
+  is permanent sync invisibility). The enqueue itself is best-effort: it
+  never breaks the entity write either.
 
 ## 3. Scoping Rules
 
