@@ -39,6 +39,7 @@ import {
 } from '../../database/persistence.tokens.js';
 import type {
   CropPlantingRepository,
+  ExpenseAllocationRow,
   FarmExpenseAllocationRepository,
   FarmExpenseRepository,
   FarmPlotRepository,
@@ -60,6 +61,8 @@ export interface CreatePlotInput {
   boundaryGeojson?: unknown;
   sizeHectares: number;
   soilType?: SoilType;
+  /** GPS fix quality (metres) of the centroid capture (GAP-L10). */
+  accuracyMeters?: number;
   clientId?: string;
 }
 
@@ -72,6 +75,7 @@ export interface UpdatePlotInput {
   boundaryGeojson?: unknown;
   sizeHectares?: number;
   soilType?: SoilType;
+  accuracyMeters?: number;
 }
 
 export interface CreatePlantingInput {
@@ -146,7 +150,7 @@ export function parseSyncedPlotPayload(payload: Record<string, unknown> | undefi
   if (!payload || typeof payload !== 'object') {
     throw new BadRequestException('farm_plot upsert requires a payload');
   }
-  const { name, state, lga, centroidLat, centroidLong, boundaryGeojson, sizeHectares, soilType, clientId } =
+  const { name, state, lga, centroidLat, centroidLong, boundaryGeojson, sizeHectares, soilType, accuracyMeters, clientId } =
     payload;
   if (typeof name !== 'string' || name.trim().length === 0) {
     throw new BadRequestException('name must be a non-empty string');
@@ -166,6 +170,12 @@ export function parseSyncedPlotPayload(payload: Record<string, unknown> | undefi
   if (soilType !== undefined && !SOIL_TYPES.includes(soilType as SoilType)) {
     throw new BadRequestException(`Unknown soil type '${String(soilType)}'`);
   }
+  if (
+    accuracyMeters !== undefined &&
+    (typeof accuracyMeters !== 'number' || !Number.isFinite(accuracyMeters) || accuracyMeters < 0)
+  ) {
+    throw new BadRequestException('accuracyMeters must be a non-negative number when present');
+  }
   if (clientId !== undefined && typeof clientId !== 'string') {
     throw new BadRequestException('clientId must be a string when present');
   }
@@ -178,6 +188,7 @@ export function parseSyncedPlotPayload(payload: Record<string, unknown> | undefi
     boundaryGeojson,
     sizeHectares,
     soilType: soilType as SoilType | undefined,
+    accuracyMeters: accuracyMeters as number | undefined,
     clientId: clientId as string | undefined
   };
 }
@@ -223,6 +234,12 @@ export class FarmsService {
       throw new BadRequestException(
         'boundaryGeojson must be a GeoJSON Polygon or MultiPolygon geometry'
       );
+    }
+    if (
+      input.accuracyMeters !== undefined &&
+      (!Number.isFinite(input.accuracyMeters) || input.accuracyMeters < 0)
+    ) {
+      throw new BadRequestException('accuracyMeters must be a non-negative finite number');
     }
   }
 
@@ -277,6 +294,7 @@ export class FarmsService {
       boundaryGeojson: input.boundaryGeojson,
       sizeHectares: input.sizeHectares,
       soilType: input.soilType,
+      accuracyMeters: input.accuracyMeters,
       createdAt: now,
       updatedAt: now,
       version: 1,
@@ -522,6 +540,7 @@ export class FarmsService {
             boundaryGeojson: input.boundaryGeojson,
             sizeHectares: input.sizeHectares,
             soilType: input.soilType,
+            accuracyMeters: input.accuracyMeters,
             updatedAt: now,
             version: existing.version + 1
           });
@@ -540,6 +559,7 @@ export class FarmsService {
             boundaryGeojson: input.boundaryGeojson,
             sizeHectares: input.sizeHectares,
             soilType: input.soilType,
+            accuracyMeters: input.accuracyMeters,
             createdAt: now,
             updatedAt: now,
             version: 1,
@@ -794,6 +814,20 @@ export class FarmsService {
     const planting = await this.plantings.getById(plantingId);
     await this.assertPlotAccess(actor, planting.plotId);
     return this.harvests.find({ plantingId });
+  }
+
+  /**
+   * Per-crop P&L read: every expense-allocation share touching one
+   * planting (A4 intercrop attribution), owner-or-admin scoped like the
+   * planting's other sub-resources.
+   */
+  async listPlantingExpenseAllocations(
+    actor: User | null,
+    plantingId: string
+  ): Promise<ExpenseAllocationRow[]> {
+    const planting = await this.plantings.getById(plantingId);
+    await this.assertPlotAccess(actor, planting.plotId);
+    return this.expenseAllocations?.listForPlanting(plantingId) ?? [];
   }
 
   /* ------------------------------ expenses ----------------------------- */
