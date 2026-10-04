@@ -221,6 +221,26 @@ describe('A4 — intercrop expense allocation', () => {
     expect(rows).toEqual([{ expenseId: expense.id, plantingId: cowpea.id, sharePercent: 30 }]);
   });
 
+  it('serves the per-planting P&L read through the service (owner or admin)', async () => {
+    const h = makeService();
+    const { plot, maize, cowpea } = await intercroppedPlot(h);
+    const expense = await h.service.createExpense(farmer, plot.id, {
+      category: 'fertilizer',
+      amountKobo: 500_000,
+      incurredAt: '2025-06-01T00:00:00.000Z',
+      allocations: [
+        { plantingId: maize.id, sharePercent: 70 },
+        { plantingId: cowpea.id, sharePercent: 30 }
+      ]
+    });
+    const rows = await h.service.listPlantingExpenseAllocations(farmer, cowpea.id);
+    expect(rows).toEqual([{ expenseId: expense.id, plantingId: cowpea.id, sharePercent: 30 }]);
+    const outsider = asUser({ id: 'farmer-2', roles: ['farmer'] });
+    await expect(
+      h.service.listPlantingExpenseAllocations(outsider, cowpea.id)
+    ).rejects.toThrow();
+  });
+
   it('rejects shares that do not total exactly 100, duplicates, and foreign plantings', async () => {
     const h = makeService();
     const { plot, maize, cowpea } = await intercroppedPlot(h);
