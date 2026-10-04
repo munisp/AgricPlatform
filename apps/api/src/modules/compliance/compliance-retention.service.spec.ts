@@ -1,5 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { NotificationMessage, User } from '@agric-platform/shared';
 import { AuditService } from '../../core/audit.service.js';
 import { createInMemoryAuditRepository } from '../../database/repositories/audit.repository.js';
@@ -16,6 +16,7 @@ import { InMemoryNotificationRepository } from '../../database/repositories/noti
 import type { DomainEvent } from '../../core/domain-events.service.js';
 import { InMemoryInboundEventRepository, type InboundEvent } from '../../database/repositories/phase3.repository.js';
 import { InMemoryOutboxRepository } from '../../database/repositories/outbox.repository.js';
+import { InMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import { ComplianceRetentionService } from './compliance-retention.service.js';
 import { pseudonymFor } from './compliance.service.js';
 
@@ -106,8 +107,10 @@ async function build(
   policySeed?: ConstructorParameters<typeof InMemoryRetentionPolicyRepository>[0],
   eventRows: {
     inbound?: readonly InboundEvent[];
-    outbox?: ReadonlyArray<{ event: DomainEvent; publishedAt?: string }>;
-  } = {}
+    outbox?: ReadonlyArray<{ event: DomainEvent; publishedAt?: string; deadLetteredAt?: string }>;
+    processed?: ReadonlyArray<{ consumer: string; eventId: string; processedAt: string }>;
+  } = {},
+  env: NodeJS.ProcessEnv = {}
 ) {
   const audit = new AuditService(createInMemoryAuditRepository());
   const policies = new InMemoryRetentionPolicyRepository(policySeed);
@@ -121,11 +124,17 @@ async function build(
   const inboundEvents = new InMemoryInboundEventRepository(eventRows.inbound ?? []);
   const outbox = new InMemoryOutboxRepository();
   for (const row of eventRows.outbox ?? []) {
-    await outbox.append(row.event);
+    // Deep-copy: anonymize/purge mutate payload in place; sharing the module-level
+    // seed objects leaks tombstoned state across tests (order-dependent failures).
+    await outbox.append(structuredClone(row.event));
     if (row.publishedAt) {
       await outbox.markPublished(row.event.id, row.publishedAt);
     }
+    if (row.deadLetteredAt) {
+      await outbox.markDeadLetter(row.event.id, row.deadLetteredAt);
+    }
   }
+  const processedEvents = new InMemoryProcessedEventRepository(eventRows.processed ?? []);
   const service = new ComplianceRetentionService(
     audit,
     policies,
@@ -133,9 +142,11 @@ async function build(
     dsr,
     notifications,
     inboundEvents,
-    outbox
+    outbox,
+    processedEvents,
+    env
   );
-  return { service, audit, policies, consents, dsr, notifications, inboundEvents, outbox };
+  return { service, audit, policies, consents, dsr, notifications, inboundEvents, outbox, processedEvents };
 }
 
 describe('ComplianceRetentionService policies', () => {
@@ -146,6 +157,8 @@ describe('ComplianceRetentionService policies', () => {
       'compliance.consent_records',
       'compliance.data_subject_requests',
       'events.outbox',
+      'events.outbox_dead_letters',
+      'events.processed_events',
       'integrations.inbound_events',
       'notifications.messages'
     ]);
@@ -156,6 +169,17 @@ describe('ComplianceRetentionService policies', () => {
       anonymizeNotDelete: true
     });
     expect(policies.find((p) => p.entity === 'events.outbox')).toMatchObject({
+      retainDays: 90,
+      anonymizeNotDelete: false
+    });
+    // GAP-M20 default (migration 122): dead letters tombstoned then pruned.
+    expect(policies.find((p) => p.entity === 'events.outbox_dead_letters')).toMatchObject({
+      retainDays: 30,
+      anonymizeNotDelete: false
+    });
+    // GAP-L11 default (migration 127): consumer-dedupe markers purged 90 days
+    // after processing (aligned with events.outbox; no payload to anonymize).
+    expect(policies.find((p) => p.entity === 'events.processed_events')).toMatchObject({
       retainDays: 90,
       anonymizeNotDelete: false
     });
@@ -387,5 +411,190 @@ describe('ComplianceRetentionService V-27 webhook/outbox payload retention', () 
     expect(record.event.id).toBe('evt-ret-old'); // metadata survives
     expect(record.event.payload).toEqual({});
     expect(record.publishedAt).toBeDefined();
+  });
+
+  // GAP-M20: dead-lettered outbox rows carry full payloads forever
+  // (published_at stays NULL, so the events.outbox handler never matches
+  // them). Their own handler sweeps on dead_lettered_at and ALWAYS
+  // anonymizes the payload before purging.
+  const deadLetterPolicy = {
+    entity: 'events.outbox_dead_letters',
+    retainDays: 30,
+    anonymizeNotDelete: false,
+    updatedAt: isoDaysAgo(1)
+  };
+  const deadRows = [
+    { event: outboxEvent('evt-dl-old', { partnerId: 'p1', userId: 'u1' }), deadLetteredAt: isoDaysAgo(45) },
+    { event: outboxEvent('evt-dl-recent', { partnerId: 'p1' }), deadLetteredAt: isoDaysAgo(5) },
+    { event: outboxEvent('evt-dl-published', { partnerId: 'p1', userId: 'u2' }), publishedAt: isoDaysAgo(45) },
+    { event: outboxEvent('evt-dl-pending', { partnerId: 'p1' }) } // never terminal
+  ];
+
+  it('GAP-M20 dry-run counts old dead letters without touching payloads', async () => {
+    const { service, outbox } = await build([deadLetterPolicy], { outbox: deadRows });
+    const result = await service.sweep(admin); // dry-run is the default
+    expect(result.results[0]).toMatchObject({
+      entity: 'events.outbox_dead_letters',
+      matched: 1,
+      action: 'purge',
+      affected: 0
+    });
+    const records = await outbox.listRecords();
+    expect(records).toHaveLength(4);
+    expect(records.find((record) => record.event.id === 'evt-dl-old')?.event.payload).toEqual({
+      partnerId: 'p1',
+      userId: 'u1'
+    });
+  });
+
+  it('GAP-M20 execute anonymizes the payload then purges old dead letters', async () => {
+    const { service, outbox } = await build([deadLetterPolicy], { outbox: deadRows });
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 1, action: 'purge', affected: 1 });
+    expect(result.results[0].note).toContain('anonymized');
+    const remaining = (await outbox.listRecords()).map((record) => record.event.id);
+    expect(remaining).not.toContain('evt-dl-old');
+    // In-window dead letter, published row, and non-terminal row are retained.
+    expect(remaining).toEqual(expect.arrayContaining(['evt-dl-recent', 'evt-dl-published', 'evt-dl-pending']));
+  });
+
+  it('GAP-M20 anonymize_not_delete=true tombstones the payload, keeps the dead letter for forensics', async () => {
+    const { service, outbox } = await build(
+      [{ ...deadLetterPolicy, anonymizeNotDelete: true }],
+      { outbox: deadRows }
+    );
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 1, action: 'anonymize', affected: 1 });
+    const record = (await outbox.listRecords()).find((row) => row.event.id === 'evt-dl-old');
+    expect(record).toBeDefined();
+    expect(record?.event.payload).toEqual({});
+    expect(record?.deadLetteredAt).toBeDefined();
+    // Idempotent: a second sweep changes nothing further.
+    const second = await service.sweep(admin, { dryRun: false });
+    expect(second.results[0].affected).toBe(0);
+  });
+
+  it('GAP-M20 never matches unpublished or published rows (only dead_lettered_at)', async () => {
+    const { service, outbox } = await build([deadLetterPolicy], {
+      outbox: [
+        { event: outboxEvent('evt-dl-published-old', { userId: 'u1' }), publishedAt: isoDaysAgo(400) },
+        { event: outboxEvent('evt-dl-pending-old', { userId: 'u1' }) }
+      ]
+    });
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 0, affected: 0 });
+    expect(await outbox.listRecords()).toHaveLength(2);
+  });
+});
+
+describe('ComplianceRetentionService GAP-L11 events.processed_events retention', () => {
+  const processedPolicy = {
+    entity: 'events.processed_events',
+    retainDays: 90,
+    anonymizeNotDelete: false,
+    updatedAt: isoDaysAgo(1)
+  };
+  const processedRows = [
+    { consumer: 'analytics-projector', eventId: 'evt-pe-old-1', processedAt: isoDaysAgo(120) },
+    { consumer: 'analytics-projector', eventId: 'evt-pe-old-2', processedAt: isoDaysAgo(100) },
+    { consumer: 'fraud-sentinel', eventId: 'evt-pe-recent', processedAt: isoDaysAgo(10) }
+  ];
+
+  it('dry-run (the default) counts old dedupe markers without deleting them', async () => {
+    const { service, processedEvents } = await build([processedPolicy], { processed: processedRows });
+    const result = await service.sweep(admin);
+    expect(result.results[0]).toMatchObject({
+      entity: 'events.processed_events',
+      retainDays: 90,
+      matched: 2, // only the two markers past the 90-day window
+      action: 'purge',
+      affected: 0
+    });
+    expect(await processedEvents.has('analytics-projector', 'evt-pe-old-1')).toBe(true);
+    expect(await processedEvents.has('analytics-projector', 'evt-pe-old-2')).toBe(true);
+    expect(await processedEvents.has('fraud-sentinel', 'evt-pe-recent')).toBe(true);
+  });
+
+  it('execute purges markers older than the window and keeps newer ones', async () => {
+    const { service, audit, processedEvents } = await build([processedPolicy], { processed: processedRows });
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 2, action: 'purge', affected: 2 });
+    expect(await processedEvents.has('analytics-projector', 'evt-pe-old-1')).toBe(false);
+    expect(await processedEvents.has('analytics-projector', 'evt-pe-old-2')).toBe(false);
+    expect(await processedEvents.has('fraud-sentinel', 'evt-pe-recent')).toBe(true);
+
+    // Idempotent: a second sweep deletes nothing further.
+    const second = await service.sweep(admin, { dryRun: false });
+    expect(second.results[0].affected).toBe(0);
+
+    // The sweep itself is audited.
+    const auditEvents = await audit.list({ entityType: 'retention_sweep' });
+    expect(auditEvents.map((event) => event.action)).toContain('compliance.retention_sweep_executed');
+  });
+
+  it('honours PROCESSED_EVENTS_PURGE_BATCH_SIZE (drains oldest-first in capped batches)', async () => {
+    const rows = [1, 2, 3].map((i) => ({
+      consumer: 'analytics-projector',
+      eventId: `evt-pe-batch-${i}`,
+      processedAt: isoDaysAgo(100 + i)
+    }));
+    const { service, processedEvents } = await build(
+      [processedPolicy],
+      { processed: rows },
+      { PROCESSED_EVENTS_PURGE_BATCH_SIZE: '2' }
+    );
+    const purgeSpy = vi.spyOn(processedEvents, 'purgeProcessedBefore');
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 3, affected: 3 });
+    // 3 expired rows with a batch cap of 2: batches of 2 then 1 (short batch ends the loop).
+    expect(purgeSpy).toHaveBeenCalledTimes(2);
+    expect(purgeSpy.mock.calls.every((call) => call[1] === 2)).toBe(true);
+    for (const row of rows) {
+      expect(await processedEvents.has(row.consumer, row.eventId)).toBe(false);
+    }
+  });
+
+  it('PROCESSED_EVENTS_RETENTION_DAYS overrides the policy window', async () => {
+    const { service } = await build(
+      [processedPolicy],
+      {
+        processed: [
+          { consumer: 'analytics-projector', eventId: 'evt-pe-old', processedAt: isoDaysAgo(30) },
+          { consumer: 'analytics-projector', eventId: 'evt-pe-new', processedAt: isoDaysAgo(5) }
+        ]
+      },
+      { PROCESSED_EVENTS_RETENTION_DAYS: '10' }
+    );
+    const result = await service.sweep(admin, { dryRun: false });
+    // 10-day env window (not the 90-day policy): only the 30-day-old marker goes.
+    expect(result.results[0]).toMatchObject({ retainDays: 10, matched: 1, affected: 1 });
+  });
+
+  it('a failing purge is logged and surfaced without rejecting the sweep (fail-closed)', async () => {
+    const { service, audit, processedEvents } = await build([processedPolicy], { processed: processedRows });
+    vi.spyOn(processedEvents, 'purgeProcessedBefore').mockRejectedValueOnce(new Error('db down'));
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({
+      entity: 'events.processed_events',
+      matched: 2,
+      action: 'purge',
+      affected: 0
+    });
+    expect(result.results[0].note).toContain('purge failed: db down');
+    // Nothing was deleted and the sweep completed (audit trail still written).
+    expect(await processedEvents.has('analytics-projector', 'evt-pe-old-1')).toBe(true);
+    const auditEvents = await audit.list({ entityType: 'retention_sweep' });
+    expect(auditEvents.map((event) => event.action)).toContain('compliance.retention_sweep_executed');
+  });
+
+  it('anonymize_not_delete=true still purges (dedupe markers carry no payload to tombstone)', async () => {
+    const { service, processedEvents } = await build(
+      [{ ...processedPolicy, anonymizeNotDelete: true }],
+      { processed: processedRows }
+    );
+    const result = await service.sweep(admin, { dryRun: false });
+    expect(result.results[0]).toMatchObject({ matched: 2, action: 'purge', affected: 2 });
+    expect(result.results[0].note).toContain('purge-only');
+    expect(await processedEvents.has('fraud-sentinel', 'evt-pe-recent')).toBe(true);
   });
 });
