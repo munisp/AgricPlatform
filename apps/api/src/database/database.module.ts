@@ -12,6 +12,7 @@ import {
   CAMPUS_CLUB_REPOSITORY,
   CERTIFICATE_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
+  CHAPTER_MEMBER_REPOSITORY,
   CHAPTER_REPOSITORY,
   COHORT_THREAD_POST_REPOSITORY,
   COHORT_THREAD_REPOSITORY,
@@ -76,6 +77,7 @@ import {
   IMPORT_BATCH_REPOSITORY,
   IMPORT_RECORD_REPOSITORY,
   INBOUND_EVENT_REPOSITORY,
+  PAYMENT_WEBHOOK_EVENT_REPOSITORY,
   BRIDGE_SYNC_STATE_REPOSITORY,
   RECOMMENDATION_FEEDBACK_REPOSITORY,
   ANALYTICS_MART_REPOSITORY,
@@ -92,10 +94,12 @@ import { createInMemoryApplicationRepository } from './repositories/application.
 import { createInMemoryAuditRepository } from './repositories/audit.repository.js';
 import { createInMemoryCertificateRepository } from './repositories/certificate.repository.js';
 import { createInMemoryChapterEventRepository } from './repositories/chapter-event.repository.js';
+import { createInMemoryChapterMemberRepository } from './repositories/chapter-member.repository.js';
 import { createInMemoryChapterRepository } from './repositories/chapter.repository.js';
 import {
   createPgAnnouncementRepository,
   createPgChapterEventRepository,
+  createPgChapterMemberRepository,
   createPgChapterRepository,
   createPgEventRsvpRepository
 } from './repositories/chapters.pg-repository.js';
@@ -309,9 +313,11 @@ import {
   createPgImportBatchRepository,
   createPgImportRecordRepository,
   createPgInboundEventRepository,
+  createPgPaymentWebhookEventRepository,
   createPgWebhookDedupeStore
 } from './repositories/phase3.pg-repository.js';
 import { createInMemoryWebhookDedupeStore } from './repositories/webhook-dedupe.repository.js';
+import { createInMemoryPaymentWebhookEventRepository } from './repositories/payment-webhook-event.repository.js';
 // WP-G20: bridge sync-state (Moodle/Discourse/Directus scheduled sync).
 import { createInMemoryBridgeSyncStateRepository } from './repositories/bridge-sync-state.repository.js';
 import { createPgBridgeSyncStateRepository } from './repositories/bridge-sync-state.pg-repository.js';
@@ -529,17 +535,20 @@ import {
 import {
   ENTITY_VERSION_REPOSITORY,
   SYNC_CURSOR_REPOSITORY,
-  SYNC_MUTATION_REPOSITORY
+  SYNC_MUTATION_REPOSITORY,
+  SYNC_VERSION_BUMP_RETRY_REPOSITORY
 } from './persistence.tokens.js';
 import {
   createInMemoryEntityVersionRepository,
   createInMemorySyncCursorRepository,
-  createInMemorySyncMutationRepository
+  createInMemorySyncMutationRepository,
+  createInMemorySyncVersionBumpRetryRepository
 } from './repositories/sync.repository.js';
 import {
   createPgEntityVersionRepository,
   createPgSyncCursorRepository,
-  createPgSyncMutationRepository
+  createPgSyncMutationRepository,
+  createPgSyncVersionBumpRetryRepository
 } from './repositories/sync.pg-repository.js';
 // Wave FARMS: farms & crop-production persistence (additive).
 import {
@@ -1002,6 +1011,12 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       inject: [PG_POOL]
     },
     {
+      provide: CHAPTER_MEMBER_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool ? createPgChapterMemberRepository(pool) : createInMemoryChapterMemberRepository(),
+      inject: [PG_POOL]
+    },
+    {
       provide: CHAPTER_EVENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgChapterEventRepository(pool) : createInMemoryChapterEventRepository(),
@@ -1336,6 +1351,15 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: INBOUND_EVENT_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgInboundEventRepository(pool) : createInMemoryInboundEventRepository(),
+      inject: [PG_POOL]
+    },
+    // GAP-L05: payment-webhook reconciliation store (integrations.payment_webhook_events).
+    {
+      provide: PAYMENT_WEBHOOK_EVENT_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgPaymentWebhookEventRepository(pool)
+          : createInMemoryPaymentWebhookEventRepository(),
       inject: [PG_POOL]
     },
     // WP-G20: bridge sync-state bookkeeping (integrations.bridge_sync_state).
@@ -1693,6 +1717,15 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
       provide: SYNC_MUTATION_REPOSITORY,
       useFactory: (pool: pg.Pool | null) =>
         pool ? createPgSyncMutationRepository(pool) : createInMemorySyncMutationRepository(),
+      inject: [PG_POOL]
+    },
+    // GAP-M11: failed version-bump reconciliation ledger (migration 123).
+    {
+      provide: SYNC_VERSION_BUMP_RETRY_REPOSITORY,
+      useFactory: (pool: pg.Pool | null) =>
+        pool
+          ? createPgSyncVersionBumpRetryRepository(pool)
+          : createInMemorySyncVersionBumpRetryRepository(),
       inject: [PG_POOL]
     },
     // Wave FARMS: farms & crop-production (appended).
@@ -2255,6 +2288,7 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     OPPORTUNITY_REPOSITORY,
     APPLICATION_REPOSITORY,
     CHAPTER_REPOSITORY,
+    CHAPTER_MEMBER_REPOSITORY,
     CHAPTER_EVENT_REPOSITORY,
     EVENT_RSVP_REPOSITORY,
     ANNOUNCEMENT_REPOSITORY,
@@ -2310,6 +2344,7 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     IMPORT_BATCH_REPOSITORY,
     IMPORT_RECORD_REPOSITORY,
     INBOUND_EVENT_REPOSITORY,
+  PAYMENT_WEBHOOK_EVENT_REPOSITORY,
     BRIDGE_SYNC_STATE_REPOSITORY,
     WEBHOOK_DEDUPE_STORE,
     USSD_SESSION_REPOSITORY,
@@ -2364,6 +2399,7 @@ import { createPgDdsPackageRepository } from './repositories/dds-package.pg-repo
     ENTITY_VERSION_REPOSITORY,
     SYNC_CURSOR_REPOSITORY,
     SYNC_MUTATION_REPOSITORY,
+    SYNC_VERSION_BUMP_RETRY_REPOSITORY,
     FARM_PLOT_REPOSITORY,
     CROP_PLANTING_REPOSITORY,
     HARVEST_RECORD_REPOSITORY,
