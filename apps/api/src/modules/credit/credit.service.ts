@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   Optional,
   ServiceUnavailableException,
   type OnModuleInit
@@ -26,6 +27,8 @@ import {
 import { newId } from '../../common/async-repository.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   CREDIT_COLLATERAL_REPOSITORY,
   CREDIT_GUARANTOR_REPOSITORY,
@@ -294,6 +297,8 @@ export function effectiveRepaymentStatus(
 
 @Injectable()
 export class CreditService implements OnModuleInit {
+  private readonly logger = new Logger(CreditService.name);
+
   constructor(
     private readonly events: DomainEventsService,
     @Inject(CREDIT_PRODUCT_REPOSITORY) private readonly products: CreditProductRepository,
@@ -319,7 +324,15 @@ export class CreditService implements OnModuleInit {
      * silently skips its legs.
      */
     @Optional() private readonly ledger?: LedgerService,
-    @Optional() private readonly audit?: AuditService
+    @Optional() private readonly audit?: AuditService,
+    // GAP-M09: consumer-side dedup (events.processed_events) for the
+    // planting-failure grace listener, so an outbox-sweeper re-drive never
+    // re-flags loans. @Optional with an in-memory fallback so bare unit
+    // constructions keep working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {}
 
   /* ---------------------------------------------------------- products -- */
@@ -2048,7 +2061,21 @@ export class CreditService implements OnModuleInit {
    * the restructure itself stays a reviewer decision.
    */
   onModuleInit(): void {
-    this.events.on('farms.planting.status_changed', (event) => void this.onPlantingFailed(event));
+    // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+    // already-processed failure transition is a no-op; a failed flagging
+    // pass stays unrecorded so re-drive retries it (flagging is
+    // idempotent, so re-execution after a partial failure converges).
+    this.events.on('farms.planting.status_changed', (event) =>
+      void this.dedup
+        .runOnce('credit-planting-failed-grace', event.id, () => this.onPlantingFailed(event))
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `planting-failure grace handling failed for event ${event.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        })
+    );
   }
 
   /** Subscriber body; also directly callable (integration tests). */
