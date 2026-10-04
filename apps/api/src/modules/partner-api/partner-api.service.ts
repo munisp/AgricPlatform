@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import type { Enrolment, Opportunity, Profile, User } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
@@ -71,8 +72,22 @@ export interface PartnerEnrolmentEvent {
   recordedAt: string;
 }
 
-/** Subscription view safe for API responses (secret omitted). */
-export type PublicWebhookSubscription = Omit<WebhookSubscription, 'secret'>;
+/** Subscription view safe for API responses (current + previous secrets omitted). */
+export type PublicWebhookSubscription = Omit<WebhookSubscription, 'secret' | 'secretPrevious'>;
+
+/** GAP-M23 rotation grace defaults (docs/security/key-rotation.md). */
+export const WEBHOOK_SECRET_GRACE_DEFAULT_HOURS = 24;
+/** Maximum dual-accept grace: 7 days. */
+export const WEBHOOK_SECRET_GRACE_MAX_HOURS = 7 * 24;
+
+/** Result of a secret rotation — the new secret is returned EXACTLY ONCE. */
+export interface WebhookSecretRotationResult {
+  subscription: PublicWebhookSubscription;
+  /** Fresh HMAC secret (creation-time-only visibility — never logged). */
+  secret: string;
+  /** Dual-accept grace deadline for the previous secret. */
+  secretPreviousUntil: string;
+}
 
 export interface FarmDataPushResult {
   id: string;
@@ -474,8 +489,60 @@ export class PartnerApiService {
 
   async webhookSubscriptionsFor(clientId: string): Promise<PublicWebhookSubscription[]> {
     const owned = await this.subscriptions.find({ clientId });
-    // Secrets are delivery-time material; never echo them on reads.
-    return owned.map(({ secret: _secret, ...rest }) => rest);
+    // Secrets (current AND previous) are delivery-time material; never echo them on reads.
+    return owned.map(({ secret: _secret, secretPrevious: _prev, ...rest }) => rest);
+  }
+
+  /**
+   * GAP-M23 — partner webhook secret rotation
+   * (docs/security/key-rotation.md; POST /partner/webhooks/:id/rotate-secret).
+   * Generates a fresh server-side secret, moves the current one into the
+   * dual-accept grace slot (default 24h, clamped to ≤7d) and audits the
+   * rotation WITHOUT logging either secret. During grace the dispatcher
+   * dual-signs deliveries (x-agric-signature = new,
+   * x-agric-signature-previous = old — see webhook-dispatch.service.ts);
+   * acceptance of the previous secret is time-gated at delivery and the
+   * slot is overwritten on the next rotation. The new secret is returned
+   * exactly once, to the owning client only.
+   */
+  async rotateWebhookSecret(
+    id: string,
+    clientId: string,
+    graceHours?: number
+  ): Promise<WebhookSecretRotationResult> {
+    const subscription = await this.subscriptions.getById(id);
+    if (subscription.clientId !== clientId) {
+      throw new ForbiddenException('Webhook subscription belongs to a different client');
+    }
+    const requested =
+      graceHours !== undefined && Number.isFinite(graceHours) && graceHours > 0
+        ? Math.floor(graceHours)
+        : WEBHOOK_SECRET_GRACE_DEFAULT_HOURS;
+    const clamped = Math.min(requested, WEBHOOK_SECRET_GRACE_MAX_HOURS);
+    const secretPreviousUntil = new Date(Date.now() + clamped * 3_600_000).toISOString();
+    // 24 random bytes → 32 base64url chars (≥ the 16-char creation minimum).
+    const secret = randomBytes(24).toString('base64url');
+    // Full-entity patch: the pg repository base maps update patches through
+    // the row mapper, so a sparse patch would NULL the unmapped columns.
+    const updated = await this.subscriptions.update(id, {
+      ...subscription,
+      secret,
+      secretPrevious: subscription.secret,
+      secretPreviousUntil
+    });
+    await this.audit.record({
+      actorId: clientId,
+      action: 'partner.webhook.secret_rotated',
+      entityType: 'webhook_subscription',
+      entityId: id,
+      metadata: {
+        clientId,
+        graceHours: clamped,
+        secretPreviousUntil
+      }
+    });
+    const { secret: _secret, secretPrevious: _prev, ...rest } = updated;
+    return { subscription: rest, secret, secretPreviousUntil };
   }
 
   async removeWebhookSubscription(id: string, clientId: string): Promise<boolean> {
