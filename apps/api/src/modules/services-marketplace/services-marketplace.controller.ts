@@ -1,17 +1,8 @@
-import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import {
-  ArrayMaxSize,
-  IsArray,
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Max,
-  MaxLength,
-  Min
-} from 'class-validator';
-import type { BookingStatus, ServiceCategory, User } from '@agric-platform/shared';
+import { ArrayMaxSize, IsArray, IsISO8601, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import type { BookingStatus, SupplierCategory, User } from '@agric-platform/shared';
+import { BOOKING_STATUSES, PRICING_UNITS, SUPPLIER_CATEGORIES, SUPPLIER_VERIFICATION_STATUSES } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
 import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Public, Roles } from '../../common/auth/roles.decorator.js';
@@ -19,169 +10,256 @@ import { RolesGuard } from '../../common/auth/roles.guard.js';
 import { ListQueryDto } from '../../common/pagination.js';
 import {
   ServicesMarketplaceService,
-  type CreateOfferingInput
+  type CreateBookingInput,
+  type CreateOfferingInput,
+  type CreateSupplierInput
 } from './services-marketplace.service.js';
 
-const SERVICE_CATEGORIES: ServiceCategory[] = [
-  'mechanisation',
-  'spraying',
-  'transport',
-  'storage',
-  'processing',
-  'veterinary',
-  'extension'
-];
-
-class ListOfferingsQuery extends ListQueryDto {
+class ListSuppliersQuery extends ListQueryDto {
   @IsOptional()
-  @IsIn(SERVICE_CATEGORIES)
-  category?: ServiceCategory;
+  @IsIn(SUPPLIER_CATEGORIES)
+  category?: SupplierCategory;
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
   state?: string;
+
+  @IsOptional()
+  @IsIn(SUPPLIER_VERIFICATION_STATUSES)
+  verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
 }
 
-class CreateOfferingDto implements CreateOfferingInput {
-  @IsIn(SERVICE_CATEGORIES)
-  category!: ServiceCategory;
+class CreateSupplierDto implements CreateSupplierInput {
+  @IsString()
+  @MaxLength(100)
+  ownerUserId!: string;
 
   @IsString()
   @MaxLength(200)
-  title!: string;
+  businessName!: string;
 
-  @IsString()
-  @MaxLength(2000)
-  description!: string;
-
-  @IsInt()
-  @Min(0)
-  priceNaira!: number;
-
-  @IsString()
-  @MaxLength(100)
-  unit!: string;
-
-  @IsString()
-  @MaxLength(100)
-  state!: string;
+  @IsArray()
+  @IsIn(SUPPLIER_CATEGORIES, { each: true })
+  categories!: SupplierCategory[];
 
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(100)
   @IsString({ each: true })
-  @MaxLength(100, { each: true })
-  lgas?: string[];
+  @MaxLength(200, { each: true })
+  statesCovered?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  lgasCovered?: string[];
 }
 
-class CreateBookingDto {
-  @IsString()
-  @MaxLength(100)
-  requesterId!: string;
+class SetVerificationDto {
+  @IsIn(SUPPLIER_VERIFICATION_STATUSES)
+  verificationStatus!: 'unverified' | 'pending' | 'verified' | 'rejected';
+}
 
-  @IsInt()
-  @Min(1)
-  quantity!: number;
+class CreateOfferingDto implements Omit<CreateOfferingInput, 'supplierId'> {
+  @IsIn(SUPPLIER_CATEGORIES)
+  category!: SupplierCategory;
+
+  @IsString()
+  @MaxLength(200)
+  title!: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(500)
-  note?: string;
+  @MaxLength(2000)
+  description?: string;
+
+  @IsNumber()
+  priceNaira!: number;
+
+  @IsIn(PRICING_UNITS)
+  pricingUnit!: CreateOfferingInput['pricingUnit'];
 }
 
-class BookingStatusDto {
-  @IsIn(['requested', 'accepted', 'in_progress', 'completed', 'cancelled', 'disputed'])
+class CreateBookingDto implements Omit<CreateBookingInput, 'offeringId'> {
+  @IsString()
+  @MaxLength(100)
+  customerId!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  quantity?: number;
+
+  @IsISO8601()
+  scheduledStart!: string;
+
+  @IsISO8601()
+  scheduledEnd!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+}
+
+class ListMyBookingsQuery {
+  @IsOptional()
+  @IsIn(BOOKING_STATUSES)
+  status?: BookingStatus;
+}
+
+class QuoteBookingDto {
+  @IsNumber()
+  totalNaira!: number;
+}
+
+class SetBookingStatusDto {
+  @IsIn(BOOKING_STATUSES)
   status!: BookingStatus;
 }
 
-/**
- * Services marketplace (mechanisation, spraying, transport...). Offerings
- * are a public catalogue; bookings are personal records visible to the
- * requester, the provider or an admin, with the state machine enforced in
- * the service.
- */
+class CreateReviewDto {
+  @IsString()
+  @MaxLength(100)
+  authorId!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rating!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  comment?: string;
+}
+
 @ApiTags('services-marketplace')
 @Controller()
-@UseGuards(RolesGuard)
 export class ServicesMarketplaceController {
-  constructor(private readonly services: ServicesMarketplaceService) {}
+  constructor(private readonly servicesMarketplace: ServicesMarketplaceService) {}
+
+  @Get('service-suppliers')
+  @Public()
+  @ApiOperation({ summary: 'List service/input suppliers with category, coverage and verification filters' })
+  listSuppliers(@Query() query: ListSuppliersQuery) {
+    return this.servicesMarketplace.listSuppliers(query);
+  }
+
+  @Post('service-suppliers')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'supplier')
+  @ApiOperation({ summary: 'Register a supplier profile (suppliers register themselves; admins may register anyone)' })
+  async createSupplier(@Body() dto: CreateSupplierDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.ownerUserId);
+    return { data: await this.servicesMarketplace.createSupplier(dto) };
+  }
+
+  @Get('service-suppliers/:id')
+  @Public()
+  @ApiOperation({ summary: 'Supplier detail' })
+  async getSupplier(@Param('id') id: string) {
+    return { data: await this.servicesMarketplace.getSupplier(id) };
+  }
+
+  @Post('service-suppliers/:id/verification')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @ApiOperation({ summary: 'Set supplier verification status (admin only)' })
+  async setVerification(@Param('id') id: string, @Body() dto: SetVerificationDto, @CurrentUser() actor: User | null) {
+    return { data: await this.servicesMarketplace.setVerificationStatus(id, dto.verificationStatus, actor?.id ?? 'anonymous') };
+  }
+
+  @Get('service-suppliers/:id/offerings')
+  @Public()
+  @ApiOperation({ summary: 'List offerings for a supplier' })
+  async listSupplierOfferings(@Param('id') id: string) {
+    return { data: await this.servicesMarketplace.listOfferings({ supplierId: id }) };
+  }
+
+  @Post('service-suppliers/:id/offerings')
+  @UseGuards(RolesGuard)
+  @Roles('admin', 'supplier')
+  @ApiOperation({ summary: 'Create an offering under a supplier (owner or admin)' })
+  async createOffering(@Param('id') id: string, @Body() dto: CreateOfferingDto, @CurrentUser() actor: User | null) {
+    return { data: await this.servicesMarketplace.createOffering({ ...dto, supplierId: id }, actor ?? { id: 'anonymous', roles: [] }) };
+  }
 
   @Get('service-offerings')
   @Public()
-  @ApiOperation({ summary: 'Browse service offerings (public catalogue)' })
-  listOfferings(@Query() query: ListOfferingsQuery) {
-    return this.services.listOfferings(query);
-  }
-
-  @Post('service-offerings')
-  @Authenticated()
-  @ApiOperation({ summary: 'Publish a service offering (provider is the authenticated user)' })
-  async createOffering(@Body() dto: CreateOfferingDto, @CurrentUser() actor: User | null) {
-    return { data: await this.services.createOffering(dto, actor!.id) };
+  @ApiOperation({ summary: 'Browse service offerings (category filter)' })
+  async listOfferings(@Query('category') category?: SupplierCategory) {
+    return { data: await this.servicesMarketplace.listOfferings({ category, active: true }) };
   }
 
   @Get('service-offerings/:id')
   @Public()
-  @ApiOperation({ summary: 'Service offering detail (public catalogue)' })
+  @ApiOperation({ summary: 'Offering detail' })
   async getOffering(@Param('id') id: string) {
-    return { data: await this.services.getOffering(id) };
+    return { data: await this.servicesMarketplace.getOffering(id) };
   }
 
   @Post('service-offerings/:id/bookings')
+  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Request a booking on an offering (own request or admin)' })
-  async createBooking(
-    @Param('id') id: string,
-    @Body() dto: CreateBookingDto,
-    @CurrentUser() actor: User | null
-  ) {
-    assertSelfOrAdmin(actor, dto.requesterId);
-    return { data: await this.services.createBooking(id, dto, actor!) };
+  @ApiOperation({ summary: 'Request a booking for an offering (own bookings only)' })
+  async createBooking(@Param('id') id: string, @Body() dto: CreateBookingDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.customerId);
+    return { data: await this.servicesMarketplace.createBooking({ ...dto, offeringId: id }) };
   }
 
-  @Get('service-bookings')
+  // Declared before `service-bookings/:id` so 'mine' is not captured as an id.
+  @Get('service-bookings/mine')
+  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'List bookings (requester/provider scoped; admins see all)' })
-  async listBookings(
-    @CurrentUser() actor: User | null,
-    @Query('requesterId') requesterId?: string,
-    @Query('providerId') providerId?: string,
-    @Query('status') status?: BookingStatus
-  ) {
-    if (requesterId) {
-      assertSelfOrAdmin(actor, requesterId);
+  @ApiOperation({ summary: 'List the current user\'s bookings (optional status filter)' })
+  async listMyBookings(@Query() query: ListMyBookingsQuery, @CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new UnauthorizedException('Authentication required');
     }
-    if (providerId) {
-      assertSelfOrAdmin(actor, providerId);
-    }
-    if (!requesterId && !providerId && !actor?.roles.includes('admin')) {
-      throw new ForbiddenException('Listing bookings across users requires the admin role');
-    }
-    return { data: await this.services.listBookings({ requesterId, providerId, status }) };
+    return { data: await this.servicesMarketplace.listBookingsForCustomer(actor.id, query.status) };
   }
 
   @Get('service-bookings/:id')
+  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Booking detail (requester, provider or admin)' })
-  async getBooking(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const booking = await this.services.getBooking(id);
-    if (!actor?.roles.includes('admin')) {
-      if (actor?.id !== booking.requesterId && actor?.id !== booking.providerId) {
-        throw new ForbiddenException('Bookings are visible to the requester, the provider or an admin');
-      }
-    }
-    return { data: booking };
+  @ApiOperation({ summary: 'Booking detail' })
+  async getBooking(@Param('id') id: string) {
+    return { data: await this.servicesMarketplace.getBooking(id) };
   }
 
-  @Patch('service-bookings/:id/status')
+  @Post('service-bookings/:id/quote')
+  @UseGuards(RolesGuard)
   @Authenticated()
-  @ApiOperation({ summary: 'Advance a booking status (actor-checked state machine in the service)' })
-  async setBookingStatus(
-    @Param('id') id: string,
-    @Body() dto: BookingStatusDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.services.transitionBooking(id, dto.status, actor!) };
+  @ApiOperation({ summary: 'Supplier quotes a total price for a requested booking' })
+  async quoteBooking(@Param('id') id: string, @Body() dto: QuoteBookingDto, @CurrentUser() actor: User | null) {
+    return { data: await this.servicesMarketplace.quoteBooking(id, dto.totalNaira, actor ?? { id: 'anonymous', roles: [] }) };
+  }
+
+  @Post('service-bookings/:id/status')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Drive the booking state machine (accept/decline/schedule/complete/cancel)' })
+  async setBookingStatus(@Param('id') id: string, @Body() dto: SetBookingStatusDto, @CurrentUser() actor: User | null) {
+    return { data: await this.servicesMarketplace.setBookingStatus(id, dto.status, actor ?? { id: 'anonymous', roles: [] }) };
+  }
+
+  @Post('service-bookings/:id/review')
+  @UseGuards(RolesGuard)
+  @Authenticated()
+  @ApiOperation({ summary: 'Review a completed booking (one review per booking, customer only)' })
+  async reviewBooking(@Param('id') id: string, @Body() dto: CreateReviewDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.authorId);
+    return { data: await this.servicesMarketplace.reviewBooking(id, dto.authorId, dto.rating, dto.comment) };
+  }
+
+  @Get('service-suppliers/:id/reviews')
+  @Public()
+  @ApiOperation({ summary: 'List reviews for a supplier' })
+  async listSupplierReviews(@Param('id') id: string) {
+    return { data: await this.servicesMarketplace.listSupplierReviews(id) };
   }
 }
