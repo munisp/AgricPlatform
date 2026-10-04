@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EscrowRecord, PaymentProviderPort, User } from '@agric-platform/shared';
 import { DomainEventsService } from '../../core/domain-events.service.js';
@@ -309,6 +309,97 @@ describe('EscrowService funds-integrity hardening', () => {
     const { service } = makeService();
     const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
     expect(Date.parse(record.heldUntil!)).toBeGreaterThan(Date.parse(record.heldAt));
+  });
+});
+
+// GAP-M23 — documented payment-intent client contract (docs/runbooks/ops.md
+// "Client contract — escrow expiry race"): the intent id is the escrow id,
+// expiresAt is heldUntil, expiry is LAZY, and confirming an expired intent
+// answers 409 intent_expired.
+describe('EscrowService payment-intent contract (GAP-M23)', () => {
+  /** Seeds a HELD escrow whose heldUntil deadline has already passed. */
+  function seedExpiredHold() {
+    const events = new DomainEventsService(createInMemoryOutboxRepository());
+    const expired: EscrowRecord = {
+      id: 'escrow-expired-intent',
+      orderId: 'order-buyer-cassava',
+      amountKobo: 37_000_000,
+      status: 'held',
+      depositReference: 'declared-ref',
+      heldAt: new Date(Date.now() - 2 * ESCROW_HOLD_TTL_MS).toISOString(),
+      heldUntil: new Date(Date.now() - 1_000).toISOString()
+    };
+    const service = new EscrowService(
+      events,
+      createInMemoryOrderRepository(),
+      new InMemoryEscrowRepository([expired])
+    );
+    return { service, expired };
+  }
+
+  it('reads a live hold as a payment intent with the server-issued expiresAt', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const intent = await service.paymentIntent(record.id);
+    expect(intent).toMatchObject({
+      id: record.id,
+      orderId: 'order-buyer-cassava',
+      amountKobo: 37_000_000,
+      status: 'held',
+      expiresAt: record.heldUntil,
+      heldAt: record.heldAt,
+      depositVerified: false
+    });
+  });
+
+  it('reports a held escrow past heldUntil as status expired — lazily, without mutating the record', async () => {
+    const { service, expired } = seedExpiredHold();
+    const intent = await service.paymentIntent(expired.id);
+    expect(intent.status).toBe('expired');
+    expect(intent.expiresAt).toBe(expired.heldUntil);
+    // The read does not flip the record; the sweeper owns the auto-refund.
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+  });
+
+  it('passes terminal statuses through unchanged once the expiry refund landed', async () => {
+    const { service, expired } = seedExpiredHold();
+    await service.expireHeldEscrows(new Date().toISOString());
+    const intent = await service.paymentIntent(expired.id);
+    expect(intent.status).toBe('refunded');
+    expect(intent.expiresAt).toBe(expired.heldUntil);
+  });
+
+  it('404s for an unknown intent id', async () => {
+    const { service } = makeService();
+    await expect(service.paymentIntent('escrow-missing')).rejects.toBeInstanceOf(
+      NotFoundException
+    );
+  });
+
+  it('refuses confirmation of an expired intent with 409 intent_expired (clients must mint a new intent)', async () => {
+    const { service, expired } = seedExpiredHold();
+    const error = await service
+      .transition(expired.id, 'released', buyer)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({
+      error: 'intent_expired'
+    });
+    // No late release to the seller — the record stays held for the sweeper.
+    expect((await service.escrowForOrder('order-buyer-cassava'))?.status).toBe('held');
+  });
+
+  it('still allows the expiry-outcome refund on an expired hold', async () => {
+    const { service, expired } = seedExpiredHold();
+    const refunded = await service.transition(expired.id, 'refunded', seller);
+    expect(refunded.status).toBe('refunded');
+  });
+
+  it('confirms a live (unexpired) intent normally', async () => {
+    const { service } = makeService();
+    const record = await service.holdForOrder('order-buyer-cassava', buyer.id);
+    const released = await service.transition(record.id, 'released', buyer);
+    expect(released.status).toBe('released');
   });
 });
 
