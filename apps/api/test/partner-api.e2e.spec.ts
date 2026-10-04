@@ -327,15 +327,27 @@ describe('Partner API (e2e)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('serves anonymous embed feeds with open CORS and cache headers', async () => {
+  it('serves anonymous embed feeds with allowlist CORS (GAP-L17) and cache headers', async () => {
     for (const path of ['opportunities', 'prices', 'courses', 'member-cta']) {
+      // Non-browser clients send no Origin and get no ACAO header at all.
       const res = await fetch(`${base}/embed/${path}`);
       expect(res.status).toBe(200);
-      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
       expect(res.headers.get('cache-control')).toContain('public');
       const body = (await res.json()) as { data: unknown };
       expect(body.data).toBeDefined();
     }
+
+    // Browser embeds: an allowlisted Origin is echoed (never '*'), an
+    // unlisted origin is refused (fail closed).
+    const allowed = await fetch(`${base}/embed/prices`, {
+      headers: { origin: 'http://localhost:3000' }
+    });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    const refused = await fetch(`${base}/embed/prices`, {
+      headers: { origin: 'https://evil.example' }
+    });
+    expect(refused.headers.get('access-control-allow-origin')).toBeNull();
   });
 
   it('binds disbursement subjects to the partner programme scope (Stage 27, WP-G22 follow-up)', async () => {
