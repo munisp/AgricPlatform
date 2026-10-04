@@ -34,6 +34,8 @@ function makeService(
       eventTypes: sub.eventTypes ?? [],
       targetUrl: sub.targetUrl ?? 'https://partner.example/hook',
       secret: sub.secret ?? 'delivery-secret',
+      secretPrevious: sub.secretPrevious,
+      secretPreviousUntil: sub.secretPreviousUntil,
       status: sub.status ?? 'active',
       partnerId: sub.partnerId,
       crossTenant: sub.crossTenant,
@@ -104,6 +106,84 @@ describe('WebhookDispatchService', () => {
       event('learning.enrolment.created', {})
     );
     expect(delivered).toBe(0);
+  });
+
+  // GAP-M23 rotation grace (docs/security/key-rotation.md): during the
+  // dual-accept window deliveries carry BOTH signatures so partners cut
+  // over without dropped events.
+  it('dual-signs deliveries while a previous secret is inside its grace window', async () => {
+    const calls: Array<{ headers: Record<string, string>; body: string }> = [];
+    const fetchImpl: WebhookFetch = async (_url, init) => {
+      calls.push({ headers: init.headers, body: init.body });
+      return { status: 200 };
+    };
+    const graceUntil = new Date(Date.now() + 60_000).toISOString();
+    const { service } = makeService(
+      [
+        {
+          eventTypes: ['disbursement.recorded'],
+          secret: 'new-secret',
+          secretPrevious: 'old-secret',
+          secretPreviousUntil: graceUntil
+        }
+      ],
+      fetchImpl
+    );
+    const delivered = await service.dispatch(
+      'disbursement.recorded',
+      event('partner.disbursement.recorded', { id: 'disb-2' })
+    );
+    expect(delivered).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].headers['x-agric-signature']).toBe(
+      signWebhookPayload('new-secret', calls[0].body)
+    );
+    expect(calls[0].headers['x-agric-signature-previous']).toBe(
+      signWebhookPayload('old-secret', calls[0].body)
+    );
+  });
+
+  it('stops sending the previous signature once the grace window expires', async () => {
+    const calls: Array<{ headers: Record<string, string>; body: string }> = [];
+    const fetchImpl: WebhookFetch = async (_url, init) => {
+      calls.push({ headers: init.headers, body: init.body });
+      return { status: 200 };
+    };
+    const expiredGrace = new Date(Date.now() - 1_000).toISOString();
+    const { service } = makeService(
+      [
+        {
+          eventTypes: ['disbursement.recorded'],
+          secret: 'new-secret',
+          secretPrevious: 'old-secret',
+          secretPreviousUntil: expiredGrace
+        }
+      ],
+      fetchImpl
+    );
+    const delivered = await service.dispatch(
+      'disbursement.recorded',
+      event('partner.disbursement.recorded', { id: 'disb-3' })
+    );
+    expect(delivered).toBe(1);
+    expect(calls[0].headers['x-agric-signature']).toBe(
+      signWebhookPayload('new-secret', calls[0].body)
+    );
+    expect(calls[0].headers).not.toHaveProperty('x-agric-signature-previous');
+  });
+
+  it('omits the previous signature when the subscription never rotated', async () => {
+    const calls: Array<{ headers: Record<string, string>; body: string }> = [];
+    const fetchImpl: WebhookFetch = async (_url, init) => {
+      calls.push({ headers: init.headers, body: init.body });
+      return { status: 200 };
+    };
+    const { service } = makeService([{ eventTypes: ['disbursement.recorded'] }], fetchImpl);
+    await service.dispatch(
+      'disbursement.recorded',
+      event('partner.disbursement.recorded', { id: 'disb-4' })
+    );
+    expect(calls[0].headers).not.toHaveProperty('x-agric-signature-previous');
   });
 
   it('subscribes to the domain event wildcard on module init', () => {
@@ -522,7 +602,7 @@ describe('WebhookDispatchService', () => {
 
     it('allows https deliveries to public hosts in production', async () => {
       vi.stubEnv('NODE_ENV', 'production');
-      const fetchImpl: WebhookFetch = async () => ({ status: 200 });
+      const fetchImpl = vi.fn(async () => ({ status: 200 }));
       const { service } = makeService([{ eventTypes: ['enrolment.created'] }], fetchImpl);
       expect(
         await service.dispatch('enrolment.created', event('learning.enrolment.created', {}))
