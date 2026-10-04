@@ -1,19 +1,13 @@
-import {
-  ForbiddenException,
-  Inject,
-  Injectable,
-  NotFoundException,
-  Optional
-} from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type {
-  Chapter,
-  CoopScore,
-  CreditRepayment,
-  User
+  ChapterEvent,
+  CoopScoreBand,
+  CoopScoreFactor,
+  CoopScoreFactorKey,
+  CoopScoreRecord
 } from '@agric-platform/shared';
+import { computeCoopScore } from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
-import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
-import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService } from '../../core/domain-events.service.js';
 import {
   CHAPTER_EVENT_REPOSITORY,
@@ -33,8 +27,8 @@ import {
   VSLA_SHARE_OUT_PLAN_REPOSITORY,
   VSLA_SHARE_OUT_REPOSITORY
 } from '../../database/persistence.tokens.js';
-import type { ChapterRepository } from '../../database/repositories/chapter.repository.js';
 import type { ChapterEventRepository } from '../../database/repositories/chapter-event.repository.js';
+import type { ChapterRepository } from '../../database/repositories/chapter.repository.js';
 import type { CoopScoreRepository } from '../../database/repositories/coop-score.repository.js';
 import type {
   CreditGroupMemberRepository,
@@ -53,60 +47,40 @@ import type {
   VslaShareOutPlanRepository,
   VslaShareOutRepository
 } from '../../database/repositories/vsla-carbon.repository.js';
-import {
-  computeCoopInputsHash,
-  computeCoopScore,
-  type CoopCommercialInput,
-  type CoopDataInput,
-  type CoopGovernanceInput,
-  type CoopRepaymentInput,
-  type CoopScoreInputs,
-  type CoopVslaInput
-} from './coop-score.js';
 
-/** Actor driving a cooperative-score read or recompute. */
-export type CoopScoreActor = Pick<User, 'id' | 'roles'>;
-
-/** Governance observation window: meetings in the trailing 180 days. */
-export const COOP_GOVERNANCE_WINDOW_DAYS = 180;
-
-/** A member profile counts as "complete" at this completionScore (0-100). */
-export const COOP_PROFILE_COMPLETE_THRESHOLD = 60;
-
-export interface CoopScoreView extends CoopScore {
-  /** Stable id of the persisted credit.coop_scores row. */
+/** Actor as seen by the coop-score read/recompute endpoints. */
+export interface CoopScoreActor {
   id: string;
+  roles: string[];
 }
 
-export interface CoopScoreRecomputeResult extends CoopScoreView {
-  /** false when inputs were unchanged — the identical-hash append is a no-op. */
-  recomputed: boolean;
-}
-
-function isReviewer(actor: CoopScoreActor): boolean {
-  return actor.roles.includes('admin') || actor.roles.includes('lender');
-}
-
+const REVIEWER_ROLES = ['admin', 'lender'] as const;
 const DAY_MS = 86_400_000;
+const GOVERNANCE_WINDOW_DAYS = 180;
+
+/** Roles allowed to read/recompute a cooperative's score. */
+function assertReviewer(actor: CoopScoreActor, leadUserId?: string): void {
+  if (REVIEWER_ROLES.some((role) => actor.roles.includes(role))) {
+    return;
+  }
+  if (leadUserId !== undefined && actor.id === leadUserId) {
+    return;
+  }
+  throw new ForbiddenException(
+    'Cooperative scores are visible to admin, lender and the cooperative lead only'
+  );
+}
 
 /**
- * Cooperative Score orchestration (stage-27 Innovation 14, flag `coop-score`).
- *
- * Assembles the five factor inputs from read models across credit,
- * vsla-carbon, chapters and marketplace (READ-ONLY consumption — no writes
- * to those modules), computes the deterministic score via the pure
- * computeCoopScore and appends it, versioned, to credit.coop_scores
- * (migration 072). Every role sees the SAME number and the same
- * explainability payload.
- *
- * Fail-closed: each source-module read is isolated; an unreadable module
- * yields a null factor input which the pure function scores as UNAVAILABLE
- * (0 points, badge set) — never interpolated, never fabricated.
+ * Cooperative credit score (stage-27 Innovation 14): deterministic factor
+ * assembly from five existing modules, append-only versioned persistence,
+ * idempotent recompute (identical inputs → same version, no new event), and
+ * band-change domain events. Factor math lives in @agric-platform/shared
+ * (computeCoopScore); this service gathers inputs, degrades fail-closed
+ * when a source module is unreadable, and persists.
  */
 @Injectable()
 export class CoopScoreService {
-  private readonly telemetry: TelemetryService;
-
   constructor(
     @Inject(CHAPTER_REPOSITORY) private readonly chapters: ChapterRepository,
     @Inject(CHAPTER_EVENT_REPOSITORY) private readonly chapterEvents: ChapterEventRepository,
@@ -118,338 +92,214 @@ export class CoopScoreService {
     @Inject(VSLA_GROUP_REPOSITORY) private readonly vslaGroups: VslaGroupRepository,
     @Inject(VSLA_MEMBER_REPOSITORY) private readonly vslaMembers: VslaMemberRepository,
     @Inject(VSLA_CYCLE_REPOSITORY) private readonly vslaCycles: VslaCycleRepository,
-    @Inject(VSLA_SHARE_OUT_REPOSITORY) private readonly vslaShareOuts: VslaShareOutRepository,
+    @Inject(VSLA_SHARE_OUT_REPOSITORY) private readonly shareOuts: VslaShareOutRepository,
     @Inject(VSLA_SHARE_OUT_PLAN_REPOSITORY)
-    private readonly vslaShareOutPlans: VslaShareOutPlanRepository,
+    private readonly shareOutPlans: VslaShareOutPlanRepository,
     @Inject(ORDER_REPOSITORY) private readonly orders: OrderRepository,
     @Inject(ESCROW_REPOSITORY) private readonly escrows: EscrowRepository,
     @Inject(PROFILE_REPOSITORY) private readonly profiles: ProfileRepository,
     @Inject(FARM_PLOT_REPOSITORY) private readonly plots: FarmPlotRepository,
-    @Inject(COOP_SCORE_REPOSITORY) private readonly coopScores: CoopScoreRepository,
-    private readonly events: DomainEventsService,
-    @Optional() telemetry?: TelemetryService,
-    @Optional() private readonly audit?: AuditService
-  ) {
-    this.telemetry = telemetry ?? new TelemetryService();
-  }
+    @Inject(COOP_SCORE_REPOSITORY) private readonly scores: CoopScoreRepository,
+    private readonly events: DomainEventsService
+  ) {}
 
-  /**
-   * Authorisation: admin and lender reviewers always; the cooperative's own
-   * leadership via the chapter lead (the platform's cooperative-admin
-   * surface — chapters carry leadUserId, there is no separate
-   * cooperative-admin role). Everyone authorised sees the same number.
-   */
-  private async requireViewer(cooperativeId: string, actor: CoopScoreActor): Promise<Chapter> {
-    const chapter = await this.chapters.getById(cooperativeId);
-    if (isReviewer(actor) || chapter.leadUserId === actor.id) {
-      return chapter;
-    }
-    throw new ForbiddenException(
-      'Only admin, lender or the cooperative lead may view a cooperative score'
-    );
-  }
-
-  /**
-   * Latest persisted score for a cooperative, computing + appending one on
-   * first access (credit.coop_scores is the only persistence target).
-   */
-  async getCoopScore(cooperativeId: string, actor: CoopScoreActor): Promise<CoopScoreView> {
-    await this.requireViewer(cooperativeId, actor);
-    const existing = await this.coopScores.latestFor(cooperativeId);
+  /** In-app read (admin/lender/coop lead): computes on first read. */
+  async getCoopScore(cooperativeId: string, actor: CoopScoreActor): Promise<CoopScoreRecord> {
+    const chapter = await this.requireChapter(cooperativeId);
+    assertReviewer(actor, chapter.leadUserId);
+    const existing = await this.scores.latestFor(cooperativeId);
     if (existing) {
       return existing;
     }
-    const { appended: _appended, ...computed } = await this.computeAndAppend(cooperativeId, actor);
-    return computed;
+    return this.computeAndMaybeAppend(cooperativeId, actor.id);
   }
 
-  /**
-   * On-demand recompute (admin|lender|cooperative lead). Idempotent: when
-   * the assembled inputs hash matches a stored row for this cooperative,
-   * NOTHING is appended and the stored row is returned with
-   * recomputed=false. Safe to drive from an external scheduler on any
-   * cadence.
-   */
-  async recompute(cooperativeId: string, actor: CoopScoreActor): Promise<CoopScoreRecomputeResult> {
-    await this.requireViewer(cooperativeId, actor);
-    const { appended, ...computed } = await this.computeAndAppend(cooperativeId, actor);
-    return { ...computed, recomputed: appended };
-  }
-
-  /**
-   * Partner-API read: identical payload to the in-app GET (same number,
-   * same explainability; no PII added). Never computes on behalf of a
-   * partner — a score exists only after an in-app recompute.
-   */
-  async getCoopScoreForPartner(cooperativeId: string): Promise<CoopScoreView> {
-    await this.chapters.getById(cooperativeId);
-    const existing = await this.coopScores.latestFor(cooperativeId);
-    if (existing) {
-      return existing;
+  /** Partner-API read (no actor): 404 until a score exists — never computes. */
+  async getCoopScoreForPartner(cooperativeId: string): Promise<CoopScoreRecord> {
+    await this.requireChapter(cooperativeId);
+    const existing = await this.scores.latestFor(cooperativeId);
+    if (!existing) {
+      throw new NotFoundException(`No score computed for cooperative '${cooperativeId}'`);
     }
-    throw new NotFoundException(
-      'No cooperative score computed yet for this cooperative — request a recompute first'
-    );
+    return existing;
   }
 
-  /* --------------------------------------------------------- internals -- */
-
-  private async computeAndAppend(
+  /** Explicit recompute: appends a version only when the inputs changed. */
+  async recompute(
     cooperativeId: string,
     actor: CoopScoreActor
-  ): Promise<CoopScoreView & { appended: boolean }> {
-    return this.telemetry.withSpan(
-      'credit.coop_score.compute',
-      { 'credit.coop_score.factor_count': 5 },
-      async () => {
-        const computedAt = new Date().toISOString();
-        const inputs = await this.assembleInputs(cooperativeId, computedAt);
-        const inputsHash = computeCoopInputsHash(cooperativeId, inputs);
-        const result = computeCoopScore(inputs);
+  ): Promise<CoopScoreRecord & { recomputed: boolean }> {
+    const chapter = await this.requireChapter(cooperativeId);
+    assertReviewer(actor, chapter.leadUserId);
+    return this.computeAndMaybeAppend(cooperativeId, actor.id);
+  }
 
-        const previous = await this.coopScores.latestFor(cooperativeId);
-        const appended = await this.coopScores.append({
-          id: newId('cscore'),
-          cooperativeId,
-          score: result.score,
-          band: result.band,
-          factors: result.factors,
-          inputsHash,
-          computedAt
-        });
-        if (!appended) {
-          const identical = await this.coopScores.findByInputsHash(cooperativeId, inputsHash);
-          if (!identical) {
-            throw new NotFoundException(
-              'Cooperative score recompute raced: identical inputs hash vanished'
-            );
-          }
-          return { ...identical, appended: false };
-        }
-
-        this.telemetry.increment('credit.coop_scores_computed_total', 1, {
-          band: result.band
-        });
-        this.telemetry.record('credit.coop_score_distribution', result.score, {
-          band: result.band
-        });
-
-        await this.events.publish(
-          'credit.coop_score.computed',
-          {
-            cooperativeId,
-            version: appended.version,
-            score: appended.score,
-            band: appended.band,
-            inputsHash
-          },
-          actor.id
-        );
-        if (previous && previous.band !== appended.band) {
-          await this.events.publish(
-            'credit.coop_score.band_changed',
-            {
-              cooperativeId,
-              fromBand: previous.band,
-              toBand: appended.band,
-              score: appended.score,
-              version: appended.version
-            },
-            actor.id
-          );
-        }
-        await this.audit?.record({
-          actorId: actor.id,
-          action: 'credit.coop_score.computed',
-          entityType: 'coop_scores',
-          entityId: appended.id,
-          metadata: {
-            cooperativeId,
-            version: appended.version,
-            score: appended.score,
-            band: appended.band
-          }
-        });
-        return { ...appended, appended: true };
-      }
-    );
+  private async requireChapter(cooperativeId: string) {
+    const chapter = await this.chapters.findById(cooperativeId);
+    if (!chapter) {
+      throw new NotFoundException(`Cooperative '${cooperativeId}' not found`);
+    }
+    return chapter;
   }
 
   /**
-   * Assembles the five factor inputs. Each source read is isolated: a
-   * throwing (unreadable) module maps to a null input, which the pure
-   * function scores as UNAVAILABLE with a bounded (zero) contribution.
+   * Computes the current factor set and appends a new record ONLY when the
+   * composite differs from the latest persisted version (idempotent
+   * recompute). Emits coop_score.computed on append and
+   * coop_score.band_changed when the band transitions.
    */
-  async assembleInputs(cooperativeId: string, nowIso: string): Promise<CoopScoreInputs> {
+  private async computeAndMaybeAppend(
+    cooperativeId: string,
+    actorId: string
+  ): Promise<CoopScoreRecord & { recomputed: boolean }> {
+    const inputs = await this.gatherInputs(cooperativeId);
+    const computed = computeCoopScore(inputs);
+    const latest = await this.scores.latestFor(cooperativeId);
+
+    if (latest && latest.score === computed.score && sameFactors(latest.factors, computed.factors)) {
+      return { ...latest, recomputed: false };
+    }
+
+    const version = (latest?.version ?? 0) + 1;
+    const record: CoopScoreRecord = {
+      id: newId('coopscore'),
+      cooperativeId,
+      version,
+      score: computed.score,
+      band: computed.band,
+      factors: computed.factors,
+      dataAsOf: new Date().toISOString(),
+      computedBy: actorId,
+      createdAt: new Date().toISOString()
+    };
+    await this.scores.append(record);
+    await this.events.publish('credit.coop_score.computed', {
+      cooperativeId,
+      version,
+      score: record.score,
+      band: record.band
+    });
+    if (latest && latest.band !== record.band) {
+      await this.events.publish('credit.coop_score.band_changed', {
+        cooperativeId,
+        fromBand: latest.band,
+        toBand: record.band,
+        version
+      });
+    }
+    return { ...record, recomputed: true };
+  }
+
+  /* ------------------------------ factor inputs ------------------------------ */
+
+  private async gatherInputs(cooperativeId: string) {
     const [repayment, vsla, governance, commercial, data] = await Promise.all([
-      this.guard(() => this.gatherRepayment(cooperativeId)),
-      this.guard(() => this.gatherVsla(cooperativeId)),
-      this.guard(() => this.gatherGovernance(cooperativeId, nowIso)),
-      this.guard(() => this.gatherCommercial(cooperativeId)),
-      this.guard(() => this.gatherDataCompleteness(cooperativeId))
+      this.guard('repaymentDiscipline', () => this.repaymentInputs(cooperativeId)),
+      this.guard('vslaPerformance', () => this.vslaInputs(cooperativeId)),
+      this.guard('governanceActivity', () => this.governanceInputs(cooperativeId)),
+      this.guard('commercialReliability', () => this.commercialInputs(cooperativeId)),
+      this.guard('dataCompleteness', () => this.dataInputs(cooperativeId))
     ]);
     return { repayment, vsla, governance, commercial, data };
   }
 
-  private async guard<T>(gather: () => Promise<T>): Promise<T | null> {
+  /** Fail-closed: a throwing source module degrades its factor to unavailable. */
+  private async guard<T>(
+    _key: CoopScoreFactorKey,
+    gather: () => Promise<T>
+  ): Promise<T | { unavailable: true }> {
     try {
       return await gather();
     } catch {
-      return null;
+      return { unavailable: true };
     }
   }
 
-  /** Member user ids of the cooperative (credit groups + VSLA groups linked to the chapter). */
-  private async memberIds(cooperativeId: string): Promise<Set<string>> {
-    const members = new Set<string>();
-    const creditGroups = await this.creditGroups.find({ chapterId: cooperativeId });
-    for (const group of creditGroups) {
-      for (const member of await this.creditGroupMembers.listByGroup(group.id)) {
-        members.add(member.userId);
+  private async memberUserIds(cooperativeId: string): Promise<string[]> {
+    const groups = await this.creditGroups.find({ chapterId: cooperativeId });
+    const ids = new Set<string>();
+    for (const group of groups) {
+      const members = await this.creditGroupMembers.listForGroup(group.id);
+      for (const member of members) {
+        ids.add(member.userId);
       }
     }
+    // VSLA membership also defines the cooperative's active membership.
     const vslaGroups = await this.vslaGroups.find({ chapterId: cooperativeId });
     for (const group of vslaGroups) {
-      for (const member of await this.vslaMembers.find({ groupId: group.id, status: 'ACTIVE' })) {
-        members.add(member.userId);
+      const members = await this.vslaMembers.find({ groupId: group.id, status: 'ACTIVE' });
+      for (const member of members) {
+        ids.add(member.userId);
       }
     }
-    return members;
+    return [...ids].sort();
   }
 
-  private async gatherRepayment(cooperativeId: string): Promise<CoopRepaymentInput> {
-    const members = await this.memberIds(cooperativeId);
-    const creditGroups = await this.creditGroups.find({ chapterId: cooperativeId });
-    const loans = [];
-    for (const group of creditGroups) {
-      loans.push(...(await this.loans.find({ groupId: group.id })));
-    }
-    for (const memberId of members) {
-      loans.push(...(await this.loans.find({ applicantUserId: memberId })));
-    }
-    const seen = new Set<string>();
-    const input: CoopRepaymentInput = {
-      loansConsidered: 0,
-      onTimeKobo: 0,
-      lateKobo: 0,
-      missedKobo: 0
-    };
-    for (const loan of loans) {
-      if (seen.has(loan.id)) {
-        continue;
-      }
-      seen.add(loan.id);
-      const schedule = await this.repayments.find({ loanId: loan.id });
-      if (schedule.length === 0) {
-        continue;
-      }
-      input.loansConsidered += 1;
-      for (const installment of schedule) {
-        this.classifyInstallment(installment, input);
-      }
-    }
-    return input;
+  private async repaymentInputs(cooperativeId: string) {
+    const memberIds = new Set(await this.memberUserIds(cooperativeId));
+    const loans = (await this.loans.all()).filter((loan) => memberIds.has(loan.applicantUserId));
+    const loanIds = new Set(loans.map((loan) => loan.id));
+    const installments = (await this.repayments.all()).filter((repayment) =>
+      loanIds.has(repayment.loanId)
+    );
+    return { loans, installments };
   }
 
-  private classifyInstallment(installment: CreditRepayment, input: CoopRepaymentInput): void {
-    if (installment.status === 'missed') {
-      input.missedKobo += installment.amountKobo;
-      return;
-    }
-    if (!installment.paidAt) {
-      // Pending obligations are undecided — excluded, never assumed.
-      return;
-    }
-    const paidKobo = installment.paidAmountKobo ?? installment.amountKobo;
-    if (installment.paidAt <= installment.dueAt) {
-      input.onTimeKobo += paidKobo;
-    } else {
-      input.lateKobo += paidKobo;
-    }
-  }
-
-  private async gatherVsla(cooperativeId: string): Promise<CoopVslaInput> {
-    const input: CoopVslaInput = {
-      cyclesTotal: 0,
-      cyclesClosed: 0,
-      shareOutsPlanned: 0,
-      shareOutsPaid: 0
-    };
+  private async vslaInputs(cooperativeId: string) {
     const groups = await this.vslaGroups.find({ chapterId: cooperativeId });
-    for (const group of groups) {
-      const cycles = await this.vslaCycles.find({ groupId: group.id });
-      for (const cycle of cycles) {
-        input.cyclesTotal += 1;
-        if (cycle.status === 'CLOSED') {
-          input.cyclesClosed += 1;
-        }
-        input.shareOutsPlanned += (await this.vslaShareOutPlans.find({ cycleId: cycle.id })).length;
-        input.shareOutsPaid += (await this.vslaShareOuts.find({ cycleId: cycle.id })).length;
-      }
-    }
-    return input;
+    const groupIds = new Set(groups.map((group) => group.id));
+    const cycles = (await this.vslaCycles.all()).filter((cycle) => groupIds.has(cycle.groupId));
+    const cycleIds = new Set(cycles.map((cycle) => cycle.id));
+    const shareOuts = (await this.shareOuts.all()).filter((row) => cycleIds.has(row.cycleId));
+    const shareOutPlans = (await this.shareOutPlans.all()).filter((row) =>
+      cycleIds.has(row.cycleId)
+    );
+    return { cycles, shareOuts, shareOutPlans };
   }
 
-  private async gatherGovernance(
-    cooperativeId: string,
-    nowIso: string
-  ): Promise<CoopGovernanceInput> {
-    const nowMs = Date.parse(nowIso);
-    const windowStartMs = nowMs - COOP_GOVERNANCE_WINDOW_DAYS * DAY_MS;
-    const events = await this.chapterEvents.find({ chapterId: cooperativeId });
-    const meetings = events.filter((event) => {
-      const startsMs = Date.parse(event.startsAt);
-      return (
-        event.type === 'meeting' &&
-        Number.isFinite(startsMs) &&
-        startsMs <= nowMs &&
-        startsMs >= windowStartMs
-      );
-    });
-    return {
-      meetingsHeld: meetings.length,
-      attendanceTotal: meetings.reduce((total, event) => total + event.attendanceCount, 0),
-      rsvpTotal: meetings.reduce((total, event) => total + event.rsvpCount, 0),
-      windowDays: COOP_GOVERNANCE_WINDOW_DAYS
-    };
+  private async governanceInputs(cooperativeId: string) {
+    const windowStart = new Date(Date.now() - GOVERNANCE_WINDOW_DAYS * DAY_MS).toISOString();
+    const events = (await this.chapterEvents.find({ chapterId: cooperativeId })).filter(
+      (event: ChapterEvent) => event.type === 'meeting' && event.startsAt >= windowStart
+    );
+    return { meetings: events, windowDays: GOVERNANCE_WINDOW_DAYS };
   }
 
-  private async gatherCommercial(cooperativeId: string): Promise<CoopCommercialInput> {
-    const input: CoopCommercialInput = {
-      escrowsReleased: 0,
-      escrowsRefunded: 0,
-      escrowsDisputed: 0
-    };
-    const members = await this.memberIds(cooperativeId);
-    for (const memberId of members) {
-      const sales = await this.orders.find({ sellerId: memberId });
-      for (const sale of sales) {
-        for (const escrow of await this.escrows.find({ orderId: sale.id })) {
-          if (escrow.status === 'released') {
-            input.escrowsReleased += 1;
-          } else if (escrow.status === 'refunded') {
-            input.escrowsRefunded += 1;
-          } else if (escrow.status === 'disputed') {
-            input.escrowsDisputed += 1;
-          }
-        }
-      }
-    }
-    return input;
+  private async commercialInputs(cooperativeId: string) {
+    const memberIds = new Set(await this.memberUserIds(cooperativeId));
+    const sales = (await this.orders.all()).filter((order) => memberIds.has(order.sellerId));
+    const orderIds = new Set(sales.map((order) => order.id));
+    const escrows = (await this.escrows.all()).filter((row) => orderIds.has(row.orderId));
+    return { sales, escrows };
   }
 
-  private async gatherDataCompleteness(cooperativeId: string): Promise<CoopDataInput> {
-    const members = await this.memberIds(cooperativeId);
-    const input: CoopDataInput = { memberCount: members.size, membersWithProfile: 0, membersWithPlot: 0 };
-    for (const memberId of members) {
-      const profile = await this.profiles.findByUserId(memberId);
-      if (profile && profile.completionScore >= COOP_PROFILE_COMPLETE_THRESHOLD) {
-        input.membersWithProfile += 1;
-      }
-      if ((await this.plots.find({ ownerUserId: memberId })).length > 0) {
-        input.membersWithPlot += 1;
+  private async dataInputs(cooperativeId: string) {
+    const memberIds = await this.memberUserIds(cooperativeId);
+    const profiles = [];
+    for (const userId of memberIds) {
+      const profile = await this.profiles.findById(userId);
+      if (profile) {
+        profiles.push(profile);
       }
     }
-    return input;
+    const plots = (await this.plots.all()).filter((plot) => memberIds.includes(plot.ownerUserId));
+    return { memberIds, profiles, plots };
   }
 }
+
+/** Factor equality for idempotent recompute (key + points + basis). */
+function sameFactors(a: CoopScoreFactor[], b: CoopScoreFactor[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((factor, index) => {
+    const other = b[index]!;
+    return (
+      factor.key === other.key &&
+      factor.points === other.points &&
+      factor.basis === other.basis
+    );
+  });
+}
+
+export type { CoopScoreBand };
