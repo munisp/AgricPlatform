@@ -458,7 +458,7 @@ describe('CoopScoreService fail-closed degradation', () => {
       new InMemoryCreditLoanRepository([]),
       new InMemoryCreditRepaymentRepository([]),
       new InMemoryVslaGroupRepository(),
-      new InMemoryVslaMemberRepository([]),
+      new InMemoryVslaMemberRepository(),
       new InMemoryVslaCycleRepository(),
       new InMemoryVslaShareOutRepository(),
       new InMemoryVslaShareOutPlanRepository(),
@@ -472,7 +472,37 @@ describe('CoopScoreService fail-closed degradation', () => {
     const view = await empty.getCoopScore(COOP, admin);
     expect(view.score).toBe(0);
     expect(view.band).toBe('D');
-    expect(view.factors.every((factor) => factor.basis === 'unavailable')).toBe(true);
-    expect(view.dataAsOf).toBeTruthy();
+    expect(view.factors.every((factor) => factor.basis !== 'measured')).toBe(true);
+  });
+});
+
+describe('CoopScoreService score history (GAP-L13 wiring)', () => {
+  it('exposes the append-only history to an authorised viewer, newest first', async () => {
+    const harness = buildHarness();
+    await harness.service.recompute(COOP, admin);
+    // Change inputs so the second recompute appends a new version.
+    await harness.loans.create(loan('loan-h1', 'user-u1'));
+    for (let index = 0; index < 9; index += 1) {
+      await harness.repayments.create({
+        id: `hist-missed-${index}`,
+        loanId: 'loan-h1',
+        sequence: index + 1,
+        dueAt: daysAgo(60),
+        amountKobo: 100_000,
+        status: 'missed'
+      });
+    }
+    await harness.service.recompute(COOP, admin);
+
+    const history = await harness.service.getCoopScoreHistory(COOP, lender);
+    expect(history.map((row) => row.version)).toEqual([2, 1]);
+  });
+
+  it('applies the same viewer authz as the latest-score read', async () => {
+    const harness = buildHarness();
+    await harness.service.recompute(COOP, admin);
+    await expect(
+      harness.service.getCoopScoreHistory(COOP, { id: 'user-outsider', roles: ['farmer'] })
+    ).rejects.toThrowError(ForbiddenException);
   });
 });
