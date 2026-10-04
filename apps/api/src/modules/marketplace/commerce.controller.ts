@@ -1,359 +1,244 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UnauthorizedException,
-  UseGuards
-} from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsISO8601, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import {
-  ESCROW_STATUSES,
-  INVOICE_STATUSES,
-  SHIPMENT_STATUSES,
-  type EscrowStatus,
-  type InvoiceStatus,
-  type ShipmentStatus,
-  type User
-} from '@agric-platform/shared';
+  ArrayMaxSize,
+  ArrayNotEmpty,
+  IsArray,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength
+} from 'class-validator';
+import type { User } from '@agric-platform/shared';
 import { CurrentUser } from '../../common/auth/current-user.decorator.js';
-import { assertPartyOrAdmin, assertSelfOrAdmin } from '../../common/auth/ownership.js';
+import { assertSelfOrAdmin } from '../../common/auth/ownership.js';
 import { Authenticated, Roles } from '../../common/auth/roles.decorator.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
-import { EscrowService } from './escrow.service.js';
-import { InvoiceService } from './invoice.service.js';
-import { LogisticsService, type SchedulePickupInput } from './logistics.service.js';
-import { MarketplaceService } from './marketplace.service.js';
+import {
+  CommerceService,
+  type AddItemInput,
+  type ApplyCouponInput,
+  type CreateCouponInput
+} from './commerce.service.js';
 
-class EscrowStatusDto {
-  @IsIn(ESCROW_STATUSES)
-  status!: EscrowStatus;
-}
-
-class HoldEscrowDto {
-  /**
-   * Stage 24 (audit A1-1): the buyer's provider payment reference. Required
-   * whenever deposit verification is required (a payment provider is wired,
-   * or production): the reference is re-verified before the hold is created,
-   * so an unfunded escrow can never be held — and later paid out — through
-   * this endpoint.
-   */
-  @IsOptional()
+class AddItemDto implements AddItemInput {
   @IsString()
   @MaxLength(100)
-  paymentReference?: string;
-}
+  listingId!: string;
 
-class InvoiceStatusDto {
-  @IsIn(INVOICE_STATUSES)
-  status!: InvoiceStatus;
-}
-
-class SchedulePickupDto implements SchedulePickupInput {
-  @IsOptional()
-  @IsString()
-  @MaxLength(500)
-  carrier?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  trackingReference?: string;
-
-  @IsOptional()
-  @IsISO8601()
-  scheduledPickupAt?: string;
-}
-
-class ShipmentStatusDto {
-  @IsIn(SHIPMENT_STATUSES)
-  status!: ShipmentStatus;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  failureReason?: string;
-}
-
-/** V-06: admin split award for a disputed escrow (seller part in kobo). */
-class ResolveSplitDto {
-  /** Seller-side release part; the buyer's refund part is the remainder. */
-  @IsInt()
-  @Min(0)
-  releaseKobo!: number;
-
-  /** Buyer-side refund part; releaseKobo + refundKobo must equal the held amount. */
-  @IsInt()
-  @Min(0)
-  refundKobo!: number;
-}
-
-/** V-36: seller-recorded partial delivery quantity. */
-class PartialDeliveryDto {
   @IsInt()
   @Min(1)
-  @Max(Number.MAX_SAFE_INTEGER)
-  deliveredQuantity!: number;
+  quantity!: number;
 }
 
-/** V-36: terminal shipment failure with fast-track escrow refund. */
-class FailShipmentDto {
+class UpdateQuantityDto {
+  @IsInt()
+  @Min(0)
+  quantity!: number;
+}
+
+class ApplyCouponDto implements ApplyCouponInput {
   @IsString()
-  @MaxLength(2000)
-  failureReason!: string;
+  @MaxLength(64)
+  code!: string;
 }
 
-function requireActor(actor: User | null): User {
-  if (!actor) {
-    throw new UnauthorizedException('Authentication required');
-  }
-  return actor;
+class CreateCouponDto implements CreateCouponInput {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(64)
+  code!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  percentOff?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  amountOffNaira?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  minSubtotalNaira?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRedemptions?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  expiresAt?: string;
 }
 
-/** Wave P2a marketplace depth: escrow, invoicing, logistics coordination. */
-@ApiTags('marketplace')
-@Controller()
+class CheckoutDto {
+  @IsString()
+  @MaxLength(100)
+  userId!: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  itemIds?: string[];
+}
+
+class AbandonDto {
+  @IsString()
+  @MaxLength(100)
+  userId!: string;
+}
+
+/**
+ * Cart + coupons (wave P6). Carts are strictly per-user: every read/write
+ * is ownership-checked against the authenticated actor. Coupon admin is
+ * admin-only; validation and application are user-facing but scoped.
+ */
+@ApiTags('commerce')
+@Controller('commerce')
+@UseGuards(RolesGuard)
 export class CommerceController {
-  constructor(
-    private readonly marketplace: MarketplaceService,
-    private readonly escrow: EscrowService,
-    private readonly invoices: InvoiceService,
-    private readonly logistics: LogisticsService
-  ) {}
+  constructor(private readonly commerce: CommerceService) {}
 
-  @Post('orders/:id/escrow')
-  @UseGuards(RolesGuard)
+  @Get('cart')
+  @Authenticated()
+  @ApiOperation({ summary: "Fetch the caller's active cart" })
+  async cart(@Query('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.cartFor(userId) };
+  }
+
+  @Post('cart/items')
+  @Authenticated()
+  @ApiOperation({ summary: 'Add a listing to the cart (quantity merges on repeats)' })
+  async addItem(
+    @Query('userId') userId: string,
+    @Body() dto: AddItemDto,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.addItem(userId, dto) };
+  }
+
+  @Patch('cart/items/:itemId')
+  @Authenticated()
+  @ApiOperation({ summary: 'Update a cart item quantity (0 removes it)' })
+  async updateItem(
+    @Query('userId') userId: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: UpdateQuantityDto,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.updateItemQuantity(userId, itemId, dto.quantity) };
+  }
+
+  @Delete('cart/items/:itemId')
+  @Authenticated()
+  @ApiOperation({ summary: 'Remove an item from the cart' })
+  async removeItem(
+    @Query('userId') userId: string,
+    @Param('itemId') itemId: string,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.removeItem(userId, itemId) };
+  }
+
+  @Delete('cart')
+  @Authenticated()
+  @ApiOperation({ summary: 'Clear the cart' })
+  async clearCart(@Query('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.clearCart(userId) };
+  }
+
+  @Post('cart/coupon')
+  @Authenticated()
+  @ApiOperation({ summary: 'Apply a coupon code to the cart (single coupon per cart)' })
+  async applyCoupon(
+    @Query('userId') userId: string,
+    @Body() dto: ApplyCouponDto,
+    @CurrentUser() actor: User | null
+  ) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.applyCoupon(userId, dto) };
+  }
+
+  @Delete('cart/coupon')
+  @Authenticated()
+  @ApiOperation({ summary: 'Remove the applied coupon' })
+  async removeCoupon(@Query('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.removeCoupon(userId) };
+  }
+
+  @Get('cart/pricing')
+  @Authenticated()
+  @ApiOperation({ summary: 'Server-side cart pricing with coupon discount applied' })
+  async pricing(@Query('userId') userId: string, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, userId);
+    return { data: await this.commerce.pricingFor(userId) };
+  }
+
+  @Post('cart/checkout')
   @Authenticated()
   @ApiOperation({
     summary:
-      'Hold the order total in escrow (buyer or admin; idempotent per order; requires the verified payment reference when deposit verification is enforced)'
+      'Checkout: converts the cart (or a selected subset) into marketplace orders, redeems the coupon once and clears the cart'
   })
-  async holdEscrow(
-    @Param('id') orderId: string,
-    @Body() dto: HoldEscrowDto,
-    @CurrentUser() actor: User | null
-  ) {
-    const user = requireActor(actor);
-    const order = await this.marketplace.getOrder(orderId);
-    assertSelfOrAdmin(user, order.buyerId);
-    // Stage 24 (audit A1-1): verify-before-credit also gates hold creation —
-    // no provider-verified deposit evidence, no hold.
-    const deposit = await this.marketplace.verifyDepositForHold(
-      orderId,
-      dto?.paymentReference,
-      user.id
-    );
-    return { data: await this.escrow.holdForOrder(orderId, user.id, deposit) };
+  async checkout(@Body() dto: CheckoutDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
+    return { data: await this.commerce.checkout(dto.userId, actor!, dto.itemIds) };
   }
 
-  @Get('orders/:id/escrow')
-  @UseGuards(RolesGuard)
+  @Post('cart/abandon')
   @Authenticated()
-  @ApiOperation({ summary: 'Escrow record for an order (order parties or admin)' })
-  async escrowForOrder(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
-    const order = await this.marketplace.getOrder(orderId);
-    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
-    return { data: (await this.escrow.escrowForOrder(orderId)) ?? null };
+  @ApiOperation({ summary: 'Abandon the active cart (recovery automation reads abandoned carts)' })
+  async abandon(@Body() dto: AbandonDto, @CurrentUser() actor: User | null) {
+    assertSelfOrAdmin(actor, dto.userId);
+    return { data: await this.commerce.abandonCart(dto.userId) };
   }
 
-  /**
-   * Deterministic escrow expiry sweep (funds-integrity wave): every held
-   * escrow past its heldUntil deadline is auto-refunded through the guarded
-   * transition machinery. Admin-triggered; safe to run repeatedly.
-   */
-  @Post('escrow/expire')
-  @UseGuards(RolesGuard)
+  @Get('coupons')
   @Roles('admin')
-  @ApiOperation({ summary: 'Auto-refund all expired escrow holds (admin; idempotent)' })
-  async expireEscrows(@CurrentUser() actor: User | null) {
-    requireActor(actor);
-    return { data: await this.escrow.expireHeldEscrows() };
+  @ApiOperation({ summary: 'List coupons (admin)' })
+  async listCoupons() {
+    return { data: await this.commerce.listCoupons() };
   }
 
-  @Patch('escrow/:id/status')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Transition an escrow (state machine enforced, actor-scoped)' })
-  async transitionEscrow(
-    @Param('id') id: string,
-    @Body() dto: EscrowStatusDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.escrow.transition(id, dto.status, requireActor(actor)) };
+  @Post('coupons')
+  @Roles('admin')
+  @ApiOperation({ summary: 'Create a coupon (admin)' })
+  async createCoupon(@Body() dto: CreateCouponDto, @CurrentUser() actor: User | null) {
+    return { data: await this.commerce.createCoupon(dto, actor!) };
   }
 
-  @Post('orders/:id/invoice')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Issue the invoice for an order (seller or admin; idempotent per order)' })
-  async issueInvoice(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
-    const user = requireActor(actor);
-    const order = await this.marketplace.getOrder(orderId);
-    assertSelfOrAdmin(user, order.sellerId);
-    return { data: await this.invoices.issueForOrder(orderId, user.id) };
+  @Delete('coupons/:code')
+  @Roles('admin')
+  @ApiOperation({ summary: 'Deactivate a coupon (admin)' })
+  async deactivateCoupon(@Param('code') code: string, @CurrentUser() actor: User | null) {
+    return { data: await this.commerce.deactivateCoupon(code, actor!) };
   }
 
-  @Get('invoices')
-  @UseGuards(RolesGuard)
+  @Post('coupons/validate')
   @Authenticated()
-  @ApiOperation({ summary: 'List invoices by seller, buyer or status (own records or admin)' })
-  async listInvoices(
-    @CurrentUser() actor: User | null,
-    @Query('sellerId') sellerId?: string,
-    @Query('buyerId') buyerId?: string,
-    @Query('status') status?: InvoiceStatus
-  ) {
-    const user = requireActor(actor);
-    if (!user.roles.includes('admin') && sellerId !== user.id && buyerId !== user.id) {
-      assertSelfOrAdmin(user, sellerId ?? buyerId ?? '');
+  @ApiOperation({ summary: 'Validate a coupon against a subtotal without mutating the cart' })
+  async validateCoupon(@Body() dto: { code: string; subtotalNaira: number }, @CurrentUser() actor: User | null) {
+    if (!actor) {
+      throw new ForbiddenException('Authentication required');
     }
-    return { data: await this.invoices.list({ sellerId, buyerId, status }) };
-  }
-
-  @Get('invoices/:id')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Invoice detail (invoice parties or admin)' })
-  async getInvoice(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const invoice = await this.invoices.getById(id);
-    assertPartyOrAdmin(actor, [invoice.buyerId, invoice.sellerId]);
-    return { data: invoice };
-  }
-
-  @Get('invoices/:id/serialised')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'PDF-ready invoice serialisation (invoice parties or admin)' })
-  async serialiseInvoice(@Param('id') id: string, @CurrentUser() actor: User | null) {
-    const invoice = await this.invoices.getById(id);
-    assertPartyOrAdmin(actor, [invoice.buyerId, invoice.sellerId]);
-    return { data: await this.invoices.serialise(id) };
-  }
-
-  @Patch('invoices/:id/status')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Transition an invoice status (state machine enforced, actor-scoped)' })
-  async transitionInvoice(
-    @Param('id') id: string,
-    @Body() dto: InvoiceStatusDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.invoices.transition(id, dto.status, requireActor(actor)) };
-  }
-
-  @Post('orders/:id/shipment')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Schedule pickup for an order (seller; one shipment per order)' })
-  async schedulePickup(
-    @Param('id') orderId: string,
-    @Body() dto: SchedulePickupDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.logistics.schedulePickup(orderId, dto, requireActor(actor)) };
-  }
-
-  @Get('orders/:id/shipment')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Shipment for an order (order parties or admin)' })
-  async shipmentForOrder(@Param('id') orderId: string, @CurrentUser() actor: User | null) {
-    const order = await this.marketplace.getOrder(orderId);
-    assertPartyOrAdmin(actor, [order.buyerId, order.sellerId]);
-    return { data: (await this.logistics.shipmentForOrder(orderId)) ?? null };
-  }
-
-  @Patch('shipments/:id/status')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({ summary: 'Transition a shipment (delivery confirmation releases escrow)' })
-  async transitionShipment(
-    @Param('id') id: string,
-    @Body() dto: ShipmentStatusDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return {
-      data: await this.logistics.transition(id, dto.status, requireActor(actor), dto.failureReason)
-    };
-  }
-
-  /**
-   * V-06: admin-mediated dispute resolution with a SPLIT award — the escrow
-   * posts a partial release to the seller and a partial refund to the buyer
-   * (two balanced legs summing exactly to the held amount), then the order
-   * completes (release part > 0) or cancels (full refund).
-   */
-  @Post('orders/:id/resolve-dispute')
-  @UseGuards(RolesGuard)
-  @Roles('admin')
-  @ApiOperation({
-    summary: 'Resolve a disputed order with a partial award (admin; idempotent per award)'
-  })
-  async resolveDispute(
-    @Param('id') orderId: string,
-    @Body() dto: ResolveSplitDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return {
-      data: await this.marketplace.resolveDispute(orderId, { releaseKobo: dto.releaseKobo }, requireActor(actor))
-    };
-  }
-
-  /** V-06: escrow-level split resolution (admin; the dispute path for holds). */
-  @Post('escrow/:id/resolve-split')
-  @UseGuards(RolesGuard)
-  @Roles('admin')
-  @ApiOperation({
-    summary: 'Split-resolve a disputed escrow (admin; two legs summing exactly to the held amount)'
-  })
-  async resolveEscrowSplit(
-    @Param('id') id: string,
-    @Body() dto: ResolveSplitDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return {
-      data: await this.escrow.resolveDisputeSplit(
-        id,
-        { releaseKobo: dto.releaseKobo, refundKobo: dto.refundKobo },
-        requireActor(actor)
-      )
-    };
-  }
-
-  /** V-36: record a partial delivery (seller); completion then settles by split. */
-  @Post('orders/:id/partial-delivery')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({
-    summary: 'Record a partial delivery (seller); order completes with a split escrow settlement'
-  })
-  async recordPartialDelivery(
-    @Param('id') orderId: string,
-    @Body() dto: PartialDeliveryDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return {
-      data: await this.marketplace.recordPartialDelivery(orderId, dto.deliveredQuantity, requireActor(actor))
-    };
-  }
-
-  /** V-36: terminal shipment failure with immediate escrow refund (fast-track). */
-  @Post('shipments/:id/fail-refund')
-  @UseGuards(RolesGuard)
-  @Authenticated()
-  @ApiOperation({
-    summary: 'Mark a shipment terminally failed and refund the escrow immediately (seller/admin)'
-  })
-  async failShipmentAndRefund(
-    @Param('id') id: string,
-    @Body() dto: FailShipmentDto,
-    @CurrentUser() actor: User | null
-  ) {
-    return { data: await this.logistics.failAndRefund(id, requireActor(actor), dto.failureReason) };
+    return { data: await this.commerce.validateCoupon(dto.code, dto.subtotalNaira) };
   }
 }
