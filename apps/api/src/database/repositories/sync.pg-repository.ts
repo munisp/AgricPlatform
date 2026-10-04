@@ -5,7 +5,10 @@ import type {
   EntityVersionRepository,
   SyncCursorRepository,
   SyncMutationRecord,
-  SyncMutationRepository
+  SyncMutationRepository,
+  SyncVersionBumpRetryInput,
+  SyncVersionBumpRetryRecord,
+  SyncVersionBumpRetryRepository
 } from './sync.repository.js';
 
 interface EntityVersionRow {
@@ -86,39 +89,6 @@ export class PgEntityVersionRepository implements EntityVersionRepository {
       [input.entity, input.entityId, input.ownerId, input.updatedBy, input.deleted ?? false]
     );
     return Number(result.rows[0].version);
-  }
-
-  async bumpExpected(input: EntityVersionBump & { expectedVersion: number }): Promise<number | null> {
-    if (input.expectedVersion === 0) {
-      // Create path: only the first writer wins the insert.
-      const inserted = await this.pool.query<{ version: string }>(
-        `INSERT INTO sync.entity_versions (entity, entity_id, version, owner_id, updated_by, deleted)
-         VALUES ($1, $2, 1, $3, $4, $5)
-         ON CONFLICT (entity, entity_id) DO NOTHING
-         RETURNING version`,
-        [input.entity, input.entityId, input.ownerId, input.updatedBy, input.deleted ?? false]
-      );
-      return inserted.rows[0] ? Number(inserted.rows[0].version) : null;
-    }
-    const updated = await this.pool.query<{ version: string }>(
-      `UPDATE sync.entity_versions
-         SET version    = version + 1,
-             owner_id   = $3,
-             updated_by = $4,
-             updated_at = now(),
-             deleted    = $5
-       WHERE entity = $1 AND entity_id = $2 AND version = $6
-       RETURNING version`,
-      [
-        input.entity,
-        input.entityId,
-        input.ownerId,
-        input.updatedBy,
-        input.deleted ?? false,
-        input.expectedVersion
-      ]
-    );
-    return updated.rows[0] ? Number(updated.rows[0].version) : null;
   }
 
   /**
@@ -326,4 +296,89 @@ export function createPgSyncCursorRepository(pool: pg.Pool): PgSyncCursorReposit
 
 export function createPgSyncMutationRepository(pool: pg.Pool): PgSyncMutationRepository {
   return new PgSyncMutationRepository(pool);
+}
+
+// ---------------------------------------------------------------------------
+// GAP-M11: failed version-bump reconciliation ledger (migration 123).
+// ---------------------------------------------------------------------------
+
+interface VersionBumpRetryRow {
+  entity: string;
+  entity_id: string;
+  owner_id: string | null;
+  actor_id: string | null;
+  deleted: boolean;
+  attempts: number;
+  last_error: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function retryFromRow(row: VersionBumpRetryRow): SyncVersionBumpRetryRecord {
+  return {
+    entity: row.entity,
+    entityId: row.entity_id,
+    ownerId: row.owner_id,
+    actorId: row.actor_id,
+    deleted: row.deleted,
+    attempts: Number(row.attempts),
+    lastError: row.last_error,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+export class PgSyncVersionBumpRetryRepository implements SyncVersionBumpRetryRepository {
+  constructor(private readonly pool: pg.Pool) {}
+
+  async enqueue(change: SyncVersionBumpRetryInput, error: string): Promise<void> {
+    // Upsert: a repeated failure refreshes the change + error and resets
+    // the attempt budget — the newest write deserves a fresh chance.
+    await this.pool.query(
+      `INSERT INTO sync.version_bump_retries
+         (entity, entity_id, owner_id, actor_id, deleted, attempts, last_error)
+       VALUES ($1, $2, $3, $4, $5, 0, $6)
+       ON CONFLICT (entity, entity_id) DO UPDATE
+         SET owner_id = EXCLUDED.owner_id,
+             actor_id = EXCLUDED.actor_id,
+             deleted = EXCLUDED.deleted,
+             attempts = 0,
+             last_error = EXCLUDED.last_error,
+             updated_at = now()`,
+      [change.entity, change.entityId, change.ownerId, change.actorId, change.deleted, error]
+    );
+  }
+
+  async listPending(limit: number): Promise<SyncVersionBumpRetryRecord[]> {
+    const result = await this.pool.query<VersionBumpRetryRow>(
+      `SELECT entity, entity_id, owner_id, actor_id, deleted, attempts, last_error, created_at, updated_at
+         FROM sync.version_bump_retries
+        ORDER BY updated_at ASC
+        LIMIT $1`,
+      [Math.max(0, limit)]
+    );
+    return result.rows.map(retryFromRow);
+  }
+
+  async remove(entity: string, entityId: string): Promise<void> {
+    await this.pool.query(
+      'DELETE FROM sync.version_bump_retries WHERE entity = $1 AND entity_id = $2',
+      [entity, entityId]
+    );
+  }
+
+  async recordAttempt(entity: string, entityId: string, error: string): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE sync.version_bump_retries
+          SET attempts = attempts + 1, last_error = $3, updated_at = now()
+        WHERE entity = $1 AND entity_id = $2
+        RETURNING attempts`,
+      [entity, entityId, error]
+    );
+    return (result.rows[0]?.attempts as number) ?? 0;
+  }
+}
+
+export function createPgSyncVersionBumpRetryRepository(pool: pg.Pool): PgSyncVersionBumpRetryRepository {
+  return new PgSyncVersionBumpRetryRepository(pool);
 }
