@@ -59,6 +59,10 @@ import {
   type WebhookRedriveResult
 } from '../partner-api/webhook-dispatch.service.js';
 import type { PartnerClient } from '../../database/repositories/partner-api.repository.js';
+import {
+  SyncVersioningService,
+  type SyncVersionReconcileResult
+} from '../sync/sync-versioning.service.js';
 
 export type { AccountStatus };
 
@@ -111,7 +115,10 @@ export class AdminService {
     // GAP-H06: outbound partner-webhook redrive. Optional so bare unit-test
     // constructions keep working; PartnerApiModule exports the dispatcher
     // and AdminModule imports it at runtime.
-    @Optional() private readonly partnerWebhookDispatch?: WebhookDispatchService
+    @Optional() private readonly partnerWebhookDispatch?: WebhookDispatchService,
+    // GAP-M11: sync version-bump reconciliation. Optional so bare unit-test
+    // constructions keep working; AdminModule imports SyncModule at runtime.
+    @Optional() private readonly syncVersioning?: SyncVersioningService
   ) {}
 
   /**
@@ -460,6 +467,23 @@ export class AdminService {
       );
     }
     return this.voucherStuckSweeper.sweep();
+  }
+
+  /**
+   * GAP-M11: one sync version-bump reconciliation pass. Re-applies queued
+   * compensating bumps (sync.version_bump_retries) with a bounded attempt
+   * budget — writes whose version bump failed are made visible to
+   * /sync/pull again instead of waiting for the next write. Same
+   * external-scheduler pattern as the outbox sweep — an external scheduler
+   * invokes POST /admin/sweeps/sync-version-retries.
+   */
+  async sweepSyncVersionRetries(limit?: number): Promise<SyncVersionReconcileResult> {
+    if (!this.syncVersioning) {
+      throw new ServiceUnavailableException(
+        'SyncVersioningService is not wired into the admin module'
+      );
+    }
+    return this.syncVersioning.reconcileFailedBumps(limit);
   }
 
   /** Wave P: dead-lettered outbox rows awaiting operator action. */
