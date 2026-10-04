@@ -189,6 +189,24 @@ export class PgOutboxRepository implements OutboxRepository {
     }));
   }
 
+  async listPendingRecords(limit?: number, offset = 0): Promise<OutboxRecord[]> {
+    const result = await this.pool.query(
+      `SELECT ${outboxMapper.columns.join(', ')}, published_at, attempts, dead_lettered_at
+         FROM events.outbox
+        WHERE published_at IS NULL AND dead_lettered_at IS NULL
+        ORDER BY occurred_at LIMIT $1 OFFSET $2`,
+      [boundOutboxListLimit(limit), offset]
+    );
+    return result.rows.map((row) => ({
+      event: outboxMapper.fromRow(row),
+      attempts: (row.attempts as number) ?? 0,
+      ...(row.published_at ? { publishedAt: (row.published_at as Date).toISOString() } : {}),
+      ...(row.dead_lettered_at
+        ? { deadLetteredAt: (row.dead_lettered_at as Date).toISOString() }
+        : {})
+    }));
+  }
+
   async markPublished(id: string, publishedAt: string): Promise<void> {
     await this.pool.query('UPDATE events.outbox SET published_at = $2 WHERE id = $1', [
       id,
@@ -250,6 +268,35 @@ export class PgOutboxRepository implements OutboxRepository {
     const result = await this.pool.query(
       `DELETE FROM events.outbox
        WHERE published_at IS NOT NULL AND published_at < $1`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async countDeadLetteredBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT count(*)::int AS n FROM events.outbox
+       WHERE dead_lettered_at IS NOT NULL AND dead_lettered_at < $1`,
+      [cutoff]
+    );
+    return result.rows[0].n as number;
+  }
+
+  async anonymizeDeadLetteredBefore(cutoff: string): Promise<number> {
+    // payload is jsonb NOT NULL, so the tombstone is '{}', never NULL; the
+    // payload <> '{}' guard keeps repeated sweeps no-ops (idempotent).
+    const result = await this.pool.query(
+      `UPDATE events.outbox SET payload = '{}'::jsonb
+       WHERE dead_lettered_at IS NOT NULL AND dead_lettered_at < $1 AND payload <> '{}'::jsonb`,
+      [cutoff]
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async purgeDeadLetteredBefore(cutoff: string): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM events.outbox
+       WHERE dead_lettered_at IS NOT NULL AND dead_lettered_at < $1`,
       [cutoff]
     );
     return result.rowCount ?? 0;

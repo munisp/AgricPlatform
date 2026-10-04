@@ -1,8 +1,13 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
 import { firstValueFrom, of, Subject, throwError } from 'rxjs';
-import { describe, expect, it } from 'vitest';
-import type { IdempotencyStore } from '../../redis/idempotency.store.js';
+import { describe, expect, it, vi } from 'vitest';
+import { InMemoryKeyValueStore } from '../../redis/key-value-store.js';
+import {
+  IDEMPOTENCY_LOCK_WAIT_MS,
+  KeyValueIdempotencyStore,
+  type IdempotencyStore
+} from '../../redis/idempotency.store.js';
 import { IdempotencyInterceptor } from './idempotency.interceptor.js';
 
 /**
@@ -181,6 +186,120 @@ describe('IdempotencyInterceptor — WP-G11 concurrent-twin serialization', () =
     const replayed = await firstValueFrom(await interceptor.intercept(second.context, counting));
     expect(replayed).toEqual({ id: 'order-9' });
     expect(second.headers['Idempotent-Replay']).toBe('true');
+    expect(executions).toBe(1);
+  });
+});
+
+/**
+ * GAP-M07: the advisory lock is now distributed via the store (Redis
+ * SET NX PX in production). Two interceptor INSTANCES — stand-ins for two
+ * API replicas — share one store over an in-memory Redis double, so only
+ * the distributed layer can serialise their twins.
+ */
+describe('IdempotencyInterceptor — GAP-M07 distributed lock', () => {
+  function makeReplicaPair() {
+    // In-memory Redis stub (consistent with the repo's KV test doubles):
+    // one shared backend, two interceptor "replicas".
+    const kv = new InMemoryKeyValueStore();
+    const store = new KeyValueIdempotencyStore(kv);
+    const replicaA = new IdempotencyInterceptor(store, metrics as never);
+    const replicaB = new IdempotencyInterceptor(store, metrics as never);
+    return { kv, store, replicaA, replicaB };
+  }
+
+  it('serialises same-key twins ACROSS replicas: exactly one execution, twin replays', async () => {
+    const { replicaA, replicaB } = makeReplicaPair();
+    let executions = 0;
+    const gate = new Subject<unknown>();
+    const slowHandler: CallHandler = {
+      handle: () => {
+        executions += 1;
+        return gate.asObservable();
+      }
+    };
+    const body = { listingId: 'l1', quantity: 4 };
+    const first = makeContext({ key: 'dist-1', body });
+    const second = makeContext({ key: 'dist-1', body });
+
+    const firstResult = firstValueFrom(await replicaA.intercept(first.context, slowHandler));
+    const secondResult = replicaB
+      .intercept(second.context, slowHandler)
+      .then((observable) => firstValueFrom(observable));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    gate.next({ id: 'order-1' });
+    gate.complete();
+    const [a, b] = await Promise.all([firstResult, secondResult]);
+    expect(executions).toBe(1);
+    expect(a).toEqual({ id: 'order-1' });
+    expect(b).toEqual({ id: 'order-1' });
+    expect(second.headers['Idempotent-Replay']).toBe('true');
+  });
+
+  it('the lock is released after the first response is cached: a later request replays without waiting', async () => {
+    const { replicaA, replicaB } = makeReplicaPair();
+    const handler: CallHandler = { handle: () => of({ id: 'order-2' }) };
+    const body = { x: 1 };
+    await firstValueFrom(
+      await replicaA.intercept(makeContext({ key: 'dist-2', body }).context, handler)
+    );
+    const replay = makeContext({ key: 'dist-2', body });
+    const started = Date.now();
+    const body2 = await firstValueFrom(await replicaB.intercept(replay.context, handler));
+    expect(body2).toEqual({ id: 'order-2' });
+    expect(replay.headers['Idempotent-Replay']).toBe('true');
+    // No lock wait: well under the 10s acquisition budget.
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('fails CLOSED (503) when the lock cannot be acquired in time', async () => {
+    const { store, replicaA } = makeReplicaPair();
+    // Another replica holds the lock and never releases (crash simulation;
+    // the TTL is the real-world backstop — the waiter must not proceed
+    // unlocked).
+    const body = { x: 1 };
+    const scopedKey = `POST:/api/orders:ip:unknown:dist-3`;
+    await store.acquireLock(scopedKey);
+    vi.useFakeTimers();
+    try {
+      let executions = 0;
+      const handler: CallHandler = {
+        handle: () => {
+          executions += 1;
+          return of({ id: 'never' });
+        }
+      };
+      const pending = replicaA.intercept(makeContext({ key: 'dist-3', body }).context, handler);
+      const assertion = expect(pending).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await vi.advanceTimersByTimeAsync(IDEMPOTENCY_LOCK_WAIT_MS + 100);
+      await assertion;
+      expect(executions).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a store without a lock primitive still serialises same-replica twins (in-process chain)', async () => {
+    const store = new MemoryStore(); // no acquireLock
+    const interceptor = new IdempotencyInterceptor(store, metrics as never);
+    let executions = 0;
+    const gate = new Subject<unknown>();
+    const slowHandler: CallHandler = {
+      handle: () => {
+        executions += 1;
+        return gate.asObservable();
+      }
+    };
+    const body = { y: 2 };
+    const first = firstValueFrom(
+      await interceptor.intercept(makeContext({ key: 'dist-4', body }).context, slowHandler)
+    );
+    const second = interceptor
+      .intercept(makeContext({ key: 'dist-4', body }).context, slowHandler)
+      .then((observable) => firstValueFrom(observable));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    gate.next({ id: 'order-4' });
+    gate.complete();
+    await Promise.all([first, second]);
     expect(executions).toBe(1);
   });
 });
