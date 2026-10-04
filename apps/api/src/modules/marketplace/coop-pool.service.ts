@@ -18,6 +18,8 @@ import { FeatureFlagsService } from '../../common/feature-flags/feature-flags.se
 import { TelemetryService } from '../../common/telemetry/telemetry.service.js';
 import { AuditService } from '../../core/audit.service.js';
 import { DomainEventsService, type DomainEvent } from '../../core/domain-events.service.js';
+import { EventDedupService } from '../../core/event-dedup.service.js';
+import { createInMemoryProcessedEventRepository } from '../../database/repositories/processed-event.repository.js';
 import {
   COOP_POOL_REPOSITORY,
   ESCROW_REPOSITORY,
@@ -106,7 +108,14 @@ export class CoopPoolService implements OnModuleInit {
     @Inject(ESCROW_REPOSITORY) private readonly escrows: EscrowRepository,
     @Optional() @Inject(ESCROW_PAYOUT_DRIVER) private readonly payoutDriver?: EscrowPayoutDriverPort,
     @Optional() private readonly audit?: AuditService,
-    @Optional() telemetry?: TelemetryService
+    @Optional() telemetry?: TelemetryService,
+    // GAP-M09: consumer-side dedup (events.processed_events) so an
+    // outbox-sweeper re-drive never re-runs the settle fan-out. @Optional
+    // with an in-memory fallback so bare unit constructions keep working.
+    @Optional()
+    private readonly dedup: EventDedupService = new EventDedupService(
+      createInMemoryProcessedEventRepository()
+    )
   ) {
     // No-op-safe fallback for direct construction (unit tests), same as
     // DomainEventsService.
@@ -122,7 +131,13 @@ export class CoopPoolService implements OnModuleInit {
    */
   onModuleInit(): void {
     this.events.on('marketplace.escrow.status_changed', (event: DomainEvent) => {
-      void this.onEscrowStatusChanged(event).catch(async (error: unknown) => {
+      // GAP-M09: dedup-guarded (mark-after) — a sweeper re-drive of an
+      // already-settled event is a no-op; a failed settle stays unrecorded
+      // so re-drive retries it (the settle itself is exactly-once via the
+      // split marker, so re-execution after a partial failure converges).
+      void this.dedup
+        .runOnce('marketplace-coop-pool-settle', event.id, () => this.onEscrowStatusChanged(event))
+        .catch(async (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.warn(`pool settle on escrow release failed: ${message}`);
         this.telemetry.increment('marketplace.pool_settle.failures', 1, {
@@ -137,7 +152,7 @@ export class CoopPoolService implements OnModuleInit {
             metadata: { eventId: event.id, error: message }
           })
           .catch(() => undefined);
-      });
+        });
     });
   }
 
