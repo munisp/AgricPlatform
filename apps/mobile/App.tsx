@@ -240,7 +240,9 @@ export default function App() {
                 )}
               </Stack.Screen>
               <Stack.Screen name="ListingDetail" options={{ title: 'Listing' }}>
-                {({ route }) => <ListingDetailScreen listingId={route.params.listingId} />}
+                {({ route }) => (
+                  <ListingDetailScreen listingId={route.params.listingId} queue={offlineQueue} />
+                )}
               </Stack.Screen>
               <Stack.Screen name="Orders" options={{ title: 'My orders' }}>
                 {({ navigation }) => (
@@ -251,7 +253,7 @@ export default function App() {
                 {({ route }) => <OrderDetailScreen orderId={route.params.orderId} />}
               </Stack.Screen>
               <Stack.Screen name="Notifications" options={{ title: 'Notifications' }}>
-                {() => <NotificationsScreen />}
+                {() => <NotificationsScreen queue={offlineQueue} />}
               </Stack.Screen>
               <Stack.Screen name="Livestock" options={{ title: 'My livestock' }}>
                 {() => <LivestockScreen />}
