@@ -1,250 +1,221 @@
-/**
- * Flood-risk drivers (wave ML): the flood-ml sidecar (services/flood-ml,
- * IBM Granite geospatial flood detection ported from farmer-data-collection)
- * is an OPTIONAL integration. The stub driver stays the default
- * FLOOD_ML_DRIVER so CI and local dev remain deterministic; setting
- * FLOOD_ML_DRIVER=http switches assessments to the sidecar's /predict
- * endpoint (env FLOOD_ML_URL). The factory fails closed with
- * ProviderConfigError when http is selected but the URL is absent — the
- * service maps that (and unreachable sidecars) to a 503 in production.
- */
-import {
-  httpJson,
-  ProviderConfigError,
-  ProviderHttpError,
-  ProviderRequestError,
-  requireEnv
-} from '../integrations/drivers/http.js';
+import { randomUUID } from 'node:crypto';
+import type { FarmPlot } from '@agric-platform/shared';
 
-/** Number of consecutive sidecar failures before the circuit opens. */
-export const FLOOD_ML_CIRCUIT_THRESHOLD = 3;
-/** How long the circuit stays open before the next call is allowed through. */
-export const FLOOD_ML_CIRCUIT_COOLDOWN_MS = 30_000;
-/** Health-probe timeout for the status endpoint. */
-export const FLOOD_ML_HEALTH_TIMEOUT_MS = 2_500;
+/** Environment shape the drivers read (test-seamable). */
+export interface FloodMlEnv {
+  FLOOD_ML_DRIVER?: string;
+  FLOOD_ML_URL?: string;
+  FLOOD_ML_TIMEOUT_MS?: string;
+  NODE_ENV?: string;
+}
 
-export interface FloodRiskAssessInput {
+export interface FloodAssessmentInput {
   latitude: number;
   longitude: number;
+  plot?: FarmPlot;
 }
 
-export interface FloodRiskAssessment {
-  floodDetected: boolean;
-  severity: string;
-  /** Share of the assessed bounding box classified as flooded (0-100). */
-  floodPercentage: number;
-  floodAreaKm2: number;
-  /** Mean model confidence 0-1 (stub reports a fixed fixture value). */
-  confidence: number;
-  /** Honest provenance label — never presented as live satellite verification. */
-  source: string;
-  assessedAt: string;
-  message: string;
-  recommendedActions: string[];
-}
-
-export interface FloodRiskDriverStatus {
-  configured: boolean;
-  healthy: boolean;
-  detail: string;
-}
-
-export interface FloodRiskDriver {
-  readonly name: 'stub' | 'http';
-  assess(input: FloodRiskAssessInput): Promise<FloodRiskAssessment>;
-  status(): Promise<FloodRiskDriverStatus>;
-}
-
-/** Deterministic 32-bit FNV-1a hash so stub output is stable per coordinate. */
-function coordinateHash(latitude: number, longitude: number): number {
-  const text = `${latitude.toFixed(4)}:${longitude.toFixed(4)}`;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-function severityFor(floodPercentage: number): string {
-  if (floodPercentage >= 20) return 'severe';
-  if (floodPercentage >= 10) return 'high';
-  if (floodPercentage >= 5) return 'moderate';
-  if (floodPercentage >= 1) return 'low';
-  return 'none';
-}
-
-/**
- * Deterministic labelled fixture for local development and CI. Same
- * coordinates always yield the same assessment; every field is labelled as
- * simulated so it can never be mistaken for live satellite verification.
- */
-export class StubFloodRiskDriver implements FloodRiskDriver {
-  readonly name = 'stub' as const;
-
-  assess(input: FloodRiskAssessInput): Promise<FloodRiskAssessment> {
-    const hash = coordinateHash(input.latitude, input.longitude);
-    // 0-24% in 0.1 steps, fully determined by the coordinates.
-    const floodPercentage = (hash % 241) / 10;
-    const floodAreaKm2 = Math.round(25 * (floodPercentage / 100) * 100) / 100;
-    const severity = severityFor(floodPercentage);
-    const floodDetected = floodPercentage >= 1;
-    return Promise.resolve({
-      floodDetected,
-      severity,
-      floodPercentage,
-      floodAreaKm2,
-      confidence: 0.5,
-      source: 'stub-fixture (simulated — not a live satellite assessment)',
-      assessedAt: new Date().toISOString(),
-      message: floodDetected
-        ? `Simulated flood risk '${severity}' for this location (stub driver fixture).`
-        : 'Simulated all-clear for this location (stub driver fixture).',
-      recommendedActions: floodDetected
-        ? ['Enable the flood-ml sidecar for model-based assessments.']
-        : []
-    });
-  }
-
-  status(): Promise<FloodRiskDriverStatus> {
-    return Promise.resolve({
-      configured: true,
-      healthy: true,
-      detail:
-        'Stub driver: deterministic simulated fixture. Set FLOOD_ML_DRIVER=http and FLOOD_ML_URL to enable the flood-ml sidecar.'
-    });
-  }
-}
-
-/** Response shape of the sidecar's POST /predict (FastAPI snake_case). */
-interface FloodMlPredictResponse {
-  flood_detected?: boolean;
-  severity?: string;
+/** Raw sidecar/stub response shape (snake_case at the boundary). */
+export interface FloodAssessmentPayload {
+  flood_detected: boolean;
+  severity: 'none' | 'low' | 'moderate' | 'high' | 'severe';
   flood_percentage?: number;
   flood_area_km2?: number;
   avg_confidence?: number;
-  timestamp?: string;
-  message?: string;
-  recommended_actions?: string[];
+  /** Provenance honesty: 'live' = real inference, 'fixture' = simulated. */
+  basis: 'live' | 'fixture';
+  source?: string;
+  [key: string]: unknown;
 }
 
-interface FloodMlHealthResponse {
-  status?: string;
-  sentinel_hub_configured?: boolean;
+export interface FloodMlDriver {
+  name: 'stub' | 'http';
+  assess(input: FloodAssessmentInput): Promise<FloodAssessmentPayload>;
+}
+
+export type FloodMlFetch = typeof fetch;
+
+/** Fail-closed configuration error (503 at the service layer). */
+export const FLOOD_ML_UNCONFIGURED =
+  'FLOOD_ML_DRIVER=http requires FLOOD_ML_URL (the flood-ml sidecar base URL)';
+
+export function floodMlUnconfiguredStatus(): {
+  configured: boolean;
+  detail: string;
+} {
+  return { configured: false, detail: FLOOD_ML_UNCONFIGURED };
+}
+
+const SEVERITIES = new Set(['none', 'low', 'moderate', 'high', 'severe']);
+
+function contractViolation(detail: string): Error {
+  return new Error(`malformed /predict response: ${detail}`);
 }
 
 /**
- * Live driver against the flood-ml sidecar. Includes a simple circuit
- * breaker: after FLOOD_ML_CIRCUIT_THRESHOLD consecutive failures the
- * circuit opens for FLOOD_ML_CIRCUIT_COOLDOWN_MS and calls fail fast with
- * ProviderRequestError (checked at call time — no in-process timers).
+ * Validates the sidecar's /predict payload. Fail-closed (audit A3-12): a
+ * response that does not satisfy the documented contract
+ * (docs/ml/flood-detection.md §API) is an error, never coerced — a degraded
+ * model must not silently serve as "no flood".
  */
-export class HttpFloodRiskDriver implements FloodRiskDriver {
-  readonly name = 'http' as const;
-
-  private consecutiveFailures = 0;
-  private circuitOpenUntil = 0;
-
-  constructor(private readonly baseUrl: string) {}
-
-  async assess(input: FloodRiskAssessInput): Promise<FloodRiskAssessment> {
-    this.assertCircuitClosed();
-    try {
-      const response = await httpJson<FloodMlPredictResponse>(
-        'flood-ml',
-        `${this.baseUrl}/predict`,
-        { body: { latitude: input.latitude, longitude: input.longitude } }
-      );
-      this.recordSuccess();
-      return this.mapAssessment(response);
-    } catch (error) {
-      this.recordFailure();
-      throw error;
+export function assertValidPrediction(payload: unknown): FloodAssessmentPayload {
+  if (!payload || typeof payload !== 'object') {
+    throw contractViolation('not an object');
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.flood_detected !== 'boolean') {
+    throw contractViolation('flood_detected missing or not boolean');
+  }
+  if (typeof record.severity !== 'string' || !SEVERITIES.has(record.severity)) {
+    throw contractViolation(`severity missing or unknown: ${String(record.severity)}`);
+  }
+  for (const key of ['flood_percentage', 'flood_area_km2', 'avg_confidence'] as const) {
+    const value = record[key];
+    if (value !== undefined && (typeof value !== 'number' || Number.isNaN(value))) {
+      throw contractViolation(`${key} present but not a number`);
     }
   }
-
-  async status(): Promise<FloodRiskDriverStatus> {
-    try {
-      const health = await httpJson<FloodMlHealthResponse>('flood-ml', `${this.baseUrl}/healthz`, {
-        method: 'GET',
-        timeoutMs: FLOOD_ML_HEALTH_TIMEOUT_MS
-      });
-      const sentinel = health.sentinel_hub_configured === true;
-      return {
-        configured: true,
-        healthy: true,
-        detail: sentinel
-          ? 'flood-ml sidecar reachable; Sentinel Hub credentials configured.'
-          : 'flood-ml sidecar reachable, but Sentinel Hub credentials are NOT configured — /predict will answer 503.'
-      };
-    } catch (error) {
-      const reason =
-        error instanceof ProviderRequestError && error.reason === 'timeout'
-          ? 'health probe timed out'
-          : 'health probe failed';
-      return {
-        configured: true,
-        healthy: false,
-        detail: `flood-ml sidecar unreachable at ${this.baseUrl} (${reason}).`
-      };
-    }
+  if (record.basis !== 'live' && record.basis !== 'fixture') {
+    throw contractViolation('basis provenance missing (expected live|fixture)');
   }
-
-  /** Visible for tests: whether the circuit breaker is currently open. */
-  get circuitOpen(): boolean {
-    return this.consecutiveFailures >= FLOOD_ML_CIRCUIT_THRESHOLD && Date.now() < this.circuitOpenUntil;
-  }
-
-  private assertCircuitClosed(): void {
-    if (this.circuitOpen) {
-      throw new ProviderRequestError(
-        'flood-ml',
-        'network',
-        new Error(
-          `circuit open after ${this.consecutiveFailures} consecutive failures; retry after cooldown`
-        )
-      );
-    }
-  }
-
-  private recordSuccess(): void {
-    this.consecutiveFailures = 0;
-    this.circuitOpenUntil = 0;
-  }
-
-  private recordFailure(): void {
-    this.consecutiveFailures += 1;
-    if (this.consecutiveFailures >= FLOOD_ML_CIRCUIT_THRESHOLD) {
-      this.circuitOpenUntil = Date.now() + FLOOD_ML_CIRCUIT_COOLDOWN_MS;
-    }
-  }
-
-  private mapAssessment(response: FloodMlPredictResponse): FloodRiskAssessment {
-    return {
-      floodDetected: response.flood_detected ?? false,
-      severity: response.severity ?? 'unknown',
-      floodPercentage: response.flood_percentage ?? 0,
-      floodAreaKm2: response.flood_area_km2 ?? 0,
-      confidence: response.avg_confidence ?? 0,
-      source: 'flood-ml sidecar (IBM Granite geospatial flood detection — accuracy unverified)',
-      assessedAt: response.timestamp ?? new Date().toISOString(),
-      message: response.message ?? '',
-      recommendedActions: response.recommended_actions ?? []
-    };
-  }
+  return record as FloodAssessmentPayload;
 }
 
-export { ProviderConfigError, ProviderHttpError, ProviderRequestError };
+/** Default inter-retry sleep; tests substitute fake timers. */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
- * Builds the configured driver. Default is the stub; FLOOD_ML_DRIVER=http
- * requires FLOOD_ML_URL and fails closed with ProviderConfigError otherwise.
+ * Bounded retry with exponential backoff (GAP-M01): one transient sidecar
+ * wobble must not 503 the farmer-facing assessment. Attempts:
+ * FLOOD_ML_ATTEMPTS (default 3); backoff base FLOOD_ML_RETRY_BASE_MS
+ * (default 250ms, doubling per attempt). Only transport/5xx failures retry;
+ * contract violations are permanent and fail immediately.
  */
-export function createFloodRiskDriver(env: NodeJS.ProcessEnv = process.env): FloodRiskDriver {
-  const flag = (env.FLOOD_ML_DRIVER ?? 'stub').toLowerCase();
-  if (flag === 'http') {
-    const baseUrl = requireEnv('flood-ml', env, ['FLOOD_ML_URL']).replace(/\/+$/, '');
-    return new HttpFloodRiskDriver(baseUrl);
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  env: FloodMlEnv,
+  sleep: (ms: number) => Promise<void> = defaultSleep
+): Promise<T> {
+  const attempts = Math.max(1, Number(env.FLOOD_ML_ATTEMPTS ?? 3) || 3);
+  const baseMs = Math.max(0, Number(env.FLOOD_ML_RETRY_BASE_MS ?? 250) || 0);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (error instanceof Error && error.message.startsWith('malformed /predict response')) {
+        throw error; // permanent contract violation — do not retry
+      }
+      if (attempt < attempts && baseMs > 0) {
+        await sleep(baseMs * 2 ** (attempt - 1));
+      }
+    }
   }
-  return new StubFloodRiskDriver();
+  throw lastError;
+}
+
+/**
+ * HTTP driver: posts the assessment to the flood-ml sidecar's /predict
+ * endpoint and validates the contract strictly. Construction with a
+ * missing URL throws FLOOD_ML_UNCONFIGURED (the service maps it to 503).
+ */
+export function createHttpDriver(
+  env: FloodMlEnv,
+  fetchImpl: FloodMlFetch = fetch,
+  sleep?: (ms: number) => Promise<void>
+): FloodMlDriver {
+  const baseUrl = env.FLOOD_ML_URL?.replace(/\/+$/, '');
+  if (!baseUrl) {
+    throw new Error(FLOOD_ML_UNCONFIGURED);
+  }
+  const timeoutMs = Math.max(1000, Number(env.FLOOD_ML_TIMEOUT_MS ?? 10_000) || 10_000);
+  return {
+    name: 'http',
+    async assess(input) {
+      return withRetry(
+        async () => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const response = await fetchImpl(`${baseUrl}/predict`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                request_id: randomUUID(),
+                latitude: input.latitude,
+                longitude: input.longitude,
+                plot: input.plot
+                  ? {
+                      id: input.plot.id,
+                      centroid_lat: input.plot.centroidLat,
+                      centroid_long: input.plot.centroidLong,
+                      size_hectares: input.plot.sizeHectares
+                    }
+                  : undefined
+              }),
+              signal: controller.signal
+            });
+            if (!response.ok) {
+              throw new Error(`flood-ml sidecar answered ${response.status}`);
+            }
+            return assertValidPrediction(await response.json());
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+        env,
+        sleep
+      );
+    }
+  };
+}
+
+/**
+ * Stub driver (default outside production): deterministic FABRICATED
+ * fixture, explicitly labelled — never presented as live inference. The
+ * service layer refuses to serve it in production (audit A3-11).
+ */
+export function createStubDriver(): FloodMlDriver {
+  return {
+    name: 'stub',
+    async assess(input) {
+      // Deterministic pseudo-assessment keyed by the location, so demos and
+      // tests are stable; clearly marked as simulated.
+      const seed = Math.abs(Math.sin(input.latitude * 12.9898 + input.longitude * 78.233));
+      const floodPercentage = Number((seed * 6).toFixed(2));
+      return {
+        flood_detected: false,
+        severity: 'none',
+        flood_percentage: floodPercentage,
+        flood_area_km2: 0,
+        avg_confidence: 0.5,
+        basis: 'fixture',
+        source: 'stub-fixture (simulated; no live inference)'
+      };
+    }
+  };
+}
+
+/** Selects the configured driver (stub default; http when FLOOD_ML_DRIVER=http). */
+export function selectFloodMlDriver(env: FloodMlEnv, fetchImpl?: FloodMlFetch): FloodMlDriver {
+  if (env.FLOOD_ML_DRIVER === 'http') {
+    return createHttpDriver(env, fetchImpl);
+  }
+  return createStubDriver();
+}
+
+/**
+ * Shared assessment orchestration used by the service: runs the driver's
+ * assessment and stamps the driver name onto the payload for provenance.
+ */
+export async function assessFloodRisk(
+  env: FloodMlEnv,
+  driver: FloodMlDriver,
+  input: FloodAssessmentInput
+): Promise<FloodAssessmentPayload & { driver: 'stub' | 'http' }> {
+  const payload = await driver.assess(input);
+  return { ...payload, driver: driver.name };
 }

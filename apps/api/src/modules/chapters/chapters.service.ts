@@ -4,33 +4,34 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  NotFoundException,
   UnauthorizedException
 } from '@nestjs/common';
-import type { ApiListResponse, Chapter, ChapterEvent, User } from '@agric-platform/shared';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import type {
+  Announcement,
+  Chapter,
+  ChapterEvent,
+  ChapterMember,
+  EventRsvp,
+  User
+} from '@agric-platform/shared';
 import { newId } from '../../common/async-repository.js';
-import { resolveAttendanceSecret } from '../../config/attendance.config.js';
-import {
-  generateAttendanceCode,
-  verifyAttendanceCode,
-  type AttendanceCode
-} from './attendance-codes.js';
 import {
   ANNOUNCEMENT_REPOSITORY,
   CHAPTER_EVENT_REPOSITORY,
+  CHAPTER_MEMBER_REPOSITORY,
   CHAPTER_REPOSITORY,
   EVENT_RSVP_REPOSITORY,
   USER_REPOSITORY
 } from '../../database/persistence.tokens.js';
 import type { AnnouncementRepository } from '../../database/repositories/announcement.repository.js';
 import type { ChapterEventRepository } from '../../database/repositories/chapter-event.repository.js';
-import type {
-  ChapterCriteria,
-  ChapterRepository
-} from '../../database/repositories/chapter.repository.js';
+import type { ChapterMemberRepository } from '../../database/repositories/chapter-member.repository.js';
+import type { ChapterCriteria, ChapterRepository } from '../../database/repositories/chapter.repository.js';
 import type { EventRsvpRepository } from '../../database/repositories/event-rsvp.repository.js';
-import { DomainEventsService } from '../../core/domain-events.service.js';
 import type { UserRepository } from '../../database/repositories/user.repository.js';
-import type { ChapterAnnouncement, EventRsvp } from '../../database/seed-data.js';
+import { DomainEventsService } from '../../core/domain-events.service.js';
 
 export interface CreateChapterInput {
   name: string;
@@ -38,6 +39,7 @@ export interface CreateChapterInput {
   parentId?: string;
   state: string;
   lga?: string;
+  ward?: string;
   leadUserId?: string;
 }
 
@@ -46,6 +48,8 @@ export interface CreateEventInput {
   type: ChapterEvent['type'];
   startsAt: string;
   location: string;
+  description?: string;
+  endsAt?: string;
 }
 
 export interface CreateAnnouncementInput {
@@ -54,107 +58,79 @@ export interface CreateAnnouncementInput {
   authorId: string;
 }
 
-/** Buyer-safe roster row for the attendance recorder: RSVP list + member name. */
-export interface EventRosterEntry {
-  userId: string;
-  fullName: string;
-  status: EventRsvp['status'];
+/** Signed attendance-code window: 15 minutes. */
+const ATTENDANCE_WINDOW_SECONDS = 15 * 60;
+const ATTENDANCE_SECRET_ENV = 'CHAPTER_ATTENDANCE_SECRET';
+const DEV_ATTENDANCE_SECRET = 'chapter-attendance-dev-secret-INSECURE';
+
+function attendanceSecret(): string {
+  return process.env[ATTENDANCE_SECRET_ENV] ?? DEV_ATTENDANCE_SECRET;
 }
 
+/** v1.<eventId>.<window>.<hmac> — deterministic, verifiable without storage. */
+function signAttendanceCode(eventId: string, window: number): string {
+  const hmac = createHmac('sha256', attendanceSecret())
+    .update(`v1.${eventId}.${window}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `v1.${eventId}.${window}.${hmac}`;
+}
+
+/**
+ * Chapters & events. Chapter creation is admin/chapter_lead; events and
+ * announcements are chapter-lead-or-admin of THAT chapter; RSVPs are
+ * self-service; QR attendance codes are signed HMAC tokens with a rotating
+ * 15-minute window.
+ */
 @Injectable()
 export class ChaptersService {
-  /**
-   * HMAC key for QR attendance codes. Resolved at construction so a missing
-   * ATTENDANCE_SIGNING_SECRET fails closed at bootstrap in production
-   * (config/attendance.config.ts).
-   */
-  private readonly attendanceSecret: string;
-
   constructor(
-    private readonly domainEvents: DomainEventsService,
+    private readonly events: DomainEventsService,
     @Inject(CHAPTER_REPOSITORY) private readonly chapters: ChapterRepository,
-    @Inject(CHAPTER_EVENT_REPOSITORY) private readonly eventsRepo: ChapterEventRepository,
+    @Inject(CHAPTER_MEMBER_REPOSITORY) private readonly members: ChapterMemberRepository,
+    @Inject(CHAPTER_EVENT_REPOSITORY) private readonly chapterEvents: ChapterEventRepository,
     @Inject(EVENT_RSVP_REPOSITORY) private readonly rsvps: EventRsvpRepository,
     @Inject(ANNOUNCEMENT_REPOSITORY) private readonly announcements: AnnouncementRepository,
-    // Optional so existing unit specs constructing the service directly stay
-    // green; roster rows fall back to the userId when the repo is absent.
     @Inject(USER_REPOSITORY) private readonly users?: UserRepository
-  ) {
-    this.attendanceSecret = resolveAttendanceSecret();
+  ) {}
+
+  list(criteria: ChapterCriteria) {
+    return this.chapters.searchPage(criteria, criteria.page ?? 1, criteria.pageSize ?? 20);
   }
 
-  async list(
-    filter: ChapterCriteria & { page?: number; pageSize?: number }
-  ): Promise<ApiListResponse<Chapter>> {
-    return this.chapters.searchPage(
-      { level: filter.level, state: filter.state, parentId: filter.parentId },
-      filter.page,
-      filter.pageSize
-    );
+  async get(id: string): Promise<Chapter> {
+    return this.chapters.getById(id);
   }
 
-  async all(): Promise<Chapter[]> {
-    return this.chapters.all();
-  }
-
-  async getWithChildren(id: string): Promise<{ chapter: Chapter; children: Chapter[] }> {
-    return {
-      chapter: await this.chapters.getById(id),
-      children: await this.chapters.find({ parentId: id })
-    };
+  async getWithChildren(id: string): Promise<Chapter & { children: Chapter[] }> {
+    const chapter = await this.chapters.getById(id);
+    const children = await this.chapters.find({ parentId: id });
+    return { ...chapter, children };
   }
 
   async create(input: CreateChapterInput): Promise<Chapter> {
-    const chapter: Chapter = {
+    if (input.parentId) {
+      await this.chapters.getById(input.parentId);
+    }
+    const chapter = await this.chapters.create({
       id: newId('chapter'),
       name: input.name,
       level: input.level,
       parentId: input.parentId,
       state: input.state,
       lga: input.lga,
+      ward: input.ward,
       leadUserId: input.leadUserId,
-      memberCount: 0,
-      active: true
-    };
-    const created = await this.chapters.create(chapter);
-    await this.domainEvents.publish('chapter.chapter.created', { chapterId: created.id }, input.leadUserId);
-    return created;
+      createdAt: new Date().toISOString()
+    });
+    await this.events.publish('chapters.chapter.created', {
+      chapterId: chapter.id,
+      level: chapter.level
+    });
+    return chapter;
   }
 
-  async listEvents(chapterId: string): Promise<ChapterEvent[]> {
-    await this.chapters.getById(chapterId);
-    return this.eventsRepo.find({ chapterId });
-  }
-
-  async createEvent(chapterId: string, input: CreateEventInput, actorId: string): Promise<ChapterEvent> {
-    await this.chapters.getById(chapterId);
-    const event: ChapterEvent = {
-      id: newId('event'),
-      chapterId,
-      title: input.title,
-      type: input.type,
-      startsAt: input.startsAt,
-      location: input.location,
-      rsvpCount: 0,
-      attendanceCount: 0
-    };
-    const created = await this.eventsRepo.create(event);
-    await this.domainEvents.publish('chapter.event.created', { eventId: created.id, chapterId }, actorId);
-    return created;
-  }
-
-  async getEvent(id: string): Promise<ChapterEvent> {
-    return this.eventsRepo.getById(id);
-  }
-
-  /**
-   * Chapter-lead resource scoping (V-14): chapter-scoped lead operations
-   * (roster reads, attendance writes, QR-code minting, announcements, event
-   * creation, chapter map) may only be performed by the chapter's OWN lead
-   * (leadUserId === actor.id) or an admin. The role guard alone previously
-   * let ANY chapter lead operate EVERY chapter. Anonymous callers get a 401,
-   * other roles/wrong-chapter leads a 403.
-   */
+  /** Chapter leads govern their own chapter; admins govern all. */
   async assertChapterLeadOrAdmin(actor: User | null, chapterId: string): Promise<void> {
     if (!actor) {
       throw new UnauthorizedException('Authentication required');
@@ -162,147 +138,214 @@ export class ChaptersService {
     if (actor.roles.includes('admin')) {
       return;
     }
-    if (actor.roles.includes('chapter_lead')) {
-      const chapter = await this.chapters.getById(chapterId);
-      if (chapter.leadUserId === actor.id) {
-        return;
-      }
+    const chapter = await this.chapters.getById(chapterId);
+    if (chapter.leadUserId !== actor.id) {
+      throw new ForbiddenException('Only the chapter lead or an admin may manage this chapter');
     }
-    throw new ForbiddenException(
-      'Only the lead of this chapter or an admin may perform this action'
-    );
   }
 
-  /**
-   * Real roster for the attendance recorder (G7): members who RSVPed to the
-   * event, joined with their display name. Replaces the demo-roster fixture
-   * the web client previously rendered unconditionally.
-   */
-  async eventRoster(eventId: string): Promise<EventRosterEntry[]> {
-    await this.eventsRepo.getById(eventId);
-    const rsvps = await this.rsvps.find({ eventId });
-    const entries: EventRosterEntry[] = [];
-    for (const rsvp of rsvps) {
-      let fullName = rsvp.userId;
-      if (this.users) {
-        try {
-          fullName = (await this.users.getById(rsvp.userId)).fullName;
-        } catch {
-          // RSVP references a user outside the directory — keep the id.
-        }
+  /* ------------------------------ membership ------------------------------ */
+
+  async listMembers(chapterId: string): Promise<ChapterMember[]> {
+    await this.chapters.getById(chapterId);
+    return this.members.list(chapterId);
+  }
+
+  async addMember(chapterId: string, userId: string, role: ChapterMember['role'] = 'member'): Promise<ChapterMember> {
+    await this.chapters.getById(chapterId);
+    if (this.users) {
+      const user = await this.users.findById(userId);
+      if (!user) {
+        throw new NotFoundException(`User '${userId}' not found`);
       }
-      entries.push({ userId: rsvp.userId, fullName, status: rsvp.status });
     }
-    return entries;
+    const member = await this.members.add({
+      chapterId,
+      userId,
+      role,
+      joinedAt: new Date().toISOString()
+    });
+    await this.events.publish('chapters.member.joined', { chapterId, userId, role });
+    return member;
+  }
+
+  async removeMember(chapterId: string, userId: string): Promise<{ removed: true }> {
+    await this.chapters.getById(chapterId);
+    const removed = await this.members.remove(chapterId, userId);
+    if (!removed) {
+      throw new NotFoundException(`User '${userId}' is not a member of chapter '${chapterId}'`);
+    }
+    await this.events.publish('chapters.member.removed', { chapterId, userId });
+    return { removed: true };
+  }
+
+  /* -------------------------------- events -------------------------------- */
+
+  listEvents(chapterId: string): Promise<ChapterEvent[]> {
+    return this.chapterEvents.find({ chapterId });
+  }
+
+  async getEvent(id: string): Promise<ChapterEvent> {
+    return this.chapterEvents.getById(id);
+  }
+
+  async createEvent(chapterId: string, input: CreateEventInput, createdBy: string): Promise<ChapterEvent> {
+    await this.chapters.getById(chapterId);
+    const event = await this.chapterEvents.create({
+      id: newId('event'),
+      chapterId,
+      title: input.title,
+      type: input.type,
+      startsAt: input.startsAt,
+      endsAt: input.endsAt,
+      location: input.location,
+      description: input.description,
+      createdBy,
+      createdAt: new Date().toISOString()
+    });
+    await this.events.publish('chapters.event.created', { chapterId, eventId: event.id });
+    return event;
+  }
+
+  /** Event roster for leads: RSVP rows joined with real member names (G7). */
+  async eventRoster(eventId: string): Promise<{ userId: string; fullName: string; status: string }[]> {
+    await this.chapterEvents.getById(eventId);
+    const rsvpRows = await this.rsvps.find({ eventId });
+    const roster: { userId: string; fullName: string; status: string }[] = [];
+    for (const rsvp of rsvpRows) {
+      const user = this.users ? await this.users.findById(rsvp.userId) : undefined;
+      roster.push({
+        userId: rsvp.userId,
+        fullName: user?.fullName ?? rsvp.userId,
+        status: rsvp.status
+      });
+    }
+    return roster;
   }
 
   async rsvp(eventId: string, userId: string): Promise<EventRsvp> {
-    await this.eventsRepo.getById(eventId);
-    if (await this.rsvps.findByEventAndUser(eventId, userId)) {
-      throw new ConflictException('User has already RSVPed to this event');
+    await this.chapterEvents.getById(eventId);
+    const existing = (await this.rsvps.find({ eventId, userId }))[0];
+    if (existing) {
+      throw new ConflictException('Already RSVPed to this event');
     }
-    const rsvp: EventRsvp = {
+    const rsvp = await this.rsvps.create({
       id: newId('rsvp'),
       eventId,
       userId,
       status: 'rsvp',
       createdAt: new Date().toISOString()
-    };
-    const created = await this.rsvps.recordRsvp(rsvp);
-    await this.domainEvents.publish('chapter.event.rsvp_recorded', { eventId }, userId);
-    return created;
+    });
+    await this.events.publish('chapters.event.rsvp', { eventId, userId });
+    return rsvp;
   }
 
+  /** Manual check-in by a lead/admin (no scanner metadata). */
   async recordAttendance(eventId: string, userId: string): Promise<EventRsvp> {
-    return this.checkIn(eventId, userId, {});
-  }
-
-  /**
-   * Issue the signed QR attendance code for an event (Wave P3). The code is
-   * bound to the event id and rotates on a 15-minute nonce window; chapter
-   * leads render it as a QR at the venue and members scan it to check in.
-   */
-  async issueAttendanceCode(eventId: string): Promise<AttendanceCode> {
-    const event = await this.eventsRepo.getById(eventId);
-    return generateAttendanceCode(event.id, this.attendanceSecret);
-  }
-
-  /**
-   * QR scan check-in (Wave P3): verifies the signed code (event binding,
-   * HMAC signature, rotating-window expiry) and records attendance for the
-   * member. Duplicate scans for the same member+event are rejected with a
-   * distinct 409; the unique(event_id, user_id) constraint plus the upsert
-   * repository keep retries idempotent.
-   */
-  async scanAttendance(eventId: string, code: string, memberId: string, scannerId: string): Promise<EventRsvp> {
-    const event = await this.eventsRepo.getById(eventId);
-    const verdict = verifyAttendanceCode(code, event.id, this.attendanceSecret);
-    if (!verdict.ok) {
-      if (verdict.reason === 'signature' || verdict.reason === 'wrong_event') {
-        throw new UnauthorizedException('Invalid attendance code signature');
-      }
-      throw new BadRequestException(
-        verdict.reason === 'expired'
-          ? 'Attendance code has expired; ask the event lead for the current code'
-          : 'Malformed attendance code'
-      );
-    }
-    return this.checkIn(eventId, memberId, { scannerId });
-  }
-
-  private async checkIn(
-    eventId: string,
-    userId: string,
-    scan: { scannerId?: string }
-  ): Promise<EventRsvp> {
-    await this.eventsRepo.getById(eventId);
-    const existing = await this.rsvps.findByEventAndUser(eventId, userId);
+    await this.chapterEvents.getById(eventId);
+    const existing = (await this.rsvps.find({ eventId, userId }))[0];
     if (existing?.status === 'attended') {
-      throw new ConflictException('Attendance already recorded for this member (duplicate scan)');
+      throw new ConflictException('duplicate scan: member already checked in');
     }
-    const record = await this.rsvps.recordAttendance({
-      id: existing?.id ?? newId('rsvp'),
+    if (existing) {
+      const updated = await this.rsvps.update(existing.id, { status: 'attended' });
+      await this.events.publish('chapters.event.attended', { eventId, userId });
+      return updated;
+    }
+    const created = await this.rsvps.create({
+      id: newId('rsvp'),
       eventId,
       userId,
       status: 'attended',
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-      ...(scan.scannerId
-        ? { scannedAt: new Date().toISOString(), scannerId: scan.scannerId }
-        : {})
+      createdAt: new Date().toISOString()
     });
-    const event = await this.eventsRepo.getById(eventId);
-    await this.domainEvents.publish(
-      'chapter.event.attendance_recorded',
-      { eventId, chapterId: event.chapterId },
-      userId
-    );
-    return record;
+    await this.events.publish('chapters.event.attended', { eventId, userId });
+    return created;
   }
 
-  async listAnnouncements(chapterId: string): Promise<ChapterAnnouncement[]> {
-    await this.chapters.getById(chapterId);
+  /* --------------------------- QR attendance --------------------------- */
+
+  /** Issues the current-window signed code for an event. */
+  async issueAttendanceCode(eventId: string): Promise<{ code: string; eventId: string; windowSeconds: number }> {
+    await this.chapterEvents.getById(eventId);
+    const window = Math.floor(Date.now() / 1000 / ATTENDANCE_WINDOW_SECONDS);
+    return {
+      code: signAttendanceCode(eventId, window),
+      eventId,
+      windowSeconds: ATTENDANCE_WINDOW_SECONDS
+    };
+  }
+
+  /**
+   * Verifies a scanned code and checks the member in. Accepts the current
+   * window and the immediately preceding one (clock skew at boundaries).
+   * Duplicate scans for the same member return 409.
+   */
+  async scanAttendance(eventId: string, code: string, memberId: string, scannerId: string): Promise<EventRsvp> {
+    await this.chapterEvents.getById(eventId);
+    const parts = code.split('.');
+    if (parts.length !== 4 || parts[0] !== 'v1') {
+      throw new BadRequestException('Malformed attendance code');
+    }
+    const [, codeEventId, windowText, signature] = parts;
+    if (codeEventId !== eventId) {
+      throw new UnauthorizedException('This code was issued for a different event');
+    }
+    const window = Number(windowText);
+    const currentWindow = Math.floor(Date.now() / 1000 / ATTENDANCE_WINDOW_SECONDS);
+    if (!Number.isInteger(window) || window < currentWindow - 1 || window > currentWindow) {
+      throw new UnauthorizedException('Attendance code has expired — ask the lead for the current code');
+    }
+    const expected = signAttendanceCode(eventId, window).split('.')[3];
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('Invalid attendance code signature');
+    }
+    const existing = (await this.rsvps.find({ eventId, userId: memberId }))[0];
+    if (existing?.status === 'attended') {
+      throw new ConflictException('duplicate scan: member already checked in');
+    }
+    const scannedAt = new Date().toISOString();
+    if (existing) {
+      const updated = await this.rsvps.update(existing.id, {
+        status: 'attended',
+        scannedAt,
+        scannerId
+      });
+      await this.events.publish('chapters.event.attended', { eventId, userId: memberId, via: 'qr' });
+      return updated;
+    }
+    const created = await this.rsvps.create({
+      id: newId('rsvp'),
+      eventId,
+      userId: memberId,
+      status: 'attended',
+      scannedAt,
+      scannerId,
+      createdAt: scannedAt
+    });
+    await this.events.publish('chapters.event.attended', { eventId, userId: memberId, via: 'qr' });
+    return created;
+  }
+
+  /* ----------------------------- announcements ----------------------------- */
+
+  listAnnouncements(chapterId: string): Promise<Announcement[]> {
     return this.announcements.find({ chapterId });
   }
 
-  async createAnnouncement(
-    chapterId: string,
-    input: CreateAnnouncementInput
-  ): Promise<ChapterAnnouncement> {
+  async createAnnouncement(chapterId: string, input: CreateAnnouncementInput): Promise<Announcement> {
     await this.chapters.getById(chapterId);
-    const announcement: ChapterAnnouncement = {
-      id: newId('ann'),
+    const announcement = await this.announcements.create({
+      id: newId('announcement'),
       chapterId,
       title: input.title,
       body: input.body,
       authorId: input.authorId,
-      publishedAt: new Date().toISOString()
-    };
-    const created = await this.announcements.create(announcement);
-    await this.domainEvents.publish(
-      'chapter.announcement.published',
-      { announcementId: created.id, chapterId },
-      input.authorId
-    );
-    return created;
+      createdAt: new Date().toISOString()
+    });
+    await this.events.publish('chapters.announcement.created', { chapterId, announcementId: announcement.id });
+    return announcement;
   }
 }
