@@ -70,7 +70,10 @@ function dt(value: unknown): string {
   return String(value).slice(0, 10);
 }
 
-export const offtakeContractMapper: RowMapper<OfftakeContract> = {
+// Module-scoped name (GAP-L18): the livestock offtake mapper in
+// pg/row-mappers.ts maps a different table (livestock.offtake_contracts);
+// this one maps marketplace.offtake_contracts (migration 077).
+export const marketplaceOfftakeContractMapper: RowMapper<OfftakeContract> = {
   columns: [
     'id',
     'cooperative_id',
@@ -362,11 +365,13 @@ async function postLedgerEntryTx(
 
 async function appendOutboxTx(client: pg.PoolClient, event: DomainEvent): Promise<void> {
   await client.query(
-    `INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at)
-     VALUES ($1, $2, $3, $4, $5)`,
+    `INSERT INTO events.outbox (id, name, aggregate_type, aggregate_id, payload, actor_id, occurred_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       event.id,
       event.name,
+      event.aggregateType ?? null,
+      event.aggregateId ?? null,
       JSON.stringify(event.payload ?? {}),
       event.actorId ?? null,
       event.occurredAt
@@ -384,7 +389,7 @@ export class PgOfftakeContractRepository
   constructor(pool: pg.Pool) {
     super(pool, {
       table: 'marketplace.offtake_contracts',
-      mapper: offtakeContractMapper,
+      mapper: marketplaceOfftakeContractMapper,
       criteria: offtakeContractCriteriaSql,
       orderBy: 'created_at, id'
     });
