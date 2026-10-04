@@ -1,330 +1,230 @@
-import { ConflictException } from '@nestjs/common';
 import type pg from 'pg';
-import type { DomainEvent } from '../../core/domain-events.service.js';
+import type { DealerQRPurchase, DealerQRToken } from '@agric-platform/shared';
 import type {
-  MerchantPaymentCriteria,
-  MerchantPaymentRecord,
-  MerchantPaymentRepository,
-  MerchantQrCodeCriteria,
-  MerchantQrCodeRecord,
-  MerchantQrCodeRepository
+  DealerQRRepository,
+  DealerTokenCriteria,
+  DealerPurchaseCriteria
 } from './dealer-qr.repository.js';
 
+/** Postgres unique-violation (duplicate purchase dedupe key, replayed token). */
+const PG_UNIQUE_VIOLATION = '23505';
+
+const TOKEN_COLUMNS =
+  'id, dealer_id, batch, qr_payload, issued_at, expires_at, redeemed_at, ' +
+  'redeemed_farmer_id, redeemed_purchase_id, created_at';
+
+const PURCHASE_COLUMNS =
+  'id, dealer_id, token_id, farmer_id, amount_kobo, input_items, dedupe_key, ' +
+  'recorded_by, occurred_at, created_at';
+
 /**
- * PostgreSQL implementations over migration 075
- * (agent_banking.merchant_qr_codes / merchant_payments). Compare-and-set
- * updates compile `expected` into WHERE fragments so a lost race updates 0
- * rows → 409, mirroring the in-memory repositories used in unit tests.
- *
- * MerchantPaymentRepository.updateExpected accepts an optional outbox event
- * and appends it to events.outbox in the SAME database transaction as the
- * state change (the transactional-outbox guarantee from the pg base class,
- * hand-rolled here to match the agent-banking pg repositories).
+ * PostgreSQL implementation over input_vouchers.dealer_qr_tokens and
+ * input_vouchers.dealer_qr_purchases (migration 073). Standalone (not
+ * PgRepositoryBase): redemption is a guarded token update and purchases
+ * carry a dedupe UNIQUE key — neither fits the generic id-keyed base.
  */
-
-function assertPgUnique(error: unknown, message: string): never {
-  if ((error as { code?: string }).code === '23505') {
-    throw new ConflictException(message);
-  }
-  throw error;
-}
-
-function toIso(value: unknown): string | undefined {
-  return value === null || value === undefined
-    ? undefined
-    : new Date(value as string).toISOString();
-}
-
-export class PgMerchantQrCodeRepository implements MerchantQrCodeRepository {
+export class PgDealerQRRepository implements DealerQRRepository {
   constructor(private readonly pool: pg.Pool) {}
 
-  async create(record: MerchantQrCodeRecord): Promise<MerchantQrCodeRecord> {
-    try {
-      await this.pool.query(
-        'INSERT INTO agent_banking.merchant_qr_codes (id, agent_org_id, dealer_user_id, payload_hmac, ' +
-          'label, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [
-          record.id,
-          record.agentOrgId,
-          record.dealerUserId,
-          record.payloadHmac,
-          record.label,
-          record.status,
-          record.createdAt
-        ]
-      );
-    } catch (error) {
-      assertPgUnique(error, 'A record with these unique values already exists');
-    }
-    return record;
+  /* ------------------------------- tokens ------------------------------- */
+
+  async createToken(token: DealerQRToken): Promise<DealerQRToken> {
+    await this.pool.query(
+      `INSERT INTO input_vouchers.dealer_qr_tokens
+         (id, dealer_id, batch, qr_payload, issued_at, expires_at, redeemed_at,
+          redeemed_farmer_id, redeemed_purchase_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        token.id,
+        token.dealerId,
+        token.batch,
+        token.qrPayload,
+        token.issuedAt,
+        token.expiresAt ?? null,
+        token.redeemedAt ?? null,
+        token.redeemedFarmerId ?? null,
+        token.redeemedPurchaseId ?? null,
+        token.createdAt
+      ]
+    );
+    return token;
   }
 
-  async findById(id: string): Promise<MerchantQrCodeRecord | undefined> {
+  async getTokenById(id: string): Promise<DealerQRToken | undefined> {
     const result = await this.pool.query(
-      'SELECT * FROM agent_banking.merchant_qr_codes WHERE id = $1',
+      `SELECT ${TOKEN_COLUMNS} FROM input_vouchers.dealer_qr_tokens WHERE id = $1`,
       [id]
     );
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
+    return result.rows[0] ? this.tokenFromRow(result.rows[0]) : undefined;
   }
 
-  async find(criteria: MerchantQrCodeCriteria): Promise<MerchantQrCodeRecord[]> {
+  async getTokenByPayload(qrPayload: string): Promise<DealerQRToken | undefined> {
+    const result = await this.pool.query(
+      `SELECT ${TOKEN_COLUMNS} FROM input_vouchers.dealer_qr_tokens WHERE qr_payload = $1`,
+      [qrPayload]
+    );
+    return result.rows[0] ? this.tokenFromRow(result.rows[0]) : undefined;
+  }
+
+  async findTokens(criteria: DealerTokenCriteria): Promise<DealerQRToken[]> {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (criteria.agentOrgId) {
-      params.push(criteria.agentOrgId);
-      where.push(`agent_org_id = $${params.length}`);
+    if (criteria.dealerId) {
+      params.push(criteria.dealerId);
+      where.push(`dealer_id = $${params.length}`);
     }
-    if (criteria.status) {
-      params.push(criteria.status);
-      where.push(`status = $${params.length}`);
-    }
-    const sql =
-      'SELECT * FROM agent_banking.merchant_qr_codes' +
-      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-      ' ORDER BY created_at';
-    const result = await this.pool.query(sql, params);
-    return result.rows.map((row) => this.fromRow(row));
-  }
-
-  async updateExpected(
-    id: string,
-    patch: Partial<MerchantQrCodeRecord>,
-    expected: Partial<MerchantQrCodeRecord>
-  ): Promise<MerchantQrCodeRecord> {
-    const columns: Record<string, string> = { status: 'status' };
-    const sets: string[] = [];
-    const params: unknown[] = [id];
-    for (const [key, column] of Object.entries(columns)) {
-      if (key in patch) {
-        params.push(patch[key as keyof MerchantQrCodeRecord]);
-        sets.push(`${column} = $${params.length}`);
-      }
-    }
-    const where: string[] = [];
-    for (const [key, column] of Object.entries(columns)) {
-      if (key in expected) {
-        params.push(expected[key as keyof MerchantQrCodeRecord]);
-        where.push(`${column} = $${params.length}`);
-      }
+    if (criteria.batch) {
+      params.push(criteria.batch);
+      where.push(`batch = $${params.length}`);
     }
     const result = await this.pool.query(
-      `UPDATE agent_banking.merchant_qr_codes SET ${sets.join(', ')} WHERE id = $1` +
-        (where.length > 0 ? ` AND ${where.join(' AND ')}` : ''),
+      `SELECT ${TOKEN_COLUMNS} FROM input_vouchers.dealer_qr_tokens` +
+        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+        ' ORDER BY issued_at, id',
       params
     );
-    if ((result.rowCount ?? 0) === 0) {
-      throw new ConflictException(`Merchant QR code '${id}' changed concurrently; reload and retry`);
-    }
-    const updated = await this.findById(id);
-    return updated as MerchantQrCodeRecord;
-  }
-
-  private fromRow(row: Record<string, unknown>): MerchantQrCodeRecord {
-    return {
-      id: row.id as string,
-      agentOrgId: row.agent_org_id as string,
-      dealerUserId: row.dealer_user_id as string,
-      payloadHmac: row.payload_hmac as string,
-      label: row.label as string,
-      status: row.status as MerchantQrCodeRecord['status'],
-      createdAt: toIso(row.created_at) as string
-    };
-  }
-}
-
-const PAYMENT_COLUMNS: Record<string, string> = {
-  status: 'status',
-  quoteId: 'quote_id',
-  mojaloopTransferId: 'mojaloop_transfer_id',
-  ledgerEntryId: 'ledger_entry_id',
-  failureReason: 'failure_reason',
-  updatedAt: 'updated_at',
-  completedAt: 'completed_at'
-};
-
-export class PgMerchantPaymentRepository implements MerchantPaymentRepository {
-  /** updateExpected persists a passed outbox event in the same transaction. */
-  readonly transactionalOutbox = true;
-
-  constructor(private readonly pool: pg.Pool) {}
-
-  async create(record: MerchantPaymentRecord): Promise<MerchantPaymentRecord> {
-    try {
-      await this.pool.query(
-        'INSERT INTO agent_banking.merchant_payments (id, qr_id, payer_user_id, amount_kobo, ' +
-          'voucher_tender_kobo, wallet_tender_kobo, voucher_id, payer_alias_hmac, quote_id, ' +
-          'mojaloop_transfer_id, adapter_basis, status, idempotency_key, ledger_entry_id, ' +
-          'failure_reason, created_at, updated_at, completed_at) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)',
-        [
-          record.id,
-          record.qrId,
-          record.payerUserId,
-          record.amountKobo,
-          record.voucherTenderKobo,
-          record.walletTenderKobo,
-          record.voucherId ?? null,
-          record.payerAliasHmac ?? null,
-          record.quoteId ?? null,
-          record.mojaloopTransferId ?? null,
-          record.adapterBasis,
-          record.status,
-          record.idempotencyKey ?? null,
-          record.ledgerEntryId ?? null,
-          record.failureReason ?? null,
-          record.createdAt,
-          record.updatedAt,
-          record.completedAt ?? null
-        ]
-      );
-    } catch (error) {
-      assertPgUnique(error, 'A record with these unique values already exists');
-    }
-    return record;
-  }
-
-  async findById(id: string): Promise<MerchantPaymentRecord | undefined> {
-    const result = await this.pool.query(
-      'SELECT * FROM agent_banking.merchant_payments WHERE id = $1',
-      [id]
-    );
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
-  }
-
-  async findByIdempotencyKey(key: string): Promise<MerchantPaymentRecord | undefined> {
-    const result = await this.pool.query(
-      'SELECT * FROM agent_banking.merchant_payments WHERE idempotency_key = $1',
-      [key]
-    );
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
-  }
-
-  async findByTransferId(transferId: string): Promise<MerchantPaymentRecord | undefined> {
-    const result = await this.pool.query(
-      'SELECT * FROM agent_banking.merchant_payments WHERE mojaloop_transfer_id = $1',
-      [transferId]
-    );
-    return result.rows[0] ? this.fromRow(result.rows[0]) : undefined;
-  }
-
-  async find(criteria: MerchantPaymentCriteria): Promise<MerchantPaymentRecord[]> {
-    const where: string[] = [];
-    const params: unknown[] = [];
-    if (criteria.qrId) {
-      params.push(criteria.qrId);
-      where.push(`qr_id = $${params.length}`);
-    }
-    if (criteria.payerUserId) {
-      params.push(criteria.payerUserId);
-      where.push(`payer_user_id = $${params.length}`);
-    }
-    if (criteria.status) {
-      params.push(criteria.status);
-      where.push(`status = $${params.length}`);
-    }
-    const sql =
-      'SELECT * FROM agent_banking.merchant_payments' +
-      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-      ' ORDER BY created_at';
-    const result = await this.pool.query(sql, params);
-    return result.rows.map((row) => this.fromRow(row));
+    return result.rows.map((row) => this.tokenFromRow(row));
   }
 
   /**
-   * Compare-and-set with optional transactional outbox: when `outboxEvent`
-   * is passed, the state change and the events.outbox append commit in ONE
-   * database transaction, eliminating the dual-write window on the
-   * settlement path (mirrors PgRepositoryBase.updateExpected).
+   * Atomic redemption: flips the token only while unredeemed. Returns the
+   * flipped row, or undefined when the token was already redeemed (a
+   * concurrent scanner raced us or this is a replay — the service
+   * distinguishes by comparing redeemed_purchase_id).
    */
-  async updateExpected(
+  async markRedeemed(
     id: string,
-    patch: Partial<MerchantPaymentRecord>,
-    expected: Partial<MerchantPaymentRecord>,
-    outboxEvent?: DomainEvent
-  ): Promise<MerchantPaymentRecord> {
-    const sets: string[] = [];
-    const params: unknown[] = [id];
-    for (const [key, column] of Object.entries(PAYMENT_COLUMNS)) {
-      if (key in patch) {
-        params.push(patch[key as keyof MerchantPaymentRecord] ?? null);
-        sets.push(`${column} = $${params.length}`);
-      }
-    }
-    const where: string[] = [];
-    for (const [key, column] of Object.entries(PAYMENT_COLUMNS)) {
-      if (key in expected) {
-        params.push(expected[key as keyof MerchantPaymentRecord]);
-        where.push(`${column} = $${params.length}`);
-      }
-    }
-    const sql =
-      `UPDATE agent_banking.merchant_payments SET ${sets.join(', ')} WHERE id = $1` +
-      (where.length > 0 ? ` AND ${where.join(' AND ')}` : '');
-    const execute = async (queryable: Pick<pg.Pool, 'query'>): Promise<void> => {
-      const result = await queryable.query(sql, params);
-      if ((result.rowCount ?? 0) === 0) {
-        throw new ConflictException(`Merchant payment '${id}' changed concurrently; reload and retry`);
-      }
-      if (outboxEvent) {
-        await queryable.query(
-          'INSERT INTO events.outbox (id, name, payload, actor_id, occurred_at) VALUES ($1, $2, $3, $4, $5)',
-          [
-            outboxEvent.id,
-            outboxEvent.name,
-            JSON.stringify(outboxEvent.payload ?? {}),
-            outboxEvent.actorId ?? null,
-            outboxEvent.occurredAt
-          ]
-        );
-      }
-    };
-    if (outboxEvent) {
-      const client = await this.pool.connect();
-      try {
-        await client.query('BEGIN');
-        await execute(client);
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    } else {
-      await execute(this.pool);
-    }
-    const updated = await this.findById(id);
-    return updated as MerchantPaymentRecord;
+    patch: { redeemedAt: string; redeemedFarmerId: string; redeemedPurchaseId: string }
+  ): Promise<DealerQRToken | undefined> {
+    const result = await this.pool.query(
+      `UPDATE input_vouchers.dealer_qr_tokens
+         SET redeemed_at = $2, redeemed_farmer_id = $3, redeemed_purchase_id = $4
+       WHERE id = $1 AND redeemed_at IS NULL
+       RETURNING ${TOKEN_COLUMNS}`,
+      [id, patch.redeemedAt, patch.redeemedFarmerId, patch.redeemedPurchaseId]
+    );
+    return result.rows[0] ? this.tokenFromRow(result.rows[0]) : undefined;
   }
 
-  private fromRow(row: Record<string, unknown>): MerchantPaymentRecord {
+  /* ------------------------------ purchases ------------------------------ */
+
+  async createPurchase(purchase: DealerQRPurchase): Promise<DealerQRPurchase> {
+    try {
+      await this.pool.query(
+        `INSERT INTO input_vouchers.dealer_qr_purchases
+           (id, dealer_id, token_id, farmer_id, amount_kobo, input_items, dedupe_key,
+            recorded_by, occurred_at, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          purchase.id,
+          purchase.dealerId,
+          purchase.tokenId,
+          purchase.farmerId,
+          purchase.amountKobo,
+          JSON.stringify(purchase.inputItems),
+          purchase.dedupeKey ?? null,
+          purchase.recordedBy,
+          purchase.occurredAt,
+          purchase.createdAt
+        ]
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code === PG_UNIQUE_VIOLATION) {
+        // Surface the dedupe conflict distinctly so the service can answer
+        // the replay with the original row instead of a 500.
+        const existing = purchase.dedupeKey
+          ? await this.getPurchaseByDedupeKey(purchase.dedupeKey)
+          : undefined;
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
+    return purchase;
+  }
+
+  async getPurchaseById(id: string): Promise<DealerQRPurchase | undefined> {
+    const result = await this.pool.query(
+      `SELECT ${PURCHASE_COLUMNS} FROM input_vouchers.dealer_qr_purchases WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] ? this.purchaseFromRow(result.rows[0]) : undefined;
+  }
+
+  async getPurchaseByDedupeKey(dedupeKey: string): Promise<DealerQRPurchase | undefined> {
+    const result = await this.pool.query(
+      `SELECT ${PURCHASE_COLUMNS} FROM input_vouchers.dealer_qr_purchases WHERE dedupe_key = $1`,
+      [dedupeKey]
+    );
+    return result.rows[0] ? this.purchaseFromRow(result.rows[0]) : undefined;
+  }
+
+  async findPurchases(criteria: DealerPurchaseCriteria): Promise<DealerQRPurchase[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (criteria.dealerId) {
+      params.push(criteria.dealerId);
+      where.push(`dealer_id = $${params.length}`);
+    }
+    if (criteria.farmerId) {
+      params.push(criteria.farmerId);
+      where.push(`farmer_id = $${params.length}`);
+    }
+    if (criteria.tokenId) {
+      params.push(criteria.tokenId);
+      where.push(`token_id = $${params.length}`);
+    }
+    const result = await this.pool.query(
+      `SELECT ${PURCHASE_COLUMNS} FROM input_vouchers.dealer_qr_purchases` +
+        (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+        ' ORDER BY occurred_at, id',
+      params
+    );
+    return result.rows.map((row) => this.purchaseFromRow(row));
+  }
+
+  async countPurchasesByFarmer(farmerId: string): Promise<number> {
+    const result = await this.pool.query(
+      'SELECT count(*)::int AS n FROM input_vouchers.dealer_qr_purchases WHERE farmer_id = $1',
+      [farmerId]
+    );
+    return result.rows[0].n as number;
+  }
+
+  /* -------------------------------- rows -------------------------------- */
+
+  private tokenFromRow(row: Record<string, unknown>): DealerQRToken {
     return {
       id: row.id as string,
-      qrId: row.qr_id as string,
-      payerUserId: row.payer_user_id as string,
+      dealerId: row.dealer_id as string,
+      batch: row.batch as string,
+      qrPayload: row.qr_payload as string,
+      issuedAt: new Date(row.issued_at as string).toISOString(),
+      expiresAt: row.expires_at ? new Date(row.expires_at as string).toISOString() : undefined,
+      redeemedAt: row.redeemed_at ? new Date(row.redeemed_at as string).toISOString() : undefined,
+      redeemedFarmerId: (row.redeemed_farmer_id as string | null) ?? undefined,
+      redeemedPurchaseId: (row.redeemed_purchase_id as string | null) ?? undefined,
+      createdAt: new Date(row.created_at as string).toISOString()
+    };
+  }
+
+  private purchaseFromRow(row: Record<string, unknown>): DealerQRPurchase {
+    return {
+      id: row.id as string,
+      dealerId: row.dealer_id as string,
+      tokenId: row.token_id as string,
+      farmerId: row.farmer_id as string,
       amountKobo: Number(row.amount_kobo),
-      voucherTenderKobo: Number(row.voucher_tender_kobo),
-      walletTenderKobo: Number(row.wallet_tender_kobo),
-      voucherId: (row.voucher_id as string) ?? undefined,
-      payerAliasHmac: (row.payer_alias_hmac as string) ?? undefined,
-      quoteId: (row.quote_id as string) ?? undefined,
-      mojaloopTransferId: (row.mojaloop_transfer_id as string) ?? undefined,
-      adapterBasis: row.adapter_basis as MerchantPaymentRecord['adapterBasis'],
-      status: row.status as MerchantPaymentRecord['status'],
-      idempotencyKey: (row.idempotency_key as string) ?? undefined,
-      ledgerEntryId: (row.ledger_entry_id as string) ?? undefined,
-      failureReason: (row.failure_reason as string) ?? undefined,
-      createdAt: toIso(row.created_at) as string,
-      updatedAt: toIso(row.updated_at) as string,
-      completedAt: toIso(row.completed_at)
+      inputItems: row.input_items as DealerQRPurchase['inputItems'],
+      dedupeKey: (row.dedupe_key as string | null) ?? undefined,
+      recordedBy: row.recorded_by as string,
+      occurredAt: new Date(row.occurred_at as string).toISOString(),
+      createdAt: new Date(row.created_at as string).toISOString()
     };
   }
 }
 
-export function createPgMerchantQrCodeRepository(pool: pg.Pool): PgMerchantQrCodeRepository {
-  return new PgMerchantQrCodeRepository(pool);
-}
-
-export function createPgMerchantPaymentRepository(pool: pg.Pool): PgMerchantPaymentRepository {
-  return new PgMerchantPaymentRepository(pool);
+export function createPgDealerQRRepository(pool: pg.Pool): PgDealerQRRepository {
+  return new PgDealerQRRepository(pool);
 }

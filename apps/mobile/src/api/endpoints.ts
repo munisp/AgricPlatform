@@ -1,379 +1,103 @@
-import type { ApiClient, ApiRequestOptions } from './client';
+import type { ApiClient } from './client';
 import type {
-  AgentAssignment,
-  Animal,
-  ApiListResponse,
-  Course,
-  CreateFarmPlotInput,
-  DraftOrder,
+  AuthSession,
   FarmPlot,
-  HealthRecall,
+  LearningEnrolment,
+  ListingOrder,
   MarketplaceListing,
-  MyPathwayEnrolmentSummary,
-  NotificationMessage,
-  Opportunity,
-  Order,
-  OrderStatus,
-  RegisterAnimalInput,
-  SelfRegistrationRole,
-  User,
-  VaccinationDueItem,
-  WeatherSnapshot
+  NotificationMessage
 } from './types';
 
-/**
- * Typed endpoint wrappers mirroring the NestJS controllers (and the web
- * client in apps/web/lib/api/endpoints.ts). Item endpoints unwrap
- * `{ data: T }`; list endpoints return the pagination envelope unless the
- * controller returns a plain `{ data: T[] }` (noted per function).
- *
- * GET wrappers accept an optional trailing `options` carrying an
- * AbortSignal so screens can cancel in-flight reads on unmount.
- */
-
-/** Caller cancellation options for idempotent GET reads. */
-export type ReadOptions = Pick<ApiRequestOptions, 'signal'>;
-
-/* ------------------------------- auth ---------------------------------- */
-
-export function requestOtp(
-  client: ApiClient,
-  phone: string
-): Promise<{ data: { requestId: string; devCode?: string } }> {
-  return client.apiFetch('/auth/otp/request', { method: 'POST', body: { phone } });
+interface RequestOptions {
+  signal?: AbortSignal;
+  idempotencyKey?: string;
 }
 
-/** Login response (Wave P): access token + first-generation refresh token. */
-export interface SessionTokens {
-  token: string;
-  refreshToken: string;
-  refreshTokenExpiresAt?: string;
-  user: User;
+export function fetchSession(client: ApiClient, options?: RequestOptions) {
+  return client.apiFetch<AuthSession>('/auth/session', { signal: options?.signal });
 }
 
-export function verifyOtp(
-  client: ApiClient,
-  requestId: string,
-  code: string
-): Promise<{ data: SessionTokens }> {
-  return client.apiFetch('/auth/otp/verify', { method: 'POST', body: { requestId, code } });
+export function listNotifications(client: ApiClient, userId: string, options?: RequestOptions) {
+  return client.apiFetch<NotificationMessage[]>(
+    `/notifications?userId=${encodeURIComponent(userId)}`,
+    { signal: options?.signal }
+  );
 }
 
-export function fetchSession(
-  client: ApiClient,
-  options?: ReadOptions
-): Promise<{ data: { user: User } }> {
-  return client.apiFetch('/auth/session', { ...options });
-}
-
-/** Registration input (POST /auth/register). Phone must be E.164. */
-export interface RegisterAccountInput {
-  phone: string;
-  fullName: string;
-  email?: string;
-  roles: SelfRegistrationRole[];
-  preferredLanguage: User['preferredLanguage'];
-}
-
-/**
- * OB-01 contract: registration creates an UNVERIFIED account and returns
- * the user plus an OTP challenge id — NO session tokens. The caller must
- * complete verification via verifyOtp(otpRequestId, code) to obtain a
- * session.
- */
-export function registerAccount(
-  client: ApiClient,
-  input: RegisterAccountInput
-): Promise<{ data: { user: User; otpRequestId: string } }> {
-  return client.apiFetch('/auth/register', { method: 'POST', body: input });
-}
-
-/** Rotate a refresh token (the client also does this automatically on 401). */
-export function refreshSession(
-  client: ApiClient,
-  refreshToken: string
-): Promise<{ data: { user: User; refreshToken: string; refreshTokenExpiresAt?: string } }> {
-  return client.apiFetch('/auth/refresh', { method: 'POST', body: { refreshToken } });
-}
-
-/** Revoke the refresh-token session on sign-out (idempotent server-side). */
-export function logoutSession(
-  client: ApiClient,
-  refreshToken: string
-): Promise<{ data: { revoked: boolean } }> {
-  return client.apiFetch('/auth/logout', { method: 'POST', body: { refreshToken } });
-}
-
-/* ------------------------------ learning ------------------------------- */
-
-export function listCourses(
-  client: ApiClient,
-  params: { category?: string; page?: number; pageSize?: number } = {},
-  options?: ReadOptions
-): Promise<ApiListResponse<Course>> {
-  return client.apiFetch('/courses', { query: { ...params }, ...options });
-}
-
-export function fetchCourse(
-  client: ApiClient,
-  id: string,
-  options?: ReadOptions
-): Promise<{ data: Course }> {
-  return client.apiFetch(`/courses/${encodeURIComponent(id)}`, { ...options });
-}
-
-/* ----------------------------- marketplace ------------------------------ */
-
-export function listListings(
-  client: ApiClient,
-  params: { kind?: MarketplaceListing['kind']; state?: string; page?: number; pageSize?: number } = {},
-  options?: ReadOptions
-): Promise<ApiListResponse<MarketplaceListing>> {
-  return client.apiFetch('/listings', { query: { ...params }, ...options });
-}
-
-export function fetchListing(
-  client: ApiClient,
-  id: string,
-  options?: ReadOptions
-): Promise<{ data: MarketplaceListing }> {
-  return client.apiFetch(`/listings/${encodeURIComponent(id)}`, { ...options });
-}
-
-/* ------------------------------- orders -------------------------------- */
-
-/** Own orders (buyer side). Plain `{ data: Order[] }`. */
-export function listMyOrders(
-  client: ApiClient,
-  buyerId: string,
-  status?: OrderStatus,
-  options?: ReadOptions
-): Promise<{ data: Order[] }> {
-  return client.apiFetch('/orders', { query: { buyerId, status }, ...options });
-}
-
-export function fetchOrder(
-  client: ApiClient,
-  id: string,
-  options?: ReadOptions
-): Promise<{ data: Order }> {
-  return client.apiFetch(`/orders/${encodeURIComponent(id)}`, { ...options });
-}
-
-/** Draft orders created for the buyer by an agent (Wave M). Plain list. */
-export function listDraftOrders(
-  client: ApiClient,
-  buyerId: string,
-  options?: ReadOptions
-): Promise<{ data: DraftOrder[] }> {
-  return client.apiFetch('/draft-orders', { query: { buyerId }, ...options });
-}
-
-/** Buyer confirms a draft order into a normal order. */
-export function confirmDraftOrder(
-  client: ApiClient,
-  id: string
-): Promise<{ data: DraftOrder }> {
-  return client.apiFetch(`/draft-orders/${encodeURIComponent(id)}/confirm`, { method: 'POST' });
-}
-
-/* ---------------------------- notifications ----------------------------- */
-
-/** Own notifications, newest first. Plain `{ data: NotificationMessage[] }`. */
-export function listNotifications(
-  client: ApiClient,
-  userId: string,
-  options?: ReadOptions
-): Promise<{ data: NotificationMessage[] }> {
-  return client.apiFetch('/notifications', { query: { userId }, ...options });
-}
-
-export function markNotificationRead(
-  client: ApiClient,
-  id: string
-): Promise<{ data: NotificationMessage }> {
-  return client.apiFetch(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' });
-}
-
-/* ------------------------------ livestock ------------------------------- */
-
-/** Own registered animals. Plain `{ data: Animal[] }`. */
-export function listMyAnimals(
-  client: ApiClient,
-  options?: ReadOptions
-): Promise<{ data: Animal[] }> {
-  return client.apiFetch('/livestock/animals/mine', { ...options });
-}
-
-export function registerAnimal(
-  client: ApiClient,
-  input: RegisterAnimalInput
-): Promise<{ data: Animal }> {
-  return client.apiFetch('/livestock/animals', { method: 'POST', body: input });
-}
-
-/** Active disease recalls = pending health tasks for the dashboard card. */
-export function listActiveRecalls(client: ApiClient): Promise<{ data: HealthRecall[] }> {
-  return client.apiFetch('/livestock-health/recalls', { query: { status: 'active' } });
-}
-
-/**
- * Computed due-vaccination schedule (plain `{ data: VaccinationDueItem[] }`).
- * Farmers see their own animals; `days` is the lookahead window (default 30)
- * separating 'due' from 'upcoming'. This is the real pending-health-tasks
- * source for the dashboard card.
- */
-export function listDueVaccinations(
-  client: ApiClient,
-  days = 30,
-  options?: ReadOptions
-): Promise<{ data: VaccinationDueItem[] }> {
-  return client.apiFetch('/livestock-health/vaccinations/due', { query: { days }, ...options });
-}
-
-/* ------------------------------ dashboard ------------------------------- */
-
-/** Training progress source: own pathway enrolments. Plain `{ data: T[] }`. */
-export function listMyPathwayEnrolments(
-  client: ApiClient,
-  options?: ReadOptions
-): Promise<{ data: MyPathwayEnrolmentSummary[] }> {
-  return client.apiFetch('/pathway-enrolments/mine', { ...options });
-}
-
-export function listOpportunities(
-  client: ApiClient,
-  params: { type?: string; page?: number; pageSize?: number } = {},
-  options?: ReadOptions
-): Promise<ApiListResponse<Opportunity>> {
-  return client.apiFetch('/opportunities', { query: { ...params }, ...options });
-}
-
-export function fetchWeather(
-  client: ApiClient,
-  state: string,
-  options?: ReadOptions
-): Promise<{ data: WeatherSnapshot }> {
-  return client.apiFetch(`/advisory/weather/${encodeURIComponent(state)}`, { ...options });
-}
-
-/* --------------------- sync protocol v1 (Wave SYNCSRV) -------------------- */
-/* Contract: docs/sync-protocol.md. All operations are scoped to the caller. */
-
-export type SyncPushOp = 'upsert' | 'delete';
-
-export interface SyncPushItem {
-  entity: string;
-  entityId: string;
-  clientMutationId: string;
-  baseVersion: number;
-  op: SyncPushOp;
-  payload?: Record<string, unknown>;
-}
-
-export interface SyncPushItemResult {
-  entity: string;
-  entityId: string;
-  clientMutationId: string;
-  status: 'applied' | 'conflict' | 'error';
-  newVersion?: number;
-  serverVersion?: number;
-  serverPayload?: unknown;
-  error?: string;
-}
-
-export interface SyncPullItem {
-  entityId: string;
-  version: number;
-  deleted: boolean;
-  payload: unknown;
-}
-
-export interface SyncPullPage {
-  entity: string;
-  items: SyncPullItem[];
-  /** Monotonic per (user, entity); pass back as `since` on the next pull. */
-  cursor: number;
-  hasMore: boolean;
-}
-
-export interface SyncStatusEntry {
-  entity: string;
-  serverMaxVersion: number;
-  cursor: number;
-}
-
-/** Push a batch of offline mutations (1–200 items; outcomes are per item). */
-export function syncPush(
-  client: ApiClient,
-  items: SyncPushItem[]
-): Promise<{ data: { results: SyncPushItemResult[] } }> {
-  return client.apiFetch('/sync/push', { method: 'POST', body: { items } });
-}
-
-/** Pull caller-scoped changes since a cursor (version-ordered, tombstoned). */
-export function syncPull(
-  client: ApiClient,
-  params: { entity: string; since?: number; limit?: number; v?: number }
-): Promise<{ data: SyncPullPage }> {
-  return client.apiFetch('/sync/pull', { query: { ...params } });
-}
-
-/** Per-entity server max version + recorded cursor for the caller. */
-export function syncStatus(client: ApiClient): Promise<{ data: SyncStatusEntry[] }> {
-  return client.apiFetch('/sync/status');
-}
-
-/* -------------------------------- farms --------------------------------- */
-
-/**
- * Own farm plots (GET /farms/plots — owner-scoped server-side, so the
- * caller only ever receives their own). Plain `{ data: FarmPlot[] }`.
- */
-export function listMyFarmPlots(
-  client: ApiClient,
-  options?: ReadOptions
-): Promise<{ data: FarmPlot[] }> {
-  return client.apiFetch('/farms/plots', { ...options });
-}
-
-/**
- * Direct plot creation. The capture screen normally writes through the
- * offline queue (src/offline/queue.ts) instead — this wrapper is for the
- * queue's flush sender and online-first callers.
- */
-export function createFarmPlot(
-  client: ApiClient,
-  input: CreateFarmPlotInput,
-  idempotencyKey?: string
-): Promise<{ data: FarmPlot }> {
-  return client.apiFetch('/farms/plots', { method: 'POST', body: input, idempotencyKey });
-}
-
-/* ---------------------------- field agents ------------------------------- */
-
-/** Enumerator's own open assignment queue. Plain `{ data: T[] }` envelope. */
-export function listMyAgentAssignments(
-  client: ApiClient,
-  options?: ReadOptions
-): Promise<{ data: AgentAssignment[] }> {
-  return client.apiFetch('/field-agents/assignments/mine', { ...options });
-}
-
-/**
- * Report progress on an own assignment (auto-completes server-side at the
- * target count). Idempotency-keyed by the caller when replayed from the
- * offline queue, so a replay cannot double-count a visit.
- */
-export function reportAgentAssignmentProgress(
-  client: ApiClient,
-  id: string,
-  count = 1,
-  idempotencyKey?: string
-): Promise<{ data: AgentAssignment }> {
-  return client.apiFetch(`/field-agents/assignments/${encodeURIComponent(id)}/progress`, {
+export function markNotificationRead(client: ApiClient, id: string, options?: RequestOptions) {
+  return client.apiFetch<NotificationMessage>(`/notifications/${encodeURIComponent(id)}/read`, {
     method: 'POST',
-    body: { count },
-    ...(idempotencyKey ? { idempotencyKey } : {})
+    signal: options?.signal
   });
+}
+
+export interface ListingsQuery {
+  kind?: MarketplaceListing['kind'];
+  state?: string;
+  q?: string;
+}
+
+export function listListings(client: ApiClient, query: ListingsQuery = {}, options?: RequestOptions) {
+  const params = new URLSearchParams();
+  if (query.kind) params.set('kind', query.kind);
+  if (query.state) params.set('state', query.state);
+  if (query.q) params.set('q', query.q);
+  const qs = params.toString();
+  return client.apiFetch<MarketplaceListing[]>(`/listings${qs ? `?${qs}` : ''}`, {
+    signal: options?.signal
+  });
+}
+
+export function fetchListing(client: ApiClient, id: string, options?: RequestOptions) {
+  return client.apiFetch<MarketplaceListing>(`/listings/${encodeURIComponent(id)}`, {
+    signal: options?.signal
+  });
+}
+
+export function placeOrder(
+  client: ApiClient,
+  listingId: string,
+  input: { buyerId: string; quantity: number },
+  options?: RequestOptions
+) {
+  return client.apiFetch<ListingOrder>(`/listings/${encodeURIComponent(listingId)}/orders`, {
+    method: 'POST',
+    body: input,
+    signal: options?.signal,
+    idempotencyKey: options?.idempotencyKey
+  });
+}
+
+export function listMyPlots(client: ApiClient, ownerUserId: string, options?: RequestOptions) {
+  return client.apiFetch<FarmPlot[]>(`/farms/plots?ownerUserId=${encodeURIComponent(ownerUserId)}`, {
+    signal: options?.signal
+  });
+}
+
+export interface CreatePlotInput {
+  name: string;
+  state: string;
+  lga: string;
+  centroidLat: number;
+  centroidLong: number;
+  sizeHectares: number;
+  soilType?: FarmPlot['soilType'];
+  accuracyMeters?: number;
+  clientId?: string;
+}
+
+export function createPlot(client: ApiClient, input: CreatePlotInput, options?: RequestOptions) {
+  return client.apiFetch<FarmPlot>('/farms/plots', {
+    method: 'POST',
+    body: input,
+    signal: options?.signal,
+    idempotencyKey: options?.idempotencyKey
+  });
+}
+
+export function listMyEnrolments(client: ApiClient, userId: string, options?: RequestOptions) {
+  return client.apiFetch<LearningEnrolment[]>(
+    `/learning/enrolments?userId=${encodeURIComponent(userId)}`,
+    { signal: options?.signal }
+  );
 }
