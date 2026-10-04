@@ -420,3 +420,52 @@ describe('LoanService V-23 term ceiling + L-12 date contract', () => {
     );
   });
 });
+
+describe('RepaymentScheduleRepository.replaceSchedule status guard (GAP-M21)', () => {
+  const pendingRow = {
+    id: 'installment-1',
+    loanId: 'loan-1',
+    sequence: 1,
+    dueDate: '2026-10-01',
+    principalKobo: 100_000,
+    interestKobo: 0,
+    totalKobo: 100_000,
+    status: 'pending' as const
+  };
+  const replacement = [{ ...pendingRow, id: 'installment-new', dueDate: '2026-11-01' }];
+
+  it('refuses replacement with 409 when an installment is paid', async () => {
+    const schedules = new InMemoryRepaymentScheduleRepository([
+      { ...pendingRow, status: 'paid', paidAt: '2026-09-15T00:00:00.000Z', paymentReference: 'ref-1' }
+    ]);
+    await expect(schedules.replaceSchedule('loan-1', replacement)).rejects.toThrowError(
+      ConflictException
+    );
+    // Payment evidence survives the refused replacement.
+    const kept = await schedules.find({ loanId: 'loan-1' });
+    expect(kept).toHaveLength(1);
+    expect(kept[0].paymentReference).toBe('ref-1');
+  });
+
+  it('refuses replacement with 409 when an installment has an in-flight declared payment', async () => {
+    const schedules = new InMemoryRepaymentScheduleRepository([
+      { ...pendingRow, status: 'declared', paymentReference: 'ref-2', declaredBy: 'user-adamu' }
+    ]);
+    await expect(schedules.replaceSchedule('loan-1', replacement)).rejects.toThrowError(
+      /paid or in-flight/
+    );
+    expect(await schedules.find({ loanId: 'loan-1' })).toHaveLength(1);
+  });
+
+  it('replaces schedules whose installments are still pending or late', async () => {
+    const schedules = new InMemoryRepaymentScheduleRepository([
+      pendingRow,
+      { ...pendingRow, id: 'installment-2', sequence: 2, status: 'late' }
+    ]);
+    const written = await schedules.replaceSchedule('loan-1', replacement);
+    expect(written).toHaveLength(1);
+    const stored = await schedules.find({ loanId: 'loan-1' });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe('installment-new');
+  });
+});
