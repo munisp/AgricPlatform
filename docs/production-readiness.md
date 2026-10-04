@@ -4,20 +4,6 @@
 **Assessment scope:** Nigeria Farmer Platform PRD v3.3, Phase 1 reference implementation, GitHub handoff, and production launch gap analysis.  
 **Verdict:** **Ready for technical review, local demo, and staging hardening. Not ready for public production launch.** The Stage 21 assurance audit additionally confirmed critical (C1) application-security gaps that must close before any public launch — see §5a.
 
----
-
-## Stage 27 addendum (2026-09-14) — supersedes the headline scores above
-
-The §1 score table and Stage 21–23 verdicts above are retained as the historical record of those stages. The current readiness assessment is the Stage 27 production-readiness report (evidence-bounded, no absolute readiness claim); the summary below is its doc-level abstract.
-
-**What changed since the Stage 21–23 baseline (merge-log; evidence-pack):**
-
-- **36 PRs merged 36/36** in the Stage 27 wave — 16 gap-closure PRs carrying all 22 WP-G register items (money-path atomicity, agent cash limits, webhook scoping/SSRF, ledger hardening, idempotency payload-hash, sweepers, telemetry, auth vendors, catalogue bridges, production guards) and 20 innovation features (inn-01…inn-20), each shipping behind a default-OFF rollout flag (merge-log; PRs #61–#96 incl. FF-reconstructions #98–#102).
-- **Test/migration surface now:** 79 migrations (`infra/postgres/001…079`; Stage 27 added 053–079), 286 API unit/integration spec files, 23 live-Postgres contract spec files, 58 web test files (evidence-pack §3, measured on main @ `27106f45c47393feec1e70d3ade8986cd1b3ff7a`). The §8 counts (41 migrations / 3,101 tests) are the Stage 21 snapshot, not current state.
-- **Stage 21/22/23 findings closed:** the C1/C2 classes (unguarded routes, self-service roles, stub drivers in production, declarative escrow, idempotency gaps) were closed by their named PR sets; Stage 27 then hardened the money paths further (WP-G1/G2/G11/G12/G13) with live-Postgres contract evidence in CI's db-contract job (merge-log).
-- **CI on main @ `27106f45` (2026-09-14):** 10 of 11 jobs green incl. db-contract and both Trivy-scanned container builds; smoke-test red at query time (exit 7 — CI-only placeholder secrets vs the 32-char HMAC boot floor; fix `23fcc5c3` + gitleaks allowlist `27106f45` landed, re-run confirmation tracked in the merge-log).
-- **Open before public launch (Stage 27 register, 12 items):** the externally gated items dominate — Keycloak realm-side config for WP-G16/G17 phone-auth (`PHONE_AUTH_KEYCLOAK` default OFF, fail-closed), real secret provisioning (incl. Stage 27 additions `MSISDN_HASH_SALT`, `AGENT_QR_SECRET`, `CREDIT_PASSPORT_SECRET`), PAT revocation, Dependabot triage, base-image digest pinning, and the break-glass in-memory flags (`ALLOW_INMEMORY_PERSISTENCE`/`ALLOW_INMEMORY_CACHE`) that must never be set in production (evidence-pack §4). No 100% readiness claim is made at any stage.
-
 ## 1. Executive readiness score
 
 | Dimension | Score | Evidence | Remaining gate |
@@ -238,7 +224,7 @@ A seven-dimension adversarial audit (money paths, authN/Z & channels, fail-close
 | # | Finding | Location |
 | --- | --- | --- |
 | C1-1 | Unauthenticated user record mutation and directory read (`PATCH /users/:id`, `GET /users`, `GET /users/:id` have no auth guard; only a global throttler exists) | `apps/api/src/modules/users/users.controller.ts:42-60`; `apps/api/src/app.module.ts:178` |
-| C1-2 | Unauthenticated application-approval workflow — an attacker can self-approve grant/subsidy applications (`POST /opportunities/:id/apply` with attacker-chosen `userId`, then `PATCH /opportunities/applications/:id/status {status:'successful'}`) | `apps/api/src/modules/opportunities/opportunities.controller.ts:113-165` |
+| C1-2 | Unauthenticated application-approval workflow — an attacker can self-approve grant/subsidy applications (`POST /opportunities/:id/apply` with attacker-chosen `userId`, then `PATCH /applications/:id/status {status:'successful'}`) | `apps/api/src/modules/opportunities/opportunities.controller.ts:113-165` |
 | C1-3 | Self-service role assignment at registration — `POST /auth/register` accepts `roles:['admin']` verbatim, with no OTP proof preceding account creation | `apps/api/src/modules/auth/auth.controller.ts:41-43`; `apps/api/src/modules/users/users.service.ts:60` |
 | C1-4 | NIN stub identity driver verifies beneficiaries in production (no production stub ban on the factory; stub verdict is a publicly computable hash), gating real subsidy-voucher money | `apps/api/src/modules/input-vouchers/identity.driver.ts:114-125`; `input-vouchers.service.ts:330-365` |
 | C1-5 | Parametric-insurance triggers evaluate on fabricated stub weather/flood data in production and book real ledger payouts marked `paid` (no `isProduction` reference anywhere in the module) | `apps/api/src/modules/insurance/insurance.service.ts:239-250,477-538,623-755` |
