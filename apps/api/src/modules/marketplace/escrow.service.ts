@@ -62,6 +62,55 @@ export interface DepositEvidence {
 type EscrowActor = 'buyer' | 'seller';
 
 /**
+ * GAP-M23 — client contract "escrow expiry race" (docs/runbooks/ops.md):
+ * a payment intent IS the escrow hold; the intent id is the escrow id and
+ * `expiresAt` is the hold's `heldUntil`. Expiry is LAZY: the record is not
+ * mutated on read — a held escrow past `heldUntil` reports
+ * `status: 'expired'` and the background sweeper (or the admin
+ * POST /escrow/expire path) drives the actual auto-refund. A confirmation
+ * attempt against an expired intent is refused with 409 `intent_expired`
+ * (see transition()) — clients must mint a new intent, never retry.
+ */
+export interface PaymentIntentView {
+  /** Intent id (= escrow record id). */
+  id: string;
+  orderId: string;
+  amountKobo: number;
+  /** Escrow status, with the lazy 'expired' overlay for lapsed holds. */
+  status: EscrowStatus | 'expired';
+  /** Server-issued expiry deadline (the escrow's heldUntil) — countdowns MUST use this, never a client-side estimate. */
+  expiresAt: string | null;
+  heldAt: string;
+  /** True only when a payment provider verified the deposit. */
+  depositVerified: boolean;
+}
+
+/** Lazy-expiry predicate: a HELD escrow at/past its heldUntil deadline. */
+export function isEscrowExpired(
+  record: EscrowRecord,
+  now: string = new Date().toISOString()
+): boolean {
+  return (
+    record.status === 'held' &&
+    typeof record.heldUntil === 'string' &&
+    record.heldUntil <= now
+  );
+}
+
+/** Maps an escrow record to the documented payment-intent read model. */
+export function toPaymentIntentView(record: EscrowRecord): PaymentIntentView {
+  return {
+    id: record.id,
+    orderId: record.orderId,
+    amountKobo: record.amountKobo,
+    status: isEscrowExpired(record) ? 'expired' : record.status,
+    expiresAt: record.heldUntil ?? null,
+    heldAt: record.heldAt,
+    depositVerified: typeof record.depositVerifiedAt === 'string'
+  };
+}
+
+/**
  * Escrow state machine: HELD → RELEASED | REFUNDED | DISPUTED, with
  * DISPUTED → RELEASED | REFUNDED as the admin-mediated resolution.
  * Terminal states accept no outbound transitions; re-sending the current
@@ -542,6 +591,19 @@ export class EscrowService {
   }
 
   /**
+   * GAP-M23 — documented payment-intent read (GET /payments/intents/:id):
+   * the intent id is the escrow id. Read-time LAZY expiry: a held escrow
+   * past its heldUntil deadline reports status 'expired' without mutating
+   * the record (the sweeper owns the auto-refund flip). Authorization
+   * (order parties / admin) is enforced by the controller, which has the
+   * order lookup.
+   */
+  async paymentIntent(id: string): Promise<PaymentIntentView> {
+    const record = await this.escrows.getById(id);
+    return toPaymentIntentView(record);
+  }
+
+  /**
    * Drives the escrow state machine with the same replay/actor rules as the
    * order state machine. Every transition is audit-logged (money movement).
    */
@@ -585,6 +647,21 @@ export class EscrowService {
           `Only the order ${allowed.length > 0 ? allowed.join(' or ') : 'administrator'} may move escrow from '${record.status}' to '${status}'`
         );
       }
+    }
+    // GAP-M23 (client contract "escrow expiry race", docs/runbooks/ops.md):
+    // a confirmation attempt (held -> released) against an intent whose
+    // server-issued expiresAt has passed is refused with 409 intent_expired
+    // — the expiry outcome is the auto-refund, never a late release to the
+    // seller. Clients MUST mint a new intent instead of retrying. System
+    // paths (delivery-confirm release, expiry sweep) go through
+    // applyTransition directly and are unaffected.
+    if (record.status === 'held' && status === 'released' && isEscrowExpired(record)) {
+      throw new ConflictException({
+        message:
+          `Payment intent ${id} expired at ${record.heldUntil} and can no longer be confirmed; ` +
+          'mint a new intent instead of retrying',
+        error: 'intent_expired'
+      });
     }
     // Stage 24 (audit A1-1): the verify-before-credit gate applies to EVERY
     // money-out transition, including this party-driven path. The single
