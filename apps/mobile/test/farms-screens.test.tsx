@@ -13,7 +13,8 @@ import {
   type SavedPlotSummary
 } from '../src/screens/PlotCaptureScreen';
 import { SYNC_ENTITY_FARM_PLOT } from '../src/sync/entities';
-import { createSyncStore, type SyncPushRequestItem } from '../src/sync/store';
+import { SyncProvider } from '../src/sync/context';
+import { createSyncStore, type SyncPushRequestItem, type SyncTransport } from '../src/sync/store';
 import { createApiSyncTransport } from '../src/sync/transport';
 
 /* ------------------------------ helpers --------------------------------- */
@@ -150,6 +151,98 @@ describe('FarmsScreen', () => {
     expect(text).toContain('Something went wrong');
     expect(text).toContain('Retry');
   });
+
+  it('merges offline-captured plots from the sync cache as pending (GAP-M24)', async () => {
+    // A capture sitting in the record-level outbox (never pushed).
+    const storage = createInMemoryStorage();
+    const seedTransport: SyncTransport = {
+      pull: async () => ({ entity: SYNC_ENTITY_FARM_PLOT, items: [], cursor: 0, hasMore: false }),
+      push: async () => ({ results: [] }),
+      status: async () => []
+    };
+    const seed = createSyncStore({ storage, transport: seedTransport });
+    await seed.enqueue({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: 'plot-offline-1',
+      op: 'upsert',
+      payload: {
+        name: 'Offline Plot',
+        state: 'Kano',
+        lga: 'Kura',
+        centroidLat: 12.0022,
+        centroidLong: 8.5919,
+        sizeHectares: 1.5,
+        accuracyMeters: 6
+      },
+      clientMutationId: 'farms.plot.offline-1'
+    });
+
+    const api = stubApi({ '/farms/plots': { data: [PLOT] } });
+    const store = createSyncStore({ storage, transport: createApiSyncTransport(api.client) });
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        <ApiProvider client={api.client}>
+          <SyncProvider store={store}>
+            <FarmsScreen />
+          </SyncProvider>
+        </ApiProvider>
+      );
+    });
+    await flush();
+
+    const text = screenText(renderer!.root);
+    expect(text).toContain('My plots (2)');
+    expect(text).toContain('Zaria North Plot'); // server plot, confirmed
+    expect(text).toContain('Offline Plot'); // offline capture, visible
+    expect(text).toContain('pending sync');
+  });
+
+  it('still shows pending captures when the server list cannot load', async () => {
+    const storage = createInMemoryStorage();
+    const seedTransport: SyncTransport = {
+      pull: async () => ({ entity: SYNC_ENTITY_FARM_PLOT, items: [], cursor: 0, hasMore: false }),
+      push: async () => ({ results: [] }),
+      status: async () => []
+    };
+    await createSyncStore({ storage, transport: seedTransport }).enqueue({
+      entity: SYNC_ENTITY_FARM_PLOT,
+      entityId: 'plot-offline-1',
+      op: 'upsert',
+      payload: {
+        name: 'Offline Plot',
+        state: 'Kano',
+        lga: 'Kura',
+        centroidLat: 12.0022,
+        centroidLong: 8.5919,
+        sizeHectares: 1.5
+      },
+      clientMutationId: 'farms.plot.offline-1'
+    });
+
+    const offlineClient = createApiClient({
+      baseUrl: 'https://api.test/api/v1',
+      tokenStore: createInMemoryTokenStore(),
+      fetchImpl: (() => Promise.reject(new TypeError('network down'))) as typeof fetch
+    });
+    const store = createSyncStore({ storage, transport: createApiSyncTransport(offlineClient) });
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        <ApiProvider client={offlineClient}>
+          <SyncProvider store={store}>
+            <FarmsScreen />
+          </SyncProvider>
+        </ApiProvider>
+      );
+    });
+    await flush();
+
+    const text = screenText(renderer!.root);
+    // The capture is NOT lost from the UI just because the fetch failed.
+    expect(text).toContain('Offline Plot');
+    expect(text).toContain('pending sync');
+  });
 });
 
 /* --------------------------- PlotCaptureScreen -------------------------- */
@@ -256,6 +349,8 @@ describe('PlotCaptureScreen', () => {
     const payload = items[0].payload as Record<string, unknown>;
     expect(payload.name).toBe('Zaria North Plot');
     expect(payload.state).toBe('Kano');
+    // GAP-L10: the GPS fix quality rides the capture payload to the server.
+    expect(payload.accuracyMeters).toBe(6);
     const boundary = payload.boundaryGeojson as { type: string; coordinates: unknown[][] };
     expect(boundary.type).toBe('Polygon');
     expect(boundary.coordinates[0]).toHaveLength(4); // closed ring
@@ -298,7 +393,7 @@ describe('PlotCaptureScreen', () => {
       op: 'upsert',
       baseVersion: 0
     });
-    expect(outbox[0].payload).toMatchObject({ name: 'Offline Plot', lga: 'Kura' });
+    expect(outbox[0].payload).toMatchObject({ name: 'Offline Plot', lga: 'Kura', accuracyMeters: 6 });
     expect(screenText(renderer!.root)).toContain('queued');
   });
 
